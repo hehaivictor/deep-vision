@@ -450,7 +450,7 @@ DIMENSION_INFO = {
 }
 
 
-def build_interview_prompt(session: dict, dimension: str) -> str:
+def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list) -> str:
     """构建访谈 prompt"""
     topic = session.get("topic", "未知项目")
     reference_docs = session.get("reference_docs", [])
@@ -486,13 +486,46 @@ def build_interview_prompt(session: dict, dimension: str) -> str:
     if interview_log:
         context_parts.append("\n## 已收集的信息：")
         for log in interview_log:
-            context_parts.append(f"- Q: {log['question']}")
+            follow_up_mark = " [追问]" if log.get("is_follow_up") else ""
+            context_parts.append(f"- Q: {log['question']}{follow_up_mark}")
             context_parts.append(f"  A: {log['answer']}")
             if log.get("dimension"):
                 context_parts.append(f"  (维度: {DIMENSION_INFO.get(log['dimension'], {}).get('name', log['dimension'])})")
 
-    # 当前维度已收集的信息
-    dim_logs = [log for log in interview_log if log.get("dimension") == dimension]
+    # 计算正式问题数量（排除追问）
+    formal_questions_count = len([log for log in all_dim_logs if not log.get("is_follow_up", False)])
+
+    # 判断是否需要对上一个回答进行追问
+    last_log = None
+    should_follow_up = False
+    follow_up_reason = ""
+
+    if all_dim_logs and not all_dim_logs[-1].get("is_follow_up", False):
+        # 上一个是正式问题，判断回答是否清晰
+        last_log = all_dim_logs[-1]
+        last_answer = last_log.get("answer", "")
+        last_question = last_log.get("question", "")
+
+        # 简单判断规则：如果回答很短、很泛泛、或包含"看情况"、"不一定"等模糊词
+        vague_indicators = ["看情况", "不一定", "可能", "或许", "大概", "差不多", "到时候", "再说", "还没想好", "不确定", "看具体", "根据情况"]
+        is_short = len(last_answer) < 15  # 回答太短
+        has_vague = any(indicator in last_answer for indicator in vague_indicators)
+        is_generic = last_answer in ["好的", "是的", "可以", "没问题", "需要", "应该要"]
+
+        if is_short or has_vague or is_generic:
+            should_follow_up = True
+            if is_short:
+                follow_up_reason = "回答过于简短，需要补充细节"
+            elif has_vague:
+                follow_up_reason = "回答包含模糊表述，需要明确具体要求"
+            else:
+                follow_up_reason = "回答过于笼统，需要深入了解具体需求"
+
+    # 如果上一个回答已经标记为需要追问，则继续追问
+    elif all_dim_logs and all_dim_logs[-1].get("needs_follow_up", False):
+        last_log = all_dim_logs[-1]
+        should_follow_up = True
+        follow_up_reason = "继续深入了解上一个问题"
 
     prompt = f"""你是一个专业的需求调研访谈师，正在进行"{topic}"的需求调研。
 
@@ -503,22 +536,23 @@ def build_interview_prompt(session: dict, dimension: str) -> str:
 你现在需要针对「{dim_info.get('name', dimension)}」维度收集信息。
 这个维度关注：{dim_info.get('description', '')}
 
-该维度已收集了 {len(dim_logs)} 个问题的回答，关键方面包括：{', '.join(dim_info.get('key_aspects', []))}
+该维度已收集了 {formal_questions_count} 个正式问题的回答，关键方面包括：{', '.join(dim_info.get('key_aspects', []))}
 
-## 要求
+{'## 追问模式' if should_follow_up else '## 要求'}
 
-1. 生成 1 个针对性的问题，用于收集该维度的关键信息
+{'上一个用户回答需要追问：' + follow_up_reason if should_follow_up else '''1. 生成 1 个针对性的问题，用于收集该维度的关键信息
 2. 为这个问题提供 3-4 个具体的选项
 3. 选项要基于：
    - 调研主题的行业特点
    - 参考文档中的信息（如有）
    - 联网搜索的行业知识（如有）
-   - 已收集的上下文信息
-4. 如果用户的上一个回答比较笼统或表面，可以生成一个追问来挖掘本质需求
-5. 如果用户的回答与参考文档内容有冲突，要在问题中指出并请求澄清
-6. **重要**：根据问题性质判断是单选还是多选：
-   - 单选场景：互斥选项（是/否）、优先级选择（最重要的）、唯一选择（首选方案）
-   - 多选场景：可并存的功能需求、多个痛点、多种用户角色、多个系统集成
+   - 已收集的上下文信息'''}
+
+4. {'追问是对上一个问题的深入了解，' if should_follow_up else '''根据问题性质判断是单选还是多选：'''}
+   {'- 追问问题要更具体、更深入，引导用户给出明确答案' if should_follow_up else '''- 单选场景：互斥选项（是/否）、优先级选择（最重要的）、唯一选择（首选方案）
+   - 多选场景：可并存的功能需求、多个痛点、多种用户角色、多个系统集成'''}
+
+5. 如果用户的回答与参考文档内容有冲突，要在问题中指出并请求澄清。
 
 ## 输出格式
 
@@ -528,8 +562,8 @@ def build_interview_prompt(session: dict, dimension: str) -> str:
     "question": "你的问题",
     "options": ["选项1", "选项2", "选项3", "选项4"],
     "multi_select": false,
-    "is_follow_up": false,
-    "follow_up_reason": null,
+    "is_follow_up": {str(should_follow_up).lower()},
+    "follow_up_reason": {json.dumps(follow_up_reason) if should_follow_up else "null"},
     "conflict_detected": false,
     "conflict_description": null
 }}
@@ -537,13 +571,18 @@ def build_interview_prompt(session: dict, dimension: str) -> str:
 
 字段说明：
 - multi_select: 布尔值，true 表示可多选，false 表示单选
+- is_follow_up: 布尔值，true 表示这是追问，false 表示是正式问题
+- follow_up_reason: 如果是追问，说明追问的原因；否则为 null
+
+**追问不计入 3 个正式问题的限制**。
 
 **重要警告**：
 - 你的回复必须是且只能是一个有效的 JSON 对象
 - 禁止在 JSON 前后添加任何文字、解释或说明
 - 禁止使用 markdown 代码块（不要使用 ```json）
 - 第一个字符必须是 {{，最后一个字符必须是 }}
-- 严格遵守 JSON 语法，所有字符串使用双引号"""
+- 严格遵守 JSON 语法，所有字符串使用双引号
+- 布尔值用 true/false，字符串用 null 表示空值"""
 
     return prompt
 
@@ -840,17 +879,25 @@ def get_next_question(session_id):
             "detail": "请联系管理员配置 ANTHROPIC_API_KEY 环境变量"
         }), 503
 
-    # 检查维度是否已完成
-    dim_logs = [log for log in session.get("interview_log", []) if log.get("dimension") == dimension]
-    if len(dim_logs) >= 3:  # 每个维度最多 3 个问题
-        return jsonify({
-            "dimension": dimension,
-            "completed": True
-        })
+    # 获取当前维度的所有记录
+    all_dim_logs = [log for log in session.get("interview_log", []) if log.get("dimension") == dimension]
+
+    # 计算正式问题数量（排除追问）
+    formal_questions_count = len([log for log in all_dim_logs if not log.get("is_follow_up", False)])
+
+    # 检查维度是否已完成（正式问题达到 3 个且没有需要追问的回答）
+    if formal_questions_count >= 3:
+        # 检查是否还有需要追问的回答
+        needs_follow_up = any(log.get("needs_follow_up", False) for log in all_dim_logs if not log.get("is_follow_up", False))
+        if not needs_follow_up:
+            return jsonify({
+                "dimension": dimension,
+                "completed": True
+            })
 
     # 调用 Claude 生成问题
     try:
-        prompt = build_interview_prompt(session, dimension)
+        prompt = build_interview_prompt(session, dimension, all_dim_logs)
         response = call_claude(prompt, max_tokens=MAX_TOKENS_QUESTION)
 
         if not response:
@@ -1122,6 +1169,18 @@ def submit_answer(session_id):
     answer = data.get("answer")
     dimension = data.get("dimension")
     options = data.get("options", [])
+    is_follow_up = data.get("is_follow_up", False)
+
+    # 判断回答是否需要追问
+    needs_follow_up = False
+    if not is_follow_up:  # 只有正式问题才判断是否需要追问
+        # 简单判断规则
+        vague_indicators = ["看情况", "不一定", "可能", "或许", "大概", "差不多", "到时候", "再说", "还没想好", "不确定", "看具体", "根据情况"]
+        is_short = len(answer) < 15
+        has_vague = any(indicator in answer for indicator in vague_indicators)
+        is_generic = answer in ["好的", "是的", "可以", "没问题", "需要", "应该要"]
+
+        needs_follow_up = is_short or has_vague or is_generic
 
     # 添加到访谈记录
     log_entry = {
@@ -1129,21 +1188,25 @@ def submit_answer(session_id):
         "question": question,
         "answer": answer,
         "dimension": dimension,
-        "options": options
+        "options": options,
+        "is_follow_up": is_follow_up,
+        "needs_follow_up": needs_follow_up
     }
     session["interview_log"].append(log_entry)
 
-    # 更新维度数据
-    if dimension and dimension in session["dimensions"]:
+    # 更新维度数据（只有正式问题才添加到维度需求列表）
+    if dimension and dimension in session["dimensions"] and not is_follow_up:
         session["dimensions"][dimension]["items"].append({
             "name": answer,
             "description": question,
             "priority": "中"
         })
 
-        # 计算覆盖度（每个维度 3 个问题为 100%）
-        item_count = len(session["dimensions"][dimension]["items"])
-        session["dimensions"][dimension]["coverage"] = min(100, int(item_count / 3 * 100))
+    # 计算覆盖度（只统计正式问题，追问不计入）
+    if dimension and dimension in session["dimensions"]:
+        formal_count = len([log for log in session["interview_log"]
+                           if log.get("dimension") == dimension and not log.get("is_follow_up", False)])
+        session["dimensions"][dimension]["coverage"] = min(100, int(formal_count / 3 * 100))
 
     session["updated_at"] = get_utc_now()
     session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1167,16 +1230,18 @@ def undo_answer(session_id):
     # 删除最后一个回答
     last_log = session["interview_log"].pop()
     dimension = last_log.get("dimension")
+    was_follow_up = last_log.get("is_follow_up", False)
 
-    # 更新维度数据
+    # 更新维度数据（只有正式问题才影响维度 items）
     if dimension and dimension in session["dimensions"]:
-        # 删除最后一个 item
-        if session["dimensions"][dimension]["items"]:
+        # 只有删除的是正式问题时，才从 items 中删除
+        if not was_follow_up and session["dimensions"][dimension]["items"]:
             session["dimensions"][dimension]["items"].pop()
 
-        # 重新计算覆盖度
-        item_count = len(session["dimensions"][dimension]["items"])
-        session["dimensions"][dimension]["coverage"] = min(100, int(item_count / 3 * 100))
+        # 重新计算覆盖度（只统计正式问题）
+        formal_count = len([log for log in session["interview_log"]
+                           if log.get("dimension") == dimension and not log.get("is_follow_up", False)])
+        session["dimensions"][dimension]["coverage"] = min(100, int(formal_count / 3 * 100))
 
     session["updated_at"] = get_utc_now()
     session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")

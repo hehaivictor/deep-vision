@@ -9,9 +9,7 @@
  */
 
 // 从配置文件获取 API 地址，如果配置文件未加载则使用默认值
-const API_BASE = (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.api?.baseUrl)
-    ? SITE_CONFIG.api.baseUrl
-    : 'http://localhost:5001/api';
+const API_BASE = window.location.origin + '/api';
 
 function deepVision() {
     return {
@@ -528,7 +526,8 @@ function deepVision() {
                             answer: answer,
                             dimension: this.currentDimension,
                             options: this.currentQuestion.options,
-                            multi_select: this.currentQuestion.multiSelect
+                            multi_select: this.currentQuestion.multiSelect,
+                            is_follow_up: this.currentQuestion.isFollowUp || false
                         })
                     }
                 );
@@ -549,8 +548,9 @@ function deepVision() {
         },
 
         getQuestionNumber() {
+            // 只计算正式问题，追问不计入问题编号
             const answered = this.currentSession.interview_log.filter(
-                l => l.dimension === this.currentDimension
+                l => l.dimension === this.currentDimension && !l.is_follow_up
             ).length;
             return answered + 1;
         },
