@@ -6,14 +6,10 @@
       "version": "1.3.3",
       "date": "2026-01-28",
       "type": "patch",
-      "title": "新增版本信息展示和更新日志功能",
+      "title": "统一版本信息弹窗配色方案并回退版本号",
       "changes": [
-        "添加版本号显示在页面底部，可点击查看更新日志",
-        "实现更新日志弹窗，展示版本历史和变更内容",
-        "新增 version.json 配置文件用于管理版本信息",
-        "添加版本管理脚本 version_manager.py 用于自动化版本更新",
-        "配置 Git hooks 实现提交后自动更新版本号",
-        "更新 site-config.js 添加版本配置项",
+        "将版本标签和按钮颜色从 primary 变量改为统一的 sage-blue 主题色（#357BE2），",
+        "确保与整体 UI 风格保持一致。同时回退版本号到 1.3.2。",
         "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
       ]
     },
