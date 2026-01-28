@@ -1,0 +1,108 @@
+{
+  "version": "1.3.3",
+  "releaseDate": "2026-01-28",
+  "changelog": [
+    {
+      "version": "1.3.3",
+      "date": "2026-01-28",
+      "type": "patch",
+      "title": "新增版本信息展示和更新日志功能",
+      "changes": [
+        "添加版本号显示在页面底部，可点击查看更新日志",
+        "实现更新日志弹窗，展示版本历史和变更内容",
+        "新增 version.json 配置文件用于管理版本信息",
+        "添加版本管理脚本 version_manager.py 用于自动化版本更新",
+        "配置 Git hooks 实现提交后自动更新版本号",
+        "更新 site-config.js 添加版本配置项",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
+    {
+      "version": "1.3.2",
+      "date": "2026-01-28",
+      "type": "patch",
+      "title": "静态资源本地化",
+      "changes": [
+        "添加 vendor 目录，支持内网部署",
+        "本地化 Tailwind CSS、Alpine.js、Marked、Mermaid 等依赖",
+        "添加 Inter 字体文件（woff2 格式）"
+      ]
+    },
+    {
+      "version": "1.3.1",
+      "date": "2026-01-27",
+      "type": "patch",
+      "title": "Web 组件优化",
+      "changes": [
+        "优化页面结构和组件布局"
+      ]
+    },
+    {
+      "version": "1.3.0",
+      "date": "2026-01-26",
+      "type": "minor",
+      "title": "思考进度可视化",
+      "changes": [
+        "新增 AI 思考进度可视化效果",
+        "添加分阶段进度指示器（分析、检索、生成）",
+        "新增骨架填充动画效果",
+        "优化问题加载体验"
+      ]
+    },
+    {
+      "version": "1.2.2",
+      "date": "2026-01-25",
+      "type": "patch",
+      "title": "响应式设计改进",
+      "changes": [
+        "更新站点配置",
+        "改进移动端响应式布局"
+      ]
+    },
+    {
+      "version": "1.2.1",
+      "date": "2026-01-24",
+      "type": "patch",
+      "title": "新建会话弹窗优化",
+      "changes": [
+        "加宽对话框尺寸",
+        "增大描述字段输入区域"
+      ]
+    },
+    {
+      "version": "1.2.0",
+      "date": "2026-01-23",
+      "type": "minor",
+      "title": "性能指标与文档摘要",
+      "changes": [
+        "添加性能指标展示面板",
+        "新增文档摘要功能",
+        "多项 UI 细节改进"
+      ]
+    },
+    {
+      "version": "1.1.0",
+      "date": "2026-01-22",
+      "type": "minor",
+      "title": "追问机制",
+      "changes": [
+        "添加追问问题功能",
+        "增强访谈深度和灵活性"
+      ]
+    },
+    {
+      "version": "1.0.0",
+      "date": "2026-01-20",
+      "type": "major",
+      "title": "首个正式版本",
+      "changes": [
+        "完整的交互式需求调研访谈系统",
+        "支持多种文档格式上传（md, txt, pdf, docx, xlsx, pptx）",
+        "AI 驱动的智能问答交互",
+        "会话历史管理",
+        "Markdown 渲染与 Mermaid 图表支持",
+        "调研报告自动生成"
+      ]
+    }
+  ]
+}

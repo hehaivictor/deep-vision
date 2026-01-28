@@ -84,6 +84,11 @@ function deepVision() {
         // Toast 通知
         toast: { show: false, message: '', type: 'success' },
 
+        // 版本信息
+        appVersion: (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.version?.current) || '1.0.0',
+        changelog: [],
+        showChangelogModal: false,
+
         // 诗句轮播（从配置文件加载）
         quotes: (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.quotes?.items)
             ? SITE_CONFIG.quotes.items
@@ -112,10 +117,26 @@ function deepVision() {
                 this.currentQuoteSource = this.quotes[0].source;
             }
 
+            await this.loadVersionInfo();
             await this.checkServerStatus();
             await this.loadSessions();
             await this.loadReports();
             this.startQuoteRotation();
+        },
+
+        // 加载版本信息
+        async loadVersionInfo() {
+            try {
+                const configFile = (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.version?.configFile) || 'version.json';
+                const response = await fetch(configFile);
+                if (response.ok) {
+                    const data = await response.json();
+                    this.appVersion = data.version || this.appVersion;
+                    this.changelog = data.changelog || [];
+                }
+            } catch (error) {
+                console.warn('无法加载版本信息:', error);
+            }
         },
 
         // 启动诗句轮播

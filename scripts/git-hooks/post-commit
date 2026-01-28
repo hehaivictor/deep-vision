@@ -1,0 +1,56 @@
+#!/bin/bash
+#
+# Git post-commit hook - 自动更新 Deep Vision 版本号
+#
+# 安装方法：
+#   chmod +x scripts/git-hooks/post-commit
+#   ln -sf ../../scripts/git-hooks/post-commit .git/hooks/post-commit
+#
+# 或运行：
+#   ./scripts/install-hooks.sh
+#
+
+# 获取脚本所在目录
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$HOOK_DIR/../.." && pwd)"
+
+# 检查是否在 deep-vision 项目中
+if [[ ! -f "$PROJECT_ROOT/web/version.json" ]]; then
+    # 如果是从 .git/hooks 运行的软链接
+    PROJECT_ROOT="$(cd "$HOOK_DIR/../.." && pwd)"
+    if [[ ! -f "$PROJECT_ROOT/web/version.json" ]]; then
+        exit 0
+    fi
+fi
+
+# 检查是否有 VERSION_SKIP 环境变量（跳过版本更新）
+if [[ -n "$VERSION_SKIP" ]]; then
+    echo "[version] 跳过版本更新 (VERSION_SKIP 已设置)"
+    exit 0
+fi
+
+# 获取最新的 commit message
+COMMIT_MSG=$(git log -1 --pretty=%B)
+
+# 检查是否是版本更新的 commit（避免循环）
+if [[ "$COMMIT_MSG" == *"[version]"* ]] || [[ "$COMMIT_MSG" == *"chore(version)"* ]]; then
+    exit 0
+fi
+
+# 检查是否是 merge commit
+if [[ "$COMMIT_MSG" == Merge* ]]; then
+    exit 0
+fi
+
+# 运行版本管理器
+echo "[version] 正在检查版本更新..."
+python3 "$PROJECT_ROOT/scripts/version_manager.py"
+
+# 如果版本文件被更新，自动 amend 到当前 commit
+if [[ $(git status --porcelain "$PROJECT_ROOT/web/version.json" 2>/dev/null) ]]; then
+    echo "[version] 正在更新 commit..."
+    git add "$PROJECT_ROOT/web/version.json"
+    # 使用 VERSION_SKIP 避免 hook 循环
+    VERSION_SKIP=1 git commit --amend --no-edit
+    echo "[version] 版本更新完成"
+fi

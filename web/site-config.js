@@ -77,6 +77,16 @@ const SITE_CONFIG = {
 
         // Web Search 状态轮询间隔（毫秒）
         webSearchPollInterval: 200
+    },
+
+    // ============ 版本信息 ============
+    // 版本信息从 version.json 动态加载
+    version: {
+        // 版本号（初始值，会被 version.json 覆盖）
+        current: '1.3.2',
+
+        // 版本信息文件路径
+        configFile: 'version.json'
     }
 };
 
