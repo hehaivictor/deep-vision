@@ -25,6 +25,7 @@ function deepVision() {
         // ========== 方案B+D 新增状态变量 ==========
         thinkingStage: null,           // 思考阶段数据
         thinkingPollInterval: null,    // 轮询定时器
+        currentTipIndex: 0,            // 调研小技巧当前索引
         skeletonMode: false,           // 骨架填充模式
         typingText: '',                // 打字机文字
         typingComplete: false,         // 打字完成标记
@@ -212,6 +213,9 @@ function deepVision() {
         // ========== 方案B: 思考进度轮询 ==========
         startThinkingPolling() {
             if (this.thinkingPollInterval) return;  // 已在轮询中
+
+            // 每次等待随机选一条调研小技巧
+            this.currentTipIndex = Math.floor(Math.random() * SITE_CONFIG.researchTips.length);
 
             const pollInterval = 300;  // 300ms 轮询间隔
 
@@ -598,10 +602,25 @@ function deepVision() {
 
                 const result = await response.json();
 
-                // 方案B结束：收到响应后立即关闭加载状态
-                this.loadingQuestion = false;
+                // 先停止轮询，手动设置完成状态让所有步骤显示为已完成
                 this.stopThinkingPolling();
                 this.stopWebSearchPolling();
+
+                // 手动设置为完成状态，让用户看到所有步骤都完成
+                this.thinkingStage = {
+                    active: true,
+                    stage_index: 2,
+                    stage_name: '生成问题',
+                    message: '问题生成完成',
+                    progress: 100
+                };
+
+                // 等待 600ms 让用户看到完成动画，然后再切换到新问题
+                await new Promise(resolve => setTimeout(resolve, 600));
+
+                // 关闭加载状态
+                this.loadingQuestion = false;
+                this.thinkingStage = null;
 
                 // 检查是否有错误
                 if (!response.ok || result.error) {
@@ -1321,6 +1340,21 @@ function deepVision() {
             setTimeout(() => {
                 this.toast.show = false;
             }, 4000);
+        },
+
+        // ============ 组合C：等待状态增强 ============
+        // 获取当前思考阶段的子步骤
+        getThinkingSubSteps() {
+            const stageIndex = this.thinkingStage?.stage_index ?? 0;
+            const steps = [
+                { name: '解析回答关键信息', done: stageIndex > 0 || (stageIndex === 0 && this.thinkingStage?.progress > 50) },
+                { name: '识别未覆盖话题', done: stageIndex > 0 },
+                { name: '检索参考文档', done: stageIndex > 1 || (stageIndex === 1 && this.thinkingStage?.progress > 30) },
+                { name: '匹配追问策略', done: stageIndex > 1 || (stageIndex === 1 && this.thinkingStage?.progress > 70) },
+                { name: '生成候选问题', done: stageIndex > 2 || (stageIndex === 2 && this.thinkingStage?.progress > 40) },
+                { name: '优化问题表达', done: stageIndex >= 2 && this.thinkingStage?.progress > 80 }
+            ];
+            return steps;
         }
     };
 }

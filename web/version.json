@@ -1,16 +1,29 @@
 {
-  "version": "1.3.3",
-  "releaseDate": "2026-01-28",
+  "version": "1.3.4",
+  "releaseDate": "2026-01-29",
   "changelog": [
+    {
+      "version": "1.3.4",
+      "date": "2026-01-29",
+      "type": "patch",
+      "title": "增强等待状态体验：新增调研小技巧和处理步骤展示",
+      "changes": [
+        "新增50条调研小技巧，等待时随机展示帮助用户更好地回答问题",
+        "重新设计等待状态UI为左右分栏布局，左侧显示三阶段进度，右侧显示详细处理步骤",
+        "增加6个细分处理步骤的实时状态展示",
+        "优化问题生成完成后的过渡动画，让用户看到所有步骤完成",
+        "调整品牌标题样式为黑色加粗，提升视觉层次",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.3.3",
       "date": "2026-01-28",
       "type": "patch",
-      "title": "统一版本信息弹窗配色方案并回退版本号",
+      "title": "统一版本信息弹窗配色方案",
       "changes": [
-        "将版本标签和按钮颜色从 primary 变量改为统一的 sage-blue 主题色（#357BE2），",
-        "确保与整体 UI 风格保持一致。同时回退版本号到 1.3.2。",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "将版本标签和按钮颜色从 primary 变量改为统一的 sage-blue 主题色",
+        "确保与整体 UI 风格保持一致"
       ]
     },
     {
