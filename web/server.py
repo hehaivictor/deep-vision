@@ -142,7 +142,7 @@ def clear_thinking_status(session_id: str):
 
 # ============ 预生成缓存函数 ============
 
-def get_prefetch_result(session_id: str, dimension: str) -> dict | None:
+def get_prefetch_result(session_id: str, dimension: str) -> Optional[dict]:
     """获取预生成结果（线程安全），命中则消费（删除缓存）
 
     Args:
@@ -2174,7 +2174,7 @@ def delete_session(session_id):
 
 # ============ AI 驱动的访谈 API ============
 
-def parse_question_response(response: str, debug: bool = False) -> dict | None:
+def parse_question_response(response: str, debug: bool = False) -> Optional[dict]:
     """解析 AI 返回的问题 JSON 响应
 
     使用5种递进式解析策略，确保最大程度提取有效JSON。
