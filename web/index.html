@@ -4,12 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Deep Vision 深瞳 - 智能需求调研助手</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=ZCOOL+XiaoWei&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@600;700&display=swap" rel="stylesheet">
+    <!-- 本地化资源 - 支持内网部署 -->
+    <script src="vendor/css/tailwind-full.js"></script>
+    <link rel="stylesheet" href="vendor/css/fonts.css">
     <style>
         .fangsong-quote {
             font-family: "FangSong", "仿宋", "STFangsong", "华文仿宋", serif;
@@ -17,7 +14,7 @@
         }
         /* Logo 品牌样式 */
         .brand-title {
-            font-family: 'Outfit', sans-serif;
+            font-family: 'Outfit', 'Inter', system-ui, sans-serif;
             background: linear-gradient(135deg, #171717 0%, #404040 50%, #525252 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
@@ -105,10 +102,10 @@
         .wave-dots span:nth-child(6) { animation-delay: 0.5s; }
     </style>
     <link rel="stylesheet" href="styles.css">
-    <!-- Markdown 渲染 -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <!-- Mermaid 图表渲染 -->
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <!-- Markdown 渲染 - 本地化 -->
+    <script src="vendor/js/marked.min.js"></script>
+    <!-- Mermaid 图表渲染 - 本地化 -->
+    <script src="vendor/js/mermaid.min.js"></script>
     <script>
         // 初始化 Mermaid 配置
         mermaid.initialize({
@@ -368,7 +365,8 @@
             }
         }
     </style>
-    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <!-- Alpine.js - 本地化 -->
+    <script defer src="vendor/js/alpine.min.js"></script>
 </head>
 <body class="bg-surface-secondary min-h-screen font-sans text-text antialiased pb-safe">
     <div x-data="deepVision()" x-cloak class="min-h-screen flex flex-col">
