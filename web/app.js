@@ -22,6 +22,16 @@ function deepVision() {
         webSearching: false,  // Web Search API 调用状态
         webSearchPollInterval: null,  // Web Search 状态轮询定时器
 
+        // ========== 方案B+D 新增状态变量 ==========
+        thinkingStage: null,           // 思考阶段数据
+        thinkingPollInterval: null,    // 轮询定时器
+        skeletonMode: false,           // 骨架填充模式
+        typingText: '',                // 打字机文字
+        typingComplete: false,         // 打字完成标记
+        optionsVisible: [],            // 选项可见性数组
+        interactionReady: false,       // 交互就绪标记
+        prefetchHit: false,            // 预生成命中标记
+
         // 服务状态
         serverStatus: null,
         aiAvailable: false,
@@ -176,6 +186,98 @@ function deepVision() {
                 this.webSearchPollInterval = null;
             }
             this.webSearching = false;  // 重置状态
+        },
+
+        // ========== 方案B: 思考进度轮询 ==========
+        startThinkingPolling() {
+            if (this.thinkingPollInterval) return;  // 已在轮询中
+
+            const pollInterval = 300;  // 300ms 轮询间隔
+
+            this.thinkingPollInterval = setInterval(async () => {
+                try {
+                    const sessionId = this.currentSession?.session_id;
+                    if (!sessionId) return;
+
+                    const response = await fetch(`${API_BASE}/status/thinking/${sessionId}`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.active) {
+                            this.thinkingStage = data;
+                        } else {
+                            this.thinkingStage = null;
+                        }
+                    }
+                } catch (error) {
+                    // 轮询失败时不显示错误，静默处理
+                }
+            }, pollInterval);
+        },
+
+        stopThinkingPolling() {
+            if (this.thinkingPollInterval) {
+                clearInterval(this.thinkingPollInterval);
+                this.thinkingPollInterval = null;
+            }
+            this.thinkingStage = null;  // 重置状态
+        },
+
+        // ========== 方案D: 骨架填充 ==========
+        async startSkeletonFill(result) {
+            // 进入骨架填充模式
+            this.skeletonMode = true;
+            this.typingText = '';
+            this.typingComplete = false;
+            this.optionsVisible = [];
+            this.interactionReady = false;
+            this.prefetchHit = result.prefetched || false;
+
+            // 设置当前问题数据（但先不显示）
+            this.currentQuestion = {
+                text: result.question,
+                options: result.options || [],
+                multiSelect: result.multi_select || false,
+                isFollowUp: result.is_follow_up || false,
+                followUpReason: result.follow_up_reason,
+                conflictDetected: result.conflict_detected || false,
+                conflictDescription: result.conflict_description,
+                aiGenerated: result.ai_generated || false
+            };
+
+            const questionText = result.question || '';
+            const options = result.options || [];
+
+            // 检查用户是否禁用了动效（可访问性支持）
+            const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+            if (prefersReducedMotion) {
+                // 禁用动效时：立即显示所有内容
+                this.typingText = questionText;
+                this.typingComplete = true;
+                this.optionsVisible = options.map((_, i) => i);
+                this.interactionReady = true;
+                this.skeletonMode = false;
+            } else {
+                // 启用动效时：打字机效果 + 选项淡入
+                const typingSpeed = 30;  // 每个字符 30ms
+                for (let i = 0; i <= questionText.length; i++) {
+                    this.typingText = questionText.substring(0, i);
+                    await new Promise(resolve => setTimeout(resolve, typingSpeed));
+                }
+                this.typingComplete = true;
+
+                // 选项依次淡入
+                const optionDelay = 150;  // 每个选项间隔 150ms
+                for (let i = 0; i < options.length; i++) {
+                    this.optionsVisible.push(i);
+                    await new Promise(resolve => setTimeout(resolve, optionDelay));
+                }
+
+                // 短暂延迟后允许交互
+                await new Promise(resolve => setTimeout(resolve, 200));
+                this.interactionReady = true;
+                this.skeletonMode = false;
+            }
         },
 
         // ============ API 调用 ============
@@ -458,7 +560,10 @@ function deepVision() {
 
         async fetchNextQuestion() {
             this.loadingQuestion = true;
-            this.startWebSearchPolling();  // 开始轮询 Web Search 状态
+            this.skeletonMode = false;
+            this.interactionReady = false;
+            this.startThinkingPolling();  // 方案B: 开始轮询思考进度
+            this.startWebSearchPolling();  // 同时保留 Web Search 状态轮询
             this.selectedAnswers = [];
             this.otherAnswerText = '';
             this.otherSelected = false;
@@ -471,6 +576,11 @@ function deepVision() {
                 });
 
                 const result = await response.json();
+
+                // 方案B结束：收到响应后立即关闭加载状态
+                this.loadingQuestion = false;
+                this.stopThinkingPolling();
+                this.stopWebSearchPolling();
 
                 // 检查是否有错误
                 if (!response.ok || result.error) {
@@ -490,6 +600,7 @@ function deepVision() {
                         errorTitle: errorTitle,
                         errorDetail: errorDetail
                     };
+                    this.interactionReady = true;  // 错误状态下允许交互（重试）
                     return;
                 }
 
@@ -511,17 +622,10 @@ function deepVision() {
                         multiSelect: false,
                         aiGenerated: false
                     };
+                    this.interactionReady = true;
                 } else {
-                    this.currentQuestion = {
-                        text: result.question,
-                        options: result.options || [],
-                        multiSelect: result.multi_select || false,
-                        isFollowUp: result.is_follow_up || false,
-                        followUpReason: result.follow_up_reason,
-                        conflictDetected: result.conflict_detected || false,
-                        conflictDescription: result.conflict_description,
-                        aiGenerated: result.ai_generated || false
-                    };
+                    // 方案D: 调用骨架填充（打字机效果 + 选项依次淡入）
+                    await this.startSkeletonFill(result);
                 }
             } catch (error) {
                 console.error('获取问题失败:', error);
@@ -541,14 +645,22 @@ function deepVision() {
                     errorTitle: errorTitle,
                     errorDetail: errorDetail
                 };
+                this.interactionReady = true;  // 错误状态下允许交互（重试）
             } finally {
+                // 确保停止轮询
+                this.stopThinkingPolling();
+                this.stopWebSearchPolling();
                 this.loadingQuestion = false;
-                this.stopWebSearchPolling();  // 停止轮询 Web Search 状态
                 this.isGoingPrev = false;
             }
         },
 
         canSubmitAnswer() {
+            // 方案D: 骨架填充期间不允许提交
+            if (!this.interactionReady) {
+                return false;
+            }
+
             if (!this.currentQuestion.text || this.currentQuestion.options.length === 0) {
                 return false;
             }

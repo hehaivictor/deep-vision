@@ -66,6 +66,43 @@
         .breathing-light {
             animation: breathing 1.5s ease-in-out infinite;
         }
+
+        /* 阶段进度呼吸灯动画 - 鼠尾草蓝 */
+        @keyframes stage-breathing {
+            0%, 100% {
+                box-shadow: 0 0 0 0 rgba(53, 123, 226, 0.7);
+                transform: scale(1);
+            }
+            50% {
+                box-shadow: 0 0 20px 10px rgba(53, 123, 226, 0.4);
+                transform: scale(1.1);
+            }
+        }
+        .stage-active {
+            animation: stage-breathing 1.5s ease-in-out infinite;
+        }
+
+        /* 波浪点动画 */
+        @keyframes wave-dot {
+            0%, 60%, 100% {
+                transform: translateY(0);
+                opacity: 0.4;
+            }
+            30% {
+                transform: translateY(-8px);
+                opacity: 1;
+            }
+        }
+        .wave-dots span {
+            display: inline-block;
+            animation: wave-dot 1.4s ease-in-out infinite;
+        }
+        .wave-dots span:nth-child(1) { animation-delay: 0s; }
+        .wave-dots span:nth-child(2) { animation-delay: 0.1s; }
+        .wave-dots span:nth-child(3) { animation-delay: 0.2s; }
+        .wave-dots span:nth-child(4) { animation-delay: 0.3s; }
+        .wave-dots span:nth-child(5) { animation-delay: 0.4s; }
+        .wave-dots span:nth-child(6) { animation-delay: 0.5s; }
     </style>
     <link rel="stylesheet" href="styles.css">
     <!-- Markdown 渲染 -->
@@ -283,6 +320,51 @@
         @media (pointer: coarse) {
             button, a, input[type="checkbox"], input[type="radio"] {
                 min-height: 44px;
+            }
+        }
+
+        /* ========== 方案D: 骨架填充动画 ========== */
+        /* 打字机光标闪烁 */
+        .typing-cursor {
+            display: inline-block;
+            animation: blink 0.8s step-end infinite;
+            color: #357BE2;
+            font-weight: normal;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+
+        /* 选项淡入效果 */
+        .option-skeleton {
+            transition: all 0.3s ease-out;  /* 使用 ease-out 而非 linear */
+        }
+        .option-hidden {
+            opacity: 0;
+            transform: translateY(10px);
+        }
+        .option-visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* 尊重用户的动效偏好（可访问性） */
+        @media (prefers-reduced-motion: reduce) {
+            .typing-cursor {
+                animation: none;
+                opacity: 1;
+            }
+            .option-skeleton {
+                transition: none;
+            }
+            .option-hidden {
+                opacity: 1;
+                transform: none;
+            }
+            /* 进度圆点的过渡也应该禁用 */
+            .transition-all {
+                transition: none;
             }
         }
     </style>
@@ -515,11 +597,27 @@
 
             <!-- ========== 调研访谈视图 ========== -->
             <template x-if="currentView === 'interview' && currentSession">
-                <div class="grid lg:grid-cols-12 gap-4 lg:gap-6">
+                <div class="grid lg:grid-cols-12 gap-4 lg:gap-6 items-start content-start">
                     <!-- 左侧：进度面板 - 移动端显示为横向滚动卡片 -->
-                    <div class="lg:col-span-4 xl:col-span-3 space-y-4 lg:pt-7 order-2 lg:order-1">
+                    <div class="lg:col-span-4 xl:col-span-3 space-y-4 order-2 lg:order-1 self-start sticky top-4">
+                        <!-- 调研主题 -->
+                        <template x-if="currentSession && currentStep < 2">
+                            <div class="bg-surface border border-border rounded-xl p-5 mt-6">
+                                <h3 class="font-semibold text-primary mb-3 flex items-center gap-2">
+                                    <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+                                    </svg>
+                                    调研主题
+                                </h3>
+                                <p class="text-sm text-secondary" x-text="currentSession.topic"></p>
+                                <template x-if="currentSession.description">
+                                    <p class="text-xs text-muted mt-2" x-text="currentSession.description"></p>
+                                </template>
+                            </div>
+                        </template>
+
                         <!-- 调研进度 -->
-                        <div class="bg-surface border border-border rounded-xl p-5 sticky top-4">
+                        <div class="bg-surface border border-border rounded-xl p-5">
                             <h3 class="font-semibold text-primary mb-4 flex items-center gap-2">
                                 <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
@@ -680,14 +778,7 @@
                     </div>
 
                     <!-- 右侧：访谈区域 - 移动端显示在上方 -->
-                    <div class="lg:col-span-8 xl:col-span-9 space-y-4 lg:space-y-6 order-1 lg:order-2">
-                        <!-- 调研主题展示（在访谈前和访谈过程中显示） -->
-                        <template x-if="currentSession && currentStep < 2">
-                            <div class="text-base text-gray-700">
-                                <span class="font-medium">调研主题：</span><span x-text="currentSession.topic"></span>
-                            </div>
-                        </template>
-
+                    <div class="lg:col-span-8 xl:col-span-9 space-y-4 lg:space-y-6 order-1 lg:order-2 self-start [&>*:first-child]:mt-0">
                         <!-- Step 0: 文档准备 -->
                         <template x-if="currentStep === 0">
                             <div class="bg-surface border border-border rounded-xl p-6">
@@ -825,24 +916,111 @@
                         </template>
 
                         <!-- Step 1: 选择式访谈 -->
-                        <template x-if="currentStep === 1">
-                            <div class="space-y-6">
-                                <!-- 加载问题中 -->
-                                <template x-if="loadingQuestion">
-                                    <div class="bg-surface border border-border rounded-xl p-8">
-                                        <div class="flex flex-col items-center justify-center py-8">
-                                            <svg class="w-12 h-12 animate-spin mb-4" fill="none" viewBox="0 0 24 24">
-                                                <circle cx="12" cy="12" r="10" stroke="#EDF4FE" stroke-width="4"/>
-                                                <path fill="#357BE2" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                                            </svg>
-                                            <p class="text-lg font-medium text-primary mb-2">AI 正在思考...</p>
-                                            <p class="text-sm text-muted" x-text="isGoingPrev ? '正在为您回到上一个问题' : '正在根据您的回答生成下一个问题'"></p>
+                        <!-- 方案B: 分阶段思考进度 -->
+                        <template x-if="currentStep === 1 && loadingQuestion">
+                            <div class="bg-surface border border-border rounded-xl p-8">
+                                <div class="flex flex-col items-center justify-center py-6">
+                                            <!-- 进度阶段可视化 -->
+                                            <div class="flex items-center justify-center mb-6">
+                                                <!-- 阶段1: 分析回答 -->
+                                                <div class="flex flex-col items-center">
+                                                    <div class="w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300"
+                                                         :class="[thinkingStage?.stage_index >= 0 ? 'bg-[#357BE2] text-white' : 'bg-[#EDF4FE] text-[#357BE2]', thinkingStage?.stage_index === 0 ? 'stage-active' : '']">
+                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                                                        </svg>
+                                                    </div>
+                                                    <span class="text-xs mt-1.5 text-muted">分析</span>
+                                                </div>
+
+                                                <!-- 连接线 -->
+                                                <div class="w-8 h-0.5 mb-5 transition-all duration-300"
+                                                     :class="thinkingStage?.stage_index >= 1 ? 'bg-[#357BE2]' : 'bg-[#EDF4FE]'"></div>
+
+                                                <!-- 阶段2: 检索资料 -->
+                                                <div class="flex flex-col items-center">
+                                                    <div class="w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300"
+                                                         :class="[thinkingStage?.stage_index >= 1 ? 'bg-[#357BE2] text-white' : 'bg-[#EDF4FE] text-[#357BE2]', thinkingStage?.stage_index === 1 ? 'stage-active' : '']">
+                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                                                        </svg>
+                                                    </div>
+                                                    <span class="text-xs mt-1.5 text-muted">检索</span>
+                                                </div>
+
+                                                <!-- 连接线 -->
+                                                <div class="w-8 h-0.5 mb-5 transition-all duration-300"
+                                                     :class="thinkingStage?.stage_index >= 2 ? 'bg-[#357BE2]' : 'bg-[#EDF4FE]'"></div>
+
+                                                <!-- 阶段3: 生成问题 -->
+                                                <div class="flex flex-col items-center">
+                                                    <div class="w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300"
+                                                         :class="[thinkingStage?.stage_index >= 2 ? 'bg-[#357BE2] text-white' : 'bg-[#EDF4FE] text-[#357BE2]', thinkingStage?.stage_index === 2 ? 'stage-active' : '']">
+                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                                                        </svg>
+                                                    </div>
+                                                    <span class="text-xs mt-1.5 text-muted">生成</span>
+                                                </div>
+                                            </div>
+
+                                            <!-- 当前阶段消息 -->
+                                            <p class="text-lg font-medium text-primary mb-2">
+                                                <span x-text="(thinkingStage?.message || 'AI 正在思考').replace(/\.+$/, '')"></span> <span class="wave-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span>
+                                            </p>
+                                        </div>
+                                    </div>
+                            </template>
+
+                            <!-- 方案D: 骨架填充模式 -->
+                            <template x-if="currentStep === 1 && !loadingQuestion && skeletonMode">
+                                    <div class="bg-surface border border-border rounded-xl p-6">
+                                        <!-- 维度标签和问题编号（立即显示） -->
+                                        <div class="flex items-center gap-3 mb-4">
+                                            <span class="px-3 py-1 bg-cta/10 text-primary rounded-lg text-sm font-medium" x-text="getDimensionName(currentDimension)"></span>
+                                            <span class="text-muted text-sm">问题 <span x-text="getQuestionNumber()"></span></span>
+                                            <span class="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
+                                                <span x-text="currentQuestion.multiSelect ? '可多选' : '单选'"></span>
+                                            </span>
+                                        </div>
+
+                                        <!-- 打字机效果问题文本 -->
+                                        <h3 class="text-xl font-semibold text-primary mb-6 min-h-[2rem]">
+                                            <span x-text="typingText"></span>
+                                            <span x-show="!typingComplete" class="typing-cursor">|</span>
+                                        </h3>
+
+                                        <!-- 选项区域 -->
+                                        <div class="space-y-3">
+                                            <template x-for="(option, index) in currentQuestion.options" :key="index">
+                                                <div class="option-skeleton"
+                                                     :class="optionsVisible.includes(index) ? 'option-visible' : 'option-hidden'">
+                                                    <!-- 选项淡入显示 -->
+                                                    <template x-if="optionsVisible.includes(index)">
+                                                        <div class="border border-border rounded-lg p-4 bg-gray-50 cursor-not-allowed opacity-70">
+                                                            <div class="flex items-center gap-3">
+                                                                <div class="w-5 h-5 rounded-full border-2 border-gray-300 shrink-0"></div>
+                                                                <span class="text-primary" x-text="option"></span>
+                                                            </div>
+                                                        </div>
+                                                    </template>
+                                                    <!-- 骨架占位 -->
+                                                    <template x-if="!optionsVisible.includes(index)">
+                                                        <div class="border border-border rounded-lg p-4 bg-gray-100 animate-pulse">
+                                                            <div class="flex items-center gap-3">
+                                                                <div class="w-5 h-5 rounded-full bg-gray-200 shrink-0"></div>
+                                                                <div class="h-4 bg-gray-200 rounded w-3/4"></div>
+                                                            </div>
+                                                        </div>
+                                                    </template>
+                                                </div>
+                                            </template>
                                         </div>
                                     </div>
                                 </template>
 
                                 <!-- 当前问题 -->
-                                <template x-if="!loadingQuestion">
+                                <template x-if="currentStep === 1 && !loadingQuestion && !skeletonMode">
                                 <div class="bg-surface border border-border rounded-xl p-6">
                                     <!-- 服务错误提示 -->
                                     <template x-if="currentQuestion.serviceError">
@@ -988,7 +1166,7 @@
                                 </template>
 
                                 <!-- 已完成的问答记录 -->
-                                <div x-show="currentSession.interview_log && currentSession.interview_log.length > 0"
+                                <div x-show="currentStep === 1 && currentSession.interview_log && currentSession.interview_log.length > 0"
                                      class="bg-surface border border-border rounded-xl p-6">
                                     <h3 class="font-semibold text-primary mb-4 flex items-center gap-2">
                                         <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1008,8 +1186,6 @@
                                         </template>
                                     </div>
                                 </div>
-                            </div>
-                        </template>
 
                         <!-- Step 2: 需求确认 -->
                         <template x-if="currentStep === 2">

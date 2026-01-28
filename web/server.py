@@ -17,6 +17,8 @@ Deep Vision Web Server - AI 驱动版本
 import json
 import os
 import secrets
+import threading
+import time as _time
 import requests
 from datetime import datetime, timezone
 from pathlib import Path
@@ -94,6 +96,245 @@ for d in [SESSIONS_DIR, REPORTS_DIR, CONVERTED_DIR, TEMP_DIR, METRICS_DIR, SUMMA
 
 # Web Search 状态追踪（用于前端呼吸灯效果）
 web_search_active = False
+
+# ============ 思考进度状态追踪（方案B）============
+thinking_status = {}           # { session_id: { stage, stage_index, total_stages, message } }
+thinking_status_lock = threading.Lock()
+
+THINKING_STAGES = {
+    "analyzing": {"index": 0, "message": "正在分析您的回答..."},
+    "searching": {"index": 1, "message": "正在检索相关资料..."},
+    "generating": {"index": 2, "message": "正在生成下一个问题..."},
+}
+
+# ============ 预生成缓存（智能预生成）============
+prefetch_cache = {}            # { session_id: { dimension: { question_data, created_at, valid } } }
+prefetch_cache_lock = threading.Lock()
+PREFETCH_TTL = 300             # 预生成缓存有效期（秒）
+
+
+def update_thinking_status(session_id: str, stage: str, has_search: bool = True):
+    """更新思考进度状态（线程安全）"""
+    stage_info = THINKING_STAGES.get(stage)
+    if not stage_info:
+        return
+
+    # 计算总阶段数（如果没有搜索，跳过 searching 阶段）
+    total = 3 if has_search else 2
+    index = stage_info["index"]
+    if not has_search and stage != "analyzing":
+        index = 1 if stage == "generating" else index  # generating 变成第2阶段
+
+    with thinking_status_lock:
+        thinking_status[session_id] = {
+            "stage": stage,
+            "stage_index": index,
+            "total_stages": total,
+            "message": stage_info["message"],
+        }
+
+
+def clear_thinking_status(session_id: str):
+    """清除思考进度状态"""
+    with thinking_status_lock:
+        thinking_status.pop(session_id, None)
+
+
+# ============ 预生成缓存函数 ============
+
+def get_prefetch_result(session_id: str, dimension: str) -> dict | None:
+    """获取预生成结果（线程安全），命中则消费（删除缓存）
+
+    Args:
+        session_id: 会话ID
+        dimension: 维度名称
+
+    Returns:
+        命中则返回问题数据dict，否则返回None
+    """
+    with prefetch_cache_lock:
+        session_cache = prefetch_cache.get(session_id, {})
+        cached = session_cache.get(dimension)
+        if cached and cached.get("valid"):
+            # 检查TTL
+            if _time.time() - cached["created_at"] < PREFETCH_TTL:
+                # 消费缓存（删除）
+                session_cache.pop(dimension, None)
+                if ENABLE_DEBUG_LOG:
+                    print(f"🚀 预生成缓存命中: session={session_id}, dim={dimension}")
+                return cached["question_data"]
+            else:
+                # 过期，清除
+                session_cache.pop(dimension, None)
+                if ENABLE_DEBUG_LOG:
+                    print(f"⏰ 预生成缓存过期: session={session_id}, dim={dimension}")
+    return None
+
+
+def invalidate_prefetch(session_id: str, dimension: str = None):
+    """使预生成缓存失效
+
+    Args:
+        session_id: 会话ID
+        dimension: 维度名称，如果为None则清除整个会话的缓存
+    """
+    with prefetch_cache_lock:
+        if dimension:
+            prefetch_cache.get(session_id, {}).pop(dimension, None)
+        else:
+            prefetch_cache.pop(session_id, None)
+
+
+def trigger_prefetch_if_needed(session: dict, current_dimension: str):
+    """判断是否需要预生成下一维度首题，如果需要则启动后台线程
+
+    预生成触发条件：当前维度正式问题数 >= 2
+
+    Args:
+        session: 会话数据
+        current_dimension: 当前维度
+    """
+    session_id = session.get("session_id")
+    interview_log = session.get("interview_log", [])
+
+    # 计算当前维度的正式问题数
+    dim_logs = [l for l in interview_log if l.get("dimension") == current_dimension]
+    formal_count = len([l for l in dim_logs if not l.get("is_follow_up", False)])
+
+    # 当前维度第2题已回答（即将进入第3题），预生成下一维度首题
+    if formal_count < 2:
+        return
+
+    # 维度顺序
+    dimension_order = ['customer_needs', 'business_process', 'tech_constraints', 'project_constraints']
+    current_idx = dimension_order.index(current_dimension) if current_dimension in dimension_order else -1
+
+    # 找下一个未完成的维度
+    next_dimension = None
+    for i in range(1, len(dimension_order)):
+        candidate = dimension_order[(current_idx + i) % len(dimension_order)]
+        cand_logs = [l for l in interview_log if l.get("dimension") == candidate]
+        cand_formal = len([l for l in cand_logs if not l.get("is_follow_up", False)])
+        if cand_formal < 3:
+            next_dimension = candidate
+            break
+
+    if not next_dimension:
+        return
+
+    # 检查缓存中是否已有
+    with prefetch_cache_lock:
+        existing = prefetch_cache.get(session_id, {}).get(next_dimension)
+        if existing and existing.get("valid"):
+            return  # 已有有效缓存，不重复生成
+
+    # 启动后台预生成线程
+    def do_prefetch():
+        try:
+            if ENABLE_DEBUG_LOG:
+                print(f"🔮 开始预生成: session={session_id}, next_dim={next_dimension}")
+
+            # 重新读取会话数据（可能已更新）
+            session_file = SESSIONS_DIR / f"{session_id}.json"
+            if not session_file.exists():
+                return
+
+            session_data = json.loads(session_file.read_text(encoding="utf-8"))
+            next_dim_logs = [l for l in session_data.get("interview_log", [])
+                           if l.get("dimension") == next_dimension]
+
+            # 构建预生成的 prompt
+            prompt, truncated_docs = build_interview_prompt(
+                session_data, next_dimension, next_dim_logs
+            )
+
+            # 调用 Claude API
+            response = call_claude(
+                prompt,
+                max_tokens=MAX_TOKENS_QUESTION,
+                call_type="prefetch",
+                truncated_docs=truncated_docs
+            )
+
+            if response:
+                # 解析响应
+                result = parse_question_response(response, debug=False)
+                if result:
+                    result["dimension"] = next_dimension
+                    result["ai_generated"] = True
+
+                    with prefetch_cache_lock:
+                        if session_id not in prefetch_cache:
+                            prefetch_cache[session_id] = {}
+                        prefetch_cache[session_id][next_dimension] = {
+                            "question_data": result,
+                            "created_at": _time.time(),
+                            "topic": session_data.get("topic"),
+                            "valid": True,
+                        }
+                    if ENABLE_DEBUG_LOG:
+                        print(f"✅ 预生成完成: session={session_id}, dim={next_dimension}")
+                else:
+                    if ENABLE_DEBUG_LOG:
+                        print(f"⚠️ 预生成解析失败: session={session_id}, dim={next_dimension}")
+        except Exception as e:
+            print(f"⚠️ 预生成失败: {e}")
+
+    threading.Thread(target=do_prefetch, daemon=True).start()
+
+
+def prefetch_first_question(session_id: str):
+    """后台预生成会话的第一个问题
+
+    在会话创建后调用，异步生成 customer_needs 维度的首题。
+
+    Args:
+        session_id: 会话ID
+    """
+    def do_prefetch():
+        try:
+            if ENABLE_DEBUG_LOG:
+                print(f"🔮 开始预生成首题: session={session_id}")
+
+            session_file = SESSIONS_DIR / f"{session_id}.json"
+            if not session_file.exists():
+                return
+
+            session_data = json.loads(session_file.read_text(encoding="utf-8"))
+
+            # 首题不依赖任何历史记录
+            prompt, truncated_docs = build_interview_prompt(
+                session_data, "customer_needs", []
+            )
+
+            response = call_claude(
+                prompt,
+                max_tokens=MAX_TOKENS_QUESTION,
+                call_type="prefetch_first",
+                truncated_docs=truncated_docs
+            )
+
+            if response:
+                result = parse_question_response(response, debug=False)
+                if result:
+                    result["dimension"] = "customer_needs"
+                    result["ai_generated"] = True
+
+                    with prefetch_cache_lock:
+                        if session_id not in prefetch_cache:
+                            prefetch_cache[session_id] = {}
+                        prefetch_cache[session_id]["customer_needs"] = {
+                            "question_data": result,
+                            "created_at": _time.time(),
+                            "topic": session_data.get("topic"),
+                            "valid": True,
+                        }
+                    if ENABLE_DEBUG_LOG:
+                        print(f"✅ 首题预生成完成: session={session_id}")
+        except Exception as e:
+            print(f"⚠️ 首题预生成失败: {e}")
+
+    threading.Thread(target=do_prefetch, daemon=True).start()
 
 
 # ============ 性能监控系统 ============
@@ -1197,8 +1438,15 @@ def _build_follow_up_reason(signals: list) -> str:
     return reasons[0] if reasons else "需要进一步了解详细需求"
 
 
-def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list) -> tuple[str, list]:
+def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
+                           session_id: str = None) -> tuple[str, list]:
     """构建访谈 prompt（使用滑动窗口 + 摘要压缩 + 智能追问）
+
+    Args:
+        session: 会话数据
+        dimension: 当前维度
+        all_dim_logs: 当前维度的所有访谈记录
+        session_id: 会话ID（可选，用于更新思考进度状态）
 
     Returns:
         tuple[str, list]: (prompt字符串, 被截断的文档列表)
@@ -1277,7 +1525,12 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list) ->
         context_parts.append(f"\n⚠️ 注意：以下文档因长度限制已被截断，请基于已有信息进行提问：{', '.join(truncated_docs)}")
 
     # 联网搜索增强（限制结果数量和长度）
-    if should_search(topic, dimension, session):
+    will_search = should_search(topic, dimension, session)
+    if will_search:
+        # 更新思考状态到"搜索"阶段
+        if session_id:
+            update_thinking_status(session_id, "searching", has_search=True)
+
         search_query = generate_search_query(topic, dimension, session)
         search_results = web_search(search_query)
 
@@ -1868,6 +2121,9 @@ def create_session():
     session_file = SESSIONS_DIR / f"{session_id}.json"
     session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    # ========== 步骤6: 预生成首题 ==========
+    prefetch_first_question(session_id)
+
     return jsonify(session)
 
 
@@ -1908,10 +2164,191 @@ def delete_session(session_id):
     session_file = SESSIONS_DIR / f"{session_id}.json"
     if session_file.exists():
         session_file.unlink()
+
+    # ========== 步骤7: 清理缓存和状态 ==========
+    invalidate_prefetch(session_id)
+    clear_thinking_status(session_id)
+
     return jsonify({"success": True})
 
 
 # ============ AI 驱动的访谈 API ============
+
+def parse_question_response(response: str, debug: bool = False) -> dict | None:
+    """解析 AI 返回的问题 JSON 响应
+
+    使用5种递进式解析策略，确保最大程度提取有效JSON。
+
+    Args:
+        response: AI 返回的原始响应文本
+        debug: 是否输出调试日志
+
+    Returns:
+        解析后的 dict（包含 question 和 options），失败返回 None
+    """
+    import re
+
+    result = None
+    parse_error = None
+
+    if debug:
+        print(f"📝 AI 原始响应 (前500字): {response[:500]}")
+
+    # 方法1: 直接尝试解析（如果AI严格遵守指令）
+    try:
+        cleaned = response.strip()
+        if cleaned.startswith('{') and cleaned.endswith('}'):
+            result = json.loads(cleaned)
+            if debug:
+                print(f"✅ 方法1成功: 直接解析")
+    except json.JSONDecodeError as e:
+        parse_error = e
+        if debug:
+            print(f"⚠️ 方法1失败: {e}")
+
+    # 方法2: 尝试提取 ```json 代码块
+    if result is None and "```json" in response:
+        try:
+            json_start = response.find("```json") + 7
+            json_end = response.find("```", json_start)
+            if json_end > json_start:
+                json_str = response[json_start:json_end].strip()
+                result = json.loads(json_str)
+                if debug:
+                    print(f"✅ 方法2成功: 从代码块提取")
+        except json.JSONDecodeError as e:
+            parse_error = e
+            if debug:
+                print(f"⚠️ 方法2失败 (JSON错误): {e}")
+        except Exception as e:
+            parse_error = e
+            if debug:
+                print(f"⚠️ 方法2失败 (其他错误): {e}")
+
+    # 方法3: 查找第一个完整的 JSON 对象（花括号配对）
+    if result is None:
+        try:
+            json_start = response.find('{')
+            if json_start >= 0:
+                brace_count = 0
+                json_end = -1
+                in_string = False
+                escape_next = False
+
+                for i in range(json_start, len(response)):
+                    char = response[i]
+
+                    if escape_next:
+                        escape_next = False
+                        continue
+
+                    if char == '\\':
+                        escape_next = True
+                        continue
+
+                    if char == '"' and not escape_next:
+                        in_string = not in_string
+                        continue
+
+                    if not in_string:
+                        if char == '{':
+                            brace_count += 1
+                        elif char == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                json_end = i + 1
+                                break
+
+                if json_end > json_start:
+                    try:
+                        json_str = response[json_start:json_end]
+                        result = json.loads(json_str)
+                        if debug:
+                            print(f"✅ 方法3成功: 花括号配对提取")
+                    except json.JSONDecodeError as e:
+                        parse_error = e
+                        if debug:
+                            print(f"⚠️ 方法3失败 (JSON错误): {e}")
+        except Exception as e:
+            parse_error = e
+            if debug:
+                print(f"⚠️ 方法3失败 (其他错误): {e}")
+
+    # 方法4: 使用正则表达式提取 JSON 对象
+    if result is None:
+        try:
+            json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
+            matches = re.findall(json_pattern, response, re.DOTALL)
+            for match in matches:
+                try:
+                    candidate = json.loads(match)
+                    # 验证必须有 question 字段
+                    if isinstance(candidate, dict) and "question" in candidate:
+                        result = candidate
+                        if debug:
+                            print(f"✅ 方法4成功: 正则表达式提取")
+                        break
+                except json.JSONDecodeError:
+                    continue
+        except Exception as e:
+            parse_error = e
+            if debug:
+                print(f"⚠️ 方法4失败 (其他错误): {e}")
+
+    # 方法5: 尝试修复不完整的JSON（补全缺失字段）
+    if result is None and '{' in response and '"question"' in response:
+        try:
+            if debug:
+                print(f"🔧 尝试修复不完整的JSON...")
+
+            # 找到JSON对象的开始位置
+            json_start = response.find('{')
+            json_content = response[json_start:]
+
+            # 尝试补全缺失的结尾部分
+            if '"options"' in json_content and '"question"' in json_content:
+                # 如果有options数组但没有正确结束，尝试补全
+                if json_content.count('[') > json_content.count(']'):
+                    json_content += ']'
+                if json_content.count('{') > json_content.count('}'):
+                    # 添加缺失的字段
+                    if '"multi_select"' not in json_content:
+                        json_content += ', "multi_select": false'
+                    if '"is_follow_up"' not in json_content:
+                        json_content += ', "is_follow_up": false'
+                    json_content += '}'
+
+                # 尝试解析修复后的JSON
+                try:
+                    result = json.loads(json_content)
+                    if isinstance(result, dict) and "question" in result:
+                        if debug:
+                            print(f"✅ 方法5成功: JSON修复完成")
+                except json.JSONDecodeError as e:
+                    if debug:
+                        print(f"⚠️ 方法5失败: 修复后仍无法解析 - {e}")
+        except Exception as e:
+            parse_error = e
+            if debug:
+                print(f"⚠️ 方法5失败 (其他错误): {e}")
+
+    # 验证结果
+    if result is not None and isinstance(result, dict):
+        if "question" in result and "options" in result:
+            # 补全可能缺失的字段
+            if "multi_select" not in result:
+                result["multi_select"] = False
+            if "is_follow_up" not in result:
+                result["is_follow_up"] = False
+            return result
+
+    # 所有解析方法都失败了
+    if debug:
+        print(f"❌ 所有解析方法都失败")
+        print(f"📄 AI 响应前500字符:\n{response[:500] if response else 'None'}")
+        print(f"📄 最后解析错误: {str(parse_error) if parse_error else '未知'}")
+
+    return None
 
 @app.route('/api/sessions/<session_id>/next-question', methods=['POST'])
 def get_next_question(session_id):
@@ -1923,6 +2360,14 @@ def get_next_question(session_id):
     session = json.loads(session_file.read_text(encoding="utf-8"))
     data = request.get_json() or {}
     dimension = data.get("dimension", "customer_needs")
+
+    # ========== 步骤5: 检查预生成缓存 ==========
+    prefetched = get_prefetch_result(session_id, dimension)
+    if prefetched:
+        if ENABLE_DEBUG_LOG:
+            print(f"🎯 预生成缓存命中: session={session_id}, dimension={dimension}")
+        prefetched["prefetched"] = True
+        return jsonify(prefetched)
 
     # 检查是否有 Claude API
     if not claude_client:
@@ -1948,8 +2393,14 @@ def get_next_question(session_id):
             })
 
     # 调用 Claude 生成问题
+    # 判断是否会有搜索（用于设置正确的阶段数）
+    has_search = should_search(session.get("topic", ""), dimension, session)
+
     try:
-        prompt, truncated_docs = build_interview_prompt(session, dimension, all_dim_logs)
+        # 阶段1: 分析回答
+        update_thinking_status(session_id, "analyzing", has_search)
+
+        prompt, truncated_docs = build_interview_prompt(session, dimension, all_dim_logs, session_id=session_id)
 
         # 日志：记录 prompt 长度（便于监控和调优）
         if ENABLE_DEBUG_LOG:
@@ -1959,6 +2410,9 @@ def get_next_question(session_id):
             if truncated_docs:
                 print(f"⚠️  文档截断：{len(truncated_docs)}个文档被截断")
 
+        # 阶段3: 生成问题
+        update_thinking_status(session_id, "generating", has_search)
+
         response = call_claude(
             prompt,
             max_tokens=MAX_TOKENS_QUESTION,
@@ -1967,182 +2421,36 @@ def get_next_question(session_id):
         )
 
         if not response:
+            # 清除思考状态
+            clear_thinking_status(session_id)
             return jsonify({
                 "error": "AI 响应失败",
                 "detail": "未能从 AI 服务获取响应，请检查网络连接或稍后重试"
             }), 503
 
-        # 解析 JSON 响应
-        result = None
-        parse_error = None
+        # 使用抽取的解析函数解析 JSON 响应
+        result = parse_question_response(response, debug=ENABLE_DEBUG_LOG)
 
-        if ENABLE_DEBUG_LOG:
-            print(f"📝 AI 原始响应 (前500字): {response[:500]}")
+        if result:
+            result["dimension"] = dimension
+            result["ai_generated"] = True
+            # 清除思考状态
+            clear_thinking_status(session_id)
+            # ========== 步骤5: 触发预生成（如果需要）==========
+            trigger_prefetch_if_needed(session, dimension)
+            return jsonify(result)
 
-        # 方法1: 直接尝试解析（如果AI严格遵守指令）
-        try:
-            cleaned = response.strip()
-            if cleaned.startswith('{') and cleaned.endswith('}'):
-                result = json.loads(cleaned)
-                if ENABLE_DEBUG_LOG:
-                    print(f"✅ 方法1成功: 直接解析")
-        except json.JSONDecodeError as e:
-            parse_error = e
-            if ENABLE_DEBUG_LOG:
-                print(f"⚠️ 方法1失败: {e}")
-
-        # 方法2: 尝试提取 ```json 代码块
-        if result is None and "```json" in response:
-            try:
-                json_start = response.find("```json") + 7
-                json_end = response.find("```", json_start)
-                if json_end > json_start:
-                    json_str = response[json_start:json_end].strip()
-                    result = json.loads(json_str)
-                    if ENABLE_DEBUG_LOG:
-                        print(f"✅ 方法2成功: 从代码块提取")
-            except json.JSONDecodeError as e:
-                parse_error = e
-                if ENABLE_DEBUG_LOG:
-                    print(f"⚠️ 方法2失败 (JSON错误): {e}")
-            except Exception as e:
-                parse_error = e
-                if ENABLE_DEBUG_LOG:
-                    print(f"⚠️ 方法2失败 (其他错误): {e}")
-
-        # 方法3: 查找第一个完整的 JSON 对象（花括号配对）
-        if result is None:
-            try:
-                json_start = response.find('{')
-                if json_start >= 0:
-                    brace_count = 0
-                    json_end = -1
-                    in_string = False
-                    escape_next = False
-
-                    for i in range(json_start, len(response)):
-                        char = response[i]
-
-                        if escape_next:
-                            escape_next = False
-                            continue
-
-                        if char == '\\':
-                            escape_next = True
-                            continue
-
-                        if char == '"' and not escape_next:
-                            in_string = not in_string
-                            continue
-
-                        if not in_string:
-                            if char == '{':
-                                brace_count += 1
-                            elif char == '}':
-                                brace_count -= 1
-                                if brace_count == 0:
-                                    json_end = i + 1
-                                    break
-
-                    if json_end > json_start:
-                        try:
-                            json_str = response[json_start:json_end]
-                            result = json.loads(json_str)
-                            if ENABLE_DEBUG_LOG:
-                                print(f"✅ 方法3成功: 花括号配对提取")
-                        except json.JSONDecodeError as e:
-                            parse_error = e
-                            if ENABLE_DEBUG_LOG:
-                                print(f"⚠️ 方法3失败 (JSON错误): {e}")
-            except Exception as e:
-                parse_error = e
-                if ENABLE_DEBUG_LOG:
-                    print(f"⚠️ 方法3失败 (其他错误): {e}")
-
-        # 方法4: 使用正则表达式提取 JSON 对象
-        if result is None:
-            try:
-                import re
-                json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-                matches = re.findall(json_pattern, response, re.DOTALL)
-                for match in matches:
-                    try:
-                        candidate = json.loads(match)
-                        # 验证必须有 question 字段
-                        if isinstance(candidate, dict) and "question" in candidate:
-                            result = candidate
-                            if ENABLE_DEBUG_LOG:
-                                print(f"✅ 方法4成功: 正则表达式提取")
-                            break
-                    except json.JSONDecodeError:
-                        continue
-            except Exception as e:
-                parse_error = e
-                if ENABLE_DEBUG_LOG:
-                    print(f"⚠️ 方法4失败 (其他错误): {e}")
-
-        # 方法5: 尝试修复不完整的JSON（补全缺失字段）
-        if result is None and '{' in response and '"question"' in response:
-            try:
-                if ENABLE_DEBUG_LOG:
-                    print(f"🔧 尝试修复不完整的JSON...")
-
-                # 找到JSON对象的开始位置
-                json_start = response.find('{')
-                json_content = response[json_start:]
-
-                # 尝试补全缺失的结尾部分
-                if '"options"' in json_content and '"question"' in json_content:
-                    # 如果有options数组但没有正确结束，尝试补全
-                    if json_content.count('[') > json_content.count(']'):
-                        json_content += ']'
-                    if json_content.count('{') > json_content.count('}'):
-                        # 添加缺失的字段
-                        if '"multi_select"' not in json_content:
-                            json_content += ', "multi_select": false'
-                        if '"is_follow_up"' not in json_content:
-                            json_content += ', "is_follow_up": false'
-                        json_content += '}'
-
-                    # 尝试解析修复后的JSON
-                    try:
-                        result = json.loads(json_content)
-                        if isinstance(result, dict) and "question" in result:
-                            if ENABLE_DEBUG_LOG:
-                                print(f"✅ 方法5成功: JSON修复完成")
-                    except json.JSONDecodeError as e:
-                        if ENABLE_DEBUG_LOG:
-                            print(f"⚠️ 方法5失败: 修复后仍无法解析 - {e}")
-            except Exception as e:
-                parse_error = e
-                if ENABLE_DEBUG_LOG:
-                    print(f"⚠️ 方法5失败 (其他错误): {e}")
-
-        # 成功解析
-        if result is not None and isinstance(result, dict):
-            # 确保必需字段存在
-            if "question" in result and "options" in result:
-                result["dimension"] = dimension
-                result["ai_generated"] = True
-                # 补全可能缺失的字段
-                if "multi_select" not in result:
-                    result["multi_select"] = False
-                if "is_follow_up" not in result:
-                    result["is_follow_up"] = False
-                return jsonify(result)
-
-        # 所有解析方法都失败了
-        if ENABLE_DEBUG_LOG:
-            print(f"❌ 所有解析方法都失败")
-            print(f"📄 AI 响应前500字符:\n{response[:500] if response else 'None'}")
-            print(f"📄 最后解析错误: {str(parse_error) if parse_error else '未知'}")
-
+        # 解析失败
+        # 清除思考状态
+        clear_thinking_status(session_id)
         return jsonify({
             "error": "AI 响应格式错误",
             "detail": "AI 返回的内容无法解析为有效的 JSON 格式。请点击「重试」按钮重新生成问题。"
         }), 503
 
     except Exception as e:
+        # 清除思考状态
+        clear_thinking_status(session_id)
         print(f"生成问题时发生异常: {e}")
         error_msg = str(e)
 
@@ -2821,6 +3129,24 @@ def get_web_search_status():
     return jsonify({
         "active": web_search_active
     })
+
+
+@app.route('/api/status/thinking/<session_id>', methods=['GET'])
+def get_thinking_status(session_id):
+    """获取 AI 思考进度状态（用于前端分阶段进度展示）"""
+    with thinking_status_lock:
+        status = thinking_status.get(session_id)
+
+    if status:
+        return jsonify({
+            "active": True,
+            "stage": status["stage"],
+            "stage_index": status["stage_index"],
+            "total_stages": status["total_stages"],
+            "message": status["message"],
+        })
+    else:
+        return jsonify({"active": False})
 
 
 @app.route('/api/metrics', methods=['GET'])
