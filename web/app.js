@@ -11,6 +11,321 @@
 // 从配置文件获取 API 地址，如果配置文件未加载则使用默认值
 const API_BASE = window.location.origin + '/api';
 
+// ============ 登录（OIDC 完整流程）============
+// 说明：
+// - 未登录：跳转到后台给出的 OIDC 登录地址
+// - 登录完成：Keycloak 会带着 ?code=... 重定向回 redirect_uri
+// - 用 code 换取 access_token，再用 access_token 获取用户信息
+const OIDC_BASE_URL = 'http://192.168.31.101:8888/realms/deep-vision-dev/protocol/openid-connect';
+const OIDC_TOKEN_URL = `${OIDC_BASE_URL}/token`;
+const OIDC_USERINFO_URL = `${OIDC_BASE_URL}/userinfo`;
+const CLIENT_ID = 'deep-vision-frontend';
+const AUTH_STORAGE_KEY = 'dv_auth';
+const USERINFO_STORAGE_KEY = 'dv_userinfo';
+const RETURN_TO_KEY = 'dv_return_to';
+const CALLBACK_PROCESSED_KEY = 'dv_callback_processed';  // 防止重复处理回调
+
+// 动态获取 redirect_uri（支持本地和线上部署）
+function getRedirectUri() {
+    // 使用当前页面的 origin，自动适配本地和线上环境
+    return window.location.origin;
+}
+
+// 动态构建登录 URL
+function buildOidcLoginUrl() {
+    // 1. 获取当前页面的完整地址（自动适配本地和线上环境）
+    const redirectUri = getRedirectUri();  // 例如: "http://192.168.80.19:5001/" 或线上地址
+    
+    // 2. 对 redirect_uri 进行 URL 编码（因为 URL 参数中不能直接包含特殊字符）
+    // encodeURIComponent 会将 "http://192.168.80.19:5001/" 编码为 "http%3A%2F%2F192.168.80.19%3A5001%2F"
+    // const encodedRedirectUri = encodeURIComponent(redirectUri);
+    
+    // 3. 构建完整的 OIDC 授权 URL
+    // redirect_uri 参数必须是编码后的值，这样 Keycloak 才能正确解析
+    return `${OIDC_BASE_URL}/auth?client_id=${CLIENT_ID}&redirect_uri=${redirectUri}&response_type=code&scope=openid`;
+}
+
+function getAuthState() {
+    try {
+        const raw = localStorage.getItem(AUTH_STORAGE_KEY);
+        return raw ? JSON.parse(raw) : null;
+    } catch {
+        return null;
+    }
+}
+
+function setAuthState(next) {
+    try {
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+        // ignore
+    }
+}
+
+function clearAuthState() {
+    try {
+        localStorage.removeItem(AUTH_STORAGE_KEY);
+        clearUserInfo();  // 同时清除用户信息
+    } catch {
+        // ignore
+    }
+}
+
+// 用 code 换取 access_token
+async function exchangeCodeForToken(code) {
+    try {
+        const params = new URLSearchParams();
+        params.append('grant_type', 'authorization_code');
+        params.append('code', code);
+        params.append('client_id', CLIENT_ID);
+        params.append('client_secret', '');  // 根据图片，client_secret 为空
+        params.append('redirect_uri', getRedirectUri());  // 使用动态获取的 redirect_uri
+
+        const response = await fetch(OIDC_TOKEN_URL, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: params.toString()
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('Token 交换失败:', response.status, errorText);
+            throw new Error(`Token 交换失败: ${response.status}`);
+        }
+
+        const tokenData = await response.json();
+        return tokenData;
+    } catch (error) {
+        console.error('Token 交换异常:', error);
+        throw error;
+    }
+}
+
+// 用 access_token 获取用户信息
+async function fetchUserInfo(accessToken) {
+    try {
+        const response = await fetch(OIDC_USERINFO_URL, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`
+            }
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('获取用户信息失败:', response.status, errorText);
+            throw new Error(`获取用户信息失败: ${response.status}`);
+        }
+
+        const userInfo = await response.json();
+        return userInfo;
+    } catch (error) {
+        console.error('获取用户信息异常:', error);
+        throw error;
+    }
+}
+
+function getUserInfo() {
+    try {
+        const raw = localStorage.getItem(USERINFO_STORAGE_KEY);
+        return raw ? JSON.parse(raw) : null;
+    } catch {
+        return null;
+    }
+}
+
+function setUserInfo(userInfo) {
+    try {
+        localStorage.setItem(USERINFO_STORAGE_KEY, JSON.stringify(userInfo));
+    } catch {
+        // ignore
+    }
+}
+
+function clearUserInfo() {
+    try {
+        localStorage.removeItem(USERINFO_STORAGE_KEY);
+    } catch {
+        // ignore
+    }
+}
+
+function isLoggedIn() {
+    const s = getAuthState();
+    // 判断：必须有 access_token 且未过期
+    if (!s || !s.access_token) {
+        return false;
+    }
+    // 检查 access_token 是否过期（expires_in 是秒数）
+    if (s.expires_at && Date.now() >= s.expires_at) {
+        // token 已过期，清除登录状态
+        clearAuthState();
+        clearUserInfo();
+        return false;
+    }
+    return true;
+}
+
+function saveReturnTo(url) {
+    try {
+        localStorage.setItem(RETURN_TO_KEY, url);
+    } catch {
+        // ignore
+    }
+}
+
+function loadReturnTo() {
+    try {
+        return localStorage.getItem(RETURN_TO_KEY);
+    } catch {
+        return null;
+    }
+}
+
+function clearReturnTo() {
+    try {
+        localStorage.removeItem(RETURN_TO_KEY);
+    } catch {
+        // ignore
+    }
+}
+
+function buildLoginUrl() {
+    // 追加 state 用于回跳
+    // state 里存一个随机值，实际回跳地址存在 localStorage（避免 URL 过长）
+    const state = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now());
+    return `${buildOidcLoginUrl()}&state=${encodeURIComponent(state)}`;
+}
+
+function redirectToLogin() {
+    // 记录当前地址（去掉 code/state 等参数，避免循环）
+    const url = new URL(window.location.href);
+    // 移除 OIDC 回调相关的查询参数
+    url.searchParams.delete('code');
+    url.searchParams.delete('state');
+    url.searchParams.delete('session_state');
+    url.searchParams.delete('iss');
+    saveReturnTo(url.toString());
+    window.location.replace(buildLoginUrl());
+}
+
+// 返回值：
+// - "none": 不是回调
+// - "redirecting": 已触发跳转（例如去登录页）
+// - "processed": 已完成 code->token->userinfo，并清理了 URL（无需刷新/跳转）
+async function handleCallbackIfNeeded() {
+    // Keycloak 跳转回来时，code 可能在根路径 / 或 /callback
+    // 检查 URL 中是否有 code 参数（而不是只检查路径）
+    const qs = new URLSearchParams(window.location.search || '');
+    const code = qs.get('code');
+    const error = qs.get('error');
+    const errorDescription = qs.get('error_description');
+
+    // 如果没有 code 也没有 error，说明不是回调
+    if (!code && !error) {
+        // 检查 URL 中是否还有 OIDC 相关参数（可能是残留的）
+        const hasOidcParams = qs.has('state') || qs.has('session_state') || qs.has('iss');
+        if (hasOidcParams) {
+            // 清理残留的 OIDC 参数（不刷新页面）
+            const cleanUrl = new URL(window.location.href);
+            cleanUrl.searchParams.delete('code');
+            cleanUrl.searchParams.delete('state');
+            cleanUrl.searchParams.delete('session_state');
+            cleanUrl.searchParams.delete('iss');
+            window.history.replaceState({}, '', cleanUrl.toString());
+        }
+        return "none";
+    }
+
+    // 防止重复处理：如果当前 code 已经处理过，直接清理 URL 并返回
+    const processedCode = sessionStorage.getItem(CALLBACK_PROCESSED_KEY);
+    if (processedCode === code) {
+        // 已经处理过这个 code，只需要清理 URL（不刷新）
+        const cleanUrl = new URL(window.location.origin + window.location.pathname);
+        cleanUrl.searchParams.delete('code');
+        cleanUrl.searchParams.delete('state');
+        cleanUrl.searchParams.delete('session_state');
+        cleanUrl.searchParams.delete('iss');
+        window.history.replaceState({}, '', cleanUrl.toString());
+        return "processed";
+    }
+
+    // 处理错误情况
+    if (error) {
+        clearAuthState();
+        console.error('登录失败:', error, errorDescription);
+        redirectToLogin();
+        return "redirecting";
+    }
+
+    // 处理成功情况：有 code
+    if (code) {
+        // 立即标记这个 code 已经处理过（防止重复处理）
+        try {
+            sessionStorage.setItem(CALLBACK_PROCESSED_KEY, code);
+        } catch {}
+
+        try {
+            // 1. 用 code 换取 access_token
+            console.log('正在用 code 换取 access_token...');
+            const tokenData = await exchangeCodeForToken(code);
+            
+            // 2. 用 access_token 获取用户信息
+            console.log('正在获取用户信息...');
+            const userInfo = await fetchUserInfo(tokenData.access_token);
+            
+            // 3. 保存 token 信息（计算过期时间）
+            const expiresAt = tokenData.expires_in 
+                ? Date.now() + (tokenData.expires_in * 1000) 
+                : null;
+            
+            setAuthState({
+                loggedIn: true,
+                access_token: tokenData.access_token,
+                refresh_token: tokenData.refresh_token,
+                token_type: tokenData.token_type,
+                expires_in: tokenData.expires_in,
+                expires_at: expiresAt,
+                refresh_expires_in: tokenData.refresh_expires_in,
+                id_token: tokenData.id_token,
+                receivedAt: Date.now()
+            });
+            
+            // 4. 保存用户信息到本地缓存
+            setUserInfo(userInfo);
+            console.log('登录成功，用户信息已保存:', userInfo);
+
+            // 5. 获取回跳地址（去掉所有 OIDC 参数）
+            const returnTo = loadReturnTo();
+            clearReturnTo();
+
+            // 6. 构建干净的 URL（最终地址不带任何参数）
+            // 你要求“跳回 redirect_uri 不要带参数”，所以这里用 history.replaceState 清理地址栏。
+            // 默认回到当前 origin + pathname（即 redirect_uri），必要时回到 returnTo。
+            const cleanUrl = new URL(returnTo || (window.location.origin + window.location.pathname));
+            cleanUrl.searchParams.delete('code');
+            cleanUrl.searchParams.delete('state');
+            cleanUrl.searchParams.delete('session_state');
+            cleanUrl.searchParams.delete('iss');
+
+            // 7. 只清理地址栏，不进行页面跳转/刷新
+            window.history.replaceState({}, '', cleanUrl.toString());
+            return "processed";
+        } catch (error) {
+            console.error('登录流程失败:', error);
+            clearAuthState();
+            // 登录失败，重新跳转到登录页
+            redirectToLogin();
+            return "redirecting";
+        }
+    }
+
+    // 理论上不会到这里，但为了安全
+    return "none";
+}
+
 function deepVision() {
     return {
         // ============ 状态 ============
@@ -96,6 +411,23 @@ function deepVision() {
 
         // ============ 初始化 ============
         async init() {
+            // 1) 优先处理 OIDC 回调（检查 URL 中是否有 code 参数）
+            // Keycloak 登录成功后会跳转回 redirect_uri，URL 中会带有 code 和 state 参数
+            // 需要先处理这些参数：用 code 换取 access_token，获取用户信息，然后清理 URL
+            const callbackResult = await handleCallbackIfNeeded();
+            // - processed：已完成换 token + 拉 userinfo，并清理地址栏（不需要返回，继续初始化页面）
+            // - redirecting：已触发跳转（去登录页等），直接结束 init
+            // - none：不是回调，继续正常流程
+            if (callbackResult === "redirecting") {
+                return;
+            }
+
+            // 2) 非回调页面：检查登录状态，未登录则跳转到后台登录地址
+            if (!isLoggedIn()) {
+                redirectToLogin();
+                return;
+            }
+
             // 初始化诗句轮播
             if (this.quotes.length > 0) {
                 this.currentQuote = this.quotes[0].text;
