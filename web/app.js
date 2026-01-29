@@ -27,13 +27,11 @@ function deepVision() {
         // ========== 方案B+D 新增状态变量 ==========
         thinkingStage: null,           // 思考阶段数据
         thinkingPollInterval: null,    // 轮询定时器
-        currentTipIndex: 0,            // 调研小技巧当前索引
         skeletonMode: false,           // 骨架填充模式
         typingText: '',                // 打字机文字
         typingComplete: false,         // 打字完成标记
         optionsVisible: [],            // 选项可见性数组
         interactionReady: false,       // 交互就绪标记
-        prefetchHit: false,            // 预生成命中标记
 
         // 服务状态
         serverStatus: null,
@@ -238,13 +236,6 @@ function deepVision() {
             // 先停止旧的轮询，防止多个轮询并发
             this.stopThinkingPolling();
 
-            // 安全访问配置中的调研小技巧
-            const tips = (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.researchTips)
-                ? SITE_CONFIG.researchTips : [];
-            if (tips.length > 0) {
-                this.currentTipIndex = Math.floor(Math.random() * tips.length);
-            }
-
             const pollInterval = 300;  // 300ms 轮询间隔
 
             this.thinkingPollInterval = setInterval(async () => {
@@ -299,7 +290,6 @@ function deepVision() {
             this.typingComplete = false;
             this.optionsVisible = [];
             this.interactionReady = false;
-            this.prefetchHit = result.prefetched || false;
 
             // 设置当前问题数据（但先不显示）
             this.currentQuestion = {
@@ -1169,7 +1159,6 @@ function deepVision() {
                     this.currentStep = 0;
                     this.currentDimension = 'customer_needs';
                     this.currentQuestion = null;
-                    this.currentOptions = [];
 
                     this.showToast('已保存当前调研成果，开始新一轮调研', 'success');
                 } else {
