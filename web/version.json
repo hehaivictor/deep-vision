@@ -1,7 +1,16 @@
 {
-  "version": "1.3.8",
+  "version": "1.3.9",
   "releaseDate": "2026-01-29",
   "changelog": [
+    {
+      "version": "1.3.9",
+      "date": "2026-01-29",
+      "type": "patch",
+      "title": "补充想法输入框支持多行换行显示",
+      "changes": [
+        "补充想法输入框支持多行换行显示"
+      ]
+    },
     {
       "version": "1.3.8",
       "date": "2026-01-29",
