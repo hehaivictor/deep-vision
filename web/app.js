@@ -987,14 +987,14 @@ function deepVision() {
             this.showMilestoneModal = false;
 
             if (this.milestoneData && this.milestoneData.isLastDimension) {
-                // 所有维度都完成
+                // 所有维度都完成，自动进入确认阶段
+                this.currentStep = 2;
                 this.currentQuestion = {
-                    text: '所有问题已完成！您可以确认需求并生成报告。',
+                    text: '',
                     options: [],
                     multiSelect: false,
                     aiGenerated: false
                 };
-                this.interactionReady = true;
             } else if (this.milestoneData && this.milestoneData.nextDimension) {
                 // 切换到下一个维度
                 this.currentDimension = this.milestoneData.nextDimension;
