@@ -1,7 +1,20 @@
 {
-  "version": "1.5.14",
-  "releaseDate": "2026-01-29",
+  "version": "1.5.15",
+  "releaseDate": "2026-01-30",
   "changelog": [
+    {
+      "version": "1.5.15",
+      "date": "2026-01-30",
+      "type": "patch",
+      "title": "所有问题完成后显示完成提示（使用 x-show 实现）",
+      "changes": [
+        "使用 x-show 而非 template 嵌套，避免破坏 HTML 结构：",
+        "问题头部：x-show=\"getTotalProgress() < 100\"",
+        "完成提示：x-show=\"getTotalProgress() === 100\"",
+        "选项区域、按钮组、导航按钮：均添加 x-show 条件",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.5.14",
       "date": "2026-01-29",
