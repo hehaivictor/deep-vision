@@ -1,7 +1,16 @@
 {
-  "version": "1.5.1",
+  "version": "1.5.2",
   "releaseDate": "2026-01-29",
   "changelog": [
+    {
+      "version": "1.5.2",
+      "date": "2026-01-29",
+      "type": "patch",
+      "title": "改进新建会话表单输入绑定",
+      "changes": [
+        "添加 @input 事件确保 Alpine.js 正确捕获输入值"
+      ]
+    },
     {
       "version": "1.5.1",
       "date": "2026-01-29",
