@@ -2926,8 +2926,11 @@ def update_session(session_id):
     updates = request.get_json()
     session = json.loads(session_file.read_text(encoding="utf-8"))
 
+    # 定义允许更新的字段白名单
+    UPDATABLE_FIELDS = {"description", "topic", "status"}
+
     for key, value in updates.items():
-        if key != "session_id":
+        if key != "session_id" and key in UPDATABLE_FIELDS:
             session[key] = value
 
     session["updated_at"] = get_utc_now()
@@ -3391,13 +3394,29 @@ def submit_answer(session_id):
         return jsonify({"error": "会话不存在"}), 404
 
     session = json.loads(session_file.read_text(encoding="utf-8"))
+
+    # 验证请求数据
     data = request.get_json()
+    if not data:
+        return jsonify({"error": "无效的请求数据"}), 400
 
     question = data.get("question")
     answer = data.get("answer")
     dimension = data.get("dimension")
     options = data.get("options", [])
     is_follow_up = data.get("is_follow_up", False)
+
+    # 验证必需参数
+    if not question or not isinstance(question, str):
+        return jsonify({"error": "问题不能为空"}), 400
+    if not answer or not isinstance(answer, str):
+        return jsonify({"error": "答案不能为空"}), 400
+    if not dimension or dimension not in DIMENSION_INFO:
+        return jsonify({"error": "无效的维度"}), 400
+    if not isinstance(options, list):
+        return jsonify({"error": "选项必须是列表"}), 400
+    if not isinstance(is_follow_up, bool):
+        return jsonify({"error": "is_follow_up必须是布尔值"}), 400
 
     # 使用增强版评估函数判断回答是否需要追问
     eval_result = evaluate_answer_depth(
@@ -3594,6 +3613,14 @@ def upload_document(session_id):
     if file.filename == '':
         return jsonify({"error": "文件名为空"}), 400
 
+    # 验证文件大小（最大10MB）
+    MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+    file.seek(0, 2)  # 移动到文件末尾
+    file_size = file.tell()
+    file.seek(0)  # 重置文件指针
+    if file_size > MAX_FILE_SIZE:
+        return jsonify({"error": f"文件大小超过限制（最大{MAX_FILE_SIZE // 1024 // 1024}MB）"}), 400
+
     filename = file.filename
     filepath = TEMP_DIR / filename
     file.save(filepath)
@@ -3602,35 +3629,45 @@ def upload_document(session_id):
     ext = Path(filename).suffix.lower()
     content = ""
 
-    # 图片处理
-    if ext in SUPPORTED_IMAGE_TYPES:
-        content = describe_image_with_vision(filepath, filename)
-    elif ext in ['.md', '.txt']:
-        content = filepath.read_text(encoding="utf-8")
-    elif ext in ['.pdf', '.docx', '.xlsx', '.pptx']:
-        # 调用转换脚本
-        import subprocess
-        convert_script = SKILL_DIR / "scripts" / "convert_doc.py"
-        if convert_script.exists():
-            try:
-                result = subprocess.run(
-                    ["uv", "run", str(convert_script), "convert", str(filepath)],
-                    capture_output=True, text=True, cwd=str(SKILL_DIR)
-                )
-                if result.returncode == 0:
-                    converted_file = CONVERTED_DIR / f"{Path(filename).stem}.md"
-                    if converted_file.exists():
-                        content = converted_file.read_text(encoding="utf-8")
+    try:
+        # 图片处理
+        if ext in SUPPORTED_IMAGE_TYPES:
+            content = describe_image_with_vision(filepath, filename)
+        elif ext in ['.md', '.txt']:
+            content = filepath.read_text(encoding="utf-8")
+            if not content or not content.strip():
+                return jsonify({"error": "文件内容为空"}), 400
+        elif ext in ['.pdf', '.docx', '.xlsx', '.pptx']:
+            # 调用转换脚本
+            import subprocess
+            convert_script = SKILL_DIR / "scripts" / "convert_doc.py"
+            if convert_script.exists():
+                try:
+                    result = subprocess.run(
+                        ["uv", "run", str(convert_script), "convert", str(filepath)],
+                        capture_output=True, text=True, cwd=str(SKILL_DIR)
+                    )
+                    if result.returncode == 0:
+                        converted_file = CONVERTED_DIR / f"{Path(filename).stem}.md"
+                        if converted_file.exists():
+                            content = converted_file.read_text(encoding="utf-8")
+                        else:
+                            content = f"[{ext.upper()[1:]} 解析失败: 未找到转换后的文件]"
                     else:
-                        content = f"[{ext.upper()[1:]} 解析失败: 未找到转换后的文件]"
-                else:
-                    error_msg = result.stderr[:200] if result.stderr else "未知错误"
-                    content = f"[{ext.upper()[1:]} 解析失败: {error_msg}]"
-            except Exception as e:
-                print(f"转换文档失败: {e}")
-                content = f"[{ext.upper()[1:]} 解析失败: {str(e)[:200]}]"
-        else:
-            content = f"[{ext.upper()[1:]} 文件: {filename}] (转换脚本不存在)"
+                        error_msg = result.stderr[:200] if result.stderr else "未知错误"
+                        content = f"[{ext.upper()[1:]} 解析失败: {error_msg}]"
+                except Exception as e:
+                    print(f"转换文档失败: {e}")
+                    content = f"[{ext.upper()[1:]} 解析失败: {str(e)[:200]}]"
+            else:
+                content = f"[{ext.upper()[1:]} 文件: {filename}] (转换脚本不存在)"
+    except UnicodeDecodeError as e:
+        return jsonify({"error": f"文件编码错误: {str(e)}"}), 400
+    except Exception as e:
+        return jsonify({"error": f"文件处理失败: {str(e)}"}), 500
+
+    if not content or not content.strip():
+        return jsonify({"error": "文件解析后内容为空"}), 400
 
     # 更新会话
     session = json.loads(session_file.read_text(encoding="utf-8"))
@@ -3706,35 +3743,45 @@ def upload_research_doc(session_id):
     ext = Path(filename).suffix.lower()
     content = ""
 
-    # 图片处理
-    if ext in SUPPORTED_IMAGE_TYPES:
-        content = describe_image_with_vision(filepath, filename)
-    elif ext in ['.md', '.txt']:
-        content = filepath.read_text(encoding="utf-8")
-    elif ext in ['.pdf', '.docx', '.xlsx', '.pptx']:
-        # 调用转换脚本
-        import subprocess
-        convert_script = SKILL_DIR / "scripts" / "convert_doc.py"
-        if convert_script.exists():
-            try:
-                result = subprocess.run(
-                    ["uv", "run", str(convert_script), "convert", str(filepath)],
-                    capture_output=True, text=True, cwd=str(SKILL_DIR)
-                )
-                if result.returncode == 0:
-                    converted_file = CONVERTED_DIR / f"{Path(filename).stem}.md"
-                    if converted_file.exists():
-                        content = converted_file.read_text(encoding="utf-8")
+    try:
+        # 图片处理
+        if ext in SUPPORTED_IMAGE_TYPES:
+            content = describe_image_with_vision(filepath, filename)
+        elif ext in ['.md', '.txt']:
+            content = filepath.read_text(encoding="utf-8")
+            if not content or not content.strip():
+                return jsonify({"error": "文件内容为空"}), 400
+        elif ext in ['.pdf', '.docx', '.xlsx', '.pptx']:
+            # 调用转换脚本
+            import subprocess
+            convert_script = SKILL_DIR / "scripts" / "convert_doc.py"
+            if convert_script.exists():
+                try:
+                    result = subprocess.run(
+                        ["uv", "run", str(convert_script), "convert", str(filepath)],
+                        capture_output=True, text=True, cwd=str(SKILL_DIR)
+                    )
+                    if result.returncode == 0:
+                        converted_file = CONVERTED_DIR / f"{Path(filename).stem}.md"
+                        if converted_file.exists():
+                            content = converted_file.read_text(encoding="utf-8")
+                        else:
+                            content = f"[{ext.upper()[1:]} 解析失败: 未找到转换后的文件]"
                     else:
-                        content = f"[{ext.upper()[1:]} 解析失败: 未找到转换后的文件]"
-                else:
-                    error_msg = result.stderr[:200] if result.stderr else "未知错误"
-                    content = f"[{ext.upper()[1:]} 解析失败: {error_msg}]"
-            except Exception as e:
-                print(f"转换文档失败: {e}")
-                content = f"[{ext.upper()[1:]} 解析失败: {str(e)[:200]}]"
-        else:
-            content = f"[{ext.upper()[1:]} 文件: {filename}] (转换脚本不存在)"
+                        error_msg = result.stderr[:200] if result.stderr else "未知错误"
+                        content = f"[{ext.upper()[1:]} 解析失败: {error_msg}]"
+                except Exception as e:
+                    print(f"转换文档失败: {e}")
+                    content = f"[{ext.upper()[1:]} 解析失败: {str(e)[:200]}]"
+            else:
+                content = f"[{ext.upper()[1:]} 文件: {filename}] (转换脚本不存在)"
+    except UnicodeDecodeError as e:
+        return jsonify({"error": f"文件编码错误: {str(e)}"}), 400
+    except Exception as e:
+        return jsonify({"error": f"文件处理失败: {str(e)}"}), 500
+
+    if not content or not content.strip():
+        return jsonify({"error": "文件解析后内容为空"}), 400
 
     # 更新会话
     session = json.loads(session_file.read_text(encoding="utf-8"))
