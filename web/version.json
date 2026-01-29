@@ -1,7 +1,26 @@
 {
-  "version": "1.5.8",
+  "version": "1.5.9",
   "releaseDate": "2026-01-29",
   "changelog": [
+    {
+      "version": "1.5.9",
+      "date": "2026-01-29",
+      "type": "patch",
+      "title": "完善后端参数验证和代码重构",
+      "changes": [
+        "**参数验证增强**：",
+        "create_session: 添加 topic 和 description 的类型和长度验证",
+        "skip_follow_up: 添加 dimension 的有效性验证",
+        "complete_dimension: 添加 DIMENSION_INFO 双重验证",
+        "**异常处理改进**：",
+        "prefetch_first_question: 添加 try-except，预生成失败不影响会话创建",
+        "**API返回值一致性**：",
+        "should_follow_up_comprehensive: saturation 和 fatigue 返回空字典而非 None",
+        "**代码重构**：",
+        "提取 calculate_dimension_coverage 函数，消除重复代码",
+        "添加除零保护 (required_questions <= 0)"
+      ]
+    },
     {
       "version": "1.5.8",
       "date": "2026-01-29",
