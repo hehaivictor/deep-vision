@@ -76,8 +76,8 @@ except ImportError:
     SEARCH_MAX_RESULTS = 3
     SEARCH_TIMEOUT = 10
     # Vision 默认配置
-    VISION_MODEL_NAME = "glm-4v-flash"
-    VISION_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+    VISION_MODEL_NAME = os.environ.get("VISION_MODEL_NAME", "")
+    VISION_API_URL = os.environ.get("VISION_API_URL", "")
     ENABLE_VISION = True
     MAX_IMAGE_SIZE_MB = 10
     SUPPORTED_IMAGE_TYPES = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
