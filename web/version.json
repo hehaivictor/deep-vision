@@ -1,7 +1,18 @@
 {
-  "version": "1.5.12",
+  "version": "1.5.13",
   "releaseDate": "2026-01-29",
   "changelog": [
+    {
+      "version": "1.5.13",
+      "date": "2026-01-29",
+      "type": "patch",
+      "title": "打开已完成会话时直接进入确认阶段",
+      "changes": [
+        "根因: openSession() 只检查 interview_log 是否非空来决定进入访谈阶段，",
+        "未检查所有维度是否已完成，导致已完成的会话仍然触发问题生成",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.5.12",
       "date": "2026-01-29",
