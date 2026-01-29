@@ -134,9 +134,9 @@
             position: absolute;
             bottom: 40px;
             left: 50%;
-            transform: translateX(-50%);
+            transform: translateX(-50%) translateY(20px);
             opacity: 0;
-            animation: fadeInUp 1s ease-out 1.5s forwards, bounce 2s ease-in-out 2.5s infinite;
+            animation: fadeInUpCentered 1s ease-out 1.5s forwards, bounce 2s ease-in-out 2.5s infinite;
             cursor: pointer;
             transition: color 0.3s ease;
             z-index: 10;
@@ -144,18 +144,15 @@
         .scroll-indicator:hover {
             color: #357BE2;
         }
-        .scroll-indicator.up {
-            top: 40px;
-            bottom: auto;
-            animation: fadeInUp 1s ease-out 0.5s forwards, bounceUp 2s ease-in-out 1.5s infinite;
+        @keyframes fadeInUpCentered {
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
         }
         @keyframes bounce {
             0%, 100% { transform: translateX(-50%) translateY(0); }
             50% { transform: translateX(-50%) translateY(10px); }
-        }
-        @keyframes bounceUp {
-            0%, 100% { transform: translateX(-50%) translateY(0); }
-            50% { transform: translateX(-50%) translateY(-10px); }
         }
 
         /* ========== 通用章节样式 ========== */
@@ -544,7 +541,6 @@
 
         <!-- 滚动指示 -->
         <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2" onclick="scrollToNextSection(this)">
-            <span class="text-sm">向下滚动探索</span>
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
             </svg>
@@ -581,17 +577,8 @@
             </p>
         </div>
 
-        <!-- 向上滚动指示 -->
-        <div class="scroll-indicator up text-gray-500 flex flex-col items-center gap-2" onclick="scrollToPrevSection(this)">
-            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
-            </svg>
-            <span class="text-sm">向上滚动</span>
-        </div>
-
         <!-- 向下滚动指示 -->
         <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2" onclick="scrollToNextSection(this)">
-            <span class="text-sm">继续探索</span>
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
             </svg>
@@ -659,17 +646,8 @@
             </div>
         </div>
 
-        <!-- 向上滚动指示 -->
-        <div class="scroll-indicator up text-gray-500 flex flex-col items-center gap-2" onclick="scrollToPrevSection(this)">
-            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
-            </svg>
-            <span class="text-sm">向上滚动</span>
-        </div>
-
         <!-- 向下滚动指示 -->
         <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2" onclick="scrollToNextSection(this)">
-            <span class="text-sm">继续探索</span>
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
             </svg>
@@ -727,17 +705,8 @@
             </div>
         </div>
 
-        <!-- 向上滚动指示 -->
-        <div class="scroll-indicator up text-gray-500 flex flex-col items-center gap-2" onclick="scrollToPrevSection(this)">
-            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
-            </svg>
-            <span class="text-sm">向上滚动</span>
-        </div>
-
         <!-- 向下滚动指示 -->
         <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2" onclick="scrollToNextSection(this)">
-            <span class="text-sm">继续探索</span>
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
             </svg>
@@ -805,17 +774,8 @@
             </div>
         </div>
 
-        <!-- 向上滚动指示 -->
-        <div class="scroll-indicator up text-gray-500 flex flex-col items-center gap-2" onclick="scrollToPrevSection(this)">
-            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
-            </svg>
-            <span class="text-sm">向上滚动</span>
-        </div>
-
         <!-- 向下滚动指示 -->
         <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2" onclick="scrollToNextSection(this)">
-            <span class="text-sm">继续探索</span>
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
             </svg>
@@ -897,17 +857,8 @@
             </div>
         </div>
 
-        <!-- 向上滚动指示 -->
-        <div class="scroll-indicator up text-gray-500 flex flex-col items-center gap-2" onclick="scrollToPrevSection(this)">
-            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
-            </svg>
-            <span class="text-sm">向上滚动</span>
-        </div>
-
         <!-- 向下滚动指示 -->
         <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2" onclick="scrollToNextSection(this)">
-            <span class="text-sm">继续探索</span>
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
             </svg>
@@ -974,17 +925,8 @@
             </div>
         </div>
 
-        <!-- 向上滚动指示 -->
-        <div class="scroll-indicator up text-gray-500 flex flex-col items-center gap-2" onclick="scrollToPrevSection(this)">
-            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
-            </svg>
-            <span class="text-sm">向上滚动</span>
-        </div>
-
         <!-- 向下滚动指示 -->
         <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2" onclick="scrollToNextSection(this)">
-            <span class="text-sm">继续探索</span>
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
             </svg>
@@ -1014,14 +956,6 @@
                 © 2026 AI与创新研究院
             </p>
         </div>
-
-        <!-- 向上滚动指示 -->
-        <div class="scroll-indicator up text-gray-500 flex flex-col items-center gap-2" onclick="scrollToPrevSection(this)">
-            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
-            </svg>
-            <span class="text-sm">向上滚动</span>
-        </div>
     </section>
 
     <script>
@@ -1035,16 +969,6 @@
             const currentIndex = sectionsArray.indexOf(currentSection);
             if (currentIndex < sectionsArray.length - 1) {
                 sectionsArray[currentIndex + 1].scrollIntoView({ behavior: 'smooth' });
-            }
-        }
-
-        // 点击滚动到上一个章节
-        function scrollToPrevSection(el) {
-            const currentSection = el.closest('.hero-section, .section');
-            const sectionsArray = Array.from(allSections);
-            const currentIndex = sectionsArray.indexOf(currentSection);
-            if (currentIndex > 0) {
-                sectionsArray[currentIndex - 1].scrollIntoView({ behavior: 'smooth' });
             }
         }
 
@@ -1074,14 +998,6 @@
                 e.preventDefault();
                 if (currentSectionIndex < allSections.length - 1) {
                     allSections[currentSectionIndex + 1].scrollIntoView({ behavior: 'smooth' });
-                }
-            }
-
-            // 向上键 - 滚动到上一个section
-            if (e.key === 'ArrowUp' || e.key === 'Up') {
-                e.preventDefault();
-                if (currentSectionIndex > 0) {
-                    allSections[currentSectionIndex - 1].scrollIntoView({ behavior: 'smooth' });
                 }
             }
         });
