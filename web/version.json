@@ -1,7 +1,17 @@
 {
-  "version": "1.5.13",
+  "version": "1.5.14",
   "releaseDate": "2026-01-29",
   "changelog": [
+    {
+      "version": "1.5.14",
+      "date": "2026-01-29",
+      "type": "patch",
+      "title": "需求确认阶段不显示进度提示",
+      "changes": [
+        "当所有维度都100%完成或进入确认阶段时，不再显示\"快完成了！还剩最后几个问题\"等进度提示",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.5.13",
       "date": "2026-01-29",
