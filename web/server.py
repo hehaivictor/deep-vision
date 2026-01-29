@@ -2352,8 +2352,8 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     "question": "你的问题",
     "options": ["选项1", "选项2", "选项3", "选项4"],
     "multi_select": false,
-    "is_follow_up": {'true' if should_follow_up else 'false 或 true（根据你的判断）'},
-    "follow_up_reason": {json.dumps(follow_up_reason, ensure_ascii=False) if should_follow_up else '"你的判断理由" 或 null'},
+    "is_follow_up": {'true' if should_follow_up else 'false'},
+    "follow_up_reason": {json.dumps(follow_up_reason, ensure_ascii=False) if should_follow_up else 'null'},
     "conflict_detected": false,
     "conflict_description": null
 }}
@@ -2372,7 +2372,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 - 不要在 JSON 前后添加任何说明文字
 - 确保 JSON 语法完全正确（所有字符串用双引号，布尔值用 true/false，空值用 null）
 - 你的整个回复就是这个 JSON 对象，没有其他内容
-- **重要**：作为专业访谈师，要善于追问，挖掘表面回答背后的真实需求"""
+- **重要**：is_follow_up 的值已由系统根据预算和饱和度预先决定，请严格按照上述模板设置"""
 
     return prompt, truncated_docs
 
@@ -3144,6 +3144,29 @@ def get_next_question(session_id):
     if prefetched:
         if ENABLE_DEBUG_LOG:
             print(f"🎯 预生成缓存命中: session={session_id}, dimension={dimension}")
+
+        # 对预生成结果也做 is_follow_up 校验
+        all_dim_logs = [log for log in session.get("interview_log", []) if log.get("dimension") == dimension]
+        if prefetched.get("is_follow_up", False) and all_dim_logs:
+            last_log = all_dim_logs[-1]
+            eval_result = evaluate_answer_depth(
+                question=last_log.get("question", ""),
+                answer=last_log.get("answer", ""),
+                dimension=dimension,
+                options=last_log.get("options", []),
+                is_follow_up=last_log.get("is_follow_up", False)
+            )
+            comprehensive_check = should_follow_up_comprehensive(
+                session=session,
+                dimension=dimension,
+                rule_based_result=eval_result
+            )
+            if not comprehensive_check["should_follow_up"]:
+                if ENABLE_DEBUG_LOG:
+                    print(f"⚠️ 预生成缓存 is_follow_up=true 但后端决策不允许，强制覆盖为 false")
+                prefetched["is_follow_up"] = False
+                prefetched["follow_up_reason"] = None
+
         prefetched["prefetched"] = True
         return jsonify(prefetched)
 
@@ -3239,6 +3262,31 @@ def get_next_question(session_id):
         if result:
             result["dimension"] = dimension
             result["ai_generated"] = True
+
+            # ========== 后端强制校验 is_follow_up ==========
+            # 防止 AI 绕过追问预算控制，自行将问题标记为追问
+            if result.get("is_follow_up", False):
+                # 重新计算追问决策
+                last_log = all_dim_logs[-1] if all_dim_logs else None
+                if last_log:
+                    eval_result = evaluate_answer_depth(
+                        question=last_log.get("question", ""),
+                        answer=last_log.get("answer", ""),
+                        dimension=dimension,
+                        options=last_log.get("options", []),
+                        is_follow_up=last_log.get("is_follow_up", False)
+                    )
+                    comprehensive_check = should_follow_up_comprehensive(
+                        session=session,
+                        dimension=dimension,
+                        rule_based_result=eval_result
+                    )
+                    if not comprehensive_check["should_follow_up"]:
+                        if ENABLE_DEBUG_LOG:
+                            print(f"⚠️ AI 返回 is_follow_up=true 但后端决策不允许追问，强制覆盖为 false (原因: {comprehensive_check['reason']})")
+                        result["is_follow_up"] = False
+                        result["follow_up_reason"] = None
+
             # 清除思考状态
             clear_thinking_status(session_id)
             # ========== 步骤5: 触发预生成（如果需要）==========
