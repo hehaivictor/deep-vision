@@ -1451,6 +1451,7 @@
                     <div class="mb-4">
                         <label for="newTopic" class="block text-sm font-medium text-secondary mb-2">调研主题 <span class="text-danger">*</span></label>
                         <input type="text" id="newTopic" x-model="newSessionTopic"
+                               @input="$el.value = $el.value"
                                placeholder="例如：CRM系统需求调研"
                                class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#F0F8FF] focus:border-[#F0F8FF]"
                                required>
