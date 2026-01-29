@@ -1428,17 +1428,32 @@ function deepVision() {
 
         // 获取预估剩余问题数
         getEstimatedRemainingQuestions() {
-            const estimated = this.getEstimatedTotalQuestions();
-            const current = this.getCurrentQuestionCount();
-            const remaining = Math.max(0, estimated - current);
+            if (!this.currentSession) return 0;
 
-            // 根据当前进度微调预估
             const progress = this.getTotalProgress();
-            if (progress >= 75) {
-                // 接近结束，剩余问题应该更少
-                return Math.min(remaining, 5);
+            const current = this.getCurrentQuestionCount();
+
+            // 基于进度反推剩余问题数
+            // 如果进度是 25%，已答 53 题，则预估总数 = 53 / 0.25 = 212，剩余 = 212 - 53 = 159
+            // 这样更准确反映实际情况
+            if (progress > 0 && progress < 100) {
+                const estimatedTotal = Math.round(current / (progress / 100));
+                const remaining = Math.max(0, estimatedTotal - current);
+
+                // 限制显示范围，避免数字过大
+                if (remaining > 50) {
+                    return '50+';
+                }
+                return remaining;
+            } else if (progress >= 100) {
+                return 0;
+            } else {
+                // 进度为0时，使用模式配置的预估
+                const config = this.getInterviewModeConfig();
+                if (!config) return 20;
+                const range = config.range.split('-');
+                return Math.round((parseInt(range[0]) + parseInt(range[1])) / 2);
             }
-            return remaining;
         },
 
         // 获取进度反馈信息
