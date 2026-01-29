@@ -3176,6 +3176,25 @@ def get_next_question(session_id):
         if ENABLE_DEBUG_LOG:
             print(f"🎯 预生成缓存命中: session={session_id}, dimension={dimension}")
 
+        # 先检查维度是否已完成（即使有缓存也要检查）
+        dim_data = session.get("dimensions", {}).get(dimension, {})
+        dim_coverage = dim_data.get("coverage", 0)
+        user_completed = dim_data.get("user_completed", False)
+        if dim_coverage >= 100 or user_completed:
+            # 维度已完成，忽略缓存，返回完成状态
+            all_dim_logs = [log for log in session.get("interview_log", []) if log.get("dimension") == dimension]
+            formal_questions_count = len([log for log in all_dim_logs if not log.get("is_follow_up", False)])
+            dim_follow_ups = len([log for log in all_dim_logs if log.get("is_follow_up", False)])
+            return jsonify({
+                "dimension": dimension,
+                "completed": True,
+                "stats": {
+                    "formal_questions": formal_questions_count,
+                    "follow_ups": dim_follow_ups,
+                    "saturation": 1.0
+                }
+            })
+
         # 对预生成结果也做 is_follow_up 校验
         all_dim_logs = [log for log in session.get("interview_log", []) if log.get("dimension") == dimension]
         if prefetched.get("is_follow_up", False) and all_dim_logs:
@@ -3218,8 +3237,16 @@ def get_next_question(session_id):
     mode_config = get_interview_mode_config(session)
     required_formal_questions = mode_config["formal_questions_per_dim"]
 
-    # 检查维度是否已完成（正式问题达到配置数量）
-    if formal_questions_count >= required_formal_questions:
+    # 获取当前维度状态
+    dim_data = session.get("dimensions", {}).get(dimension, {})
+    dim_coverage = dim_data.get("coverage", 0)
+    user_completed = dim_data.get("user_completed", False)
+
+    # 检查维度是否已完成：
+    # 1. 正式问题达到配置数量
+    # 2. 或者 coverage 已经 >= 100%（可能是用户手动完成）
+    # 3. 或者用户标记了 user_completed
+    if formal_questions_count >= required_formal_questions or dim_coverage >= 100 or user_completed:
         # 使用综合决策检查是否还需要追问
         # 创建一个虚拟的规则评估结果来触发综合检查
         comprehensive_check = should_follow_up_comprehensive(
