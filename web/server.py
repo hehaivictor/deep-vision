@@ -14,6 +14,7 @@ Deep Vision Web Server - AI 驱动版本
 - 生成专业调研报告
 """
 
+import base64
 import json
 import os
 import secrets
@@ -45,7 +46,12 @@ try:
         ZHIPU_API_KEY,
         ZHIPU_SEARCH_ENGINE,
         SEARCH_MAX_RESULTS,
-        SEARCH_TIMEOUT
+        SEARCH_TIMEOUT,
+        VISION_MODEL_NAME,
+        VISION_API_URL,
+        ENABLE_VISION,
+        MAX_IMAGE_SIZE_MB,
+        SUPPORTED_IMAGE_TYPES,
     )
     print("✅ 配置文件加载成功")
 except ImportError:
@@ -69,6 +75,12 @@ except ImportError:
     ZHIPU_SEARCH_ENGINE = "search_pro"
     SEARCH_MAX_RESULTS = 3
     SEARCH_TIMEOUT = 10
+    # Vision 默认配置
+    VISION_MODEL_NAME = "glm-4v-flash"
+    VISION_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+    ENABLE_VISION = True
+    MAX_IMAGE_SIZE_MB = 10
+    SUPPORTED_IMAGE_TYPES = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
 
 try:
     import anthropic
@@ -90,6 +102,7 @@ TEMP_DIR = DATA_DIR / "temp"
 METRICS_DIR = DATA_DIR / "metrics"
 SUMMARIES_DIR = DATA_DIR / "summaries"  # 文档摘要缓存目录
 DELETED_REPORTS_FILE = REPORTS_DIR / ".deleted_reports.json"
+DELETED_DOCS_FILE = DATA_DIR / ".deleted_docs.json"  # 软删除记录文件
 
 for d in [SESSIONS_DIR, REPORTS_DIR, CONVERTED_DIR, TEMP_DIR, METRICS_DIR, SUMMARIES_DIR]:
     d.mkdir(parents=True, exist_ok=True)
@@ -119,17 +132,16 @@ def update_thinking_status(session_id: str, stage: str, has_search: bool = True)
     if not stage_info:
         return
 
-    # 计算总阶段数（如果没有搜索，跳过 searching 阶段）
-    total = 3 if has_search else 2
+    # 始终使用原始的 stage_index，确保 index 和 message 一致
+    # - 有搜索时：分析(0) -> 检索(1) -> 生成(2)
+    # - 无搜索时：分析(0) -> 生成(2)，检索阶段被跳过
     index = stage_info["index"]
-    if not has_search and stage != "analyzing":
-        index = 1 if stage == "generating" else index  # generating 变成第2阶段
 
     with thinking_status_lock:
         thinking_status[session_id] = {
             "stage": stage,
             "stage_index": index,
-            "total_stages": total,
+            "total_stages": 3,  # 总是3个阶段，无搜索时检索会被快速跳过
             "message": stage_info["message"],
         }
 
@@ -610,6 +622,43 @@ def mark_report_as_deleted(filename: str):
     )
 
 
+def get_deleted_docs() -> dict:
+    """获取已删除文档的记录"""
+    if not DELETED_DOCS_FILE.exists():
+        return {"reference_docs": [], "research_docs": []}
+    try:
+        data = json.loads(DELETED_DOCS_FILE.read_text(encoding="utf-8"))
+        return {
+            "reference_docs": data.get("reference_docs", []),
+            "research_docs": data.get("research_docs", [])
+        }
+    except Exception:
+        return {"reference_docs": [], "research_docs": []}
+
+
+def mark_doc_as_deleted(session_id: str, doc_name: str, doc_type: str):
+    """标记文档为已删除（软删除）
+
+    Args:
+        session_id: 会话 ID
+        doc_name: 文档名称
+        doc_type: 文档类型 ('reference_docs' 或 'research_docs')
+    """
+    deleted = get_deleted_docs()
+    record = {
+        "session_id": session_id,
+        "doc_name": doc_name,
+        "deleted_at": get_utc_now()
+    }
+    if doc_type not in deleted:
+        deleted[doc_type] = []
+    deleted[doc_type].append(record)
+    DELETED_DOCS_FILE.write_text(
+        json.dumps(deleted, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+
+
 # ============ 联网搜索功能 ============
 
 class MCPClient:
@@ -831,47 +880,205 @@ def web_search(query: str) -> list:
 
 
 def should_search(topic: str, dimension: str, context: dict) -> bool:
-    """判断是否需要进行联网搜索"""
+    """
+    规则预判：快速判断是否可能需要联网搜索（兜底规则）
+    返回 True 表示"可能需要"，后续会交给 AI 做最终判断
+    """
     if not ENABLE_WEB_SEARCH:
         return False
 
+    # ========== 扩展的关键词库 ==========
+
     # 技术关键词
     tech_keywords = [
-        "技术", "系统", "平台", "框架", "工具", "软件", "应用",
-        "AI", "人工智能", "机器学习", "深度学习", "大模型",
-        "云", "SaaS", "PaaS", "微服务", "容器", "Docker", "K8s",
-        "数据库", "中间件", "API", "集成", "部署"
+        "技术", "系统", "平台", "框架", "工具", "软件", "应用", "架构",
+        "AI", "人工智能", "机器学习", "深度学习", "大模型", "LLM", "GPT",
+        "云", "SaaS", "PaaS", "IaaS", "微服务", "容器", "Docker", "K8s", "Kubernetes",
+        "数据库", "中间件", "API", "集成", "部署", "运维", "DevOps",
+        "前端", "后端", "全栈", "移动端", "App", "小程序"
     ]
 
-    # 行业关键词
+    # 垂直行业关键词（新增）
     industry_keywords = [
-        "行业", "标准", "规范", "合规", "认证", "等保",
-        "市场", "趋势", "最新", "现状", "发展"
+        # 医疗健康
+        "医院", "医疗", "HIS", "LIS", "PACS", "EMR", "电子病历", "DRG", "医保",
+        "诊所", "药房", "处方", "挂号", "门诊", "住院", "护理", "CDSS",
+        # 金融
+        "银行", "保险", "证券", "基金", "信托", "支付", "清算", "风控",
+        "反洗钱", "征信", "资管", "理财", "贷款", "信用卡",
+        # 教育
+        "学校", "教育", "培训", "课程", "教学", "学生", "考试", "招生",
+        "在线教育", "网课", "双减", "新课标",
+        # 制造
+        "工厂", "制造", "生产", "车间", "MES", "ERP", "PLM", "SCM", "WMS",
+        "工业互联网", "智能制造", "数字孪生", "质检", "设备", "产线",
+        # 零售电商
+        "零售", "电商", "门店", "商城", "订单", "库存", "物流", "配送",
+        "会员", "营销", "促销", "CRM", "POS",
+        # 政务
+        "政府", "政务", "审批", "办事", "公共服务", "智慧城市", "数字政府",
+        # 能源
+        "电力", "能源", "电网", "新能源", "光伏", "风电", "储能", "充电桩",
+        # 交通物流
+        "交通", "物流", "运输", "仓储", "TMS", "调度", "车队"
     ]
 
-    # 时间敏感关键词
-    time_keywords = [
-        "最新", "当前", "现在", "2024", "2025", "2026",
-        "趋势", "未来", "发展"
+    # 合规政策关键词（新增）
+    compliance_keywords = [
+        "合规", "标准", "规范", "认证", "等保", "ISO", "GDPR", "隐私",
+        "安全", "审计", "法规", "政策", "监管", "资质", "许可证"
     ]
 
-    topic_lower = topic.lower()
-    all_keywords = tech_keywords + industry_keywords + time_keywords
+    # 时效性关键词
+    time_sensitive_keywords = [
+        "最新", "当前", "现在", "近期", "今年", "明年",
+        "2024", "2025", "2026", "2027",
+        "趋势", "未来", "发展", "动态", "变化", "更新",
+        "市场", "行情", "竞品", "对手", "现状"
+    ]
 
-    # 如果主题包含关键词，可能需要搜索
+    # 不确定性/专业性关键词（新增）
+    uncertainty_keywords = [
+        "怎么选", "如何选择", "哪个好", "推荐", "建议", "比较",
+        "最佳实践", "业界", "头部", "领先", "主流", "标杆"
+    ]
+
+    all_keywords = (tech_keywords + industry_keywords + compliance_keywords +
+                   time_sensitive_keywords + uncertainty_keywords)
+
+    # 如果主题包含任何关键词，标记为"可能需要搜索"
     for keyword in all_keywords:
-        if keyword in topic:
+        if keyword.lower() in topic.lower():
             return True
 
-    # 技术约束维度更可能需要搜索
+    # 技术约束维度通常需要搜索
     if dimension == "tech_constraints":
         return True
 
     return False
 
 
+def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa: list) -> dict:
+    """
+    AI 自主判断：让 AI 评估是否需要联网搜索
+    返回: { "need_search": bool, "reason": str, "search_query": str }
+    """
+    global claude_client
+
+    if not ENABLE_WEB_SEARCH or not claude_client:
+        return {"need_search": False, "reason": "搜索功能未启用", "search_query": ""}
+
+    dim_info = DIMENSION_INFO.get(dimension, {})
+    dim_name = dim_info.get("name", dimension)
+
+    # 构建最近的问答上下文
+    recent_context = ""
+    if recent_qa:
+        recent_context = "\n".join([
+            f"Q: {qa.get('question', '')}\nA: {qa.get('answer', '')}"
+            for qa in recent_qa[-3:]  # 只取最近3条
+        ])
+
+    prompt = f"""你是一个智能搜索决策助手。请判断在当前调研场景下，是否需要联网搜索来获取更准确、更专业的信息。
+
+## 当前调研信息
+- 调研主题：{topic}
+- 当前维度：{dim_name}
+- 最近问答：
+{recent_context if recent_context else "（尚未开始问答）"}
+
+## 判断标准
+请评估以下几个方面，判断是否需要联网搜索：
+
+1. **知识时效性**：是否涉及近1-2年的政策、市场、技术变化？
+2. **专业领域深度**：是否涉及你可能不够熟悉的垂直行业细节（如医疗编码规则、金融监管要求、行业标准参数等）？
+3. **竞品/市场信息**：是否需要了解市场现状、竞争对手、行业头部产品？
+4. **最佳实践参考**：是否需要了解业界的最新做法、成功案例？
+5. **数据/指标参考**：是否需要了解行业基准数据、常见参数范围？
+
+## 输出格式
+请严格按以下JSON格式输出，不要有其他内容：
+{{
+    "need_search": true或false,
+    "reason": "简要说明判断理由（20字以内）",
+    "search_query": "如果需要搜索，给出最佳搜索词（要精准、具体，15字以内）；不需要搜索则留空"
+}}"""
+
+    try:
+        response = claude_client.messages.create(
+            model=MODEL_NAME,
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        result_text = response.content[0].text.strip()
+
+        # 尝试解析 JSON
+        import json
+        # 处理可能的 markdown 代码块
+        if "```json" in result_text:
+            result_text = result_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in result_text:
+            result_text = result_text.split("```")[1].split("```")[0].strip()
+
+        result = json.loads(result_text)
+
+        if ENABLE_DEBUG_LOG:
+            print(f"🤖 AI搜索决策: need_search={result.get('need_search')}, reason={result.get('reason')}")
+
+        return {
+            "need_search": result.get("need_search", False),
+            "reason": result.get("reason", ""),
+            "search_query": result.get("search_query", "")
+        }
+
+    except Exception as e:
+        if ENABLE_DEBUG_LOG:
+            print(f"⚠️  AI搜索决策失败: {e}")
+        # 失败时返回不搜索，避免阻塞流程
+        return {"need_search": False, "reason": f"决策失败: {e}", "search_query": ""}
+
+
+def smart_search_decision(topic: str, dimension: str, context: dict, recent_qa: list = None) -> tuple:
+    """
+    智能搜索决策：规则预判 + AI 最终判断
+    返回: (need_search: bool, search_query: str, reason: str)
+    """
+    if not ENABLE_WEB_SEARCH:
+        return (False, "", "搜索功能未启用")
+
+    # 第一步：规则预判
+    rule_suggests_search = should_search(topic, dimension, context)
+
+    if not rule_suggests_search:
+        # 规则判断不需要搜索，但让 AI 做二次确认（可能漏掉的场景）
+        ai_result = ai_evaluate_search_need(topic, dimension, context, recent_qa or [])
+        if ai_result["need_search"]:
+            if ENABLE_DEBUG_LOG:
+                print(f"🔍 规则未触发，但AI建议搜索: {ai_result['reason']}")
+            return (True, ai_result["search_query"], f"AI建议: {ai_result['reason']}")
+        else:
+            return (False, "", "规则和AI均判断不需要搜索")
+
+    # 第二步：规则建议搜索，让 AI 生成精准搜索词
+    ai_result = ai_evaluate_search_need(topic, dimension, context, recent_qa or [])
+
+    if ai_result["need_search"] and ai_result["search_query"]:
+        # AI 确认需要搜索，使用 AI 生成的搜索词
+        return (True, ai_result["search_query"], ai_result["reason"])
+    elif ai_result["need_search"]:
+        # AI 确认需要但没给搜索词，使用兜底模板
+        fallback_query = generate_search_query(topic, dimension, context)
+        return (True, fallback_query, "AI确认需要，使用模板搜索词")
+    else:
+        # AI 判断实际不需要搜索（规则误触发）
+        if ENABLE_DEBUG_LOG:
+            print(f"🔍 规则触发但AI判断不需要: {ai_result['reason']}")
+        return (False, "", f"AI判断不需要: {ai_result['reason']}")
+
+
 def generate_search_query(topic: str, dimension: str, context: dict) -> str:
-    """生成搜索查询"""
+    """生成搜索查询（兜底模板，当 AI 未生成搜索词时使用）"""
     dim_info = DIMENSION_INFO.get(dimension, {})
     dim_name = dim_info.get("name", dimension)
 
@@ -1524,14 +1731,19 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     if truncated_docs:
         context_parts.append(f"\n⚠️ 注意：以下文档因长度限制已被截断，请基于已有信息进行提问：{', '.join(truncated_docs)}")
 
-    # 联网搜索增强（限制结果数量和长度）
-    will_search = should_search(topic, dimension, session)
-    if will_search:
+    # ========== 智能联网搜索（规则预判 + AI决策） ==========
+    # 获取最近的问答记录用于 AI 判断
+    recent_qa = interview_log[-3:] if interview_log else []
+    will_search, search_query, search_reason = smart_search_decision(topic, dimension, session, recent_qa)
+
+    if will_search and search_query:
         # 更新思考状态到"搜索"阶段
         if session_id:
             update_thinking_status(session_id, "searching", has_search=True)
 
-        search_query = generate_search_query(topic, dimension, session)
+        if ENABLE_DEBUG_LOG:
+            print(f"🔍 执行搜索: {search_query} (原因: {search_reason})")
+
         search_results = web_search(search_query)
 
         if search_results:
@@ -1964,6 +2176,113 @@ async def call_claude_async(prompt: str, max_tokens: int = None) -> Optional[str
             print(f"   原因: API Key 认证失败")
 
         return None
+
+
+def describe_image_with_vision(image_path: Path, filename: str) -> str:
+    """
+    使用智谱视觉模型描述图片内容
+
+    Args:
+        image_path: 图片文件路径
+        filename: 原始文件名
+
+    Returns:
+        str: 图片描述文本
+    """
+    if not ENABLE_VISION:
+        return f"[图片: {filename}] (视觉功能已禁用)"
+
+    if not ZHIPU_API_KEY or ZHIPU_API_KEY == "your-zhipu-api-key-here":
+        return f"[图片: {filename}] (视觉 API 未配置)"
+
+    try:
+        # 读取图片并转换为 base64
+        with open(image_path, "rb") as f:
+            image_data = f.read()
+
+        # 检查文件大小
+        size_mb = len(image_data) / (1024 * 1024)
+        if size_mb > MAX_IMAGE_SIZE_MB:
+            return f"[图片: {filename}] (文件过大: {size_mb:.1f}MB > {MAX_IMAGE_SIZE_MB}MB)"
+
+        # 确定 MIME 类型
+        ext = Path(filename).suffix.lower()
+        mime_types = {
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp'
+        }
+        mime_type = mime_types.get(ext, 'image/jpeg')
+
+        base64_image = base64.b64encode(image_data).decode('utf-8')
+
+        # 构建请求
+        headers = {
+            "Authorization": f"Bearer {ZHIPU_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "model": VISION_MODEL_NAME,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": """请详细描述这张图片的内容，包括：
+1. 图片的主要内容和主题
+2. 图片中的关键元素（人物、物体、文字等）
+3. 如果是流程图/架构图/图表，请解读其含义
+4. 如果有文字，请提取主要文字内容
+
+请用中文回答，内容尽量完整准确。"""
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "max_tokens": 1000
+        }
+
+        if ENABLE_DEBUG_LOG:
+            print(f"🖼️ 调用视觉 API 描述图片: {filename}")
+
+        response = requests.post(
+            VISION_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            description = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if description:
+                if ENABLE_DEBUG_LOG:
+                    print(f"✅ 图片描述生成成功: {len(description)} 字符")
+                return f"[图片: {filename}]\n\n**AI 图片描述:**\n{description}"
+            else:
+                return f"[图片: {filename}] (描述生成失败: 空响应)"
+        else:
+            error_msg = response.json().get("error", {}).get("message", response.text[:200])
+            if ENABLE_DEBUG_LOG:
+                print(f"❌ 视觉 API 调用失败: {error_msg}")
+            return f"[图片: {filename}] (API 错误: {error_msg[:100]})"
+
+    except requests.exceptions.Timeout:
+        return f"[图片: {filename}] (API 超时)"
+    except Exception as e:
+        if ENABLE_DEBUG_LOG:
+            print(f"❌ 图片描述生成失败: {e}")
+        return f"[图片: {filename}] (处理失败: {str(e)[:100]})"
 
 
 def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = True,
@@ -2662,11 +2981,12 @@ def upload_document(session_id):
     ext = Path(filename).suffix.lower()
     content = ""
 
-    if ext in ['.md', '.txt']:
+    # 图片处理
+    if ext in SUPPORTED_IMAGE_TYPES:
+        content = describe_image_with_vision(filepath, filename)
+    elif ext in ['.md', '.txt']:
         content = filepath.read_text(encoding="utf-8")
-    elif ext == '.pdf':
-        content = f"[PDF 文件: {filename}]"  # 简化处理
-    elif ext in ['.docx', '.xlsx', '.pptx']:
+    elif ext in ['.pdf', '.docx', '.xlsx', '.pptx']:
         # 调用转换脚本
         import subprocess
         convert_script = SKILL_DIR / "scripts" / "convert_doc.py"
@@ -2680,8 +3000,16 @@ def upload_document(session_id):
                     converted_file = CONVERTED_DIR / f"{Path(filename).stem}.md"
                     if converted_file.exists():
                         content = converted_file.read_text(encoding="utf-8")
+                    else:
+                        content = f"[{ext.upper()[1:]} 解析失败: 未找到转换后的文件]"
+                else:
+                    error_msg = result.stderr[:200] if result.stderr else "未知错误"
+                    content = f"[{ext.upper()[1:]} 解析失败: {error_msg}]"
             except Exception as e:
                 print(f"转换文档失败: {e}")
+                content = f"[{ext.upper()[1:]} 解析失败: {str(e)[:200]}]"
+        else:
+            content = f"[{ext.upper()[1:]} 文件: {filename}] (转换脚本不存在)"
 
     # 更新会话
     session = json.loads(session_file.read_text(encoding="utf-8"))
@@ -2703,7 +3031,7 @@ def upload_document(session_id):
 
 @app.route('/api/sessions/<session_id>/documents/<path:doc_name>', methods=['DELETE'])
 def delete_document(session_id, doc_name):
-    """删除参考文档"""
+    """删除参考文档（软删除）"""
     session_file = SESSIONS_DIR / f"{session_id}.json"
     if not session_file.exists():
         return jsonify({"error": "会话不存在"}), 404
@@ -2723,12 +3051,13 @@ def delete_document(session_id, doc_name):
     session["updated_at"] = get_utc_now()
     session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # 注意：不删除后台文件存档，仅从会话中移除引用
-    # 这样文件仍保留在 temp/ 和 converted/ 目录中供后续使用
+    # 软删除：记录到删除日志，文件保留在 temp/converted 目录
+    mark_doc_as_deleted(session_id, doc_name, "reference_docs")
 
     return jsonify({
         "success": True,
-        "deleted": doc_name
+        "deleted": doc_name,
+        "message": "文档已从列表中移除（文件已存档）"
     })
 
 
@@ -2756,11 +3085,12 @@ def upload_research_doc(session_id):
     ext = Path(filename).suffix.lower()
     content = ""
 
-    if ext in ['.md', '.txt']:
+    # 图片处理
+    if ext in SUPPORTED_IMAGE_TYPES:
+        content = describe_image_with_vision(filepath, filename)
+    elif ext in ['.md', '.txt']:
         content = filepath.read_text(encoding="utf-8")
-    elif ext == '.pdf':
-        content = f"[PDF 文件: {filename}]"  # 简化处理
-    elif ext in ['.docx', '.xlsx', '.pptx']:
+    elif ext in ['.pdf', '.docx', '.xlsx', '.pptx']:
         # 调用转换脚本
         import subprocess
         convert_script = SKILL_DIR / "scripts" / "convert_doc.py"
@@ -2774,8 +3104,16 @@ def upload_research_doc(session_id):
                     converted_file = CONVERTED_DIR / f"{Path(filename).stem}.md"
                     if converted_file.exists():
                         content = converted_file.read_text(encoding="utf-8")
+                    else:
+                        content = f"[{ext.upper()[1:]} 解析失败: 未找到转换后的文件]"
+                else:
+                    error_msg = result.stderr[:200] if result.stderr else "未知错误"
+                    content = f"[{ext.upper()[1:]} 解析失败: {error_msg}]"
             except Exception as e:
                 print(f"转换文档失败: {e}")
+                content = f"[{ext.upper()[1:]} 解析失败: {str(e)[:200]}]"
+        else:
+            content = f"[{ext.upper()[1:]} 文件: {filename}] (转换脚本不存在)"
 
     # 更新会话
     session = json.loads(session_file.read_text(encoding="utf-8"))
@@ -2802,7 +3140,7 @@ def upload_research_doc(session_id):
 
 @app.route('/api/sessions/<session_id>/research-docs/<path:doc_name>', methods=['DELETE'])
 def delete_research_doc(session_id, doc_name):
-    """删除已有调研成果文档"""
+    """删除已有调研成果文档（软删除）"""
     session_file = SESSIONS_DIR / f"{session_id}.json"
     if not session_file.exists():
         return jsonify({"error": "会话不存在"}), 404
@@ -2827,9 +3165,13 @@ def delete_research_doc(session_id, doc_name):
     session["updated_at"] = get_utc_now()
     session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    # 软删除：记录到删除日志，文件保留在 temp/converted 目录
+    mark_doc_as_deleted(session_id, doc_name, "research_docs")
+
     return jsonify({
         "success": True,
-        "deleted": doc_name
+        "deleted": doc_name,
+        "message": "文档已从列表中移除（文件已存档）"
     })
 
 

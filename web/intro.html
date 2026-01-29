@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deep Vision 深瞳 - 洞察深处，方见真章</title>
+    <script src="vendor/css/tailwind-full.js"></script>
+    <link rel="stylesheet" href="vendor/css/fonts.css">
+    <style>
+        /* 基础样式 */
+        html { scroll-behavior: smooth; }
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background: #0a0a0a;
+            color: #fafafa;
+            overflow-x: hidden;
+        }
+
+        /* 品牌字体 */
+        .brand-title {
+            font-family: 'Outfit', 'Inter', system-ui, sans-serif;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+        }
+        .brand-title-cn {
+            font-family: 'ZCOOL XiaoWei', serif;
+            font-weight: 600;
+        }
+
+        /* ========== Hero 区域 ========== */
+        .hero-section {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* 背景光效 */
+        .hero-glow {
+            position: absolute;
+            width: 800px;
+            height: 800px;
+            border-radius: 50%;
+            filter: blur(120px);
+            opacity: 0.15;
+            pointer-events: none;
+        }
+        .hero-glow-1 {
+            background: radial-gradient(circle, #357BE2 0%, transparent 70%);
+            top: -200px;
+            left: -200px;
+            animation: float 20s ease-in-out infinite;
+        }
+        .hero-glow-2 {
+            background: radial-gradient(circle, #6366f1 0%, transparent 70%);
+            bottom: -300px;
+            right: -200px;
+            animation: float 25s ease-in-out infinite reverse;
+        }
+        @keyframes float {
+            0%, 100% { transform: translate(0, 0) scale(1); }
+            33% { transform: translate(30px, -30px) scale(1.1); }
+            66% { transform: translate(-20px, 20px) scale(0.9); }
+        }
+
+        /* 网格背景 */
+        .hero-grid {
+            position: absolute;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+            background-size: 60px 60px;
+            mask-image: radial-gradient(ellipse at center, black 30%, transparent 70%);
+        }
+
+        /* Hero 文字动画 */
+        .hero-title {
+            opacity: 0;
+            transform: translateY(40px);
+            animation: fadeInUp 1s ease-out 0.3s forwards;
+        }
+        .hero-subtitle {
+            opacity: 0;
+            transform: translateY(30px);
+            animation: fadeInUp 1s ease-out 0.6s forwards;
+        }
+        .hero-tagline {
+            opacity: 0;
+            transform: translateY(20px);
+            animation: fadeInUp 1s ease-out 0.9s forwards;
+        }
+        .hero-cta {
+            opacity: 0;
+            transform: translateY(20px);
+            animation: fadeInUp 1s ease-out 1.2s forwards;
+        }
+        @keyframes fadeInUp {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Logo 眼睛动画 */
+        .logo-eye {
+            animation: pulse-glow 3s ease-in-out infinite;
+        }
+        @keyframes pulse-glow {
+            0%, 100% {
+                filter: drop-shadow(0 0 20px rgba(53, 123, 226, 0.5));
+                transform: scale(1);
+            }
+            50% {
+                filter: drop-shadow(0 0 40px rgba(53, 123, 226, 0.8));
+                transform: scale(1.02);
+            }
+        }
+
+        /* 滚动指示器 */
+        .scroll-indicator {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            opacity: 0;
+            animation: fadeInUp 1s ease-out 1.5s forwards, bounce 2s ease-in-out 2.5s infinite;
+        }
+        @keyframes bounce {
+            0%, 100% { transform: translateX(-50%) translateY(0); }
+            50% { transform: translateX(-50%) translateY(10px); }
+        }
+
+        /* ========== 通用章节样式 ========== */
+        .section {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 80px 24px;
+            position: relative;
+        }
+
+        /* 滚动动画触发 */
+        .reveal {
+            opacity: 0;
+            transform: translateY(60px);
+            transition: all 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .reveal.active {
+            opacity: 1;
+            transform: translateY(0);
+        }
+        .reveal-delay-1 { transition-delay: 0.1s; }
+        .reveal-delay-2 { transition-delay: 0.2s; }
+        .reveal-delay-3 { transition-delay: 0.3s; }
+        .reveal-delay-4 { transition-delay: 0.4s; }
+        .reveal-delay-5 { transition-delay: 0.5s; }
+        .reveal-delay-6 { transition-delay: 0.6s; }
+
+        /* ========== 痛点区域 ========== */
+        .pain-section {
+            background: linear-gradient(180deg, #0a0a0a 0%, #111111 100%);
+        }
+        .pain-quote {
+            font-size: clamp(1.25rem, 4vw, 2rem);
+            font-style: italic;
+            color: #a1a1aa;
+            border-left: 3px solid #357BE2;
+            padding-left: 1.5rem;
+            margin: 1.5rem 0;
+            opacity: 0;
+            transform: translateX(-30px);
+            transition: all 0.6s ease-out;
+        }
+        .pain-quote.active {
+            opacity: 1;
+            transform: translateX(0);
+        }
+
+        /* ========== 解决方案区域 ========== */
+        .solution-section {
+            background: #0f0f0f;
+        }
+        .solution-card {
+            background: linear-gradient(135deg, rgba(53, 123, 226, 0.1) 0%, rgba(99, 102, 241, 0.05) 100%);
+            border: 1px solid rgba(53, 123, 226, 0.2);
+            border-radius: 16px;
+            padding: 2rem;
+            transition: all 0.3s ease;
+        }
+        .solution-card:hover {
+            border-color: rgba(53, 123, 226, 0.5);
+            transform: translateY(-4px);
+            box-shadow: 0 20px 40px rgba(53, 123, 226, 0.1);
+        }
+        .solution-icon {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, #357BE2 0%, #6366f1 100%);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 1rem;
+        }
+
+        /* ========== 功能特性区域 ========== */
+        .feature-section {
+            background: linear-gradient(180deg, #0f0f0f 0%, #0a0a0a 100%);
+        }
+        .feature-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 20px;
+            padding: 2rem;
+            transition: all 0.4s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        .feature-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, #357BE2, transparent);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .feature-card:hover {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(53, 123, 226, 0.3);
+            transform: translateY(-8px);
+        }
+        .feature-card:hover::before {
+            opacity: 1;
+        }
+
+        /* ========== 对比表格区域 ========== */
+        .compare-section {
+            background: #0a0a0a;
+        }
+        .compare-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            border-radius: 16px;
+            overflow: hidden;
+        }
+        .compare-table th {
+            background: linear-gradient(135deg, #1a1a1a 0%, #262626 100%);
+            padding: 1.25rem 1.5rem;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            white-space: nowrap;
+        }
+        .compare-table th:last-child {
+            background: linear-gradient(135deg, #357BE2 0%, #2563eb 100%);
+            color: white;
+            white-space: nowrap;
+        }
+        .compare-table td {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            transition: background 0.3s;
+            white-space: nowrap;
+        }
+        .compare-table tr:hover td {
+            background: rgba(53, 123, 226, 0.05);
+        }
+        .compare-table td:last-child {
+            color: #357BE2;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        /* ========== 场景区域 ========== */
+        .scenario-section {
+            background: linear-gradient(180deg, #0a0a0a 0%, #111111 100%);
+        }
+        .scenario-card {
+            text-align: center;
+            padding: 2rem 1.5rem;
+            border-radius: 16px;
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.05);
+            transition: all 0.3s ease;
+        }
+        .scenario-card:hover {
+            background: rgba(53, 123, 226, 0.1);
+            border-color: rgba(53, 123, 226, 0.3);
+            transform: scale(1.05);
+        }
+        .scenario-icon {
+            width: 64px;
+            height: 64px;
+            margin: 0 auto 1rem;
+            background: linear-gradient(135deg, rgba(53, 123, 226, 0.2) 0%, rgba(99, 102, 241, 0.1) 100%);
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* ========== 用户角色区域 ========== */
+        .user-section {
+            background: #0f0f0f;
+        }
+        .user-card {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 1.25rem 1.5rem;
+            background: rgba(255,255,255,0.02);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-radius: 12px;
+            transition: all 0.3s ease;
+        }
+        .user-card:hover {
+            background: rgba(53, 123, 226, 0.1);
+            border-color: rgba(53, 123, 226, 0.3);
+        }
+        .user-avatar {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, #357BE2 0%, #6366f1 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.25rem;
+        }
+
+        /* ========== CTA 区域 ========== */
+        .cta-section {
+            background: linear-gradient(180deg, #0f0f0f 0%, #0a0a0a 50%, #111827 100%);
+            position: relative;
+            overflow: hidden;
+        }
+        .cta-glow {
+            position: absolute;
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, rgba(53, 123, 226, 0.3) 0%, transparent 70%);
+            filter: blur(100px);
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+        .cta-button {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 1.25rem 3rem;
+            background: linear-gradient(135deg, #357BE2 0%, #2563eb 100%);
+            color: white;
+            font-size: 1.25rem;
+            font-weight: 600;
+            border-radius: 16px;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            box-shadow: 0 8px 32px rgba(53, 123, 226, 0.3);
+        }
+        .cta-button:hover {
+            transform: translateY(-4px) scale(1.02);
+            box-shadow: 0 16px 48px rgba(53, 123, 226, 0.4);
+        }
+
+        /* ========== 导航栏 ========== */
+        .nav-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            padding: 1rem 2rem;
+            background: rgba(10, 10, 10, 0.8);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            transform: translateY(-100%);
+            transition: transform 0.3s ease;
+        }
+        .nav-bar.visible {
+            transform: translateY(0);
+        }
+
+        /* 返回按钮 */
+        .back-button {
+            position: fixed;
+            top: 24px;
+            left: 24px;
+            z-index: 101;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1.25rem;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px;
+            color: #a1a1aa;
+            text-decoration: none;
+            font-size: 0.875rem;
+            transition: all 0.3s ease;
+        }
+        .back-button:hover {
+            background: rgba(255,255,255,0.1);
+            color: white;
+        }
+
+        /* 进度指示器 */
+        .progress-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #357BE2, #6366f1);
+            z-index: 102;
+            transition: width 0.1s linear;
+        }
+
+        /* 响应式调整 */
+        @media (max-width: 768px) {
+            .section { padding: 60px 16px; }
+            .hero-glow { width: 400px; height: 400px; }
+            .compare-table { font-size: 0.875rem; }
+            .compare-table th, .compare-table td { padding: 0.75rem 1rem; }
+        }
+
+        /* 减少动画（无障碍） */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                transition-duration: 0.01ms !important;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 进度条 -->
+    <div class="progress-bar" id="progressBar"></div>
+
+    <!-- 返回按钮 -->
+    <a href="index.html" class="back-button">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+        </svg>
+        返回应用
+    </a>
+
+    <!-- ========== Hero 区域 ========== -->
+    <section class="hero-section">
+        <div class="hero-glow hero-glow-1"></div>
+        <div class="hero-glow hero-glow-2"></div>
+        <div class="hero-grid"></div>
+
+        <div class="text-center relative z-10 max-w-4xl mx-auto px-6">
+            <!-- Logo -->
+            <div class="hero-title mb-8">
+                <svg class="logo-eye w-24 h-24 mx-auto" viewBox="0 0 96 96" fill="none">
+                    <circle cx="48" cy="48" r="40" stroke="url(#hero-ring)" stroke-width="3"/>
+                    <circle cx="48" cy="48" r="28" fill="url(#hero-iris)"/>
+                    <circle cx="48" cy="48" r="12" fill="#0a0a0a"/>
+                    <circle cx="40" cy="40" r="5" fill="white" opacity="0.9"/>
+                    <circle cx="54" cy="44" r="2.5" fill="white" opacity="0.6"/>
+                    <defs>
+                        <linearGradient id="hero-ring" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" stop-color="#357BE2"/>
+                            <stop offset="100%" stop-color="#6366f1"/>
+                        </linearGradient>
+                        <radialGradient id="hero-iris" cx="50%" cy="50%" r="50%">
+                            <stop offset="0%" stop-color="#60a5fa"/>
+                            <stop offset="50%" stop-color="#357BE2"/>
+                            <stop offset="100%" stop-color="#1e40af"/>
+                        </radialGradient>
+                    </defs>
+                </svg>
+            </div>
+
+            <!-- 标题 -->
+            <h1 class="hero-title">
+                <span class="brand-title text-5xl md:text-7xl lg:text-8xl bg-gradient-to-r from-white via-gray-200 to-gray-400 bg-clip-text text-transparent">
+                    Deep Vision
+                </span>
+                <span class="brand-title-cn text-5xl md:text-7xl lg:text-8xl text-white/80 ml-4">深瞳</span>
+            </h1>
+
+            <!-- 副标题 -->
+            <p class="hero-subtitle text-xl md:text-2xl lg:text-3xl text-gray-400 mt-6 font-light">
+                洞察深处，方见真章
+            </p>
+
+            <!-- Tagline -->
+            <p class="hero-tagline text-lg md:text-xl text-gray-500 mt-4 max-w-2xl mx-auto">
+                AI 驱动的沉浸式智能访谈<br class="md:hidden">
+                让每一次对话都直抵本质
+            </p>
+
+            <!-- CTA -->
+            <div class="hero-cta mt-12">
+                <a href="index.html" class="cta-button">
+                    开始体验
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/>
+                    </svg>
+                </a>
+            </div>
+        </div>
+
+        <!-- 滚动指示 -->
+        <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2">
+            <span class="text-sm">向下滚动探索</span>
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
+            </svg>
+        </div>
+    </section>
+
+    <!-- ========== 痛点区域 ========== -->
+    <section class="section pain-section">
+        <div class="max-w-4xl mx-auto">
+            <h2 class="reveal text-3xl md:text-4xl font-bold text-center mb-4">
+                你是否也遇到过这些困境？
+            </h2>
+            <p class="reveal reveal-delay-1 text-gray-500 text-center mb-12">
+                这些场景，是否似曾相识？
+            </p>
+
+            <div class="space-y-6">
+                <blockquote class="pain-quote" data-delay="0">
+                    "客户说了很多，但我还是不知道他们真正想要什么。"
+                </blockquote>
+                <blockquote class="pain-quote" data-delay="200">
+                    "开了三小时的会，最后发现需求理解完全偏了。"
+                </blockquote>
+                <blockquote class="pain-quote" data-delay="400">
+                    "写方案的时间，比调研的时间还长。"
+                </blockquote>
+                <blockquote class="pain-quote" data-delay="600">
+                    "每次调研都像开盲盒，质量完全取决于谁来问。"
+                </blockquote>
+            </div>
+
+            <p class="reveal text-xl md:text-2xl text-center mt-12 text-white font-medium">
+                信息获取的低效，正在悄悄吞噬你的时间和精力。
+            </p>
+        </div>
+    </section>
+
+    <!-- ========== 解决方案区域 ========== -->
+    <section class="section solution-section">
+        <div class="max-w-6xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="reveal text-3xl md:text-4xl font-bold mb-4">
+                    重新定义<span class="text-[#357BE2]">"理解"</span>
+                </h2>
+                <p class="reveal reveal-delay-1 text-gray-400 text-lg max-w-3xl mx-auto">
+                    Deep Vision 深瞳，不只是一个调研工具。<br>
+                    它是一种<strong class="text-white">全新的信息获取方式</strong>——通过 AI 驱动的选择式交互，<br>
+                    让复杂的需求挖掘变得简单、深入、可复制。
+                </p>
+            </div>
+
+            <p class="reveal text-center text-xl text-gray-300 mb-10">
+                <strong class="text-[#357BE2]">核心理念：</strong>让被访谈者只需做选择，让洞察自然涌现。
+            </p>
+
+            <div class="grid md:grid-cols-2 gap-6">
+                <div class="solution-card reveal reveal-delay-1">
+                    <div class="solution-icon">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">以选择代替输入</h3>
+                    <p class="text-gray-400">降低表达门槛，让被访者轻松表达</p>
+                </div>
+
+                <div class="solution-card reveal reveal-delay-2">
+                    <div class="solution-icon">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">以追问代替猜测</h3>
+                    <p class="text-gray-400">挖掘真实意图，直达需求本质</p>
+                </div>
+
+                <div class="solution-card reveal reveal-delay-3">
+                    <div class="solution-icon">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">以知识代替盲区</h3>
+                    <p class="text-gray-400">实时联网补充专业视角</p>
+                </div>
+
+                <div class="solution-card reveal reveal-delay-4">
+                    <div class="solution-icon">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">以体系代替碎片</h3>
+                    <p class="text-gray-400">自动生成洞察报告</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== 功能特性区域 ========== -->
+    <section class="section feature-section">
+        <div class="max-w-6xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="reveal text-3xl md:text-4xl font-bold mb-4">
+                    六大核心能力
+                </h2>
+                <p class="reveal reveal-delay-1 text-gray-400 text-lg">
+                    每一项功能，都为深度洞察而生
+                </p>
+            </div>
+
+            <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div class="feature-card reveal reveal-delay-1">
+                    <div class="text-3xl mb-4">🎯</div>
+                    <h3 class="text-lg font-semibold mb-2">选择式交互</h3>
+                    <p class="text-gray-400 text-sm">每个问题 2-4 个精心设计的选项，外加"补充你的想法"——既有引导，又保留开放性。</p>
+                </div>
+
+                <div class="feature-card reveal reveal-delay-2">
+                    <div class="text-3xl mb-4">🔍</div>
+                    <h3 class="text-lg font-semibold mb-2">智能追问</h3>
+                    <p class="text-gray-400 text-sm">不满足于表面答案。当检测到模糊或浅层回答时，自动发起追问，直达本质。</p>
+                </div>
+
+                <div class="feature-card reveal reveal-delay-3">
+                    <div class="text-3xl mb-4">⚡</div>
+                    <h3 class="text-lg font-semibold mb-2">冲突检测</h3>
+                    <p class="text-gray-400 text-sm">发现回答与已有信息矛盾？立即提醒，当场澄清，确保信息一致。</p>
+                </div>
+
+                <div class="feature-card reveal reveal-delay-4">
+                    <div class="text-3xl mb-4">🌐</div>
+                    <h3 class="text-lg font-semibold mb-2">实时知识增强</h3>
+                    <p class="text-gray-400 text-sm">联网搜索行业知识，无感融入问题选项，让每个问题都更专业。</p>
+                </div>
+
+                <div class="feature-card reveal reveal-delay-5">
+                    <div class="text-3xl mb-4">📊</div>
+                    <h3 class="text-lg font-semibold mb-2">可视化报告</h3>
+                    <p class="text-gray-400 text-sm">自动生成流程图、关联图、用户旅程图，让复杂信息一目了然。</p>
+                </div>
+
+                <div class="feature-card reveal reveal-delay-6">
+                    <div class="text-3xl mb-4">💾</div>
+                    <h3 class="text-lg font-semibold mb-2">断点续访</h3>
+                    <p class="text-gray-400 text-sm">随时暂停，随时继续。访谈进度自动保存，不怕中断。</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== 对比区域 ========== -->
+    <section class="section compare-section">
+        <div class="max-w-5xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="reveal text-3xl md:text-4xl font-bold mb-4">
+                    为什么选择深瞳？
+                </h2>
+                <p class="reveal reveal-delay-1 text-gray-400 text-lg">
+                    认知负担降低 <span class="text-[#357BE2] font-bold text-2xl">80%+</span>
+                </p>
+            </div>
+
+            <div class="reveal overflow-x-auto">
+                <table class="compare-table">
+                    <thead>
+                        <tr>
+                            <th class="w-[20%]">维度</th>
+                            <th class="w-[35%]">传统方式</th>
+                            <th class="w-[45%]">Deep Vision 深瞳</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td class="font-medium text-gray-300">信息获取</td>
+                            <td class="text-gray-500">开放式提问，信息发散</td>
+                            <td>选择式问答，聚焦关键</td>
+                        </tr>
+                        <tr>
+                            <td class="font-medium text-gray-300">表达门槛</td>
+                            <td class="text-gray-500">依赖对方表达能力</td>
+                            <td>AI 选项降低表达难度</td>
+                        </tr>
+                        <tr>
+                            <td class="font-medium text-gray-300">挖掘深度</td>
+                            <td class="text-gray-500">取决于提问者经验</td>
+                            <td>智能追问确保深度一致</td>
+                        </tr>
+                        <tr>
+                            <td class="font-medium text-gray-300">知识储备</td>
+                            <td class="text-gray-500">双方都可能有盲区</td>
+                            <td>实时联网补充专业知识</td>
+                        </tr>
+                        <tr>
+                            <td class="font-medium text-gray-300">结果呈现</td>
+                            <td class="text-gray-500">手工整理，耗时易漏</td>
+                            <td>自动生成结构化报告</td>
+                        </tr>
+                        <tr>
+                            <td class="font-medium text-gray-300">质量一致性</td>
+                            <td class="text-gray-500">人员水平差异大</td>
+                            <td>标准化流程，质量稳定</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="reveal mt-12 text-center">
+                <p class="text-lg text-gray-400 mb-4">从<span class="text-gray-300">"我该怎么说"</span>变成<span class="text-[#357BE2] font-semibold">"这个对不对"</span></p>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== 场景区域 ========== -->
+    <section class="section scenario-section">
+        <div class="max-w-6xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="reveal text-3xl md:text-4xl font-bold mb-4">
+                    不只是需求调研
+                </h2>
+                <p class="reveal reveal-delay-1 text-gray-400 text-lg">
+                    深瞳的核心能力是<strong class="text-white">结构化信息获取</strong>，赋能更多场景
+                </p>
+            </div>
+
+            <div class="grid grid-cols-2 md:grid-cols-3 gap-4 md:gap-6">
+                <div class="scenario-card reveal reveal-delay-1">
+                    <div class="scenario-icon">
+                        <svg class="w-8 h-8 text-[#357BE2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+                        </svg>
+                    </div>
+                    <h3 class="font-semibold mb-1">产品规划</h3>
+                    <p class="text-gray-500 text-sm">用户调研、竞品分析、路线图决策</p>
+                </div>
+
+                <div class="scenario-card reveal reveal-delay-2">
+                    <div class="scenario-icon">
+                        <svg class="w-8 h-8 text-[#357BE2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
+                        </svg>
+                    </div>
+                    <h3 class="font-semibold mb-1">项目规划</h3>
+                    <p class="text-gray-500 text-sm">可行性调研、干系人诉求、风险评估</p>
+                </div>
+
+                <div class="scenario-card reveal reveal-delay-3">
+                    <div class="scenario-icon">
+                        <svg class="w-8 h-8 text-[#357BE2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+                        </svg>
+                    </div>
+                    <h3 class="font-semibold mb-1">售前支持</h3>
+                    <p class="text-gray-500 text-sm">客户需求理解、差异化价值挖掘</p>
+                </div>
+
+                <div class="scenario-card reveal reveal-delay-4">
+                    <div class="scenario-icon">
+                        <svg class="w-8 h-8 text-[#357BE2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                        </svg>
+                    </div>
+                    <h3 class="font-semibold mb-1">战略研究</h3>
+                    <p class="text-gray-500 text-sm">市场机会探索、用户画像构建</p>
+                </div>
+
+                <div class="scenario-card reveal reveal-delay-5">
+                    <div class="scenario-icon">
+                        <svg class="w-8 h-8 text-[#357BE2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                        </svg>
+                    </div>
+                    <h3 class="font-semibold mb-1">招投标</h3>
+                    <p class="text-gray-500 text-sm">招标需求理解、技术响应准备</p>
+                </div>
+
+                <div class="scenario-card reveal reveal-delay-6">
+                    <div class="scenario-icon">
+                        <svg class="w-8 h-8 text-[#357BE2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/>
+                        </svg>
+                    </div>
+                    <h3 class="font-semibold mb-1">内部协作</h3>
+                    <p class="text-gray-500 text-sm">跨部门需求对齐、知识沉淀存档</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== 用户角色区域 ========== -->
+    <section class="section user-section">
+        <div class="max-w-4xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="reveal text-3xl md:text-4xl font-bold mb-4">
+                    谁在使用深瞳？
+                </h2>
+            </div>
+
+            <div class="grid md:grid-cols-2 gap-4">
+                <div class="user-card reveal reveal-delay-1">
+                    <div class="user-avatar">PM</div>
+                    <div>
+                        <h3 class="font-semibold">产品经理</h3>
+                        <p class="text-gray-500 text-sm">用户调研、需求梳理、版本规划</p>
+                    </div>
+                </div>
+
+                <div class="user-card reveal reveal-delay-2">
+                    <div class="user-avatar">售前</div>
+                    <div>
+                        <h3 class="font-semibold">售前顾问</h3>
+                        <p class="text-gray-500 text-sm">客户需求理解、方案准备</p>
+                    </div>
+                </div>
+
+                <div class="user-card reveal reveal-delay-3">
+                    <div class="user-avatar">项目</div>
+                    <div>
+                        <h3 class="font-semibold">项目经理</h3>
+                        <p class="text-gray-500 text-sm">干系人访谈、风险评估</p>
+                    </div>
+                </div>
+
+                <div class="user-card reveal reveal-delay-4">
+                    <div class="user-avatar">BA</div>
+                    <div>
+                        <h3 class="font-semibold">业务分析师</h3>
+                        <p class="text-gray-500 text-sm">业务流程梳理、系统分析</p>
+                    </div>
+                </div>
+
+                <div class="user-card reveal reveal-delay-5">
+                    <div class="user-avatar">咨询</div>
+                    <div>
+                        <h3 class="font-semibold">咨询顾问</h3>
+                        <p class="text-gray-500 text-sm">战略调研、企业诊断</p>
+                    </div>
+                </div>
+
+                <div class="user-card reveal reveal-delay-6">
+                    <div class="user-avatar">创业</div>
+                    <div>
+                        <h3 class="font-semibold">创业者</h3>
+                        <p class="text-gray-500 text-sm">市场验证、用户洞察</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== CTA 区域 ========== -->
+    <section class="section cta-section">
+        <div class="cta-glow"></div>
+        <div class="text-center relative z-10 max-w-3xl mx-auto">
+            <h2 class="reveal text-3xl md:text-5xl font-bold mb-6">
+                让每一次对话<br>都直抵本质
+            </h2>
+            <p class="reveal reveal-delay-1 text-gray-400 text-lg mb-10 max-w-xl mx-auto">
+                无论是需求调研、产品规划、售前沟通还是项目决策，深瞳都能帮你更快、更深、更准地获取关键信息。
+            </p>
+            <div class="reveal reveal-delay-2">
+                <a href="index.html" class="cta-button">
+                    开始体验
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/>
+                    </svg>
+                </a>
+            </div>
+
+            <p class="reveal reveal-delay-3 text-gray-600 text-sm mt-12">
+                © 2026 AI与创新研究院
+            </p>
+        </div>
+    </section>
+
+    <script>
+        // 滚动进度条
+        window.addEventListener('scroll', () => {
+            const winScroll = document.documentElement.scrollTop;
+            const height = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+            const scrolled = (winScroll / height) * 100;
+            document.getElementById('progressBar').style.width = scrolled + '%';
+        });
+
+        // 滚动动画触发
+        const observerOptions = {
+            root: null,
+            rootMargin: '0px',
+            threshold: 0.1
+        };
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('active');
+                }
+            });
+        }, observerOptions);
+
+        // 监听 reveal 元素
+        document.querySelectorAll('.reveal').forEach(el => {
+            observer.observe(el);
+        });
+
+        // 痛点引用逐条显示
+        const painObserver = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    const quotes = entry.target.querySelectorAll('.pain-quote');
+                    quotes.forEach((quote, index) => {
+                        const delay = parseInt(quote.dataset.delay) || index * 200;
+                        setTimeout(() => {
+                            quote.classList.add('active');
+                        }, delay);
+                    });
+                    painObserver.unobserve(entry.target);
+                }
+            });
+        }, { threshold: 0.3 });
+
+        document.querySelectorAll('.pain-section').forEach(el => {
+            painObserver.observe(el);
+        });
+    </script>
+</body>
+</html>

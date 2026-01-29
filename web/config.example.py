@@ -52,3 +52,15 @@ ZHIPU_SEARCH_ENGINE = "search_pro"  # 搜索引擎：search_std(基础版), sear
 # 搜索配置
 SEARCH_MAX_RESULTS = 3        # 每次搜索返回的最大结果数
 SEARCH_TIMEOUT = 10           # 搜索超时时间（秒）
+
+# ============ 图片处理配置 ============
+
+# 智谱 Vision API 配置（使用视觉模型描述图片）
+# 复用 ZHIPU_API_KEY，无需额外配置
+VISION_MODEL_NAME = "glm-4v-flash"  # 免费视觉模型，或使用 glm-4.6v（收费）
+VISION_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+ENABLE_VISION = True  # 是否启用图片描述功能
+
+# 图片大小限制
+MAX_IMAGE_SIZE_MB = 10  # 最大 10MB
+SUPPORTED_IMAGE_TYPES = ['.jpg', '.jpeg', '.png', '.gif', '.webp']

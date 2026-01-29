@@ -90,6 +90,9 @@ function deepVision() {
         changelog: [],
         showChangelogModal: false,
 
+        // 产品介绍
+        showIntroPage: false,
+
         // 诗句轮播（从配置文件加载）
         quotes: (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.quotes?.items)
             ? SITE_CONFIG.quotes.items
@@ -123,6 +126,33 @@ function deepVision() {
             await this.loadSessions();
             await this.loadReports();
             this.startQuoteRotation();
+
+            // 检查是否首次访问，跳转产品介绍页
+            this.checkFirstVisit();
+        },
+
+        // 检查首次访问
+        checkFirstVisit() {
+            const hasSeenIntro = localStorage.getItem('deepvision_intro_seen');
+            if (!hasSeenIntro) {
+                localStorage.setItem('deepvision_intro_seen', 'true');
+                window.location.href = 'intro.html';
+            }
+        },
+
+        // 加载版本信息
+        async loadVersionInfo() {
+            try {
+                const configFile = (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.version?.configFile) || 'version.json';
+                const response = await fetch(configFile);
+                if (response.ok) {
+                    const data = await response.json();
+                    this.appVersion = data.version || this.appVersion;
+                    this.changelog = data.changelog || [];
+                }
+            } catch (error) {
+                console.warn('无法加载版本信息:', error);
+            }
         },
 
         // 加载版本信息
@@ -1343,16 +1373,20 @@ function deepVision() {
         },
 
         // ============ 组合C：等待状态增强 ============
-        // 获取当前思考阶段的子步骤
+        // 获取当前思考阶段的子步骤（与三阶段进度同步）
         getThinkingSubSteps() {
-            const stageIndex = this.thinkingStage?.stage_index ?? 0;
+            const stageIndex = this.thinkingStage?.stage_index ?? -1;
+            // 简化逻辑：只依赖 stage_index，与三个圆圈进度保持同步
+            // stage 0 = 分析阶段：完成前两个步骤
+            // stage 1 = 检索阶段：完成第3、4个步骤
+            // stage 2 = 生成阶段：完成最后两个步骤
             const steps = [
-                { name: '解析回答关键信息', done: stageIndex > 0 || (stageIndex === 0 && this.thinkingStage?.progress > 50) },
-                { name: '识别未覆盖话题', done: stageIndex > 0 },
-                { name: '检索参考文档', done: stageIndex > 1 || (stageIndex === 1 && this.thinkingStage?.progress > 30) },
-                { name: '匹配追问策略', done: stageIndex > 1 || (stageIndex === 1 && this.thinkingStage?.progress > 70) },
-                { name: '生成候选问题', done: stageIndex > 2 || (stageIndex === 2 && this.thinkingStage?.progress > 40) },
-                { name: '优化问题表达', done: stageIndex >= 2 && this.thinkingStage?.progress > 80 }
+                { name: '解析回答关键信息', done: stageIndex >= 0 },
+                { name: '识别未覆盖话题', done: stageIndex >= 1 },
+                { name: '检索参考文档', done: stageIndex >= 1 },
+                { name: '匹配追问策略', done: stageIndex >= 2 },
+                { name: '生成候选问题', done: stageIndex >= 2 },
+                { name: '优化问题表达', done: stageIndex >= 2 && this.thinkingStage?.progress === 100 }
             ];
             return steps;
         }

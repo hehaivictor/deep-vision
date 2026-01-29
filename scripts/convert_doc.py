@@ -5,6 +5,7 @@
 #     "openpyxl>=3.1.0",
 #     "python-docx>=1.1.0",
 #     "python-pptx>=0.6.23",
+#     "pypdf>=4.0.0",
 # ]
 # ///
 """
@@ -262,6 +263,63 @@ def convert_pptx_to_markdown(input_path: Path, output_path: Path) -> bool:
         return False
 
 
+def convert_pdf_to_markdown(input_path: Path, output_path: Path) -> bool:
+    """
+    将 PDF 文件转换为 Markdown
+
+    Args:
+        input_path: 输入 PDF 文件路径
+        output_path: 输出 Markdown 文件路径
+
+    Returns:
+        bool: 转换是否成功
+    """
+    try:
+        from pypdf import PdfReader
+
+        log_info(f"转换 PDF: {input_path}")
+        reader = PdfReader(str(input_path))
+
+        markdown_lines = [f"# {input_path.stem}", ""]
+
+        total_pages = len(reader.pages)
+        extracted_text = False
+
+        for page_num, page in enumerate(reader.pages, 1):
+            text = page.extract_text()
+            if text and text.strip():
+                extracted_text = True
+                markdown_lines.append(f"## 第 {page_num} 页")
+                markdown_lines.append("")
+                # 清理文本：移除多余空白，保留段落结构
+                paragraphs = text.strip().split('\n\n')
+                for para in paragraphs:
+                    cleaned = ' '.join(para.split())
+                    if cleaned:
+                        markdown_lines.append(cleaned)
+                        markdown_lines.append("")
+                markdown_lines.append("---")
+                markdown_lines.append("")
+
+        if not extracted_text:
+            log_warn(f"PDF 文件无法提取文本（可能是扫描版）: {input_path}")
+            markdown_lines.append("*注意: 此 PDF 文件无法提取文本内容（可能是扫描版或图片 PDF）*")
+            markdown_lines.append("")
+            markdown_lines.append(f"文件名: {input_path.name}")
+            markdown_lines.append(f"页数: {total_pages}")
+
+        output_path.write_text("\n".join(markdown_lines), encoding="utf-8")
+        log_info(f"转换成功: {output_path}")
+        return True
+
+    except ImportError:
+        log_error("缺少 pypdf 库，请使用 uvx 执行此脚本")
+        return False
+    except Exception as e:
+        log_error(f"转换 PDF 失败: {e}")
+        return False
+
+
 def convert_document(input_path: str, output_dir: Optional[str] = None) -> Optional[str]:
     """
     转换单个文档
@@ -298,16 +356,13 @@ def convert_document(input_path: str, output_dir: Optional[str] = None) -> Optio
         ".xls": convert_xlsx_to_markdown,
         ".pptx": convert_pptx_to_markdown,
         ".ppt": convert_pptx_to_markdown,
+        ".pdf": convert_pdf_to_markdown,
     }
 
     if ext in [".md", ".txt"]:
         log_info("文件已是文本格式，直接复制")
         shutil.copy(input_file, output_path)
         return str(output_path)
-
-    if ext == ".pdf":
-        log_info("PDF 文件可直接由 Claude 读取，无需转换")
-        return str(input_file)
 
     if ext not in converters:
         log_error(f"不支持的文件格式: {ext}")
