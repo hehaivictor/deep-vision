@@ -1,7 +1,30 @@
 {
-  "version": "1.5.6",
+  "version": "1.5.7",
   "releaseDate": "2026-01-29",
   "changelog": [
+    {
+      "version": "1.5.7",
+      "date": "2026-01-29",
+      "type": "patch",
+      "title": "修复状态管理、内存泄漏和边界条件问题 (v1.5.6)",
+      "changes": [
+        "**内存泄漏修复**：",
+        "定时器重启时先停止旧定时器，防止多个轮询并发",
+        "exitInterview 清理所有轮询定时器",
+        "诗句轮播定时器现在可以被正确清理",
+        "**状态管理修复**：",
+        "SITE_CONFIG.researchTips 未定义时不再崩溃",
+        "fetchNextQuestion 开始时清除上次错误状态",
+        "completeDimension 检查重复完成并加入并发保护",
+        "**逻辑修正**：",
+        "getNextIncompleteDimension 全部完成时返回 null",
+        "submitAnswer 和 completeDimension 正确处理 null 返回值",
+        "**边界条件增强**：",
+        "startSkeletonFill 验证空选项数组",
+        "submitAnswer 二次校验防止提交 undefined",
+        "API 调用错误响应非 JSON 时不再崩溃"
+      ]
+    },
     {
       "version": "1.5.6",
       "date": "2026-01-29",
