@@ -1,7 +1,32 @@
 {
-  "version": "1.5.7",
+  "version": "1.5.8",
   "releaseDate": "2026-01-29",
   "changelog": [
+    {
+      "version": "1.5.8",
+      "date": "2026-01-29",
+      "type": "patch",
+      "title": "修复后端数据验证和异常处理问题",
+      "changes": [
+        "**高优先级修复**：",
+        "submit_answer: 添加完整的参数验证（question/answer/dimension/options/is_follow_up）",
+        "update_session: 添加字段白名单保护，仅允许更新 description/topic/status",
+        "upload_document/upload_research_doc: 添加文件大小验证（10MB限制）和编码错误处理",
+        "**数据验证增强**：",
+        "验证 dimension 必须在 DIMENSION_INFO 中",
+        "验证 answer 和 question 必须是非空字符串",
+        "验证 options 必须是列表类型",
+        "验证 is_follow_up 必须是布尔值",
+        "**异常处理改进**：",
+        "文档上传添加 UnicodeDecodeError 处理",
+        "文档内容为空时返回 400 错误",
+        "文件大小超限时返回 400 错误",
+        "**安全性提升**：",
+        "防止通过 update_session 任意修改会话字段",
+        "防止超大文件上传导致内存溢出",
+        "这些修复解决了代码审查发现的 3 个高风险问题和多个中风险问题。"
+      ]
+    },
     {
       "version": "1.5.7",
       "date": "2026-01-29",
