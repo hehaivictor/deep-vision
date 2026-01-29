@@ -624,7 +624,9 @@
                                     </svg>
                                     访谈进度
                                 </h3>
-                                <span class="text-sm font-medium text-primary" x-text="getCurrentQuestionCount() + '/' + getEstimatedTotalQuestions()"></span>
+                                <span class="text-sm font-medium text-primary">
+                                    已答 <span x-text="getCurrentQuestionCount()"></span> 题
+                                </span>
                             </div>
 
                             <!-- 正向反馈提示 -->
@@ -680,7 +682,12 @@
                                          :style="getProgressBarStyle(getTotalProgress())"></div>
                                 </div>
                                 <div class="mt-2 text-xs text-center text-muted">
-                                    <span x-text="'约还剩 ' + getEstimatedRemainingQuestions() + ' 题'"></span>
+                                    <template x-if="getTotalProgress() < 100">
+                                        <span>预计还需 <span x-text="getEstimatedRemainingQuestions()"></span> 题左右</span>
+                                    </template>
+                                    <template x-if="getTotalProgress() >= 100">
+                                        <span class="text-green-600 font-medium">所有维度已完成</span>
+                                    </template>
                                 </div>
                             </div>
 
