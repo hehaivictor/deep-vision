@@ -412,13 +412,24 @@ function deepVision() {
         async openSession(sessionId) {
             try {
                 this.currentSession = await this.apiCall(`/sessions/${sessionId}`);
-                this.currentStep = this.currentSession.interview_log.length > 0 ? 1 : 0;
-                this.currentDimension = this.getNextIncompleteDimension();
-                // 先切换到访谈视图，让用户看到加载状态
                 this.currentView = 'interview';
-                if (this.currentStep === 1) {
-                    // 再获取下一个问题（会显示加载动画）
+
+                // 检查所有维度是否已完成
+                const nextDim = this.getNextIncompleteDimension();
+                if (!nextDim && this.currentSession.interview_log.length > 0) {
+                    // 所有维度已完成，直接进入确认阶段
+                    this.currentStep = 2;
+                    this.currentDimension = this.dimensionOrder[this.dimensionOrder.length - 1];
+                    this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false };
+                } else if (this.currentSession.interview_log.length > 0) {
+                    // 有未完成的维度，继续访谈
+                    this.currentStep = 1;
+                    this.currentDimension = nextDim;
                     await this.fetchNextQuestion();
+                } else {
+                    // 还没开始访谈
+                    this.currentStep = 0;
+                    this.currentDimension = 'customer_needs';
                 }
             } catch (error) {
                 this.showToast('加载会话失败', 'error');
