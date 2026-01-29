@@ -1572,6 +1572,17 @@ def get_interview_mode_config(session: dict) -> dict:
     return INTERVIEW_MODES.get(mode, INTERVIEW_MODES[DEFAULT_INTERVIEW_MODE])
 
 
+def calculate_dimension_coverage(session: dict, dimension: str) -> int:
+    """计算维度覆盖度（只统计正式问题）"""
+    formal_count = len([log for log in session.get("interview_log", [])
+                       if log.get("dimension") == dimension and not log.get("is_follow_up", False)])
+    mode_config = get_interview_mode_config(session)
+    required_questions = mode_config.get("formal_questions_per_dim", 3)
+    if required_questions <= 0:
+        return 100
+    return min(100, int(formal_count / required_questions * 100))
+
+
 def get_follow_up_budget_status(session: dict, dimension: str) -> dict:
     """
     计算追问预算使用情况
@@ -1852,8 +1863,8 @@ def should_follow_up_comprehensive(session: dict, dimension: str,
             "should_follow_up": False,
             "reason": reason_map.get(budget_status["budget_exhausted_reason"], "预算已用完"),
             "budget_status": budget_status,
-            "saturation": None,
-            "fatigue": None,
+            "saturation": {},
+            "fatigue": {},
             "decision_factors": ["budget_exhausted"]
         }
 
@@ -2863,9 +2874,22 @@ def list_sessions():
 def create_session():
     """创建新会话"""
     data = request.get_json()
+    if not data:
+        return jsonify({"error": "无效的请求数据"}), 400
+
     topic = data.get("topic", "未命名调研")
     description = data.get("description")  # 获取可选的主题描述
     interview_mode = data.get("interview_mode", DEFAULT_INTERVIEW_MODE)  # 获取访谈模式
+
+    # 验证 topic
+    if not isinstance(topic, str) or not topic.strip():
+        return jsonify({"error": "主题不能为空"}), 400
+    if len(topic) > 200:
+        return jsonify({"error": "主题长度不能超过200字符"}), 400
+
+    # 验证 description
+    if description and (not isinstance(description, str) or len(description) > 2000):
+        return jsonify({"error": "描述长度不能超过2000字符"}), 400
 
     # 验证访谈模式
     if interview_mode not in INTERVIEW_MODES:
@@ -2900,7 +2924,11 @@ def create_session():
     session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # ========== 步骤6: 预生成首题 ==========
-    prefetch_first_question(session_id)
+    try:
+        prefetch_first_question(session_id)
+    except Exception as e:
+        # 预生成失败不影响会话创建
+        print(f"⚠️ 预生成首题失败: {e}")
 
     return jsonify(session)
 
@@ -3455,12 +3483,7 @@ def submit_answer(session_id):
 
     # 计算覆盖度（只统计正式问题，追问不计入）
     if dimension and dimension in session["dimensions"]:
-        formal_count = len([log for log in session["interview_log"]
-                           if log.get("dimension") == dimension and not log.get("is_follow_up", False)])
-        # 使用访谈模式配置的问题数量
-        mode_config = get_interview_mode_config(session)
-        required_questions = mode_config["formal_questions_per_dim"]
-        session["dimensions"][dimension]["coverage"] = min(100, int(formal_count / required_questions * 100))
+        session["dimensions"][dimension]["coverage"] = calculate_dimension_coverage(session, dimension)
 
     session["updated_at"] = get_utc_now()
     session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -3503,11 +3526,7 @@ def undo_answer(session_id):
             session["dimensions"][dimension]["items"].pop()
 
         # 重新计算覆盖度（只统计正式问题）
-        formal_count = len([log for log in session["interview_log"]
-                           if log.get("dimension") == dimension and not log.get("is_follow_up", False)])
-        mode_config = get_interview_mode_config(session)
-        required_questions = mode_config["formal_questions_per_dim"]
-        session["dimensions"][dimension]["coverage"] = min(100, int(formal_count / required_questions * 100))
+        session["dimensions"][dimension]["coverage"] = calculate_dimension_coverage(session, dimension)
 
     session["updated_at"] = get_utc_now()
     session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -3528,6 +3547,10 @@ def skip_follow_up(session_id):
     session = json.loads(session_file.read_text(encoding="utf-8"))
     data = request.get_json() or {}
     dimension = data.get("dimension")
+
+    # 验证 dimension
+    if not dimension or dimension not in DIMENSION_INFO:
+        return jsonify({"error": "无效的维度"}), 400
 
     interview_log = session.get("interview_log", [])
     if not interview_log:
@@ -3568,8 +3591,11 @@ def complete_dimension(session_id):
     data = request.get_json() or {}
     dimension = data.get("dimension")
 
-    if not dimension or dimension not in session.get("dimensions", {}):
+    # 验证维度有效性
+    if not dimension or dimension not in DIMENSION_INFO:
         return jsonify({"error": "无效的维度"}), 400
+    if dimension not in session.get("dimensions", {}):
+        return jsonify({"error": "会话中不存在该维度"}), 400
 
     # 检查覆盖度是否已达到至少 50%
     current_coverage = session["dimensions"][dimension]["coverage"]
