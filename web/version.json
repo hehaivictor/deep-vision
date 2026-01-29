@@ -1,7 +1,26 @@
 {
-  "version": "1.5.10",
+  "version": "1.5.11",
   "releaseDate": "2026-01-29",
   "changelog": [
+    {
+      "version": "1.5.11",
+      "date": "2026-01-29",
+      "type": "patch",
+      "title": "安全性和输入验证增强",
+      "changes": [
+        "**安全性修复 (P0)**：",
+        "添加路径遍历防护：delete_document 和 delete_research_doc 检查 doc_name 是否包含 ../ 或以 / 开头",
+        "**前端验证增强 (P1)**：",
+        "uploadDocument: 添加文件类型白名单验证 (.md, .txt, .pdf, .docx 等)",
+        "uploadDocument: 添加前端文件大小检查 (10MB)",
+        "uploadDocument: 改进错误提示，显示后端返回的具体错误信息",
+        "**后端容错改进 (P1)**：",
+        "新增 safe_load_session 函数，处理 JSON 解析错误",
+        "get_session 和 update_session 使用安全加载函数",
+        "**输入长度限制 (P3)**：",
+        "submit_answer: 答案长度限制为 5000 字符，防止 prompt 过长"
+      ]
+    },
     {
       "version": "1.5.10",
       "date": "2026-01-29",
