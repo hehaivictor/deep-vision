@@ -1149,8 +1149,8 @@
 
                                     <!-- 全部完成提示 - 100%时显示 -->
                                     <div x-show="getTotalProgress() === 100" class="text-center py-8" style="display: none;">
-                                        <div class="inline-flex items-center justify-center w-16 h-16 bg-success/10 rounded-full mb-4">
-                                            <svg class="w-8 h-8 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <div class="inline-flex items-center justify-center w-16 h-16 bg-[#F0F8FF] rounded-full mb-4">
+                                            <svg class="w-8 h-8 text-[#357BE2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                                             </svg>
                                         </div>
@@ -1487,44 +1487,35 @@
                         <label class="block text-sm font-medium text-secondary mb-3">访谈深度</label>
                         <div class="space-y-2">
                             <!-- 快速模式 -->
-                            <label class="flex items-start gap-3 p-3 border-2 rounded-lg cursor-pointer transition-all duration-200 hover:border-primary/40"
-                                   :class="selectedInterviewMode === 'quick' ? 'border-primary bg-primary/5' : 'border-gray-200'">
-                                <input type="radio" name="interviewMode" value="quick" x-model="selectedInterviewMode" class="mt-1 accent-[#F0F8FF]" style="accent-color: #F0F8FF;">
-                                <div class="flex-1">
-                                    <div class="flex items-center gap-2 mb-1">
-                                        <span class="font-medium text-primary">⚡ 快速模式</span>
-                                        <span class="text-xs text-muted">约 12-16 题</span>
-                                    </div>
-                                    <p class="text-xs text-muted">每维度 2 个核心问题，适度追问。适合时间紧张的简单项目</p>
+                            <div @click="selectedInterviewMode = 'quick'" class="p-3 border-2 rounded-lg cursor-pointer transition-all duration-200 hover:border-primary/40"
+                                   :class="selectedInterviewMode === 'quick' ? 'border-[#357BE2] bg-[#F0F8FF]' : 'border-gray-200'">
+                                <div class="flex items-center gap-2 mb-1">
+                                    <span class="font-medium text-primary">⚡ 快速模式</span>
+                                    <span class="text-xs text-muted">约 12-16 题</span>
                                 </div>
-                            </label>
+                                <p class="text-xs text-muted">每维度 2 个核心问题，适度追问。适合时间紧张的简单项目</p>
+                            </div>
 
                             <!-- 标准模式 -->
-                            <label class="flex items-start gap-3 p-3 border-2 rounded-lg cursor-pointer transition-all duration-200 hover:border-primary/40"
-                                   :class="selectedInterviewMode === 'standard' ? 'border-primary bg-primary/5' : 'border-gray-200'">
-                                <input type="radio" name="interviewMode" value="standard" x-model="selectedInterviewMode" class="mt-1 accent-[#F0F8FF]" style="accent-color: #F0F8FF;">
-                                <div class="flex-1">
-                                    <div class="flex items-center gap-2 mb-1">
-                                        <span class="font-medium text-primary">⭐ 标准模式</span>
-                                        <span class="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded">推荐</span>
-                                        <span class="text-xs text-muted">约 20-28 题</span>
-                                    </div>
-                                    <p class="text-xs text-muted">每维度 3 个问题，智能追问。效率与深度兼顾，适合大多数情况</p>
+                            <div @click="selectedInterviewMode = 'standard'" class="p-3 border-2 rounded-lg cursor-pointer transition-all duration-200 hover:border-primary/40"
+                                   :class="selectedInterviewMode === 'standard' ? 'border-[#357BE2] bg-[#F0F8FF]' : 'border-gray-200'">
+                                <div class="flex items-center gap-2 mb-1">
+                                    <span class="font-medium text-primary">⭐ 标准模式</span>
+                                    <span class="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded">推荐</span>
+                                    <span class="text-xs text-muted">约 20-28 题</span>
                                 </div>
-                            </label>
+                                <p class="text-xs text-muted">每维度 3 个问题，智能追问。效率与深度兼顾，适合大多数情况</p>
+                            </div>
 
                             <!-- 深度模式 -->
-                            <label class="flex items-start gap-3 p-3 border-2 rounded-lg cursor-pointer transition-all duration-200 hover:border-primary/40"
-                                   :class="selectedInterviewMode === 'deep' ? 'border-primary bg-primary/5' : 'border-gray-200'">
-                                <input type="radio" name="interviewMode" value="deep" x-model="selectedInterviewMode" class="mt-1 accent-[#F0F8FF]" style="accent-color: #F0F8FF;">
-                                <div class="flex-1">
-                                    <div class="flex items-center gap-2 mb-1">
-                                        <span class="font-medium text-primary">🔬 深度模式</span>
-                                        <span class="text-xs text-muted">约 28-40 题</span>
-                                    </div>
-                                    <p class="text-xs text-muted">每维度 4 个问题，充分追问。深入挖掘细节，适合复杂项目</p>
+                            <div @click="selectedInterviewMode = 'deep'" class="p-3 border-2 rounded-lg cursor-pointer transition-all duration-200 hover:border-primary/40"
+                                   :class="selectedInterviewMode === 'deep' ? 'border-[#357BE2] bg-[#F0F8FF]' : 'border-gray-200'">
+                                <div class="flex items-center gap-2 mb-1">
+                                    <span class="font-medium text-primary">🔬 深度模式</span>
+                                    <span class="text-xs text-muted">约 28-40 题</span>
                                 </div>
-                            </label>
+                                <p class="text-xs text-muted">每维度 4 个问题，充分追问。深入挖掘细节，适合复杂项目</p>
+                            </div>
                         </div>
                     </div>
 
