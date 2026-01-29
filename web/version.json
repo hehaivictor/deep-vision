@@ -11,8 +11,7 @@
         "使用 x-show 而非 template 嵌套，避免破坏 HTML 结构：",
         "问题头部：x-show=\"getTotalProgress() < 100\"",
         "完成提示：x-show=\"getTotalProgress() === 100\"",
-        "选项区域、按钮组、导航按钮：均添加 x-show 条件",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "选项区域、按钮组、导航按钮：均添加 x-show 条件"
       ]
     },
     {
@@ -21,8 +20,7 @@
       "type": "patch",
       "title": "需求确认阶段不显示进度提示",
       "changes": [
-        "当所有维度都100%完成或进入确认阶段时，不再显示\"快完成了！还剩最后几个问题\"等进度提示",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "当所有维度都100%完成或进入确认阶段时，不再显示\"快完成了！还剩最后几个问题\"等进度提示"
       ]
     },
     {
@@ -32,8 +30,7 @@
       "title": "打开已完成会话时直接进入确认阶段",
       "changes": [
         "根因: openSession() 只检查 interview_log 是否非空来决定进入访谈阶段，",
-        "未检查所有维度是否已完成，导致已完成的会话仍然触发问题生成",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "未检查所有维度是否已完成，导致已完成的会话仍然触发问题生成"
       ]
     },
     {
@@ -48,8 +45,7 @@
         "1. submitAnswer: 当 getNextIncompleteDimension() 返回 null 时，",
         "直接设置 currentStep=2 进入确认阶段，不调用 fetchNextQuestion",
         "2. startInterview: 检查是否所有维度已完成，如果是则直接进入确认阶段",
-        "3. 移除临时调试日志",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "3. 移除临时调试日志"
       ]
     },
     {
