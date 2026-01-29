@@ -33,8 +33,7 @@
         "新增向上/向下滚动指示器，支持点击切换章节",
         "添加键盘导航支持，可使用方向键切换章节",
         "优化滚动指示器样式和动画效果",
-        "移动端自动降级为 proximity 模式",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "移动端自动降级为 proximity 模式"
       ]
     },
     {
