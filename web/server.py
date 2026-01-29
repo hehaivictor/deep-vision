@@ -1501,6 +1501,440 @@ DIMENSION_FOLLOW_UP_SENSITIVITY = {
     "project_constraints": 0.4,  # 项目约束通常较直接
 }
 
+# ============ 追问优化系统配置 ============
+
+# 访谈模式配置
+INTERVIEW_MODES = {
+    "quick": {
+        "name": "快速模式",
+        "formal_questions_per_dim": 2,
+        "follow_up_budget_per_dim": 2,
+        "total_follow_up_budget": 8,
+        "max_questions_per_formal": 1,  # 每个正式问题最多追问次数
+        "estimated_questions": "12-16"
+    },
+    "standard": {
+        "name": "标准模式",
+        "formal_questions_per_dim": 3,
+        "follow_up_budget_per_dim": 4,
+        "total_follow_up_budget": 16,
+        "max_questions_per_formal": 2,
+        "estimated_questions": "20-28"
+    },
+    "deep": {
+        "name": "深度模式",
+        "formal_questions_per_dim": 4,
+        "follow_up_budget_per_dim": 6,
+        "total_follow_up_budget": 24,
+        "max_questions_per_formal": 3,
+        "estimated_questions": "28-40"
+    }
+}
+
+# 默认模式
+DEFAULT_INTERVIEW_MODE = "standard"
+
+# 疲劳度信号权重
+FATIGUE_SIGNALS = {
+    "consecutive_short": {
+        "description": "连续 3 个回答少于 30 字符",
+        "threshold": 3,
+        "weight": 0.3
+    },
+    "option_only_streak": {
+        "description": "连续 3 次只选选项不补充",
+        "threshold": 3,
+        "weight": 0.25
+    },
+    "same_dimension_too_long": {
+        "description": "同一维度已问 8+ 问题",
+        "threshold": 8,
+        "weight": 0.25
+    },
+    "total_questions_high": {
+        "description": "总问题数超过 25",
+        "threshold": 25,
+        "weight": 0.2
+    }
+}
+
+# 信息饱和度阈值
+SATURATION_THRESHOLDS = {
+    "high": 0.8,       # 高饱和度，停止追问
+    "medium": 0.6,     # 中等饱和度，最多再追问1次
+    "low": 0.4         # 低饱和度，正常追问
+}
+
+
+def get_interview_mode_config(session: dict) -> dict:
+    """获取会话的访谈模式配置"""
+    mode = session.get("interview_mode", DEFAULT_INTERVIEW_MODE)
+    return INTERVIEW_MODES.get(mode, INTERVIEW_MODES[DEFAULT_INTERVIEW_MODE])
+
+
+def get_follow_up_budget_status(session: dict, dimension: str) -> dict:
+    """
+    计算追问预算使用情况
+
+    Returns:
+        {
+            "total_used": int,           # 已使用的总追问次数
+            "total_budget": int,         # 总预算
+            "dimension_used": int,       # 当前维度已使用追问次数
+            "dimension_budget": int,     # 当前维度预算
+            "current_question_used": int, # 当前正式问题已追问次数
+            "current_question_budget": int, # 当前正式问题追问预算
+            "can_follow_up": bool,       # 是否还能追问
+            "budget_exhausted_reason": str or None  # 预算耗尽原因
+        }
+    """
+    mode_config = get_interview_mode_config(session)
+    interview_log = session.get("interview_log", [])
+
+    # 计算总追问次数
+    total_follow_ups = len([log for log in interview_log if log.get("is_follow_up", False)])
+    total_budget = mode_config["total_follow_up_budget"]
+
+    # 计算当前维度的追问次数
+    dim_logs = [log for log in interview_log if log.get("dimension") == dimension]
+    dim_follow_ups = len([log for log in dim_logs if log.get("is_follow_up", False)])
+    dim_budget = mode_config["follow_up_budget_per_dim"]
+
+    # 计算当前正式问题的追问次数
+    # 找到最后一个正式问题的索引
+    formal_indices = [i for i, log in enumerate(dim_logs) if not log.get("is_follow_up", False)]
+    if formal_indices:
+        last_formal_idx = formal_indices[-1]
+        # 统计这个正式问题之后的追问数
+        current_question_follow_ups = len([
+            log for log in dim_logs[last_formal_idx + 1:]
+            if log.get("is_follow_up", False)
+        ])
+    else:
+        current_question_follow_ups = 0
+    current_question_budget = mode_config["max_questions_per_formal"]
+
+    # 判断是否能继续追问
+    can_follow_up = True
+    budget_exhausted_reason = None
+
+    if total_follow_ups >= total_budget:
+        can_follow_up = False
+        budget_exhausted_reason = "total_budget_exhausted"
+    elif dim_follow_ups >= dim_budget:
+        can_follow_up = False
+        budget_exhausted_reason = "dimension_budget_exhausted"
+    elif current_question_follow_ups >= current_question_budget:
+        can_follow_up = False
+        budget_exhausted_reason = "question_budget_exhausted"
+
+    return {
+        "total_used": total_follow_ups,
+        "total_budget": total_budget,
+        "dimension_used": dim_follow_ups,
+        "dimension_budget": dim_budget,
+        "current_question_used": current_question_follow_ups,
+        "current_question_budget": current_question_budget,
+        "can_follow_up": can_follow_up,
+        "budget_exhausted_reason": budget_exhausted_reason
+    }
+
+
+def calculate_dimension_saturation(session: dict, dimension: str) -> dict:
+    """
+    计算维度的信息饱和度
+
+    Returns:
+        {
+            "saturation_score": float,   # 0-1 饱和度分数
+            "coverage_score": float,     # 关键方面覆盖度
+            "depth_score": float,        # 信息深度
+            "volume_score": float,       # 信息量
+            "covered_aspects": list,     # 已覆盖的关键方面
+            "level": str                 # "high", "medium", "low"
+        }
+    """
+    interview_log = session.get("interview_log", [])
+    dim_logs = [log for log in interview_log if log.get("dimension") == dimension]
+
+    if not dim_logs:
+        return {
+            "saturation_score": 0,
+            "coverage_score": 0,
+            "depth_score": 0,
+            "volume_score": 0,
+            "covered_aspects": [],
+            "level": "low"
+        }
+
+    dim_info = DIMENSION_INFO.get(dimension, {})
+    key_aspects = dim_info.get("key_aspects", [])
+
+    # 1. 信息覆盖度：检查关键方面是否被提及
+    all_answers = " ".join([log.get("answer", "") for log in dim_logs])
+    all_questions = " ".join([log.get("question", "") for log in dim_logs])
+    combined_text = all_answers + all_questions
+
+    covered_aspects = []
+    for aspect in key_aspects:
+        # 检查关键词是否出现在问答中
+        if aspect in combined_text:
+            covered_aspects.append(aspect)
+        else:
+            # 检查相关词
+            aspect_keywords = {
+                "核心痛点": ["痛点", "问题", "困难", "挑战", "困扰"],
+                "期望价值": ["价值", "收益", "效果", "目标", "期望"],
+                "使用场景": ["场景", "情况", "使用", "应用", "何时"],
+                "用户角色": ["用户", "角色", "人员", "谁", "使用者"],
+                "关键流程": ["流程", "步骤", "环节", "过程"],
+                "角色分工": ["分工", "职责", "负责", "部门"],
+                "触发事件": ["触发", "开始", "启动", "何时"],
+                "异常处理": ["异常", "错误", "失败", "例外"],
+                "部署方式": ["部署", "云", "本地", "服务器"],
+                "系统集成": ["集成", "对接", "接口", "系统"],
+                "性能要求": ["性能", "响应", "并发", "速度"],
+                "安全合规": ["安全", "合规", "权限", "加密"],
+                "预算范围": ["预算", "费用", "成本", "价格"],
+                "时间节点": ["时间", "期限", "周期", "何时"],
+                "资源限制": ["资源", "人力", "团队", "限制"],
+                "优先级": ["优先", "重要", "紧急", "先后"]
+            }
+            for keyword in aspect_keywords.get(aspect, []):
+                if keyword in combined_text:
+                    covered_aspects.append(aspect)
+                    break
+
+    coverage_score = len(covered_aspects) / len(key_aspects) if key_aspects else 0
+
+    # 2. 信息深度：检查是否有量化、具体场景、对比等深度信号
+    depth_signals = 0
+    # 检查数字（量化信息）
+    if any(c.isdigit() for c in all_answers):
+        depth_signals += 1
+    # 检查具体场景描述（包含"比如"、"例如"、"当...时"等）
+    scenario_keywords = ["比如", "例如", "当", "如果", "场景", "情况下"]
+    if any(kw in all_answers for kw in scenario_keywords):
+        depth_signals += 1
+    # 检查对比或选择（"而不是"、"优先"、"相比"）
+    comparison_keywords = ["而不是", "优先", "相比", "更重要", "首先"]
+    if any(kw in all_answers for kw in comparison_keywords):
+        depth_signals += 1
+    # 检查原因说明（"因为"、"由于"、"所以"）
+    reason_keywords = ["因为", "由于", "所以", "原因是"]
+    if any(kw in all_answers for kw in reason_keywords):
+        depth_signals += 1
+    # 检查多点回答
+    if "；" in all_answers or "、" in all_answers:
+        depth_signals += 1
+
+    depth_score = min(1.0, depth_signals / 5)
+
+    # 3. 信息量：基于总字符数
+    total_chars = sum(len(log.get("answer", "")) for log in dim_logs)
+    # 期望每个维度至少收集 300 字符的有效信息
+    volume_score = min(1.0, total_chars / 300)
+
+    # 综合饱和度
+    saturation_score = coverage_score * 0.4 + depth_score * 0.3 + volume_score * 0.3
+
+    # 确定饱和度级别
+    if saturation_score >= SATURATION_THRESHOLDS["high"]:
+        level = "high"
+    elif saturation_score >= SATURATION_THRESHOLDS["medium"]:
+        level = "medium"
+    else:
+        level = "low"
+
+    return {
+        "saturation_score": round(saturation_score, 2),
+        "coverage_score": round(coverage_score, 2),
+        "depth_score": round(depth_score, 2),
+        "volume_score": round(volume_score, 2),
+        "covered_aspects": covered_aspects,
+        "level": level
+    }
+
+
+def calculate_user_fatigue(session: dict, dimension: str) -> dict:
+    """
+    计算用户疲劳度
+
+    Returns:
+        {
+            "fatigue_score": float,      # 0-1 疲劳度分数
+            "detected_signals": list,    # 检测到的疲劳信号
+            "sensitivity_modifier": float, # 追问敏感度调整系数 (0.5-1.0)
+            "should_force_progress": bool  # 是否应该强制推进
+        }
+    """
+    interview_log = session.get("interview_log", [])
+    dim_logs = [log for log in interview_log if log.get("dimension") == dimension]
+
+    detected_signals = []
+    fatigue_score = 0
+
+    # 1. 检查连续简短回答
+    recent_answers = [log.get("answer", "") for log in interview_log[-5:]]
+    short_count = sum(1 for ans in recent_answers if len(ans.strip()) < 30)
+    if short_count >= FATIGUE_SIGNALS["consecutive_short"]["threshold"]:
+        detected_signals.append("consecutive_short")
+        fatigue_score += FATIGUE_SIGNALS["consecutive_short"]["weight"]
+
+    # 2. 检查连续只选选项
+    recent_logs = interview_log[-5:]
+    option_only_count = 0
+    for log in recent_logs:
+        options = log.get("options", [])
+        answer = log.get("answer", "")
+        if options and answer in options and len(answer) < 40:
+            option_only_count += 1
+    if option_only_count >= FATIGUE_SIGNALS["option_only_streak"]["threshold"]:
+        detected_signals.append("option_only_streak")
+        fatigue_score += FATIGUE_SIGNALS["option_only_streak"]["weight"]
+
+    # 3. 检查同一维度问题过多
+    if len(dim_logs) >= FATIGUE_SIGNALS["same_dimension_too_long"]["threshold"]:
+        detected_signals.append("same_dimension_too_long")
+        fatigue_score += FATIGUE_SIGNALS["same_dimension_too_long"]["weight"]
+
+    # 4. 检查总问题数
+    if len(interview_log) >= FATIGUE_SIGNALS["total_questions_high"]["threshold"]:
+        detected_signals.append("total_questions_high")
+        fatigue_score += FATIGUE_SIGNALS["total_questions_high"]["weight"]
+
+    fatigue_score = min(1.0, fatigue_score)
+
+    # 计算敏感度调整系数（疲劳度越高，追问敏感度越低）
+    # 当 fatigue_score = 0 时，modifier = 1.0
+    # 当 fatigue_score = 1 时，modifier = 0.5
+    sensitivity_modifier = 1.0 - (fatigue_score * 0.5)
+
+    # 判断是否应该强制推进
+    should_force_progress = fatigue_score >= 0.8
+
+    return {
+        "fatigue_score": round(fatigue_score, 2),
+        "detected_signals": detected_signals,
+        "sensitivity_modifier": round(sensitivity_modifier, 2),
+        "should_force_progress": should_force_progress
+    }
+
+
+def should_follow_up_comprehensive(session: dict, dimension: str,
+                                    rule_based_result: dict) -> dict:
+    """
+    综合决策是否应该追问
+
+    整合：规则评估 + 预算检查 + 饱和度 + 疲劳度
+
+    Returns:
+        {
+            "should_follow_up": bool,
+            "reason": str,
+            "budget_status": dict,
+            "saturation": dict,
+            "fatigue": dict,
+            "decision_factors": list  # 影响决策的因素
+        }
+    """
+    decision_factors = []
+
+    # 1. 检查预算
+    budget_status = get_follow_up_budget_status(session, dimension)
+    if not budget_status["can_follow_up"]:
+        reason_map = {
+            "total_budget_exhausted": "会话追问预算已用完",
+            "dimension_budget_exhausted": "当前维度追问预算已用完",
+            "question_budget_exhausted": "当前问题追问次数已达上限"
+        }
+        return {
+            "should_follow_up": False,
+            "reason": reason_map.get(budget_status["budget_exhausted_reason"], "预算已用完"),
+            "budget_status": budget_status,
+            "saturation": None,
+            "fatigue": None,
+            "decision_factors": ["budget_exhausted"]
+        }
+
+    # 2. 检查饱和度
+    saturation = calculate_dimension_saturation(session, dimension)
+    if saturation["level"] == "high":
+        decision_factors.append("high_saturation")
+        return {
+            "should_follow_up": False,
+            "reason": f"信息已充分（饱和度 {saturation['saturation_score']:.0%}）",
+            "budget_status": budget_status,
+            "saturation": saturation,
+            "fatigue": None,
+            "decision_factors": decision_factors
+        }
+
+    # 3. 检查疲劳度
+    fatigue = calculate_user_fatigue(session, dimension)
+    if fatigue["should_force_progress"]:
+        decision_factors.append("user_fatigue")
+        return {
+            "should_follow_up": False,
+            "reason": "检测到用户疲劳，暂停追问",
+            "budget_status": budget_status,
+            "saturation": saturation,
+            "fatigue": fatigue,
+            "decision_factors": decision_factors
+        }
+
+    # 4. 基于规则评估结果，但应用疲劳度调整
+    original_needs_follow_up = rule_based_result.get("needs_follow_up", False)
+
+    if not original_needs_follow_up:
+        return {
+            "should_follow_up": False,
+            "reason": "回答已充分",
+            "budget_status": budget_status,
+            "saturation": saturation,
+            "fatigue": fatigue,
+            "decision_factors": ["sufficient_answer"]
+        }
+
+    # 中等饱和度时限制追问
+    if saturation["level"] == "medium":
+        # 检查是否已经追问过
+        if budget_status["current_question_used"] >= 1:
+            decision_factors.append("medium_saturation_limit")
+            return {
+                "should_follow_up": False,
+                "reason": "信息接近充分，不再追问",
+                "budget_status": budget_status,
+                "saturation": saturation,
+                "fatigue": fatigue,
+                "decision_factors": decision_factors
+            }
+
+    # 疲劳度较高时，提高追问门槛
+    if fatigue["fatigue_score"] >= 0.5:
+        decision_factors.append("elevated_threshold")
+        # 只有非常明显需要追问的情况才追问
+        if len(rule_based_result.get("signals", [])) < 2:
+            return {
+                "should_follow_up": False,
+                "reason": "用户可能疲劳，跳过非关键追问",
+                "budget_status": budget_status,
+                "saturation": saturation,
+                "fatigue": fatigue,
+                "decision_factors": decision_factors
+            }
+
+    # 通过所有检查，可以追问
+    decision_factors.append("rule_based_follow_up")
+    return {
+        "should_follow_up": True,
+        "reason": rule_based_result.get("reason", "需要进一步了解"),
+        "budget_status": budget_status,
+        "saturation": saturation,
+        "fatigue": fatigue,
+        "decision_factors": decision_factors
+    }
+
 
 def evaluate_answer_depth(question: str, answer: str, dimension: str,
                           options: list = None, is_follow_up: bool = False) -> dict:
@@ -1785,12 +2219,13 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     # 计算正式问题数量（排除追问）
     formal_questions_count = len([log for log in all_dim_logs if not log.get("is_follow_up", False)])
 
-    # ========== 智能追问判断（使用增强规则 + AI评估） ==========
+    # ========== 智能追问判断（综合预算+饱和度+疲劳度+规则评估） ==========
     last_log = None
     should_follow_up = False
     suggest_ai_eval = False
     follow_up_reason = ""
     eval_signals = []
+    comprehensive_decision = None
 
     if all_dim_logs:
         last_log = all_dim_logs[-1]
@@ -1799,7 +2234,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         last_options = last_log.get("options", [])
         last_is_follow_up = last_log.get("is_follow_up", False)
 
-        # 使用增强版评估函数
+        # 使用增强版评估函数（规则层）
         eval_result = evaluate_answer_depth(
             question=last_question,
             answer=last_answer,
@@ -1808,13 +2243,31 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
             is_follow_up=last_is_follow_up
         )
 
-        should_follow_up = eval_result["needs_follow_up"]
-        suggest_ai_eval = eval_result["suggest_ai_eval"]
-        follow_up_reason = eval_result["reason"] or ""
         eval_signals = eval_result["signals"]
 
-        if ENABLE_DEBUG_LOG and (should_follow_up or suggest_ai_eval):
-            print(f"🔍 追问评估: signals={eval_signals}, follow_up={should_follow_up}, ai_eval={suggest_ai_eval}")
+        # 使用综合决策函数（整合预算、饱和度、疲劳度）
+        comprehensive_decision = should_follow_up_comprehensive(
+            session=session,
+            dimension=dimension,
+            rule_based_result=eval_result
+        )
+
+        should_follow_up = comprehensive_decision["should_follow_up"]
+        follow_up_reason = comprehensive_decision["reason"] or ""
+
+        # 只有在规则层建议 AI 评估且综合决策允许追问时，才建议 AI 评估
+        suggest_ai_eval = eval_result["suggest_ai_eval"] and comprehensive_decision["should_follow_up"]
+
+        if ENABLE_DEBUG_LOG:
+            budget = comprehensive_decision.get("budget_status", {})
+            saturation = comprehensive_decision.get("saturation", {})
+            fatigue = comprehensive_decision.get("fatigue", {})
+            print(f"🔍 追问决策: should_follow_up={should_follow_up}, reason={follow_up_reason}")
+            print(f"   预算: {budget.get('total_used', 0)}/{budget.get('total_budget', 0)} (维度: {budget.get('dimension_used', 0)}/{budget.get('dimension_budget', 0)})")
+            if saturation:
+                print(f"   饱和度: {saturation.get('saturation_score', 0):.0%} ({saturation.get('level', 'unknown')})")
+            if fatigue:
+                print(f"   疲劳度: {fatigue.get('fatigue_score', 0):.0%}, 信号: {fatigue.get('detected_signals', [])}")
 
     # 构建 AI 评估提示（当规则未明确触发但建议AI判断时）
     ai_eval_guidance = ""
@@ -2412,6 +2865,11 @@ def create_session():
     data = request.get_json()
     topic = data.get("topic", "未命名调研")
     description = data.get("description")  # 获取可选的主题描述
+    interview_mode = data.get("interview_mode", DEFAULT_INTERVIEW_MODE)  # 获取访谈模式
+
+    # 验证访谈模式
+    if interview_mode not in INTERVIEW_MODES:
+        interview_mode = DEFAULT_INTERVIEW_MODE
 
     session_id = generate_session_id()
     now = get_utc_now()
@@ -2420,6 +2878,7 @@ def create_session():
         "session_id": session_id,
         "topic": topic,
         "description": description,  # 存储主题描述
+        "interview_mode": interview_mode,  # 存储访谈模式
         "created_at": now,
         "updated_at": now,
         "status": "in_progress",
@@ -2701,14 +3160,41 @@ def get_next_question(session_id):
     # 计算正式问题数量（排除追问）
     formal_questions_count = len([log for log in all_dim_logs if not log.get("is_follow_up", False)])
 
-    # 检查维度是否已完成（正式问题达到 3 个且没有需要追问的回答）
-    if formal_questions_count >= 3:
-        # 检查是否还有需要追问的回答
-        needs_follow_up = any(log.get("needs_follow_up", False) for log in all_dim_logs if not log.get("is_follow_up", False))
-        if not needs_follow_up:
+    # 获取访谈模式配置
+    mode_config = get_interview_mode_config(session)
+    required_formal_questions = mode_config["formal_questions_per_dim"]
+
+    # 检查维度是否已完成（正式问题达到配置数量）
+    if formal_questions_count >= required_formal_questions:
+        # 使用综合决策检查是否还需要追问
+        # 创建一个虚拟的规则评估结果来触发综合检查
+        comprehensive_check = should_follow_up_comprehensive(
+            session=session,
+            dimension=dimension,
+            rule_based_result={"needs_follow_up": False, "signals": []}
+        )
+
+        # 如果预算已用完或饱和度足够高，直接完成维度
+        budget_status = comprehensive_check.get("budget_status", {})
+        saturation = comprehensive_check.get("saturation", {})
+
+        should_complete = (
+            not budget_status.get("can_follow_up", True) or
+            saturation.get("level") == "high" or
+            formal_questions_count >= required_formal_questions
+        )
+
+        if should_complete:
+            # 计算维度完成的统计信息
+            dim_follow_ups = len([log for log in all_dim_logs if log.get("is_follow_up", False)])
             return jsonify({
                 "dimension": dimension,
-                "completed": True
+                "completed": True,
+                "stats": {
+                    "formal_questions": formal_questions_count,
+                    "follow_ups": dim_follow_ups,
+                    "saturation": saturation.get("saturation_score", 0) if saturation else 0
+                }
             })
 
     # 调用 Claude 生成问题
@@ -2904,7 +3390,10 @@ def submit_answer(session_id):
     if dimension and dimension in session["dimensions"]:
         formal_count = len([log for log in session["interview_log"]
                            if log.get("dimension") == dimension and not log.get("is_follow_up", False)])
-        session["dimensions"][dimension]["coverage"] = min(100, int(formal_count / 3 * 100))
+        # 使用访谈模式配置的问题数量
+        mode_config = get_interview_mode_config(session)
+        required_questions = mode_config["formal_questions_per_dim"]
+        session["dimensions"][dimension]["coverage"] = min(100, int(formal_count / required_questions * 100))
 
     session["updated_at"] = get_utc_now()
     session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -2949,12 +3438,96 @@ def undo_answer(session_id):
         # 重新计算覆盖度（只统计正式问题）
         formal_count = len([log for log in session["interview_log"]
                            if log.get("dimension") == dimension and not log.get("is_follow_up", False)])
-        session["dimensions"][dimension]["coverage"] = min(100, int(formal_count / 3 * 100))
+        mode_config = get_interview_mode_config(session)
+        required_questions = mode_config["formal_questions_per_dim"]
+        session["dimensions"][dimension]["coverage"] = min(100, int(formal_count / required_questions * 100))
 
     session["updated_at"] = get_utc_now()
     session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
 
     return jsonify(session)
+
+
+@app.route('/api/sessions/<session_id>/skip-follow-up', methods=['POST'])
+def skip_follow_up(session_id):
+    """
+    用户主动跳过当前问题的追问
+    标记最后一个正式问题的回答为"不需要追问"
+    """
+    session_file = SESSIONS_DIR / f"{session_id}.json"
+    if not session_file.exists():
+        return jsonify({"error": "会话不存在"}), 404
+
+    session = json.loads(session_file.read_text(encoding="utf-8"))
+    data = request.get_json() or {}
+    dimension = data.get("dimension")
+
+    interview_log = session.get("interview_log", [])
+    if not interview_log:
+        return jsonify({"error": "没有可跳过的问题"}), 400
+
+    # 找到当前维度的最后一个正式问题
+    dim_logs = [log for log in interview_log if log.get("dimension") == dimension]
+    formal_logs = [log for log in dim_logs if not log.get("is_follow_up", False)]
+
+    if not formal_logs:
+        return jsonify({"error": "没有可跳过的正式问题"}), 400
+
+    # 标记最后一个正式问题不需要追问
+    last_formal = formal_logs[-1]
+    last_formal["needs_follow_up"] = False
+    last_formal["user_skip_follow_up"] = True  # 标记为用户主动跳过
+
+    session["updated_at"] = get_utc_now()
+    session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if ENABLE_DEBUG_LOG:
+        print(f"⏭️ 用户跳过追问: dimension={dimension}")
+
+    return jsonify({"success": True, "message": "已跳过追问"})
+
+
+@app.route('/api/sessions/<session_id>/complete-dimension', methods=['POST'])
+def complete_dimension(session_id):
+    """
+    用户主动完成当前维度
+    将当前维度标记为已完成（覆盖度设为100%）
+    """
+    session_file = SESSIONS_DIR / f"{session_id}.json"
+    if not session_file.exists():
+        return jsonify({"error": "会话不存在"}), 404
+
+    session = json.loads(session_file.read_text(encoding="utf-8"))
+    data = request.get_json() or {}
+    dimension = data.get("dimension")
+
+    if not dimension or dimension not in session.get("dimensions", {}):
+        return jsonify({"error": "无效的维度"}), 400
+
+    # 检查覆盖度是否已达到至少 50%
+    current_coverage = session["dimensions"][dimension]["coverage"]
+    if current_coverage < 50:
+        return jsonify({
+            "error": "无法完成维度",
+            "detail": "当前维度覆盖度不足50%，建议至少回答一半问题后再跳过"
+        }), 400
+
+    # 标记所有该维度的回答为不需要追问
+    for log in session.get("interview_log", []):
+        if log.get("dimension") == dimension and not log.get("is_follow_up", False):
+            log["needs_follow_up"] = False
+
+    # 将维度覆盖度设为 100%
+    session["dimensions"][dimension]["coverage"] = 100
+    session["dimensions"][dimension]["user_completed"] = True  # 标记为用户主动完成
+
+    session["updated_at"] = get_utc_now()
+    session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    if ENABLE_DEBUG_LOG:
+        print(f"⏭️ 用户完成维度: dimension={dimension}, coverage={current_coverage}%")
+
+    return jsonify({"success": True, "message": f"{DIMENSION_INFO.get(dimension, {}).get('name', dimension)}维度已完成"})
 
 
 # ============ 文档上传 API ============

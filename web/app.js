@@ -42,6 +42,7 @@ function deepVision() {
         currentSession: null,
         newSessionTopic: '',
         newSessionDescription: '',
+        selectedInterviewMode: 'standard',  // 默认标准模式
         showNewSessionModal: false,
         showDeleteModal: false,
         sessionToDelete: null,
@@ -84,6 +85,10 @@ function deepVision() {
 
         // Toast 通知
         toast: { show: false, message: '', type: 'success' },
+
+        // 里程碑弹窗
+        showMilestoneModal: false,
+        milestoneData: null,  // { dimension: '...', dimName: '...', stats: {...}, nextDimension: '...' }
 
         // 版本信息
         appVersion: (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.version?.current) || '1.0.0',
@@ -358,7 +363,8 @@ function deepVision() {
                     method: 'POST',
                     body: JSON.stringify({
                         topic: this.newSessionTopic,
-                        description: this.newSessionDescription.trim() || null
+                        description: this.newSessionDescription.trim() || null,
+                        interview_mode: this.selectedInterviewMode
                     })
                 });
 
@@ -367,6 +373,7 @@ function deepVision() {
                 this.showNewSessionModal = false;
                 this.newSessionTopic = '';
                 this.newSessionDescription = '';
+                this.selectedInterviewMode = 'standard';  // 重置为默认值
                 this.currentStep = 0;
                 this.currentView = 'interview';
                 this.showToast('会话创建成功', 'success');
@@ -660,24 +667,45 @@ function deepVision() {
                 }
 
                 if (result.completed) {
-                    // 当前维度已完成，切换到下一个
+                    // 当前维度已完成，显示里程碑弹窗
+                    const completedDimension = this.currentDimension;
+                    const completedDimName = this.getDimensionName(completedDimension);
+                    const stats = result.stats || {};
+
+                    // 找下一个未完成的维度
                     const currentIdx = this.dimensionOrder.indexOf(this.currentDimension);
+                    let nextDim = null;
                     for (let i = 1; i <= this.dimensionOrder.length; i++) {
-                        const nextDim = this.dimensionOrder[(currentIdx + i) % this.dimensionOrder.length];
-                        if (this.currentSession.dimensions[nextDim].coverage < 100) {
-                            this.currentDimension = nextDim;
-                            await this.fetchNextQuestion();
-                            return;
+                        const dim = this.dimensionOrder[(currentIdx + i) % this.dimensionOrder.length];
+                        if (this.currentSession.dimensions[dim].coverage < 100) {
+                            nextDim = dim;
+                            break;
                         }
                     }
-                    // 所有维度都完成
-                    this.currentQuestion = {
-                        text: '所有问题已完成！您可以确认需求并生成报告。',
-                        options: [],
-                        multiSelect: false,
-                        aiGenerated: false
-                    };
-                    this.interactionReady = true;
+
+                    if (nextDim) {
+                        // 还有未完成的维度，显示里程碑弹窗
+                        this.milestoneData = {
+                            dimension: completedDimension,
+                            dimName: completedDimName,
+                            stats: stats,
+                            nextDimension: nextDim,
+                            nextDimName: this.getDimensionName(nextDim),
+                            isLastDimension: false
+                        };
+                        this.showMilestoneModal = true;
+                    } else {
+                        // 所有维度都完成
+                        this.milestoneData = {
+                            dimension: completedDimension,
+                            dimName: completedDimName,
+                            stats: stats,
+                            nextDimension: null,
+                            nextDimName: null,
+                            isLastDimension: true
+                        };
+                        this.showMilestoneModal = true;
+                    }
                 } else {
                     // 方案D: 调用骨架填充（打字机效果 + 选项依次淡入）
                     await this.startSkeletonFill(result);
@@ -883,6 +911,97 @@ function deepVision() {
             } finally {
                 this.isGoingPrev = false;
             }
+        },
+
+        // 用户跳过当前问题的追问
+        async skipFollowUp() {
+            if (!this.currentSession) return;
+
+            try {
+                await this.apiCall(
+                    `/sessions/${this.currentSession.session_id}/skip-follow-up`,
+                    {
+                        method: 'POST',
+                        body: JSON.stringify({ dimension: this.currentDimension })
+                    }
+                );
+
+                this.showToast('已跳过追问', 'success');
+
+                // 获取下一个问题
+                await this.fetchNextQuestion();
+            } catch (error) {
+                this.showToast(`跳过失败: ${error.message}`, 'error');
+            }
+        },
+
+        // 用户完成当前维度
+        async completeDimension() {
+            if (!this.currentSession) return;
+
+            const coverage = this.currentSession.dimensions[this.currentDimension].coverage;
+            if (coverage < 50) {
+                this.showToast('当前维度覆盖度不足50%，建议至少回答一半问题', 'warning');
+                return;
+            }
+
+            try {
+                const result = await this.apiCall(
+                    `/sessions/${this.currentSession.session_id}/complete-dimension`,
+                    {
+                        method: 'POST',
+                        body: JSON.stringify({ dimension: this.currentDimension })
+                    }
+                );
+
+                this.showToast(result.message, 'success');
+
+                // 重新加载会话数据
+                this.currentSession = await this.apiCall(`/sessions/${this.currentSession.session_id}`);
+
+                // 切换到下一个未完成的维度
+                this.currentDimension = this.getNextIncompleteDimension();
+
+                // 获取下一个问题
+                await this.fetchNextQuestion();
+            } catch (error) {
+                const errorMsg = error.detail || error.message || '完成维度失败';
+                this.showToast(errorMsg, 'error');
+            }
+        },
+
+        // 检查是否可以显示"跳过追问"按钮
+        canShowSkipFollowUp() {
+            return this.currentQuestion.isFollowUp;
+        },
+
+        // 检查是否可以显示"完成维度"按钮
+        canShowCompleteDimension() {
+            if (!this.currentSession) return false;
+            const coverage = this.currentSession.dimensions[this.currentDimension].coverage;
+            return coverage >= 50 && coverage < 100;
+        },
+
+        // 关闭里程碑弹窗并继续访谈
+        async continueMilestone() {
+            this.showMilestoneModal = false;
+
+            if (this.milestoneData && this.milestoneData.isLastDimension) {
+                // 所有维度都完成
+                this.currentQuestion = {
+                    text: '所有问题已完成！您可以确认需求并生成报告。',
+                    options: [],
+                    multiSelect: false,
+                    aiGenerated: false
+                };
+                this.interactionReady = true;
+            } else if (this.milestoneData && this.milestoneData.nextDimension) {
+                // 切换到下一个维度
+                this.currentDimension = this.milestoneData.nextDimension;
+                await this.fetchNextQuestion();
+            }
+
+            this.milestoneData = null;
         },
 
         goToConfirmation() {
@@ -1279,6 +1398,67 @@ function deepVision() {
             const dims = Object.values(this.currentSession.dimensions);
             const total = dims.reduce((sum, d) => sum + (d.coverage || 0), 0);
             return Math.round(total / dims.length);
+        },
+
+        // 获取访谈模式配置
+        getInterviewModeConfig() {
+            if (!this.currentSession) return null;
+            const modes = {
+                quick: { formal: 2, followUp: 2, total: 8, range: "12-16" },
+                standard: { formal: 3, followUp: 4, total: 16, range: "20-28" },
+                deep: { formal: 4, followUp: 6, total: 24, range: "28-40" }
+            };
+            const mode = this.currentSession.interview_mode || 'standard';
+            return modes[mode] || modes.standard;
+        },
+
+        // 获取当前问题总数
+        getCurrentQuestionCount() {
+            if (!this.currentSession) return 0;
+            return this.currentSession.interview_log.length;
+        },
+
+        // 获取预估总问题数（中间值）
+        getEstimatedTotalQuestions() {
+            const config = this.getInterviewModeConfig();
+            if (!config) return 24;
+            const range = config.range.split('-');
+            return Math.round((parseInt(range[0]) + parseInt(range[1])) / 2);
+        },
+
+        // 获取预估剩余问题数
+        getEstimatedRemainingQuestions() {
+            const estimated = this.getEstimatedTotalQuestions();
+            const current = this.getCurrentQuestionCount();
+            const remaining = Math.max(0, estimated - current);
+
+            // 根据当前进度微调预估
+            const progress = this.getTotalProgress();
+            if (progress >= 75) {
+                // 接近结束，剩余问题应该更少
+                return Math.min(remaining, 5);
+            }
+            return remaining;
+        },
+
+        // 获取进度反馈信息
+        getProgressFeedback() {
+            if (!this.currentSession) return null;
+
+            const progress = this.getTotalProgress();
+            const remaining = this.getEstimatedRemainingQuestions();
+            const dimProgress = this.currentSession.dimensions[this.currentDimension].coverage;
+
+            if (progress >= 75) {
+                return { type: 'success', message: '快完成了！还剩最后几个问题' };
+            } else if (dimProgress >= 75) {
+                return { type: 'info', message: `${this.getDimensionName(this.currentDimension)}维度即将完成` };
+            } else if (progress >= 50) {
+                return { type: 'info', message: '已完成一半，继续加油' };
+            } else if (progress >= 25) {
+                return { type: 'info', message: '进展顺利' };
+            }
+            return null;
         },
 
         getDimensionName(key) {
