@@ -33,8 +33,7 @@
         "而没有考虑 coverage 已达到100% 或 user_completed 标记",
         "修复:",
         "1. 在维度完成检查中增加 coverage >= 100 和 user_completed 条件",
-        "2. 在预生成缓存命中时也优先检查维度是否已完成",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "2. 在预生成缓存命中时也优先检查维度是否已完成"
       ]
     },
     {
@@ -146,8 +145,7 @@
         "追问预算现在真正生效（标准模式：总预算16次，维度预算4次，单题预算2次）",
         "AI 无法绕过后端控制自行决定追问",
         "维度进度能够正常增长并触发维度切换",
-        "四个维度能够均衡覆盖",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "四个维度能够均衡覆盖"
       ]
     },
     {
