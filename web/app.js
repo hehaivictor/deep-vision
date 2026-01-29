@@ -474,7 +474,23 @@ function deepVision() {
             const files = event.target.files;
             if (!files.length || !this.currentSession) return;
 
+            // 允许的文件类型
+            const allowedTypes = ['.md', '.txt', '.pdf', '.docx', '.xlsx', '.pptx', '.png', '.jpg', '.jpeg', '.gif', '.webp'];
+
             for (const file of files) {
+                // 验证文件类型
+                const ext = '.' + file.name.split('.').pop().toLowerCase();
+                if (!allowedTypes.includes(ext)) {
+                    this.showToast(`不支持的文件类型: ${ext}`, 'error');
+                    continue;
+                }
+
+                // 验证文件大小（10MB）
+                if (file.size > 10 * 1024 * 1024) {
+                    this.showToast(`文件 ${file.name} 超过10MB限制`, 'error');
+                    continue;
+                }
+
                 const formData = new FormData();
                 formData.append('file', file);
 
@@ -490,10 +506,16 @@ function deepVision() {
                         this.currentSession = await this.apiCall(`/sessions/${this.currentSession.session_id}`);
                         this.showToast(`文档 ${file.name} 上传成功`, 'success');
                     } else {
-                        throw new Error('上传失败');
+                        // 尝试获取详细错误信息
+                        let errorMsg = '上传失败';
+                        try {
+                            const errData = await response.json();
+                            errorMsg = errData.error || errorMsg;
+                        } catch (e) {}
+                        throw new Error(errorMsg);
                     }
                 } catch (error) {
-                    this.showToast(`上传 ${file.name} 失败`, 'error');
+                    this.showToast(`上传 ${file.name} 失败: ${error.message}`, 'error');
                 }
             }
 

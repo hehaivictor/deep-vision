@@ -126,6 +126,18 @@ prefetch_cache_lock = threading.Lock()
 PREFETCH_TTL = 300             # 预生成缓存有效期（秒）
 
 
+def safe_load_session(session_file: Path) -> dict:
+    """安全加载会话文件，处理 JSON 解析错误"""
+    try:
+        return json.loads(session_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print(f"⚠️ 会话文件损坏: {session_file}, 错误: {e}")
+        return None
+    except Exception as e:
+        print(f"⚠️ 读取会话文件失败: {session_file}, 错误: {e}")
+        return None
+
+
 def update_thinking_status(session_id: str, stage: str, has_search: bool = True):
     """更新思考进度状态（线程安全）"""
     stage_info = THINKING_STAGES.get(stage)
@@ -2940,7 +2952,9 @@ def get_session(session_id):
     if not session_file.exists():
         return jsonify({"error": "会话不存在"}), 404
 
-    session = json.loads(session_file.read_text(encoding="utf-8"))
+    session = safe_load_session(session_file)
+    if session is None:
+        return jsonify({"error": "会话数据损坏"}), 500
     return jsonify(session)
 
 
@@ -2952,7 +2966,9 @@ def update_session(session_id):
         return jsonify({"error": "会话不存在"}), 404
 
     updates = request.get_json()
-    session = json.loads(session_file.read_text(encoding="utf-8"))
+    session = safe_load_session(session_file)
+    if session is None:
+        return jsonify({"error": "会话数据损坏"}), 500
 
     # 定义允许更新的字段白名单
     UPDATABLE_FIELDS = {"description", "topic", "status"}
@@ -3242,11 +3258,17 @@ def get_next_question(session_id):
     dim_coverage = dim_data.get("coverage", 0)
     user_completed = dim_data.get("user_completed", False)
 
+    # 调试日志（临时）
+    print(f"🔍 [DEBUG] next-question 检查维度完成状态:")
+    print(f"   dimension={dimension}, formal_count={formal_questions_count}, required={required_formal_questions}")
+    print(f"   dim_coverage={dim_coverage}, user_completed={user_completed}")
+
     # 检查维度是否已完成：
     # 1. 正式问题达到配置数量
     # 2. 或者 coverage 已经 >= 100%（可能是用户手动完成）
     # 3. 或者用户标记了 user_completed
     if formal_questions_count >= required_formal_questions or dim_coverage >= 100 or user_completed:
+        print(f"   ✅ 维度已完成，应返回 completed: true")
         # 使用综合决策检查是否还需要追问
         # 创建一个虚拟的规则评估结果来触发综合检查
         comprehensive_check = should_follow_up_comprehensive(
@@ -3466,6 +3488,8 @@ def submit_answer(session_id):
         return jsonify({"error": "问题不能为空"}), 400
     if not answer or not isinstance(answer, str):
         return jsonify({"error": "答案不能为空"}), 400
+    if len(answer) > 5000:
+        return jsonify({"error": "答案长度不能超过5000字符"}), 400
     if not dimension or dimension not in DIMENSION_INFO:
         return jsonify({"error": "无效的维度"}), 400
     if not isinstance(options, list):
@@ -3743,6 +3767,10 @@ def upload_document(session_id):
 @app.route('/api/sessions/<session_id>/documents/<path:doc_name>', methods=['DELETE'])
 def delete_document(session_id, doc_name):
     """删除参考文档（软删除）"""
+    # 路径遍历防护
+    if '..' in doc_name or doc_name.startswith('/'):
+        return jsonify({"error": "无效的文档名"}), 400
+
     session_file = SESSIONS_DIR / f"{session_id}.json"
     if not session_file.exists():
         return jsonify({"error": "会话不存在"}), 404
@@ -3862,6 +3890,10 @@ def upload_research_doc(session_id):
 @app.route('/api/sessions/<session_id>/research-docs/<path:doc_name>', methods=['DELETE'])
 def delete_research_doc(session_id, doc_name):
     """删除已有调研成果文档（软删除）"""
+    # 路径遍历防护
+    if '..' in doc_name or doc_name.startswith('/'):
+        return jsonify({"error": "无效的文档名"}), 400
+
     session_file = SESSIONS_DIR / f"{session_id}.json"
     if not session_file.exists():
         return jsonify({"error": "会话不存在"}), 404
