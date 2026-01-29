@@ -686,7 +686,7 @@
 
                             <!-- 操作按钮 -->
                             <div class="mt-6 space-y-3">
-                                <button x-show="getTotalProgress() >= 50"
+                                <button x-show="getTotalProgress() >= 100 || currentStep === 2"
                                         @click="currentStep === 2 ? generateReport() : goToConfirmation()"
                                         :disabled="currentStep === 2 && generatingReport"
                                         :class="(currentStep === 2 && generatingReport) ? 'btn-sage-blue opacity-80 cursor-wait' : 'btn-sage-blue cursor-pointer'"
