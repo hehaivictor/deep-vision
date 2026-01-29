@@ -1134,18 +1134,33 @@
                                         </div>
                                     </template>
 
-                                    <div class="flex items-center gap-3 mb-4">
-                                        <span class="px-3 py-1 bg-cta/10 text-primary rounded-lg text-sm font-medium" x-text="getDimensionName(currentDimension)"></span>
-                                        <span class="text-muted text-sm">问题 <span x-text="getQuestionNumber()"></span></span>
-                                        <!-- 单选/多选提示 -->
-                                        <span class="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
-                                            <span x-text="currentQuestion.multiSelect ? '可多选' : '单选'"></span>
-                                        </span>
+                                    <!-- 问题头部 - 未完成时显示 -->
+                                    <div x-show="getTotalProgress() < 100">
+                                        <div class="flex items-center gap-3 mb-4">
+                                            <span class="px-3 py-1 bg-cta/10 text-primary rounded-lg text-sm font-medium" x-text="getDimensionName(currentDimension)"></span>
+                                            <span class="text-muted text-sm">问题 <span x-text="getQuestionNumber()"></span></span>
+                                            <!-- 单选/多选提示 -->
+                                            <span class="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
+                                                <span x-text="currentQuestion.multiSelect ? '可多选' : '单选'"></span>
+                                            </span>
+                                        </div>
+                                        <h3 class="text-xl font-semibold text-primary mb-6" x-text="currentQuestion.text"></h3>
                                     </div>
-                                    <h3 class="text-xl font-semibold text-primary mb-6" x-text="currentQuestion.text"></h3>
 
-                                    <!-- 选项 -->
-                                    <div class="space-y-3">
+                                    <!-- 全部完成提示 - 100%时显示 -->
+                                    <div x-show="getTotalProgress() === 100" class="text-center py-8" style="display: none;">
+                                        <div class="inline-flex items-center justify-center w-16 h-16 bg-success/10 rounded-full mb-4">
+                                            <svg class="w-8 h-8 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                            </svg>
+                                        </div>
+                                        <h3 class="text-xl font-semibold text-primary mb-2">🎉 所有问题已完成</h3>
+                                        <p class="text-muted text-sm">您已经完成了全部 4 个维度的调研访谈</p>
+                                        <p class="text-muted text-sm mt-1">请点击下方"确认需求"按钮进入下一阶段</p>
+                                    </div>
+
+                                    <!-- 选项 - 未完成时显示 -->
+                                    <div class="space-y-3" x-show="getTotalProgress() < 100">
                                         <template x-for="(option, index) in currentQuestion.options" :key="index">
                                             <div @click="toggleOption(option)"
                                                  :class="isOptionSelected(option) ? 'border-[#EDF4FE] bg-cta/5 ring-2 ring-cta/20' : 'border-gray-200 hover:border-cta/50'"
@@ -1203,8 +1218,8 @@
                                         </div>
                                     </div>
 
-                                    <!-- 用户控制按钮组 -->
-                                    <template x-if="canShowSkipFollowUp() || canShowCompleteDimension()">
+                                    <!-- 用户控制按钮组 - 未完成时显示 -->
+                                    <template x-if="(canShowSkipFollowUp() || canShowCompleteDimension()) && getTotalProgress() < 100">
                                         <div class="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                                             <div class="flex flex-wrap items-center gap-2">
                                                 <span class="text-xs text-blue-700 font-medium">快速操作：</span>
@@ -1228,7 +1243,8 @@
                                         </div>
                                     </template>
 
-                                    <div class="flex flex-col-reverse sm:flex-row justify-between items-stretch sm:items-center gap-3 mt-6 pt-4 border-t border-gray-100">
+                                    <!-- 导航按钮 - 未完成时显示 -->
+                                    <div x-show="getTotalProgress() < 100" class="flex flex-col-reverse sm:flex-row justify-between items-stretch sm:items-center gap-3 mt-6 pt-4 border-t border-gray-100">
                                         <button x-show="canGoPrevQuestion()"
                                                 @click="goPrevQuestion()"
                                                 class="text-muted hover:text-secondary flex items-center justify-center gap-1 cursor-pointer py-2.5 sm:py-0">
