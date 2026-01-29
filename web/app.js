@@ -640,8 +640,17 @@ function deepVision() {
 
         // ============ AI 驱动的访谈流程 ============
         startInterview() {
+            // 检查是否所有维度都已完成
+            const nextDim = this.getNextIncompleteDimension();
+            if (!nextDim) {
+                // 所有维度都已完成，直接进入确认阶段
+                this.currentStep = 2;
+                this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false };
+                return;
+            }
+
             this.currentStep = 1;
-            this.currentDimension = 'customer_needs';
+            this.currentDimension = nextDim;  // 从第一个未完成的维度开始
             this.fetchNextQuestion();
         },
 
@@ -921,9 +930,13 @@ function deepVision() {
                     const nextDim = this.getNextIncompleteDimension();
                     if (nextDim) {
                         this.currentDimension = nextDim;
+                    } else {
+                        // 所有维度都已完成，直接进入确认阶段
+                        this.currentStep = 2;
+                        this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false };
+                        this.showToast('所有维度调研完成！', 'success');
+                        return;  // 不再调用 fetchNextQuestion
                     }
-                    // 若 nextDim 为 null，说明所有维度完成，
-                    // fetchNextQuestion 会返回 completed 状态
                 }
 
                 // 获取下一个问题
