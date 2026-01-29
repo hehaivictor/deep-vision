@@ -155,21 +155,6 @@ function deepVision() {
             }
         },
 
-        // 加载版本信息
-        async loadVersionInfo() {
-            try {
-                const configFile = (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.version?.configFile) || 'version.json';
-                const response = await fetch(configFile);
-                if (response.ok) {
-                    const data = await response.json();
-                    this.appVersion = data.version || this.appVersion;
-                    this.changelog = data.changelog || [];
-                }
-            } catch (error) {
-                console.warn('无法加载版本信息:', error);
-            }
-        },
-
         // 启动诗句轮播
         startQuoteRotation() {
             // 如果配置文件禁用了诗句轮播或没有诗句，则不启动
