@@ -1,7 +1,23 @@
 {
-  "version": "1.5.11",
+  "version": "1.5.12",
   "releaseDate": "2026-01-29",
   "changelog": [
+    {
+      "version": "1.5.12",
+      "date": "2026-01-29",
+      "type": "patch",
+      "title": "所有维度完成后直接进入确认阶段，不再生成问题",
+      "changes": [
+        "问题: 所有维度都达到100%后，前端仍然调用 fetchNextQuestion()，",
+        "导致显示新问题而不是进入确认阶段",
+        "修复:",
+        "1. submitAnswer: 当 getNextIncompleteDimension() 返回 null 时，",
+        "直接设置 currentStep=2 进入确认阶段，不调用 fetchNextQuestion",
+        "2. startInterview: 检查是否所有维度已完成，如果是则直接进入确认阶段",
+        "3. 移除临时调试日志",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.5.11",
       "date": "2026-01-29",

@@ -3258,17 +3258,11 @@ def get_next_question(session_id):
     dim_coverage = dim_data.get("coverage", 0)
     user_completed = dim_data.get("user_completed", False)
 
-    # 调试日志（临时）
-    print(f"🔍 [DEBUG] next-question 检查维度完成状态:")
-    print(f"   dimension={dimension}, formal_count={formal_questions_count}, required={required_formal_questions}")
-    print(f"   dim_coverage={dim_coverage}, user_completed={user_completed}")
-
     # 检查维度是否已完成：
     # 1. 正式问题达到配置数量
     # 2. 或者 coverage 已经 >= 100%（可能是用户手动完成）
     # 3. 或者用户标记了 user_completed
     if formal_questions_count >= required_formal_questions or dim_coverage >= 100 or user_completed:
-        print(f"   ✅ 维度已完成，应返回 completed: true")
         # 使用综合决策检查是否还需要追问
         # 创建一个虚拟的规则评估结果来触发综合检查
         comprehensive_check = should_follow_up_comprehensive(
