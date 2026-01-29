@@ -18,9 +18,11 @@ function deepVision() {
         loading: false,
         loadingQuestion: false,
         isGoingPrev: false,
+        submitting: false,  // 提交答案进行中，防止并发操作
         generatingReport: false,
         webSearching: false,  // Web Search API 调用状态
         webSearchPollInterval: null,  // Web Search 状态轮询定时器
+        quoteRotationInterval: null,  // 诗句轮播定时器
 
         // ========== 方案B+D 新增状态变量 ==========
         thinkingStage: null,           // 思考阶段数据
@@ -175,7 +177,7 @@ function deepVision() {
                 ? SITE_CONFIG.quotes.interval
                 : 10000;  // 默认10秒
 
-            setInterval(() => {
+            this.quoteRotationInterval = setInterval(() => {
                 this.currentQuoteIndex = (this.currentQuoteIndex + 1) % this.quotes.length;
                 this.currentQuote = this.quotes[this.currentQuoteIndex].text;
                 this.currentQuoteSource = this.quotes[this.currentQuoteIndex].source;
@@ -201,7 +203,8 @@ function deepVision() {
 
         // 开始轮询 Web Search 状态
         startWebSearchPolling() {
-            if (this.webSearchPollInterval) return;  // 已在轮询中
+            // 先停止旧的轮询，防止多个轮询并发
+            this.stopWebSearchPolling();
 
             // 从配置文件读取轮询间隔
             const pollInterval = (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.api?.webSearchPollInterval)
@@ -232,10 +235,15 @@ function deepVision() {
 
         // ========== 方案B: 思考进度轮询 ==========
         startThinkingPolling() {
-            if (this.thinkingPollInterval) return;  // 已在轮询中
+            // 先停止旧的轮询，防止多个轮询并发
+            this.stopThinkingPolling();
 
-            // 每次等待随机选一条调研小技巧
-            this.currentTipIndex = Math.floor(Math.random() * SITE_CONFIG.researchTips.length);
+            // 安全访问配置中的调研小技巧
+            const tips = (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.researchTips)
+                ? SITE_CONFIG.researchTips : [];
+            if (tips.length > 0) {
+                this.currentTipIndex = Math.floor(Math.random() * tips.length);
+            }
 
             const pollInterval = 300;  // 300ms 轮询间隔
 
@@ -269,6 +277,22 @@ function deepVision() {
 
         // ========== 方案D: 骨架填充 ==========
         async startSkeletonFill(result) {
+            const questionText = result.question || '';
+            const options = result.options || [];
+
+            // 验证必要数据
+            if (!questionText || options.length === 0) {
+                this.currentQuestion = {
+                    text: '', options: [], multiSelect: false,
+                    aiGenerated: false, serviceError: true,
+                    errorTitle: '数据异常',
+                    errorDetail: '问题或选项缺失，请重试'
+                };
+                this.interactionReady = true;
+                this.skeletonMode = false;
+                return;
+            }
+
             // 进入骨架填充模式
             this.skeletonMode = true;
             this.typingText = '';
@@ -288,9 +312,6 @@ function deepVision() {
                 conflictDescription: result.conflict_description,
                 aiGenerated: result.ai_generated || false
             };
-
-            const questionText = result.question || '';
-            const options = result.options || [];
 
             // 检查用户是否禁用了动效（可访问性支持）
             const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -333,8 +354,14 @@ function deepVision() {
                     ...options
                 });
                 if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.error || '请求失败');
+                    let errorMsg = `HTTP ${response.status}`;
+                    try {
+                        const error = await response.json();
+                        errorMsg = error.error || error.detail || errorMsg;
+                    } catch (parseError) {
+                        // 响应非 JSON 格式，使用 HTTP 状态信息
+                    }
+                    throw new Error(errorMsg);
                 }
                 return await response.json();
             } catch (error) {
@@ -597,18 +624,28 @@ function deepVision() {
         },
 
         getNextIncompleteDimension() {
+            if (!this.currentSession || !this.currentSession.dimensions) {
+                return this.dimensionOrder[0];
+            }
             for (const dim of this.dimensionOrder) {
-                if (this.currentSession.dimensions[dim].coverage < 100) {
+                const dimension = this.currentSession.dimensions[dim];
+                if (dimension && dimension.coverage < 100) {
                     return dim;
                 }
             }
-            return this.dimensionOrder[0];
+            // 所有维度都已完成，返回 null
+            return null;
         },
 
         async fetchNextQuestion() {
             this.loadingQuestion = true;
             this.skeletonMode = false;
             this.interactionReady = false;
+            // 重置问题状态，清除上一次可能的错误
+            this.currentQuestion = {
+                text: '', options: [], multiSelect: false,
+                aiGenerated: false, serviceError: false
+            };
             this.startThinkingPolling();  // 方案B: 开始轮询思考进度
             this.startWebSearchPolling();  // 同时保留 Web Search 状态轮询
             this.selectedAnswers = [];
@@ -677,7 +714,8 @@ function deepVision() {
                     let nextDim = null;
                     for (let i = 1; i <= this.dimensionOrder.length; i++) {
                         const dim = this.dimensionOrder[(currentIdx + i) % this.dimensionOrder.length];
-                        if (this.currentSession.dimensions[dim].coverage < 100) {
+                        const dimension = this.currentSession.dimensions[dim];
+                        if (dimension && dimension.coverage < 100) {
                             nextDim = dim;
                             break;
                         }
@@ -739,6 +777,11 @@ function deepVision() {
         },
 
         canSubmitAnswer() {
+            // 防止并发提交
+            if (this.submitting) {
+                return false;
+            }
+
             // 方案D: 骨架填充期间不允许提交
             if (!this.interactionReady) {
                 return false;
@@ -803,6 +846,9 @@ function deepVision() {
         async submitAnswer() {
             if (!this.canSubmitAnswer()) return;
 
+            // 设置提交状态，防止并发操作
+            this.submitting = true;
+
             // 构建答案
             let answer;
             if (this.currentQuestion.multiSelect) {
@@ -811,10 +857,22 @@ function deepVision() {
                 if (this.otherSelected && this.otherAnswerText.trim()) {
                     answers.push(this.otherAnswerText.trim());
                 }
+                if (answers.length === 0) {
+                    this.submitting = false;
+                    return;
+                }
                 answer = answers.join('；');  // 使用中文分号分隔
             } else {
                 // 单选
-                answer = this.otherSelected ? this.otherAnswerText.trim() : this.selectedAnswers[0];
+                if (this.otherSelected) {
+                    answer = this.otherAnswerText.trim();
+                } else {
+                    answer = this.selectedAnswers.length > 0 ? this.selectedAnswers[0] : '';
+                }
+                if (!answer) {
+                    this.submitting = false;
+                    return;
+                }
             }
 
             try {
@@ -836,8 +894,14 @@ function deepVision() {
                 this.currentSession = updatedSession;
 
                 // 检查是否需要切换维度
-                if (this.currentSession.dimensions[this.currentDimension].coverage >= 100) {
-                    this.currentDimension = this.getNextIncompleteDimension();
+                const currentDim = this.currentSession.dimensions[this.currentDimension];
+                if (currentDim && currentDim.coverage >= 100) {
+                    const nextDim = this.getNextIncompleteDimension();
+                    if (nextDim) {
+                        this.currentDimension = nextDim;
+                    }
+                    // 若 nextDim 为 null，说明所有维度完成，
+                    // fetchNextQuestion 会返回 completed 状态
                 }
 
                 // 获取下一个问题
@@ -846,6 +910,9 @@ function deepVision() {
             } catch (error) {
                 console.error('提交回答错误:', error);
                 this.showToast(`提交回答失败: ${error.message}`, 'error');
+            } finally {
+                // 确保清除提交状态
+                this.submitting = false;
             }
         },
 
@@ -858,11 +925,18 @@ function deepVision() {
         },
 
         canGoPrevQuestion() {
+            // 提交过程中不允许回退
+            if (this.submitting) {
+                return false;
+            }
             return this.currentSession && this.currentSession.interview_log.length > 0;
         },
 
         async goPrevQuestion() {
             if (!this.canGoPrevQuestion()) return;
+
+            // 设置提交状态，防止并发操作
+            this.submitting = true;
 
             try {
                 // 先保存要恢复的问题信息（在调用 undo 之前）
@@ -910,12 +984,14 @@ function deepVision() {
                 this.showToast('撤销失败', 'error');
             } finally {
                 this.isGoingPrev = false;
+                this.submitting = false;  // 确保清除提交状态
             }
         },
 
         // 用户跳过当前问题的追问
         async skipFollowUp() {
-            if (!this.currentSession) return;
+            if (!this.currentSession || this.submitting) return;
+            this.submitting = true;
 
             try {
                 await this.apiCall(
@@ -932,6 +1008,8 @@ function deepVision() {
                 await this.fetchNextQuestion();
             } catch (error) {
                 this.showToast(`跳过失败: ${error.message}`, 'error');
+            } finally {
+                this.submitting = false;
             }
         },
 
@@ -939,11 +1017,25 @@ function deepVision() {
         async completeDimension() {
             if (!this.currentSession) return;
 
-            const coverage = this.currentSession.dimensions[this.currentDimension].coverage;
+            // 安全访问当前维度
+            const currentDim = this.currentSession.dimensions[this.currentDimension];
+            if (!currentDim) {
+                this.showToast('维度数据异常', 'error');
+                return;
+            }
+
+            const coverage = currentDim.coverage;
+            if (coverage >= 100) {
+                this.showToast('该维度已完成', 'info');
+                return;
+            }
             if (coverage < 50) {
                 this.showToast('当前维度覆盖度不足50%，建议至少回答一半问题', 'warning');
                 return;
             }
+
+            if (this.submitting) return;
+            this.submitting = true;
 
             try {
                 const result = await this.apiCall(
@@ -960,13 +1052,19 @@ function deepVision() {
                 this.currentSession = await this.apiCall(`/sessions/${this.currentSession.session_id}`);
 
                 // 切换到下一个未完成的维度
-                this.currentDimension = this.getNextIncompleteDimension();
-
-                // 获取下一个问题
-                await this.fetchNextQuestion();
+                const nextDim = this.getNextIncompleteDimension();
+                if (nextDim) {
+                    this.currentDimension = nextDim;
+                    await this.fetchNextQuestion();
+                } else {
+                    // 所有维度完成，进入确认阶段
+                    this.currentStep = 2;
+                }
             } catch (error) {
                 const errorMsg = error.detail || error.message || '完成维度失败';
                 this.showToast(errorMsg, 'error');
+            } finally {
+                this.submitting = false;
             }
         },
 
@@ -978,7 +1076,9 @@ function deepVision() {
         // 检查是否可以显示"完成维度"按钮
         canShowCompleteDimension() {
             if (!this.currentSession) return false;
-            const coverage = this.currentSession.dimensions[this.currentDimension].coverage;
+            const currentDim = this.currentSession.dimensions[this.currentDimension];
+            if (!currentDim) return false;
+            const coverage = currentDim.coverage;
             return coverage >= 50 && coverage < 100;
         },
 
@@ -1388,6 +1488,11 @@ function deepVision() {
         },
 
         exitInterview() {
+            // 清理所有定时器，防止内存泄漏
+            this.stopThinkingPolling();
+            this.stopWebSearchPolling();
+            this.submitting = false;
+
             this.currentView = 'sessions';
             this.currentSession = null;
             this.loadSessions();
@@ -1396,6 +1501,7 @@ function deepVision() {
         getTotalProgress() {
             if (!this.currentSession) return 0;
             const dims = Object.values(this.currentSession.dimensions);
+            if (dims.length === 0) return 0;  // 防止除以零
             const total = dims.reduce((sum, d) => sum + (d.coverage || 0), 0);
             return Math.round(total / dims.length);
         },
@@ -1462,7 +1568,12 @@ function deepVision() {
 
             const progress = this.getTotalProgress();
             const remaining = this.getEstimatedRemainingQuestions();
-            const dimProgress = this.currentSession.dimensions[this.currentDimension].coverage;
+
+            // 安全访问当前维度，防止维度不存在
+            const currentDim = this.currentSession.dimensions[this.currentDimension];
+            if (!currentDim) return null;
+
+            const dimProgress = currentDim.coverage;
 
             if (progress >= 75) {
                 return { type: 'success', message: '快完成了！还剩最后几个问题' };
