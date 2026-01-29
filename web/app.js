@@ -1612,7 +1612,14 @@ function deepVision() {
         getProgressFeedback() {
             if (!this.currentSession) return null;
 
+            // 在确认阶段（currentStep >= 2）不显示进度提示
+            if (this.currentStep >= 2) return null;
+
             const progress = this.getTotalProgress();
+
+            // 所有维度都已完成时不显示进度提示
+            if (progress >= 100) return null;
+
             const remaining = this.getEstimatedRemainingQuestions();
 
             // 安全访问当前维度，防止维度不存在
