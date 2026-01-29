@@ -534,15 +534,11 @@ function deepVision() {
         },
 
         async removeDocument(index) {
-            console.log('removeDocument 被调用，index:', index);
-
             if (!this.currentSession || !this.currentSession.reference_docs) {
-                console.log('没有当前会话或参考文档');
                 return;
             }
 
             const doc = this.currentSession.reference_docs[index];
-            console.log('准备删除文档:', doc.name);
 
             // 使用自定义确认对话框
             this.docToDelete = doc;
@@ -600,15 +596,11 @@ function deepVision() {
         },
 
         async removeResearchDoc(index) {
-            console.log('removeResearchDoc 被调用，index:', index);
-
             if (!this.currentSession || !this.currentSession.research_docs) {
-                console.log('没有当前会话或调研成果文档');
                 return;
             }
 
             const doc = this.currentSession.research_docs[index];
-            console.log('准备删除调研成果:', doc.name);
 
             // 使用自定义确认对话框
             this.docToDelete = doc;
@@ -1240,7 +1232,6 @@ function deepVision() {
 
         // 当报告内容渲染完成后调用（由 x-effect 触发）
         onReportRendered() {
-            console.log('📄 报告内容已渲染，开始处理 Mermaid 图表');
             this.renderMermaidCharts();
         },
 
@@ -1315,11 +1306,8 @@ function deepVision() {
                 const mermaidElements = document.querySelectorAll('.mermaid');
 
                 if (mermaidElements.length === 0) {
-                    console.log('ℹ️ 没有需要渲染的 Mermaid 图表');
                     return;
                 }
-
-                console.log(`🎨 发现 ${mermaidElements.length} 个 Mermaid 图表，开始渲染...`);
 
                 // 逐个渲染图表
                 let successCount = 0;
@@ -1328,7 +1316,6 @@ function deepVision() {
 
                     // 跳过已经渲染为 SVG 的元素
                     if (element.querySelector('svg')) {
-                        console.log(`  ⏭️  图表 ${i + 1} 已渲染，跳过`);
                         continue;
                     }
 
@@ -1341,8 +1328,6 @@ function deepVision() {
 
                         // 修复1：检测 quadrantChart 的中文（quadrantChart 对中文支持不好，需要转换）
                         if (fixedDefinition.includes('quadrantChart')) {
-                            console.log(`  ⚠️  图表 ${i + 1} 是 quadrantChart，检查并修复中文...`);
-
                             // 替换所有包含冒号的 quadrant 标签（移除冒号后的部分）
                             fixedDefinition = fixedDefinition
                                 .replace(/quadrant-1\s+[^:\n]*:\s*[^\n]*/g, 'quadrant-1 P1 High Priority')
@@ -1370,24 +1355,18 @@ function deepVision() {
                                 /^\s*([^\n:]*[\u4e00-\u9fa5]+[^\n:]*?):\s*\[/gm,
                                 (match, chineseName) => {
                                     const englishName = `Req${reqIndex++}`;
-                                    console.log(`    📝 将 "${chineseName.trim()}" 替换为 "${englishName}"`);
                                     return `    ${englishName}: [`;
                                 }
                             );
 
                             // 确保至少有一个数据点
                             if (!/\w+:\s*\[\s*[\d.]+\s*,\s*[\d.]+\s*\]/.test(fixedDefinition)) {
-                                console.log(`    ⚠️  未发现数据点，添加默认数据点`);
                                 fixedDefinition += '\n    Sample: [0.5, 0.5]';
                             }
-
-                            console.log(`  ✏️  quadrantChart 已将中文标签转换为英文（quadrantChart 限制）`);
                         }
 
                         // 修复2：检测 flowchart/graph 中的语法问题（保留中文显示）
                         if (fixedDefinition.match(/^(graph|flowchart)\s/m)) {
-                            console.log(`  ⚠️  图表 ${i + 1} 是 flowchart/graph，检查语法...`);
-
                             // 修复 HTML 标签（如 <br>）为换行符
                             fixedDefinition = fixedDefinition.replace(/<br\s*\/?>/gi, ' ');
 
@@ -1395,7 +1374,6 @@ function deepVision() {
                             const subgraphCount = (fixedDefinition.match(/subgraph\s/g) || []).length;
                             const endCount = (fixedDefinition.match(/\bend\b/g) || []).length;
                             if (subgraphCount > endCount) {
-                                console.log(`    ⚠️  检测到 ${subgraphCount - endCount} 个未闭合的 subgraph，自动添加 end`);
                                 for (let j = 0; j < subgraphCount - endCount; j++) {
                                     fixedDefinition += '\n    end';
                                 }
@@ -1426,8 +1404,6 @@ function deepVision() {
                                 /(\w+)\s+---\s+(\w+)\[/g,
                                 (match, from, to) => `${from} --> ${to}[`
                             );
-
-                            console.log(`  ✅ flowchart/graph 语法检查完成，保留中文显示`);
                         }
 
                         // 使用 mermaid.render() 生成 SVG
@@ -1485,7 +1461,6 @@ function deepVision() {
                         }
 
                         successCount++;
-                        console.log(`  ✅ 图表 ${i + 1}/${mermaidElements.length} 渲染成功`);
                     } catch (error) {
                         console.error(`  ❌ 图表 ${i + 1} 渲染失败:`, error);
                         // 清空所有内容（包括 Mermaid 可能残留的错误 SVG）
@@ -1515,8 +1490,6 @@ function deepVision() {
                         element.classList.add('mermaid-failed');
                     }
                 }
-
-                console.log(`✅ Mermaid 渲染完成：${successCount}/${mermaidElements.length} 成功`);
             } catch (error) {
                 console.error('❌ Mermaid 渲染过程失败:', error);
             }
