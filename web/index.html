@@ -1169,12 +1169,13 @@
                                                 </template>
                                                 <span class="font-medium">补充你的想法</span>
                                             </div>
-                                            <input type="text" x-ref="otherInput"
+                                            <textarea x-ref="otherInput"
                                                    x-show="otherSelected"
                                                    x-model="otherAnswerText"
                                                    @focus="otherSelected = true; if (!currentQuestion.multiSelect) { selectedAnswers = []; }"
                                                    placeholder="你的想法对访谈至关重要"
-                                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cta/50 focus:border-cta">
+                                                   rows="3"
+                                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cta/50 focus:border-cta resize-y min-h-[80px]"></textarea>
                                         </div>
                                     </div>
 
