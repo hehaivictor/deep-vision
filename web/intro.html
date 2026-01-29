@@ -8,12 +8,19 @@
     <link rel="stylesheet" href="vendor/css/fonts.css">
     <style>
         /* 基础样式 */
-        html { scroll-behavior: smooth; }
+        html {
+            scroll-behavior: smooth;
+            scroll-snap-type: y mandatory;
+            overflow-y: scroll;
+            height: 100%;
+        }
         body {
             font-family: 'Inter', system-ui, sans-serif;
             background: #0a0a0a;
             color: #fafafa;
             overflow-x: hidden;
+            height: 100%;
+            margin: 0;
         }
 
         /* 品牌字体 */
@@ -29,6 +36,7 @@
 
         /* ========== Hero 区域 ========== */
         .hero-section {
+            height: 100vh;
             min-height: 100vh;
             display: flex;
             flex-direction: column;
@@ -36,6 +44,7 @@
             align-items: center;
             position: relative;
             overflow: hidden;
+            scroll-snap-align: start;
         }
 
         /* 背景光效 */
@@ -128,20 +137,38 @@
             transform: translateX(-50%);
             opacity: 0;
             animation: fadeInUp 1s ease-out 1.5s forwards, bounce 2s ease-in-out 2.5s infinite;
+            cursor: pointer;
+            transition: color 0.3s ease;
+            z-index: 10;
+        }
+        .scroll-indicator:hover {
+            color: #357BE2;
+        }
+        .scroll-indicator.up {
+            top: 40px;
+            bottom: auto;
+            animation: fadeInUp 1s ease-out 0.5s forwards, bounceUp 2s ease-in-out 1.5s infinite;
         }
         @keyframes bounce {
             0%, 100% { transform: translateX(-50%) translateY(0); }
             50% { transform: translateX(-50%) translateY(10px); }
         }
+        @keyframes bounceUp {
+            0%, 100% { transform: translateX(-50%) translateY(0); }
+            50% { transform: translateX(-50%) translateY(-10px); }
+        }
 
         /* ========== 通用章节样式 ========== */
         .section {
+            height: 100vh;
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
             padding: 80px 24px;
             position: relative;
+            scroll-snap-align: start;
+            overflow-y: auto;
         }
 
         /* 滚动动画触发 */
@@ -432,6 +459,7 @@
             .hero-glow { width: 400px; height: 400px; }
             .compare-table { font-size: 0.875rem; }
             .compare-table th, .compare-table td { padding: 0.75rem 1rem; }
+            html { scroll-snap-type: y proximity; }
         }
 
         /* 减少动画（无障碍） */
@@ -515,7 +543,7 @@
         </div>
 
         <!-- 滚动指示 -->
-        <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2">
+        <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2" onclick="scrollToNextSection(this)">
             <span class="text-sm">向下滚动探索</span>
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
@@ -552,6 +580,22 @@
                 信息获取的低效，正在悄悄吞噬你的时间和精力。
             </p>
         </div>
+
+        <!-- 向上滚动指示 -->
+        <div class="scroll-indicator up text-gray-500 flex flex-col items-center gap-2" onclick="scrollToPrevSection(this)">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
+            </svg>
+            <span class="text-sm">向上滚动</span>
+        </div>
+
+        <!-- 向下滚动指示 -->
+        <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2" onclick="scrollToNextSection(this)">
+            <span class="text-sm">继续探索</span>
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
+            </svg>
+        </div>
     </section>
 
     <!-- ========== 解决方案区域 ========== -->
@@ -562,7 +606,7 @@
                     重新定义<span class="text-[#357BE2]">"理解"</span>
                 </h2>
                 <p class="reveal reveal-delay-1 text-gray-400 text-lg max-w-3xl mx-auto">
-                    Deep Vision 深瞳，不只是一个调研工具。<br>
+                    Deep Vision 深瞳,不只是一个调研工具。<br>
                     它是一种<strong class="text-white">全新的信息获取方式</strong>——通过 AI 驱动的选择式交互，<br>
                     让复杂的需求挖掘变得简单、深入、可复制。
                 </p>
@@ -613,6 +657,22 @@
                     <p class="text-gray-400">自动生成洞察报告</p>
                 </div>
             </div>
+        </div>
+
+        <!-- 向上滚动指示 -->
+        <div class="scroll-indicator up text-gray-500 flex flex-col items-center gap-2" onclick="scrollToPrevSection(this)">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
+            </svg>
+            <span class="text-sm">向上滚动</span>
+        </div>
+
+        <!-- 向下滚动指示 -->
+        <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2" onclick="scrollToNextSection(this)">
+            <span class="text-sm">继续探索</span>
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
+            </svg>
         </div>
     </section>
 
@@ -665,6 +725,22 @@
                     <p class="text-gray-400 text-sm">随时暂停，随时继续。访谈进度自动保存，不怕中断。</p>
                 </div>
             </div>
+        </div>
+
+        <!-- 向上滚动指示 -->
+        <div class="scroll-indicator up text-gray-500 flex flex-col items-center gap-2" onclick="scrollToPrevSection(this)">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
+            </svg>
+            <span class="text-sm">向上滚动</span>
+        </div>
+
+        <!-- 向下滚动指示 -->
+        <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2" onclick="scrollToNextSection(this)">
+            <span class="text-sm">继续探索</span>
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
+            </svg>
         </div>
     </section>
 
@@ -727,6 +803,22 @@
             <div class="reveal mt-12 text-center">
                 <p class="text-lg text-gray-400 mb-4">从<span class="text-gray-300">"我该怎么说"</span>变成<span class="text-[#357BE2] font-semibold">"这个对不对"</span></p>
             </div>
+        </div>
+
+        <!-- 向上滚动指示 -->
+        <div class="scroll-indicator up text-gray-500 flex flex-col items-center gap-2" onclick="scrollToPrevSection(this)">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
+            </svg>
+            <span class="text-sm">向上滚动</span>
+        </div>
+
+        <!-- 向下滚动指示 -->
+        <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2" onclick="scrollToNextSection(this)">
+            <span class="text-sm">继续探索</span>
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
+            </svg>
         </div>
     </section>
 
@@ -804,6 +896,22 @@
                 </div>
             </div>
         </div>
+
+        <!-- 向上滚动指示 -->
+        <div class="scroll-indicator up text-gray-500 flex flex-col items-center gap-2" onclick="scrollToPrevSection(this)">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
+            </svg>
+            <span class="text-sm">向上滚动</span>
+        </div>
+
+        <!-- 向下滚动指示 -->
+        <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2" onclick="scrollToNextSection(this)">
+            <span class="text-sm">继续探索</span>
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
+            </svg>
+        </div>
     </section>
 
     <!-- ========== 用户角色区域 ========== -->
@@ -865,6 +973,22 @@
                 </div>
             </div>
         </div>
+
+        <!-- 向上滚动指示 -->
+        <div class="scroll-indicator up text-gray-500 flex flex-col items-center gap-2" onclick="scrollToPrevSection(this)">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
+            </svg>
+            <span class="text-sm">向上滚动</span>
+        </div>
+
+        <!-- 向下滚动指示 -->
+        <div class="scroll-indicator text-gray-500 flex flex-col items-center gap-2" onclick="scrollToNextSection(this)">
+            <span class="text-sm">继续探索</span>
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"/>
+            </svg>
+        </div>
     </section>
 
     <!-- ========== CTA 区域 ========== -->
@@ -890,9 +1014,78 @@
                 © 2026 AI与创新研究院
             </p>
         </div>
+
+        <!-- 向上滚动指示 -->
+        <div class="scroll-indicator up text-gray-500 flex flex-col items-center gap-2" onclick="scrollToPrevSection(this)">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18"/>
+            </svg>
+            <span class="text-sm">向上滚动</span>
+        </div>
     </section>
 
     <script>
+        // 获取所有章节
+        const allSections = document.querySelectorAll('.hero-section, .section');
+
+        // 点击滚动到下一个章节
+        function scrollToNextSection(el) {
+            const currentSection = el.closest('.hero-section, .section');
+            const sectionsArray = Array.from(allSections);
+            const currentIndex = sectionsArray.indexOf(currentSection);
+            if (currentIndex < sectionsArray.length - 1) {
+                sectionsArray[currentIndex + 1].scrollIntoView({ behavior: 'smooth' });
+            }
+        }
+
+        // 点击滚动到上一个章节
+        function scrollToPrevSection(el) {
+            const currentSection = el.closest('.hero-section, .section');
+            const sectionsArray = Array.from(allSections);
+            const currentIndex = sectionsArray.indexOf(currentSection);
+            if (currentIndex > 0) {
+                sectionsArray[currentIndex - 1].scrollIntoView({ behavior: 'smooth' });
+            }
+        }
+
+        // 键盘导航
+        document.addEventListener('keydown', (e) => {
+            // 检查是否在输入框中，如果是则不响应
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                return;
+            }
+
+            // 获取当前可见的section
+            let currentSectionIndex = 0;
+            const scrollPosition = window.scrollY + window.innerHeight / 2;
+
+            allSections.forEach((section, index) => {
+                const rect = section.getBoundingClientRect();
+                const sectionTop = window.scrollY + rect.top;
+                const sectionBottom = sectionTop + rect.height;
+
+                if (scrollPosition >= sectionTop && scrollPosition < sectionBottom) {
+                    currentSectionIndex = index;
+                }
+            });
+
+            // 向下键 - 滚动到下一个section
+            if (e.key === 'ArrowDown' || e.key === 'Down') {
+                e.preventDefault();
+                if (currentSectionIndex < allSections.length - 1) {
+                    allSections[currentSectionIndex + 1].scrollIntoView({ behavior: 'smooth' });
+                }
+            }
+
+            // 向上键 - 滚动到上一个section
+            if (e.key === 'ArrowUp' || e.key === 'Up') {
+                e.preventDefault();
+                if (currentSectionIndex > 0) {
+                    allSections[currentSectionIndex - 1].scrollIntoView({ behavior: 'smooth' });
+                }
+            }
+        });
+
         // 滚动进度条
         window.addEventListener('scroll', () => {
             const winScroll = document.documentElement.scrollTop;
