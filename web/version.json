@@ -1,30 +1,7 @@
 {
-  "version": "1.9.2",
+  "version": "1.9.0",
   "releaseDate": "2026-01-30",
   "changelog": [
-    {
-      "version": "1.9.2",
-      "date": "2026-01-30",
-      "type": "patch",
-      "title": "修复PDF导出内容为空白的问题",
-      "changes": [
-        "设置临时容器固定宽度(210mm)和白色背景",
-        "添加DOM渲染等待时间确保内容可见",
-        "更新html2canvas配置：启用allowTaint、设置backgroundColor",
-        "启用logging便于调试",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
-      ]
-    },
-    {
-      "version": "1.9.1",
-      "date": "2026-01-30",
-      "type": "patch",
-      "title": "修复PDF导出文件为空的问题",
-      "changes": [
-        "从原始DOM预先收集Mermaid图表图片数据，避免临时容器中SVG尺寸为0导致PDF内容为空",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
-      ]
-    },
     {
       "version": "1.9.0",
       "date": "2026-01-30",
