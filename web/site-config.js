@@ -64,8 +64,20 @@ const SITE_CONFIG = {
         source: "——《史记·李将军列传》",
       },
       {
-        text: "Singularity Arrived. AI is Faith.",
+        text: "Singularity Arrived. AI is Faith",
         source: "——奇点已至，AI 即信仰",
+      },
+      {
+        text: "People don't know what they want until you show it to them",
+        source: "——乔布斯",
+      },
+      {
+        text: "我们的任务是去读懂那些尚未写在页面上的东西",
+        source: "——亨利·福特",
+      },
+      {
+        text: "卓越的产品创造者需要洞察那些"尚未写在页面上"的需求",
+        source: "",
       },
     ],
   },
