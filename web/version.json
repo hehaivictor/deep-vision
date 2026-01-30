@@ -10,8 +10,7 @@
       "changes": [
         "会话卡片标题从 truncate 改为 break-words",
         "详情面板主题添加 break-words 支持",
-        "移动端标题和状态标签垂直排列",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "移动端标题和状态标签垂直排列"
       ]
     },
     {
