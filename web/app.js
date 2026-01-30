@@ -1357,6 +1357,9 @@ function deepVision() {
                     return;
                 }
 
+                // 先从原始DOM收集Mermaid图表的图片数据（原始DOM已渲染，尺寸正确）
+                const mermaidImages = await this.collectMermaidImages();
+
                 // 创建临时容器用于PDF生成，避免影响原始DOM
                 const tempContainer = document.createElement('div');
                 tempContainer.innerHTML = reportElement.innerHTML;
@@ -1383,8 +1386,18 @@ function deepVision() {
                 tempContainer.prepend(style);
                 document.body.appendChild(tempContainer);
 
-                // 将 Mermaid SVG 转换为图片
-                await this.convertMermaidToImages(tempContainer);
+                // 用预先收集的图片数据替换临时容器中的Mermaid图表
+                const tempMermaidContainers = tempContainer.querySelectorAll('.mermaid-container');
+                tempMermaidContainers.forEach((container, index) => {
+                    if (mermaidImages[index]) {
+                        const img = document.createElement('img');
+                        img.src = mermaidImages[index].dataUrl;
+                        img.style.cssText = 'max-width: 100%; height: auto; display: block; margin: 16px auto;';
+                        img.alt = 'Mermaid 图表';
+                        container.innerHTML = '';
+                        container.appendChild(img);
+                    }
+                });
 
                 const options = {
                     margin: [15, 15, 15, 15],
