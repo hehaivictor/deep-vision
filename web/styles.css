@@ -73,6 +73,104 @@ textarea {
     }
 }
 
+/* 移动端响应式优化 */
+@media (max-width: 768px) {
+    /* 减小字体大小 */
+    html {
+        font-size: 14px;
+    }
+
+    /* 输入框调整 */
+    input[type="text"],
+    input[type="email"],
+    textarea {
+        @apply px-3 py-2;
+    }
+
+    /* 按钮调整 */
+    button {
+        @apply text-sm px-4 py-2;
+    }
+
+    /* 卡片间距调整 */
+    .card {
+        @apply p-4;
+    }
+
+    /* Modal 全屏显示 */
+    .modal-content {
+        @apply w-full h-full max-w-none rounded-none;
+    }
+
+    /* 表单间距调整 */
+    .form-group {
+        @apply mb-4;
+    }
+
+    /* Logo 大小调整 */
+    .brand-title {
+        @apply text-xl;
+    }
+
+    /* 进度条高度调整 */
+    .progress-bar {
+        @apply h-1.5;
+    }
+}
+
+@media (max-width: 414px) {
+    /* 超小屏幕进一步优化 */
+    html {
+        font-size: 13px;
+    }
+
+    /* 按钮更小 */
+    button {
+        @apply text-xs px-3 py-1.5;
+    }
+
+    /* 输入框更紧凑 */
+    input[type="text"],
+    input[type="email"],
+    textarea {
+        @apply px-2 py-1.5 text-sm;
+    }
+
+    /* 卡片更紧凑 */
+    .card {
+        @apply p-3;
+    }
+}
+
+/* 平板端优化 */
+@media (min-width: 769px) and (max-width: 1024px) {
+    /* 平板布局优化 */
+    html {
+        font-size: 15px;
+    }
+
+    .container {
+        @apply px-6;
+    }
+}
+
+/* 触摸设备优化 */
+@media (hover: none) and (pointer: coarse) {
+    /* 增大可点击区域 */
+    button,
+    a,
+    .clickable {
+        min-height: 44px;
+        min-width: 44px;
+    }
+
+    /* 禁用 hover 效果 */
+    button:hover,
+    a:hover {
+        transform: none;
+    }
+}
+
 /* 保持浅色主题 */
 @media (prefers-color-scheme: dark) {
     /* Manus 风格以浅色为主，不实现暗色模式 */
