@@ -373,13 +373,35 @@ function deepVision() {
         },
 
         async createNewSession() {
-            if (!this.newSessionTopic.trim()) return;
+            if (!this.newSessionTopic.trim() || this.loading) return;
+
+            // 设置加载状态，防止并发
+            this.loading = true;
+
+            // 从配置获取限制
+            const config = typeof SITE_CONFIG !== 'undefined' ? SITE_CONFIG.limits : null;
+            const topicMaxLength = config?.topicMaxLength || 200;
+            const descMaxLength = config?.descriptionMaxLength || 1000;
+
+            // 验证主题长度
+            if (this.newSessionTopic.length > topicMaxLength) {
+                this.showToast(`调研主题不能超过${topicMaxLength}个字符`, 'error');
+                this.loading = false;
+                return;
+            }
+
+            // 验证描述长度
+            if (this.newSessionDescription.length > descMaxLength) {
+                this.showToast(`调研描述不能超过${descMaxLength}个字符`, 'error');
+                this.loading = false;
+                return;
+            }
 
             try {
                 const session = await this.apiCall('/sessions', {
                     method: 'POST',
                     body: JSON.stringify({
-                        topic: this.newSessionTopic,
+                        topic: this.newSessionTopic.trim(),
                         description: this.newSessionDescription.trim() || null,
                         interview_mode: this.selectedInterviewMode
                     })
@@ -396,6 +418,8 @@ function deepVision() {
                 this.showToast('会话创建成功', 'success');
             } catch (error) {
                 this.showToast('创建会话失败', 'error');
+            } finally {
+                this.loading = false;
             }
         },
 
@@ -475,21 +499,50 @@ function deepVision() {
             const files = event.target.files;
             if (!files.length || !this.currentSession) return;
 
-            // 允许的文件类型
-            const allowedTypes = ['.md', '.txt', '.pdf', '.docx', '.xlsx', '.pptx', '.png', '.jpg', '.jpeg', '.gif', '.webp'];
+            // 从配置获取限制
+            const config = typeof SITE_CONFIG !== 'undefined' ? SITE_CONFIG.limits : null;
+            const minFileSize = config?.minFileSize || 1;
+            const maxFileSize = config?.maxFileSize || (10 * 1024 * 1024);
+            const supportedTypes = config?.supportedFileTypes || {
+                '.md': ['text/markdown', 'text/x-markdown', 'text/plain'],
+                '.txt': ['text/plain'],
+                '.pdf': ['application/pdf'],
+                '.docx': ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+                '.xlsx': ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+                '.pptx': ['application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+                '.png': ['image/png'],
+                '.jpg': ['image/jpeg'],
+                '.jpeg': ['image/jpeg'],
+                '.gif': ['image/gif'],
+                '.webp': ['image/webp']
+            };
 
             for (const file of files) {
-                // 验证文件类型
+                // 验证文件大小 - 最小值
+                if (file.size < minFileSize) {
+                    this.showToast(`文件 ${file.name} 是空文件，请选择有效文件`, 'error');
+                    continue;
+                }
+
+                // 验证文件大小 - 最大值
+                if (file.size > maxFileSize) {
+                    const sizeMB = (maxFileSize / (1024 * 1024)).toFixed(0);
+                    this.showToast(`文件 ${file.name} 超过${sizeMB}MB限制`, 'error');
+                    continue;
+                }
+
+                // 验证文件扩展名
                 const ext = '.' + file.name.split('.').pop().toLowerCase();
-                if (!allowedTypes.includes(ext)) {
+                if (!supportedTypes[ext]) {
                     this.showToast(`不支持的文件类型: ${ext}`, 'error');
                     continue;
                 }
 
-                // 验证文件大小（10MB）
-                if (file.size > 10 * 1024 * 1024) {
-                    this.showToast(`文件 ${file.name} 超过10MB限制`, 'error');
-                    continue;
+                // 验证MIME类型（增强安全性）
+                const allowedMimeTypes = supportedTypes[ext];
+                if (allowedMimeTypes && !allowedMimeTypes.includes(file.type)) {
+                    console.warn(`文件 ${file.name} 的MIME类型 ${file.type} 与扩展名 ${ext} 不匹配，但允许继续`);
+                    // 警告但不阻止，因为某些系统的MIME类型识别可能不准确
                 }
 
                 const formData = new FormData();
@@ -873,6 +926,18 @@ function deepVision() {
             // 设置提交状态，防止并发操作
             this.submitting = true;
 
+            // 从配置获取限制
+            const config = typeof SITE_CONFIG !== 'undefined' ? SITE_CONFIG.limits : null;
+            const answerMaxLength = config?.answerMaxLength || 5000;
+            const otherInputMaxLength = config?.otherInputMaxLength || 2000;
+
+            // 验证"其他"选项输入长度
+            if (this.otherSelected && this.otherAnswerText.length > otherInputMaxLength) {
+                this.showToast(`自定义答案不能超过${otherInputMaxLength}个字符`, 'error');
+                this.submitting = false;
+                return;
+            }
+
             // 构建答案
             let answer;
             if (this.currentQuestion.multiSelect) {
@@ -897,6 +962,13 @@ function deepVision() {
                     this.submitting = false;
                     return;
                 }
+            }
+
+            // 验证答案总长度
+            if (answer.length > answerMaxLength) {
+                this.showToast(`答案内容过长，请简化后重试（最大${answerMaxLength}字符）`, 'error');
+                this.submitting = false;
+                return;
             }
 
             try {
