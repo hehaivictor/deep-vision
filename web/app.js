@@ -1357,27 +1357,10 @@ function deepVision() {
                     return;
                 }
 
-                // 先从原始DOM收集Mermaid图表的图片数据（原始DOM已渲染，尺寸正确）
-                const mermaidImages = await this.collectMermaidImages();
-
                 // 创建临时容器用于PDF生成，避免影响原始DOM
                 const tempContainer = document.createElement('div');
                 tempContainer.innerHTML = reportElement.innerHTML;
-                // 设置临时容器样式：固定宽度、可见、白色背景
-                tempContainer.style.cssText = `
-                    position: absolute;
-                    left: 0;
-                    top: 0;
-                    width: 210mm;
-                    min-height: 297mm;
-                    padding: 40px;
-                    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
-                    line-height: 1.8;
-                    color: #1a1a1a;
-                    background: white;
-                    z-index: -9999;
-                    overflow: visible;
-                `;
+                tempContainer.style.cssText = 'padding: 40px; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; line-height: 1.8; color: #1a1a1a;';
 
                 // 添加PDF专用样式
                 const style = document.createElement('style');
@@ -1400,24 +1383,8 @@ function deepVision() {
                 tempContainer.prepend(style);
                 document.body.appendChild(tempContainer);
 
-                // 等待DOM渲染完成
-                await new Promise(resolve => setTimeout(resolve, 100));
-
-                // 用预先收集的图片数据替换临时容器中的Mermaid图表
-                const tempMermaidContainers = tempContainer.querySelectorAll('.mermaid-container');
-                tempMermaidContainers.forEach((container, index) => {
-                    if (mermaidImages[index]) {
-                        const img = document.createElement('img');
-                        img.src = mermaidImages[index].dataUrl;
-                        img.style.cssText = 'max-width: 100%; height: auto; display: block; margin: 16px auto;';
-                        img.alt = 'Mermaid 图表';
-                        container.innerHTML = '';
-                        container.appendChild(img);
-                    }
-                });
-
-                // 再次等待图片加载
-                await new Promise(resolve => setTimeout(resolve, 100));
+                // 将 Mermaid SVG 转换为图片
+                await this.convertMermaidToImages(tempContainer);
 
                 const options = {
                     margin: [15, 15, 15, 15],
@@ -1426,12 +1393,8 @@ function deepVision() {
                     html2canvas: {
                         scale: 2,
                         useCORS: true,
-                        logging: true,
-                        letterRendering: true,
-                        allowTaint: true,
-                        backgroundColor: '#ffffff',
-                        windowWidth: tempContainer.scrollWidth,
-                        windowHeight: tempContainer.scrollHeight
+                        logging: false,
+                        letterRendering: true
                     },
                     jsPDF: {
                         unit: 'mm',
