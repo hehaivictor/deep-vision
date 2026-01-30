@@ -2522,32 +2522,42 @@ def build_report_prompt(session: dict) -> str:
 
 ## Mermaid 图表规范
 
-请在报告中包含以下类型的 Mermaid 图表。**除 quadrantChart 外，所有图表都应使用中文标签**。
+请在报告中包含以下类型的 Mermaid 图表。**所有图表都应使用中文标签**。
 
 ### 1. 优先级矩阵（必须）
-使用象限图展示需求优先级，**严格按照以下格式**：
+使用 flowchart 模拟四象限图展示需求优先级，**完全使用中文**：
 
 ```mermaid
-quadrantChart
-    title Priority Matrix
-    x-axis Low Urgency --> High Urgency
-    y-axis Low Importance --> High Importance
-    quadrant-1 Do First
-    quadrant-2 Schedule
-    quadrant-3 Delegate
-    quadrant-4 Eliminate
+flowchart TB
+    subgraph 优先级矩阵
+        direction TB
+        subgraph Q1[" 重要且紧急 "]
+            R1[需求1]
+            R2[需求2]
+        end
+        subgraph Q2[" 重要不紧急 "]
+            R3[需求3]
+        end
+        subgraph Q3[" 紧急不重要 "]
+            R4[需求4]
+        end
+        subgraph Q4[" 不重要不紧急 "]
+            R5[需求5]
+        end
+    end
 
-    Requirement1: [0.8, 0.9]
-    Requirement2: [0.3, 0.7]
-    Requirement3: [0.6, 0.5]
+    style Q1 fill:#ff6b6b,color:#fff
+    style Q2 fill:#4ecdc4,color:#fff
+    style Q3 fill:#ffe66d,color:#333
+    style Q4 fill:#95a5a6,color:#fff
 ```
 
-**quadrantChart 严格规则（必须遵守）：**
-- title、x-axis、y-axis、quadrant 标签**必须用英文**（quadrantChart 不支持中文）
-- 数据点名称**必须用英文或拼音**，不能用中文
-- 数据点格式：`Name: [x, y]`，x和y范围0-1
-- 不要在标签中使用括号、冒号等特殊符号
-- 在图表下方用中文表格说明每个数据点的含义
+**优先级矩阵规则（必须遵守）：**
+- 使用 flowchart TB 布局
+- 四个象限使用 subgraph 表示，标题用中文
+- 需求项放在对应象限的 subgraph 内
+- 使用 style 设置不同象限的颜色区分
+- 在图表下方用文字说明每个需求的优先级理由
 
 ### 2. 业务流程图（推荐）
 使用 flowchart 展示关键业务流程，**使用中文标签**：
@@ -2603,8 +2613,8 @@ flowchart LR
 ## 重要提醒
 - 所有内容必须严格基于访谈记录，不得编造
 - 使用 Markdown 格式，Mermaid 代码块使用 ```mermaid 标记
-- **flowchart、pie 等图表使用中文标签**，quadrantChart 因技术限制必须用英文
-- 优先级矩阵中的坐标值请根据实际需求评估
+- **所有图表都使用中文标签**
+- 优先级矩阵使用 flowchart 模拟四象限，按重要性和紧急性分类
 - 报告要专业、结构清晰、可操作
 - **Mermaid 语法要求严格，请仔细检查每个图表的语法正确性**
 - 报告末尾使用署名：*此报告由 Deep Vision 深瞳-智能需求调研助手生成*
