@@ -749,11 +749,16 @@
                                 <template x-if="!currentSession.reference_docs || currentSession.reference_docs.length === 0">
                                     <p class="text-sm text-muted">暂无参考文档</p>
                                 </template>
-                                <label class="mt-3 flex items-center justify-center gap-2 p-3 border-2 border-dashed border-gray-200 rounded-lg hover:border-cta/50 cursor-pointer transition-colors">
-                                    <svg class="w-5 h-5 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <label class="mt-3 flex items-center justify-center gap-2 p-3 border-2 border-dashed rounded-lg cursor-pointer transition-all duration-200"
+                                       :class="isDraggingDoc ? 'border-cta bg-cta/5' : 'border-gray-200 hover:border-cta/50'"
+                                       @dragover.prevent="isDraggingDoc = true"
+                                       @dragenter.prevent="isDraggingDoc = true"
+                                       @dragleave.prevent="isDraggingDoc = false"
+                                       @drop.prevent="isDraggingDoc = false; uploadDocument($event)">
+                                    <svg class="w-5 h-5" :class="isDraggingDoc ? 'text-primary' : 'text-muted'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
                                     </svg>
-                                    <span class="text-sm text-muted">上传文档</span>
+                                    <span class="text-sm" :class="isDraggingDoc ? 'text-primary' : 'text-muted'" x-text="isDraggingDoc ? '松开上传' : '上传文档'"></span>
                                     <input type="file" class="hidden" @change="uploadDocument($event)" accept=".md,.txt,.pdf,.docx,.xlsx,.pptx,.jpg,.jpeg,.png,.gif,.webp">
                                 </label>
                             </div>
@@ -789,11 +794,16 @@
                                 <template x-if="!currentSession.research_docs || currentSession.research_docs.length === 0">
                                     <p class="text-sm text-muted">暂无调研成果</p>
                                 </template>
-                                <label class="mt-3 flex items-center justify-center gap-2 p-3 border-2 border-dashed border-gray-200 rounded-lg hover:border-cta/50 cursor-pointer transition-colors">
-                                    <svg class="w-5 h-5 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <label class="mt-3 flex items-center justify-center gap-2 p-3 border-2 border-dashed rounded-lg cursor-pointer transition-all duration-200"
+                                       :class="isDraggingResearch ? 'border-cta bg-cta/5' : 'border-gray-200 hover:border-cta/50'"
+                                       @dragover.prevent="isDraggingResearch = true"
+                                       @dragenter.prevent="isDraggingResearch = true"
+                                       @dragleave.prevent="isDraggingResearch = false"
+                                       @drop.prevent="isDraggingResearch = false; uploadResearchDoc($event)">
+                                    <svg class="w-5 h-5" :class="isDraggingResearch ? 'text-primary' : 'text-muted'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
                                     </svg>
-                                    <span class="text-sm text-muted">上传调研成果</span>
+                                    <span class="text-sm" :class="isDraggingResearch ? 'text-primary' : 'text-muted'" x-text="isDraggingResearch ? '松开上传' : '上传调研成果'"></span>
                                     <input type="file" class="hidden" @change="uploadResearchDoc($event)" accept=".md,.txt,.pdf,.docx,.xlsx,.pptx,.jpg,.jpeg,.png,.gif,.webp">
                                 </label>
                             </div>
@@ -814,13 +824,18 @@
                                 <p class="text-muted mb-6">您可以上传参考文档帮助我们更好地理解您的需求背景（可选）</p>
 
                                 <div class="grid gap-4 sm:grid-cols-2">
-                                    <label class="flex flex-col items-center justify-center p-6 md:p-8 border-2 border-dashed border-gray-200 rounded-xl hover:border-cta cursor-pointer transition-colors group">
-                                        <svg class="w-12 h-12 text-gray-300 group-hover:text-primary mb-3 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <label class="flex flex-col items-center justify-center p-6 md:p-8 border-2 border-dashed rounded-xl cursor-pointer transition-all duration-200 group"
+                                           :class="isDraggingDoc ? 'border-cta bg-cta/5 scale-[1.02]' : 'border-gray-200 hover:border-cta'"
+                                           @dragover.prevent="isDraggingDoc = true"
+                                           @dragenter.prevent="isDraggingDoc = true"
+                                           @dragleave.prevent="isDraggingDoc = false"
+                                           @drop.prevent="isDraggingDoc = false; uploadDocument($event)">
+                                        <svg class="w-12 h-12 mb-3 transition-colors" :class="isDraggingDoc ? 'text-primary' : 'text-gray-300 group-hover:text-primary'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
                                         </svg>
-                                        <span class="font-medium text-secondary group-hover:text-primary">上传参考文档</span>
+                                        <span class="font-medium" :class="isDraggingDoc ? 'text-primary' : 'text-secondary group-hover:text-primary'" x-text="isDraggingDoc ? '松开以上传文件' : '点击或拖拽上传'"></span>
                                         <span class="text-xs text-muted mt-1">支持 .md, .txt, .pdf, .docx, .xlsx, .pptx, 图片</span>
-                                        <input type="file" class="hidden" @change="uploadDocument($event)" accept=".md,.txt,.pdf,.docx,.xlsx,.pptx" multiple>
+                                        <input type="file" class="hidden" @change="uploadDocument($event)" accept=".md,.txt,.pdf,.docx,.xlsx,.pptx,.jpg,.jpeg,.png,.gif,.webp" multiple>
                                     </label>
 
                                     <div class="flex flex-col p-4 border-2 border-gray-200 rounded-xl bg-gray-50">
@@ -875,13 +890,18 @@
                                     <p class="text-muted mb-4">如果您已有相关的调研报告或分析文档，可以上传供 AI 参考（可选）</p>
 
                                     <div class="grid gap-4 sm:grid-cols-2">
-                                        <label class="flex flex-col items-center justify-center p-6 md:p-8 border-2 border-dashed border-gray-200 rounded-xl hover:border-cta cursor-pointer transition-colors group">
-                                            <svg class="w-12 h-12 text-gray-300 group-hover:text-primary mb-3 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <label class="flex flex-col items-center justify-center p-6 md:p-8 border-2 border-dashed rounded-xl cursor-pointer transition-all duration-200 group"
+                                               :class="isDraggingResearch ? 'border-cta bg-cta/5 scale-[1.02]' : 'border-gray-200 hover:border-cta'"
+                                               @dragover.prevent="isDraggingResearch = true"
+                                               @dragenter.prevent="isDraggingResearch = true"
+                                               @dragleave.prevent="isDraggingResearch = false"
+                                               @drop.prevent="isDraggingResearch = false; uploadResearchDoc($event)">
+                                            <svg class="w-12 h-12 mb-3 transition-colors" :class="isDraggingResearch ? 'text-primary' : 'text-gray-300 group-hover:text-primary'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
                                             </svg>
-                                            <span class="font-medium text-secondary group-hover:text-primary">上传已有调研成果</span>
+                                            <span class="font-medium" :class="isDraggingResearch ? 'text-primary' : 'text-secondary group-hover:text-primary'" x-text="isDraggingResearch ? '松开以上传文件' : '点击或拖拽上传'"></span>
                                             <span class="text-xs text-muted mt-1">支持 .md, .txt, .pdf, .docx, .xlsx, .pptx, 图片</span>
-                                            <input type="file" class="hidden" @change="uploadResearchDoc($event)" accept=".md,.txt,.pdf,.docx,.xlsx,.pptx" multiple>
+                                            <input type="file" class="hidden" @change="uploadResearchDoc($event)" accept=".md,.txt,.pdf,.docx,.xlsx,.pptx,.jpg,.jpeg,.png,.gif,.webp" multiple>
                                         </label>
 
                                         <div class="flex flex-col p-4 border-2 border-gray-200 rounded-xl bg-gray-50">

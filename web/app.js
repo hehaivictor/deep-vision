@@ -55,6 +55,10 @@ function deepVision() {
         docToDelete: null,
         docDeleteCallback: null,
 
+        // 拖放上传状态
+        isDraggingDoc: false,
+        isDraggingResearch: false,
+
         // 报告相关
         reports: [],
         selectedReport: null,
@@ -496,8 +500,9 @@ function deepVision() {
 
         // ============ 文档上传 ============
         async uploadDocument(event) {
-            const files = event.target.files;
-            if (!files.length || !this.currentSession) return;
+            // 支持拖放上传和点击上传
+            const files = event.dataTransfer?.files || event.target?.files;
+            if (!files?.length || !this.currentSession) return;
 
             // 从配置获取限制
             const config = typeof SITE_CONFIG !== 'undefined' ? SITE_CONFIG.limits : null;
@@ -573,7 +578,10 @@ function deepVision() {
                 }
             }
 
-            event.target.value = '';
+            // 清除 input 值（仅点击上传时）
+            if (event.target?.value !== undefined) {
+                event.target.value = '';
+            }
         },
 
         async removeDocument(index) {
@@ -609,8 +617,9 @@ function deepVision() {
 
         // ============ 已有调研成果上传 ============
         async uploadResearchDoc(event) {
-            const files = event.target.files;
-            if (!files.length || !this.currentSession) return;
+            // 支持拖放上传和点击上传
+            const files = event.dataTransfer?.files || event.target?.files;
+            if (!files?.length || !this.currentSession) return;
 
             for (const file of files) {
                 const formData = new FormData();
@@ -635,7 +644,10 @@ function deepVision() {
                 }
             }
 
-            event.target.value = '';
+            // 清除 input 值（仅点击上传时）
+            if (event.target?.value !== undefined) {
+                event.target.value = '';
+            }
         },
 
         async removeResearchDoc(index) {
