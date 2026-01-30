@@ -1363,7 +1363,21 @@ function deepVision() {
                 // 创建临时容器用于PDF生成，避免影响原始DOM
                 const tempContainer = document.createElement('div');
                 tempContainer.innerHTML = reportElement.innerHTML;
-                tempContainer.style.cssText = 'padding: 40px; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; line-height: 1.8; color: #1a1a1a;';
+                // 设置临时容器样式：固定宽度、可见、白色背景
+                tempContainer.style.cssText = `
+                    position: absolute;
+                    left: 0;
+                    top: 0;
+                    width: 210mm;
+                    min-height: 297mm;
+                    padding: 40px;
+                    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+                    line-height: 1.8;
+                    color: #1a1a1a;
+                    background: white;
+                    z-index: -9999;
+                    overflow: visible;
+                `;
 
                 // 添加PDF专用样式
                 const style = document.createElement('style');
@@ -1386,6 +1400,9 @@ function deepVision() {
                 tempContainer.prepend(style);
                 document.body.appendChild(tempContainer);
 
+                // 等待DOM渲染完成
+                await new Promise(resolve => setTimeout(resolve, 100));
+
                 // 用预先收集的图片数据替换临时容器中的Mermaid图表
                 const tempMermaidContainers = tempContainer.querySelectorAll('.mermaid-container');
                 tempMermaidContainers.forEach((container, index) => {
@@ -1399,6 +1416,9 @@ function deepVision() {
                     }
                 });
 
+                // 再次等待图片加载
+                await new Promise(resolve => setTimeout(resolve, 100));
+
                 const options = {
                     margin: [15, 15, 15, 15],
                     filename: `${filename}.pdf`,
@@ -1406,8 +1426,12 @@ function deepVision() {
                     html2canvas: {
                         scale: 2,
                         useCORS: true,
-                        logging: false,
-                        letterRendering: true
+                        logging: true,
+                        letterRendering: true,
+                        allowTaint: true,
+                        backgroundColor: '#ffffff',
+                        windowWidth: tempContainer.scrollWidth,
+                        windowHeight: tempContainer.scrollHeight
                     },
                     jsPDF: {
                         unit: 'mm',
