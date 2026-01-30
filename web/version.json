@@ -1,16 +1,7 @@
 {
-  "version": "1.9.1",
+  "version": "1.9.0",
   "releaseDate": "2026-01-30",
   "changelog": [
-    {
-      "version": "1.9.1",
-      "date": "2026-01-30",
-      "type": "patch",
-      "title": "revert: 回退到1.9.0稳定版本",
-      "changes": [
-        "revert: 回退到1.9.0稳定版本"
-      ]
-    },
     {
       "version": "1.9.0",
       "date": "2026-01-30",
