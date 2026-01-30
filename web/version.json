@@ -1,7 +1,20 @@
 {
-  "version": "1.6.1",
+  "version": "1.7.0",
   "releaseDate": "2026-01-30",
   "changelog": [
+    {
+      "version": "1.7.0",
+      "date": "2026-01-30",
+      "type": "minor",
+      "title": "文档上传支持拖拽上传",
+      "changes": [
+        "参考文档上传区域支持拖放",
+        "调研成果上传区域支持拖放",
+        "拖放时显示视觉反馈（边框变色、文字提示）",
+        "兼容点击上传和拖放上传两种方式",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.6.1",
       "date": "2026-01-30",
