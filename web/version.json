@@ -1,7 +1,18 @@
 {
-  "version": "1.9.2",
+  "version": "1.9.3",
   "releaseDate": "2026-01-30",
   "changelog": [
+    {
+      "version": "1.9.3",
+      "date": "2026-01-30",
+      "type": "patch",
+      "title": "简化PDF导出 - 直接使用原始DOM元素",
+      "changes": [
+        "移除临时容器逻辑，直接使用已渲染的.markdown-body元素",
+        "降低scale和quality参数减少内存占用",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.9.2",
       "date": "2026-01-30",

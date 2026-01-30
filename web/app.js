@@ -1347,97 +1347,34 @@ function deepVision() {
                 return;
             }
 
-            this.showToast('正在生成 PDF（处理图表中）...', 'info');
+            this.showToast('正在生成 PDF...', 'info');
 
             try {
-                // 获取渲染后的报告内容
+                // 直接使用原始渲染好的报告内容，不创建临时容器
                 const reportElement = document.querySelector('.markdown-body');
                 if (!reportElement) {
                     this.showToast('无法获取报告内容', 'error');
                     return;
                 }
 
-                // 【关键修复】先从原始DOM收集Mermaid图表的图片数据
-                // 因为原始DOM中的SVG已经渲染完成，getBoundingClientRect()能返回正确尺寸
-                const mermaidImages = await this.collectMermaidImages();
-
-                // 创建临时容器用于PDF生成，避免影响原始DOM
-                const tempContainer = document.createElement('div');
-                tempContainer.innerHTML = reportElement.innerHTML;
-                // 设置临时容器样式：固定宽度、白色背景、确保可见
-                tempContainer.style.cssText = `
-                    position: absolute;
-                    left: -9999px;
-                    top: 0;
-                    width: 800px;
-                    padding: 40px;
-                    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
-                    line-height: 1.8;
-                    color: #1a1a1a;
-                    background: #ffffff;
-                `;
-
-                // 添加PDF专用样式
-                const style = document.createElement('style');
-                style.textContent = `
-                    h1 { font-size: 24px; font-weight: bold; margin: 24px 0 16px; color: #111; }
-                    h2 { font-size: 20px; font-weight: bold; margin: 20px 0 12px; color: #222; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; }
-                    h3 { font-size: 16px; font-weight: bold; margin: 16px 0 8px; color: #333; }
-                    p { margin: 8px 0; }
-                    ul, ol { margin: 8px 0; padding-left: 24px; }
-                    li { margin: 4px 0; }
-                    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 14px; }
-                    pre { background: #f3f4f6; padding: 16px; border-radius: 8px; overflow-x: auto; }
-                    blockquote { border-left: 4px solid #3b82f6; padding-left: 16px; margin: 16px 0; color: #4b5563; }
-                    table { border-collapse: collapse; width: 100%; margin: 16px 0; }
-                    th, td { border: 1px solid #e5e7eb; padding: 8px 12px; text-align: left; }
-                    th { background: #f9fafb; font-weight: 600; }
-                    .mermaid-container { page-break-inside: avoid; margin: 16px 0; }
-                    .mermaid-container img { max-width: 100%; height: auto; }
-                `;
-                tempContainer.prepend(style);
-                document.body.appendChild(tempContainer);
-
-                // 【关键修复】用预先收集的图片替换临时容器中的Mermaid SVG
-                const tempMermaidContainers = tempContainer.querySelectorAll('.mermaid-container');
-                let imageIndex = 0;
-                for (const container of tempMermaidContainers) {
-                    if (mermaidImages[imageIndex] && mermaidImages[imageIndex].dataUrl) {
-                        const img = document.createElement('img');
-                        img.src = mermaidImages[imageIndex].dataUrl;
-                        img.style.cssText = 'max-width: 100%; height: auto; display: block; margin: 16px auto;';
-                        img.alt = 'Mermaid 图表';
-                        container.innerHTML = '';
-                        container.appendChild(img);
-                    }
-                    imageIndex++;
-                }
-
                 const options = {
-                    margin: [15, 15, 15, 15],
+                    margin: [10, 10, 10, 10],
                     filename: `${filename}.pdf`,
-                    image: { type: 'jpeg', quality: 0.95 },
+                    image: { type: 'jpeg', quality: 0.92 },
                     html2canvas: {
-                        scale: 2,
+                        scale: 1.5,
                         useCORS: true,
-                        logging: true,
-                        letterRendering: true,
-                        backgroundColor: '#ffffff',
-                        width: 800,
-                        windowWidth: 800
+                        logging: true
                     },
                     jsPDF: {
                         unit: 'mm',
                         format: 'a4',
                         orientation: 'portrait'
                     },
-                    pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+                    pagebreak: { mode: 'avoid-all' }
                 };
 
-                await html2pdf().set(options).from(tempContainer).save();
-
-                // 清理临时容器
-                document.body.removeChild(tempContainer);
+                await html2pdf().set(options).from(reportElement).save();
 
                 this.showToast('PDF 文件已下载', 'success');
             } catch (error) {
