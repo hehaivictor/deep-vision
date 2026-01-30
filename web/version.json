@@ -1,7 +1,20 @@
 {
-  "version": "1.9.1",
+  "version": "1.10.0",
   "releaseDate": "2026-01-30",
   "changelog": [
+    {
+      "version": "1.10.0",
+      "date": "2026-01-30",
+      "type": "minor",
+      "title": "优先级矩阵改用flowchart实现，支持完全中文",
+      "changes": [
+        "将quadrantChart替换为flowchart模拟的四象限图",
+        "使用subgraph表示四个象限：重要且紧急、重要不紧急、紧急不重要、不重要不紧急",
+        "使用style设置不同象限的颜色区分",
+        "所有图表现在都支持中文标签",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.9.1",
       "date": "2026-01-30",
