@@ -1364,7 +1364,18 @@ function deepVision() {
                 // 创建临时容器用于PDF生成，避免影响原始DOM
                 const tempContainer = document.createElement('div');
                 tempContainer.innerHTML = reportElement.innerHTML;
-                tempContainer.style.cssText = 'padding: 40px; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; line-height: 1.8; color: #1a1a1a;';
+                // 设置临时容器样式：固定宽度、白色背景、确保可见
+                tempContainer.style.cssText = `
+                    position: absolute;
+                    left: -9999px;
+                    top: 0;
+                    width: 800px;
+                    padding: 40px;
+                    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+                    line-height: 1.8;
+                    color: #1a1a1a;
+                    background: #ffffff;
+                `;
 
                 // 添加PDF专用样式
                 const style = document.createElement('style');
@@ -1405,12 +1416,15 @@ function deepVision() {
                 const options = {
                     margin: [15, 15, 15, 15],
                     filename: `${filename}.pdf`,
-                    image: { type: 'jpeg', quality: 0.98 },
+                    image: { type: 'jpeg', quality: 0.95 },
                     html2canvas: {
                         scale: 2,
                         useCORS: true,
-                        logging: false,
-                        letterRendering: true
+                        logging: true,
+                        letterRendering: true,
+                        backgroundColor: '#ffffff',
+                        width: 800,
+                        windowWidth: 800
                     },
                     jsPDF: {
                         unit: 'mm',
