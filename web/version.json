@@ -1,7 +1,19 @@
 {
-  "version": "1.9.1",
+  "version": "1.9.2",
   "releaseDate": "2026-01-30",
   "changelog": [
+    {
+      "version": "1.9.2",
+      "date": "2026-01-30",
+      "type": "patch",
+      "title": "修复大文件PDF导出空白 - 设置临时容器固定宽度和背景色",
+      "changes": [
+        "临时容器设置固定宽度800px和白色背景",
+        "html2canvas配置添加backgroundColor和windowWidth",
+        "启用logging便于调试",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.9.1",
       "date": "2026-01-30",
