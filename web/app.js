@@ -1347,27 +1347,44 @@ function deepVision() {
                 return;
             }
 
-            this.showToast('正在生成 PDF...', 'info');
+            this.showToast('正在生成 PDF（处理图表中）...', 'info');
 
             try {
-                // 直接使用原始渲染好的报告内容
+                // 获取渲染后的报告内容
                 const reportElement = document.querySelector('.markdown-body');
                 if (!reportElement) {
                     this.showToast('无法获取报告内容', 'error');
                     return;
                 }
 
-                // 保存原始样式
-                const originalStyle = reportElement.getAttribute('style') || '';
+                // 创建临时容器用于PDF生成，避免影响原始DOM
+                const tempContainer = document.createElement('div');
+                tempContainer.innerHTML = reportElement.innerHTML;
+                tempContainer.style.cssText = 'padding: 40px; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; line-height: 1.8; color: #1a1a1a;';
 
-                // 临时设置打印样式
-                reportElement.style.cssText = originalStyle + `
-                    padding: 40px;
-                    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
-                    line-height: 1.8;
-                    color: #1a1a1a;
-                    background: white;
+                // 添加PDF专用样式
+                const style = document.createElement('style');
+                style.textContent = `
+                    h1 { font-size: 24px; font-weight: bold; margin: 24px 0 16px; color: #111; }
+                    h2 { font-size: 20px; font-weight: bold; margin: 20px 0 12px; color: #222; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; }
+                    h3 { font-size: 16px; font-weight: bold; margin: 16px 0 8px; color: #333; }
+                    p { margin: 8px 0; }
+                    ul, ol { margin: 8px 0; padding-left: 24px; }
+                    li { margin: 4px 0; }
+                    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 14px; }
+                    pre { background: #f3f4f6; padding: 16px; border-radius: 8px; overflow-x: auto; }
+                    blockquote { border-left: 4px solid #3b82f6; padding-left: 16px; margin: 16px 0; color: #4b5563; }
+                    table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+                    th, td { border: 1px solid #e5e7eb; padding: 8px 12px; text-align: left; }
+                    th { background: #f9fafb; font-weight: 600; }
+                    .mermaid-container { page-break-inside: avoid; margin: 16px 0; }
+                    .mermaid-container img { max-width: 100%; height: auto; }
                 `;
+                tempContainer.prepend(style);
+                document.body.appendChild(tempContainer);
+
+                // 将 Mermaid SVG 转换为图片
+                await this.convertMermaidToImages(tempContainer);
 
                 const options = {
                     margin: [15, 15, 15, 15],
@@ -1377,8 +1394,7 @@ function deepVision() {
                         scale: 2,
                         useCORS: true,
                         logging: false,
-                        letterRendering: true,
-                        backgroundColor: '#ffffff'
+                        letterRendering: true
                     },
                     jsPDF: {
                         unit: 'mm',
@@ -1388,14 +1404,10 @@ function deepVision() {
                     pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
                 };
 
-                await html2pdf().set(options).from(reportElement).save();
+                await html2pdf().set(options).from(tempContainer).save();
 
-                // 恢复原始样式
-                if (originalStyle) {
-                    reportElement.setAttribute('style', originalStyle);
-                } else {
-                    reportElement.removeAttribute('style');
-                }
+                // 清理临时容器
+                document.body.removeChild(tempContainer);
 
                 this.showToast('PDF 文件已下载', 'success');
             } catch (error) {
