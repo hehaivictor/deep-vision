@@ -2525,39 +2525,22 @@ def build_report_prompt(session: dict) -> str:
 请在报告中包含以下类型的 Mermaid 图表。**所有图表都应使用中文标签**。
 
 ### 1. 优先级矩阵（必须）
-使用 flowchart 模拟四象限图展示需求优先级，**完全使用中文**：
+使用表格形式展示需求优先级分类，**不使用Mermaid图表**，直接用Markdown表格：
 
-```mermaid
-flowchart TB
-    subgraph 优先级矩阵
-        direction TB
-        subgraph Q1[" 重要且紧急 "]
-            R1[需求1]
-            R2[需求2]
-        end
-        subgraph Q2[" 重要不紧急 "]
-            R3[需求3]
-        end
-        subgraph Q3[" 紧急不重要 "]
-            R4[需求4]
-        end
-        subgraph Q4[" 不重要不紧急 "]
-            R5[需求5]
-        end
-    end
-
-    style Q1 fill:#ff6b6b,color:#fff
-    style Q2 fill:#4ecdc4,color:#fff
-    style Q3 fill:#ffe66d,color:#333
-    style Q4 fill:#95a5a6,color:#fff
-```
+| 优先级 | 需求项 | 说明 |
+|:---:|:---|:---|
+| 🔴 P0 立即执行 | 需求1、需求2 | 重要且紧急，必须优先处理 |
+| 🟡 P1 计划执行 | 需求3 | 重要但不紧急，需要规划 |
+| 🟢 P2 可委派 | 需求4 | 紧急但不重要，可分配他人 |
+| ⚪ P3 低优先级 | 需求5 | 不重要不紧急，可延后 |
 
 **优先级矩阵规则（必须遵守）：**
-- 使用 flowchart TB 布局
-- 四个象限使用 subgraph 表示，标题用中文
-- 需求项放在对应象限的 subgraph 内
-- 使用 style 设置不同象限的颜色区分
-- 在图表下方用文字说明每个需求的优先级理由
+- 使用Markdown表格展示，不使用Mermaid
+- P0（立即执行）：重要且紧急的需求
+- P1（计划执行）：重要但不紧急的需求
+- P2（可委派）：紧急但不重要的需求
+- P3（低优先级）：不重要不紧急的需求
+- 每个优先级说明具体原因
 
 ### 2. 业务流程图（推荐）
 使用 flowchart 展示关键业务流程，**使用中文标签**：
