@@ -2522,10 +2522,34 @@ def build_report_prompt(session: dict) -> str:
 
 ## Mermaid 图表规范
 
-请在报告中包含以下类型的 Mermaid 图表。**所有图表都应使用中文标签**。
+请在报告中包含以下类型的 Mermaid 图表。**除 quadrantChart 外，所有图表都应使用中文标签**。
 
-### 1. 优先级矩阵（必须）
-使用表格形式展示需求优先级分类，**不使用Mermaid图表**，直接用Markdown表格：
+### 1. 优先级矩阵（必须，两种形式都要）
+
+#### 1.1 象限图（Mermaid）
+使用 quadrantChart 展示需求在重要性-紧急性坐标中的位置：
+
+```mermaid
+quadrantChart
+    title Priority Matrix
+    x-axis Low Urgency --> High Urgency
+    y-axis Low Importance --> High Importance
+    quadrant-1 Do First
+    quadrant-2 Schedule
+    quadrant-3 Delegate
+    quadrant-4 Eliminate
+
+    Requirement1: [0.8, 0.9]
+    Requirement2: [0.3, 0.7]
+```
+
+**quadrantChart 规则（必须遵守）：**
+- title、x-axis、y-axis、quadrant 标签**必须用英文**（技术限制）
+- 数据点名称用英文或拼音，格式：`Name: [x, y]`，x和y范围0-1
+- 不要使用特殊符号
+
+#### 1.2 优先级清单（Markdown表格）
+紧接着象限图，用中文表格详细说明每个需求的优先级：
 
 | 优先级 | 需求项 | 说明 |
 |:---:|:---|:---|
@@ -2534,13 +2558,7 @@ def build_report_prompt(session: dict) -> str:
 | 🟢 P2 可委派 | 需求4 | 紧急但不重要，可分配他人 |
 | ⚪ P3 低优先级 | 需求5 | 不重要不紧急，可延后 |
 
-**优先级矩阵规则（必须遵守）：**
-- 使用Markdown表格展示，不使用Mermaid
-- P0（立即执行）：重要且紧急的需求
-- P1（计划执行）：重要但不紧急的需求
-- P2（可委派）：紧急但不重要的需求
-- P3（低优先级）：不重要不紧急的需求
-- 每个优先级说明具体原因
+**两种形式配合使用**：象限图直观展示位置分布，表格详细说明优先级和理由。
 
 ### 2. 业务流程图（推荐）
 使用 flowchart 展示关键业务流程，**使用中文标签**：
@@ -2596,8 +2614,8 @@ flowchart LR
 ## 重要提醒
 - 所有内容必须严格基于访谈记录，不得编造
 - 使用 Markdown 格式，Mermaid 代码块使用 ```mermaid 标记
-- **所有图表都使用中文标签**
-- 优先级矩阵使用 flowchart 模拟四象限，按重要性和紧急性分类
+- **优先级矩阵必须同时包含：quadrantChart象限图 + Markdown表格**
+- **flowchart、pie 等图表使用中文标签**，quadrantChart 因技术限制必须用英文
 - 报告要专业、结构清晰、可操作
 - **Mermaid 语法要求严格，请仔细检查每个图表的语法正确性**
 - 报告末尾使用署名：*此报告由 Deep Vision 深瞳-智能需求调研助手生成*
