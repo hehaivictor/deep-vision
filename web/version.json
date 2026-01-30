@@ -1,7 +1,21 @@
 {
-  "version": "1.7.0",
+  "version": "1.8.0",
   "releaseDate": "2026-01-30",
   "changelog": [
+    {
+      "version": "1.8.0",
+      "date": "2026-01-30",
+      "type": "minor",
+      "title": "PDF/Word导出支持Mermaid图表转图片",
+      "changes": [
+        "新增svgToImage方法将SVG转换为PNG Base64图片",
+        "新增collectMermaidImages方法收集已渲染的Mermaid图表",
+        "新增convertMermaidToImages方法批量转换图表",
+        "PDF导出：将Mermaid SVG转为图片后再生成PDF",
+        "Word导出：使用ImageRun嵌入图表图片，支持自动缩放",
+        "添加html2pdf、docx、FileSaver依赖库"
+      ]
+    },
     {
       "version": "1.7.0",
       "date": "2026-01-30",
