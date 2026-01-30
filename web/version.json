@@ -1,7 +1,16 @@
 {
-  "version": "1.5.16",
+  "version": "1.6.0",
   "releaseDate": "2026-01-30",
   "changelog": [
+    {
+      "version": "1.6.0",
+      "date": "2026-01-30",
+      "type": "minor",
+      "title": "添加名人名言到首页轮播配置",
+      "changes": [
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.5.16",
       "date": "2026-01-30",
