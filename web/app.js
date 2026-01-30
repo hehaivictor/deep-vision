@@ -1357,6 +1357,10 @@ function deepVision() {
                     return;
                 }
 
+                // 【关键修复】先从原始DOM收集Mermaid图表的图片数据
+                // 因为原始DOM中的SVG已经渲染完成，getBoundingClientRect()能返回正确尺寸
+                const mermaidImages = await this.collectMermaidImages();
+
                 // 创建临时容器用于PDF生成，避免影响原始DOM
                 const tempContainer = document.createElement('div');
                 tempContainer.innerHTML = reportElement.innerHTML;
@@ -1383,8 +1387,20 @@ function deepVision() {
                 tempContainer.prepend(style);
                 document.body.appendChild(tempContainer);
 
-                // 将 Mermaid SVG 转换为图片
-                await this.convertMermaidToImages(tempContainer);
+                // 【关键修复】用预先收集的图片替换临时容器中的Mermaid SVG
+                const tempMermaidContainers = tempContainer.querySelectorAll('.mermaid-container');
+                let imageIndex = 0;
+                for (const container of tempMermaidContainers) {
+                    if (mermaidImages[imageIndex] && mermaidImages[imageIndex].dataUrl) {
+                        const img = document.createElement('img');
+                        img.src = mermaidImages[imageIndex].dataUrl;
+                        img.style.cssText = 'max-width: 100%; height: auto; display: block; margin: 16px auto;';
+                        img.alt = 'Mermaid 图表';
+                        container.innerHTML = '';
+                        container.appendChild(img);
+                    }
+                    imageIndex++;
+                }
 
                 const options = {
                     margin: [15, 15, 15, 15],
