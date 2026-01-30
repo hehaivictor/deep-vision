@@ -1308,16 +1308,442 @@ function deepVision() {
             this.renderMermaidCharts();
         },
 
-        downloadReport() {
+        downloadReport(format = 'md') {
             if (!this.reportContent || !this.selectedReport) return;
 
-            const blob = new Blob([this.reportContent], { type: 'text/markdown' });
+            const baseFilename = this.selectedReport.replace(/\.md$/, '');
+
+            switch (format) {
+                case 'md':
+                    this.downloadMarkdown(baseFilename);
+                    break;
+                case 'pdf':
+                    this.downloadPDF(baseFilename);
+                    break;
+                case 'docx':
+                    this.downloadDocx(baseFilename);
+                    break;
+                default:
+                    this.downloadMarkdown(baseFilename);
+            }
+        },
+
+        // 下载 Markdown 格式
+        downloadMarkdown(filename) {
+            const blob = new Blob([this.reportContent], { type: 'text/markdown;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = this.selectedReport;
+            a.download = `${filename}.md`;
             a.click();
             URL.revokeObjectURL(url);
+            this.showToast('Markdown 文件已下载', 'success');
+        },
+
+        // 下载 PDF 格式
+        async downloadPDF(filename) {
+            if (typeof html2pdf === 'undefined') {
+                this.showToast('PDF 导出功能暂不可用', 'error');
+                return;
+            }
+
+            this.showToast('正在生成 PDF（处理图表中）...', 'info');
+
+            try {
+                // 获取渲染后的报告内容
+                const reportElement = document.querySelector('.markdown-body');
+                if (!reportElement) {
+                    this.showToast('无法获取报告内容', 'error');
+                    return;
+                }
+
+                // 创建临时容器用于PDF生成，避免影响原始DOM
+                const tempContainer = document.createElement('div');
+                tempContainer.innerHTML = reportElement.innerHTML;
+                tempContainer.style.cssText = 'padding: 40px; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; line-height: 1.8; color: #1a1a1a;';
+
+                // 添加PDF专用样式
+                const style = document.createElement('style');
+                style.textContent = `
+                    h1 { font-size: 24px; font-weight: bold; margin: 24px 0 16px; color: #111; }
+                    h2 { font-size: 20px; font-weight: bold; margin: 20px 0 12px; color: #222; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; }
+                    h3 { font-size: 16px; font-weight: bold; margin: 16px 0 8px; color: #333; }
+                    p { margin: 8px 0; }
+                    ul, ol { margin: 8px 0; padding-left: 24px; }
+                    li { margin: 4px 0; }
+                    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 14px; }
+                    pre { background: #f3f4f6; padding: 16px; border-radius: 8px; overflow-x: auto; }
+                    blockquote { border-left: 4px solid #3b82f6; padding-left: 16px; margin: 16px 0; color: #4b5563; }
+                    table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+                    th, td { border: 1px solid #e5e7eb; padding: 8px 12px; text-align: left; }
+                    th { background: #f9fafb; font-weight: 600; }
+                    .mermaid-container { page-break-inside: avoid; margin: 16px 0; }
+                    .mermaid-container img { max-width: 100%; height: auto; }
+                `;
+                tempContainer.prepend(style);
+                document.body.appendChild(tempContainer);
+
+                // 将 Mermaid SVG 转换为图片
+                await this.convertMermaidToImages(tempContainer);
+
+                const options = {
+                    margin: [15, 15, 15, 15],
+                    filename: `${filename}.pdf`,
+                    image: { type: 'jpeg', quality: 0.98 },
+                    html2canvas: {
+                        scale: 2,
+                        useCORS: true,
+                        logging: false,
+                        letterRendering: true
+                    },
+                    jsPDF: {
+                        unit: 'mm',
+                        format: 'a4',
+                        orientation: 'portrait'
+                    },
+                    pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+                };
+
+                await html2pdf().set(options).from(tempContainer).save();
+
+                // 清理临时容器
+                document.body.removeChild(tempContainer);
+
+                this.showToast('PDF 文件已下载', 'success');
+            } catch (error) {
+                console.error('PDF 导出失败:', error);
+                this.showToast('PDF 导出失败，请重试', 'error');
+            }
+        },
+
+        // 下载 Word 格式
+        async downloadDocx(filename) {
+            if (typeof docx === 'undefined') {
+                this.showToast('Word 导出功能暂不可用', 'error');
+                return;
+            }
+
+            this.showToast('正在生成 Word 文档（处理图表中）...', 'info');
+
+            try {
+                const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle, ImageRun } = docx;
+
+                // 先收集所有 Mermaid 图表的图片数据
+                const mermaidImages = await this.collectMermaidImages();
+
+                // 解析 Markdown 内容为文档段落
+                const lines = this.reportContent.split('\n');
+                const children = [];
+                let inMermaidBlock = false;
+                let mermaidIndex = 0;
+
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i];
+
+                    // 检测 Mermaid 代码块开始
+                    if (line.trim().startsWith('```mermaid')) {
+                        inMermaidBlock = true;
+                        // 插入对应的图片
+                        if (mermaidImages[mermaidIndex]) {
+                            const imgData = mermaidImages[mermaidIndex];
+                            try {
+                                // 将 base64 转换为 ArrayBuffer
+                                const base64Data = imgData.dataUrl.split(',')[1];
+                                const binaryString = atob(base64Data);
+                                const bytes = new Uint8Array(binaryString.length);
+                                for (let j = 0; j < binaryString.length; j++) {
+                                    bytes[j] = binaryString.charCodeAt(j);
+                                }
+
+                                // 计算适合文档的尺寸（最大宽度 600px）
+                                const maxWidth = 600;
+                                const scale = Math.min(1, maxWidth / imgData.width);
+                                const displayWidth = Math.round(imgData.width * scale);
+                                const displayHeight = Math.round(imgData.height * scale);
+
+                                children.push(new Paragraph({
+                                    children: [
+                                        new ImageRun({
+                                            data: bytes.buffer,
+                                            transformation: {
+                                                width: displayWidth,
+                                                height: displayHeight
+                                            },
+                                            type: 'png'
+                                        })
+                                    ],
+                                    spacing: { before: 240, after: 240 },
+                                    alignment: AlignmentType.CENTER
+                                }));
+                            } catch (imgError) {
+                                console.error('图片插入失败:', imgError);
+                                children.push(new Paragraph({
+                                    text: '[图表无法显示]',
+                                    spacing: { before: 120, after: 120 }
+                                }));
+                            }
+                            mermaidIndex++;
+                        }
+                        continue;
+                    }
+
+                    // 检测代码块结束
+                    if (inMermaidBlock && line.trim() === '```') {
+                        inMermaidBlock = false;
+                        continue;
+                    }
+
+                    // 跳过 Mermaid 代码块内容
+                    if (inMermaidBlock) {
+                        continue;
+                    }
+
+                    // 跳过其他代码块（非 Mermaid）
+                    if (line.trim().startsWith('```')) {
+                        continue;
+                    }
+
+                    if (!line.trim()) {
+                        children.push(new Paragraph({ text: '' }));
+                        continue;
+                    }
+
+                    // 标题处理
+                    if (line.startsWith('### ')) {
+                        children.push(new Paragraph({
+                            text: line.replace('### ', ''),
+                            heading: HeadingLevel.HEADING_3,
+                            spacing: { before: 240, after: 120 }
+                        }));
+                    } else if (line.startsWith('## ')) {
+                        children.push(new Paragraph({
+                            text: line.replace('## ', ''),
+                            heading: HeadingLevel.HEADING_2,
+                            spacing: { before: 360, after: 160 },
+                            border: {
+                                bottom: { color: '#3B82F6', size: 6, style: BorderStyle.SINGLE }
+                            }
+                        }));
+                    } else if (line.startsWith('# ')) {
+                        children.push(new Paragraph({
+                            text: line.replace('# ', ''),
+                            heading: HeadingLevel.HEADING_1,
+                            spacing: { before: 480, after: 240 }
+                        }));
+                    }
+                    // 列表处理
+                    else if (line.match(/^[-*] /)) {
+                        const text = line.replace(/^[-*] /, '');
+                        children.push(new Paragraph({
+                            text: `• ${this.stripMarkdownFormatting(text)}`,
+                            spacing: { before: 60, after: 60 },
+                            indent: { left: 360 }
+                        }));
+                    }
+                    // 有序列表
+                    else if (line.match(/^\d+\. /)) {
+                        children.push(new Paragraph({
+                            text: this.stripMarkdownFormatting(line),
+                            spacing: { before: 60, after: 60 },
+                            indent: { left: 360 }
+                        }));
+                    }
+                    // 引用
+                    else if (line.startsWith('> ')) {
+                        children.push(new Paragraph({
+                            children: [
+                                new TextRun({
+                                    text: line.replace('> ', ''),
+                                    italics: true,
+                                    color: '4B5563'
+                                })
+                            ],
+                            spacing: { before: 120, after: 120 },
+                            indent: { left: 480 },
+                            border: {
+                                left: { color: '#3B82F6', size: 12, style: BorderStyle.SINGLE }
+                            }
+                        }));
+                    }
+                    // 普通段落
+                    else {
+                        const textRuns = this.parseMarkdownInline(line);
+                        children.push(new Paragraph({
+                            children: textRuns,
+                            spacing: { before: 80, after: 80 }
+                        }));
+                    }
+                }
+
+                const doc = new Document({
+                    sections: [{
+                        properties: {
+                            page: {
+                                margin: {
+                                    top: 1440,
+                                    right: 1440,
+                                    bottom: 1440,
+                                    left: 1440
+                                }
+                            }
+                        },
+                        children: children
+                    }]
+                });
+
+                const blob = await Packer.toBlob(doc);
+                saveAs(blob, `${filename}.docx`);
+
+                this.showToast('Word 文档已下载', 'success');
+            } catch (error) {
+                console.error('Word 导出失败:', error);
+                this.showToast('Word 导出失败，请重试', 'error');
+            }
+        },
+
+        // 收集所有已渲染的 Mermaid 图表并转换为图片数据
+        async collectMermaidImages() {
+            const images = [];
+            const reportElement = document.querySelector('.markdown-body');
+            if (!reportElement) return images;
+
+            const mermaidContainers = reportElement.querySelectorAll('.mermaid-container');
+
+            for (const container of mermaidContainers) {
+                const svg = container.querySelector('svg');
+                if (svg) {
+                    try {
+                        const imageData = await this.svgToImage(svg);
+                        images.push(imageData);
+                    } catch (error) {
+                        console.error('Mermaid 图表收集失败:', error);
+                        images.push(null);
+                    }
+                } else {
+                    images.push(null);
+                }
+            }
+
+            return images;
+        },
+
+        // 将 SVG 元素转换为 PNG Base64 图片
+        async svgToImage(svgElement) {
+            return new Promise((resolve, reject) => {
+                try {
+                    // 克隆 SVG 以避免修改原始元素
+                    const clonedSvg = svgElement.cloneNode(true);
+
+                    // 确保 SVG 有明确的尺寸
+                    const bbox = svgElement.getBoundingClientRect();
+                    const width = bbox.width || svgElement.getAttribute('width') || 800;
+                    const height = bbox.height || svgElement.getAttribute('height') || 600;
+
+                    clonedSvg.setAttribute('width', width);
+                    clonedSvg.setAttribute('height', height);
+
+                    // 添加白色背景
+                    const bgRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                    bgRect.setAttribute('width', '100%');
+                    bgRect.setAttribute('height', '100%');
+                    bgRect.setAttribute('fill', 'white');
+                    clonedSvg.insertBefore(bgRect, clonedSvg.firstChild);
+
+                    // 序列化 SVG
+                    const svgData = new XMLSerializer().serializeToString(clonedSvg);
+                    const svgBase64 = btoa(unescape(encodeURIComponent(svgData)));
+                    const svgUrl = 'data:image/svg+xml;base64,' + svgBase64;
+
+                    // 创建 Canvas 并绘制
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    const img = new Image();
+
+                    img.onload = () => {
+                        canvas.width = width * 2;  // 2x 分辨率
+                        canvas.height = height * 2;
+                        ctx.scale(2, 2);
+                        ctx.fillStyle = 'white';
+                        ctx.fillRect(0, 0, width, height);
+                        ctx.drawImage(img, 0, 0, width, height);
+
+                        resolve({
+                            dataUrl: canvas.toDataURL('image/png'),
+                            width: width,
+                            height: height
+                        });
+                    };
+
+                    img.onerror = (e) => {
+                        console.error('SVG 转图片失败:', e);
+                        reject(e);
+                    };
+
+                    img.src = svgUrl;
+                } catch (error) {
+                    console.error('SVG 处理失败:', error);
+                    reject(error);
+                }
+            });
+        },
+
+        // 将所有 Mermaid 图表转换为图片（用于导出）
+        async convertMermaidToImages(container) {
+            const mermaidContainers = container.querySelectorAll('.mermaid-container');
+            const conversions = [];
+
+            for (const mermaidContainer of mermaidContainers) {
+                const svg = mermaidContainer.querySelector('svg');
+                if (svg) {
+                    try {
+                        const imageData = await this.svgToImage(svg);
+
+                        // 创建图片元素替换 SVG
+                        const img = document.createElement('img');
+                        img.src = imageData.dataUrl;
+                        img.style.cssText = `max-width: 100%; height: auto; display: block; margin: 16px auto;`;
+                        img.alt = 'Mermaid 图表';
+
+                        // 清空容器并插入图片
+                        mermaidContainer.innerHTML = '';
+                        mermaidContainer.appendChild(img);
+
+                        conversions.push({ success: true });
+                    } catch (error) {
+                        console.error('Mermaid 图表转换失败:', error);
+                        conversions.push({ success: false, error });
+                    }
+                }
+            }
+
+            return conversions;
+        },
+
+        // 去除 Markdown 格式标记
+        stripMarkdownFormatting(text) {
+            return text
+                .replace(/\*\*(.*?)\*\*/g, '$1')
+                .replace(/\*(.*?)\*/g, '$1')
+                .replace(/`(.*?)`/g, '$1')
+                .replace(/\[(.*?)\]\(.*?\)/g, '$1');
+        },
+
+        // 解析行内 Markdown 格式
+        parseMarkdownInline(text) {
+            if (typeof docx === 'undefined') return [];
+
+            const { TextRun } = docx;
+            const runs = [];
+            let remaining = text;
+
+            // 简化处理：直接返回去格式化的文本
+            // 复杂的格式解析可能导致错误
+            runs.push(new TextRun({
+                text: this.stripMarkdownFormatting(remaining),
+                size: 22
+            }));
+
+            return runs;
         },
 
         renderMarkdown(content) {
