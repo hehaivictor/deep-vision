@@ -1,7 +1,20 @@
 {
-  "version": "1.11.0",
+  "version": "1.11.1",
   "releaseDate": "2026-01-30",
   "changelog": [
+    {
+      "version": "1.11.1",
+      "date": "2026-01-30",
+      "type": "patch",
+      "title": "象限图下方添加中文图例说明",
+      "changes": [
+        "添加横轴、纵轴的中文解释",
+        "添加四个象限的中文含义说明",
+        "要求列出每个数据点对应的中文需求名称",
+        "确保用户能看懂英文象限图",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.11.0",
       "date": "2026-01-30",
