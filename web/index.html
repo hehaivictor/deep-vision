@@ -117,6 +117,9 @@
     <script src="vendor/js/marked.min.js"></script>
     <!-- Mermaid 图表渲染 - 本地化 -->
     <script src="vendor/js/mermaid.min.js"></script>
+    <script src="vendor/js/html2pdf.bundle.min.js"></script>
+    <script src="vendor/js/docx.min.js"></script>
+    <script src="vendor/js/FileSaver.min.js"></script>
     <script>
         // 初始化 Mermaid 配置
         mermaid.initialize({
@@ -1441,12 +1444,63 @@
                                     </svg>
                                     返回列表
                                 </button>
-                                <button @click="downloadReport()" class="btn-sage-blue text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-                                    </svg>
-                                    下载报告
-                                </button>
+                                <!-- 下载报告下拉菜单 -->
+                                <div class="relative" x-data="{ downloadMenuOpen: false }">
+                                    <button @click="downloadMenuOpen = !downloadMenuOpen"
+                                            @click.outside="downloadMenuOpen = false"
+                                            class="btn-sage-blue text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                                        </svg>
+                                        下载报告
+                                        <svg class="w-4 h-4 transition-transform duration-200" :class="{ 'rotate-180': downloadMenuOpen }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                                        </svg>
+                                    </button>
+                                    <!-- 下拉菜单 -->
+                                    <div x-show="downloadMenuOpen"
+                                         x-transition:enter="transition ease-out duration-150"
+                                         x-transition:enter-start="opacity-0 transform scale-95 -translate-y-2"
+                                         x-transition:enter-end="opacity-100 transform scale-100 translate-y-0"
+                                         x-transition:leave="transition ease-in duration-100"
+                                         x-transition:leave-start="opacity-100 transform scale-100 translate-y-0"
+                                         x-transition:leave-end="opacity-0 transform scale-95 -translate-y-2"
+                                         class="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-lg border border-gray-200 py-2 z-50">
+                                        <!-- Markdown 格式 -->
+                                        <button @click="downloadReport('md'); downloadMenuOpen = false"
+                                                class="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-3 cursor-pointer transition-colors">
+                                            <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                            </svg>
+                                            <div>
+                                                <div class="font-medium">Markdown</div>
+                                                <div class="text-xs text-gray-400">.md 源文件</div>
+                                            </div>
+                                        </button>
+                                        <!-- PDF 格式 -->
+                                        <button @click="downloadReport('pdf'); downloadMenuOpen = false"
+                                                class="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-3 cursor-pointer transition-colors">
+                                            <svg class="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+                                            </svg>
+                                            <div>
+                                                <div class="font-medium">PDF</div>
+                                                <div class="text-xs text-gray-400">适合打印分享</div>
+                                            </div>
+                                        </button>
+                                        <!-- Word 格式 -->
+                                        <button @click="downloadReport('docx'); downloadMenuOpen = false"
+                                                class="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-3 cursor-pointer transition-colors">
+                                            <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                            </svg>
+                                            <div>
+                                                <div class="font-medium">Word</div>
+                                                <div class="text-xs text-gray-400">.docx 可编辑</div>
+                                            </div>
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                             <div class="bg-surface border border-border rounded-xl p-4 md:p-8">
                                 <div class="markdown-body"
