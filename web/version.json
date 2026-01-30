@@ -1,7 +1,18 @@
 {
-  "version": "1.6.0",
+  "version": "1.6.1",
   "releaseDate": "2026-01-30",
   "changelog": [
+    {
+      "version": "1.6.1",
+      "date": "2026-01-30",
+      "type": "patch",
+      "title": "调研主题支持换行显示，避免页面横向滚动",
+      "changes": [
+        "会话卡片标题从 truncate 改为 break-words",
+        "详情面板主题添加 break-words 支持",
+        "移动端标题和状态标签垂直排列"
+      ]
+    },
     {
       "version": "1.6.0",
       "date": "2026-01-30",
