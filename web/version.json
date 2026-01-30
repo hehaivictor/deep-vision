@@ -1,7 +1,22 @@
 {
-  "version": "1.9.0",
+  "version": "1.9.1",
   "releaseDate": "2026-01-30",
   "changelog": [
+    {
+      "version": "1.9.1",
+      "date": "2026-01-30",
+      "type": "patch",
+      "title": "防止Mermaid图表在PDF/Word导出时被分页切割",
+      "changes": [
+        "PDF:",
+        "添加 break-inside: avoid !important 样式",
+        "对 .mermaid-container、img、svg 都应用分页控制",
+        "Word:",
+        "图片段落添加 keepLines: true 和 keepNext: true",
+        "确保图片不会被分页切割",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.9.0",
       "date": "2026-01-30",
