@@ -1,7 +1,18 @@
 {
-  "version": "1.8.0",
+  "version": "1.9.0",
   "releaseDate": "2026-01-30",
   "changelog": [
+    {
+      "version": "1.9.0",
+      "date": "2026-01-30",
+      "type": "minor",
+      "title": "下载报告UI支持多格式选择",
+      "changes": [
+        "新增下载格式下拉菜单（Markdown/PDF/Word）",
+        "引入html2pdf、docx、FileSaver库依赖",
+        "优化下拉菜单动画和样式"
+      ]
+    },
     {
       "version": "1.8.0",
       "date": "2026-01-30",
