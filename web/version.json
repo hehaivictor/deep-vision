@@ -1,7 +1,23 @@
 {
-  "version": "1.9.0",
+  "version": "1.9.1",
   "releaseDate": "2026-01-30",
   "changelog": [
+    {
+      "version": "1.9.1",
+      "date": "2026-01-30",
+      "type": "patch",
+      "title": "修复大文件PDF导出空白问题",
+      "changes": [
+        "问题根因：",
+        "临时容器中的SVG通过innerHTML复制，getBoundingClientRect()返回0",
+        "小文件偶尔能正常工作，大文件必然失败",
+        "修复方案：",
+        "在创建临时容器之前，先从原始DOM收集Mermaid图表图片",
+        "原始DOM中的SVG已渲染完成，尺寸信息正确",
+        "在临时容器中直接用预收集的图片替换SVG",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.9.0",
       "date": "2026-01-30",
