@@ -1,7 +1,17 @@
 {
-  "version": "1.9.0",
+  "version": "1.9.1",
   "releaseDate": "2026-01-30",
   "changelog": [
+    {
+      "version": "1.9.1",
+      "date": "2026-01-30",
+      "type": "patch",
+      "title": "修复PDF导出文件为空的问题",
+      "changes": [
+        "从原始DOM预先收集Mermaid图表图片数据，避免临时容器中SVG尺寸为0导致PDF内容为空",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.9.0",
       "date": "2026-01-30",
