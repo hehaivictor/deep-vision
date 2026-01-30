@@ -1377,8 +1377,9 @@ function deepVision() {
                     table { border-collapse: collapse; width: 100%; margin: 16px 0; }
                     th, td { border: 1px solid #e5e7eb; padding: 8px 12px; text-align: left; }
                     th { background: #f9fafb; font-weight: 600; }
-                    .mermaid-container { page-break-inside: avoid; margin: 16px 0; }
-                    .mermaid-container img { max-width: 100%; height: auto; }
+                    .mermaid-container { page-break-inside: avoid !important; break-inside: avoid !important; margin: 16px 0; }
+                    .mermaid-container img { max-width: 100%; height: auto; page-break-inside: avoid !important; break-inside: avoid !important; }
+                    .mermaid-container svg { page-break-inside: avoid !important; break-inside: avoid !important; }
                 `;
                 tempContainer.prepend(style);
                 document.body.appendChild(tempContainer);
@@ -1473,7 +1474,9 @@ function deepVision() {
                                         })
                                     ],
                                     spacing: { before: 240, after: 240 },
-                                    alignment: AlignmentType.CENTER
+                                    alignment: AlignmentType.CENTER,
+                                    keepLines: true,
+                                    keepNext: true
                                 }));
                             } catch (imgError) {
                                 console.error('图片插入失败:', imgError);
