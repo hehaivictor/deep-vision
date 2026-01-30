@@ -1,7 +1,19 @@
 {
-  "version": "1.10.0",
+  "version": "1.11.0",
   "releaseDate": "2026-01-30",
   "changelog": [
+    {
+      "version": "1.11.0",
+      "date": "2026-01-30",
+      "type": "minor",
+      "title": "优先级矩阵同时展示象限图和表格两种形式",
+      "changes": [
+        "quadrantChart 象限图：直观展示需求在重要性-紧急性坐标中的位置",
+        "Markdown 表格：用中文详细说明每个需求的优先级（P0-P3）和理由",
+        "两种形式配合使用，兼顾可视化效果和中文可读性",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.10.0",
       "date": "2026-01-30",
