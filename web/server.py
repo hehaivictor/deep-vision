@@ -2978,38 +2978,81 @@ def get_scenario(scenario_id):
 
 @app.route('/api/scenarios/recognize', methods=['POST'])
 def recognize_scenario():
-    """根据主题自动识别场景"""
+    """根据主题和描述智能识别最匹配的访谈场景"""
     data = request.get_json()
     if not data:
         return jsonify({"error": "无效的请求数据"}), 400
 
     topic = data.get("topic", "")
+    description = data.get("description", "")
     if not topic:
         return jsonify({"error": "主题不能为空"}), 400
 
-    # 基于关键词匹配识别场景
-    result = scenario_loader.match_by_keywords(topic)
+    # 构建场景摘要供 AI 判断
+    all_scenarios = scenario_loader.get_all_scenarios()
+    scenario_list_text = "\n".join(
+        f"- id: {s['id']}, 名称: {s['name']}, 说明: {s.get('description', '')}"
+        for s in all_scenarios
+    )
 
-    # 获取推荐场景的完整信息
-    recommended_scenario = scenario_loader.get_scenario(result["scenario_id"])
+    user_input = f"访谈主题：{topic}"
+    if description:
+        user_input += f"\n主题描述：{description}"
+
+    prompt = f"""你是一个访谈场景分类器。根据用户的访谈主题和描述，从以下场景中选择最匹配的一个。
+
+可选场景：
+{scenario_list_text}
+
+{user_input}
+
+请严格按照以下 JSON 格式返回（不要包含其他文字）：
+{{"scenario_id": "最匹配的场景id", "confidence": 0.0到1.0的置信度, "reason": "一句话理由"}}"""
+
+    # 优先使用 AI 识别，失败时回退到关键词匹配
+    ai_result = None
+    if claude_client:
+        try:
+            response = claude_client.messages.create(
+                model=MODEL_NAME,
+                max_tokens=200,
+                timeout=10.0,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            raw = response.content[0].text.strip()
+            # 提取 JSON（兼容模型返回 markdown 代码块）
+            if "```" in raw:
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
+            ai_result = json.loads(raw)
+        except Exception as e:
+            print(f"⚠️  AI 场景识别失败，回退到关键词匹配: {e}")
+
+    if ai_result and ai_result.get("scenario_id") in [s["id"] for s in all_scenarios]:
+        best_id = ai_result["scenario_id"]
+        confidence = min(1.0, max(0.0, float(ai_result.get("confidence", 0.8))))
+        reason = ai_result.get("reason", "")
+    else:
+        # 回退：关键词匹配
+        kw_result = scenario_loader.match_by_keywords(topic)
+        best_id = kw_result["scenario_id"]
+        confidence = kw_result["confidence"]
+        reason = ""
+
+    recommended_scenario = scenario_loader.get_scenario(best_id)
 
     return jsonify({
         "recommended": {
-            "id": result["scenario_id"],
-            "name": recommended_scenario.get("name") if recommended_scenario else result["scenario_id"],
+            "id": best_id,
+            "name": recommended_scenario.get("name") if recommended_scenario else best_id,
             "description": recommended_scenario.get("description") if recommended_scenario else "",
             "icon": recommended_scenario.get("icon") if recommended_scenario else "clipboard-list",
             "dimensions_count": len(recommended_scenario.get("dimensions", [])) if recommended_scenario else 4
         },
-        "confidence": result["confidence"],
-        "matched_keywords": result.get("matched_keywords", []),
-        "alternatives": [
-            {
-                "id": alt["scenario_id"],
-                "name": scenario_loader.get_scenario(alt["scenario_id"]).get("name", alt["scenario_id"]) if scenario_loader.get_scenario(alt["scenario_id"]) else alt["scenario_id"]
-            }
-            for alt in result.get("alternatives", [])
-        ]
+        "confidence": confidence,
+        "reason": reason
     })
 
 

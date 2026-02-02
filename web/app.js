@@ -2117,8 +2117,8 @@ function deepVision() {
 
             const topic = this.newSessionTopic.trim();
 
-            // 主题少于 3 个字符时不触发识别
-            if (topic.length < 3) {
+            // 主题少于 2 个字符时不触发识别
+            if (topic.length < 2) {
                 this.recognizedResult = null;
                 return;
             }
@@ -2128,21 +2128,24 @@ function deepVision() {
                 return;
             }
 
-            // 500ms 防抖
+            // 800ms 防抖（AI 识别需要更长的输入稳定期）
             this.recognizeTimer = setTimeout(() => {
                 this.recognizeScenario(topic);
-            }, 500);
+            }, 800);
         },
 
         // 调用场景识别 API
         async recognizeScenario(topic) {
-            if (!topic || topic.length < 3) return;
+            if (!topic || topic.length < 2) return;
 
             this.recognizing = true;
             try {
                 const result = await this.apiCall('/scenarios/recognize', {
                     method: 'POST',
-                    body: JSON.stringify({ topic })
+                    body: JSON.stringify({
+                        topic,
+                        description: this.newSessionDescription.trim() || ''
+                    })
                 });
 
                 this.recognizedResult = result;
