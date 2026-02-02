@@ -1,7 +1,20 @@
 {
-  "version": "1.11.2",
+  "version": "1.12.0",
   "releaseDate": "2026-02-02",
   "changelog": [
+    {
+      "version": "1.12.0",
+      "date": "2026-02-02",
+      "type": "minor",
+      "title": "多场景访谈系统 P0 实现",
+      "changes": [
+        "新增 8 个内置访谈场景（产品需求、用户研究、技术方案、商业模式、",
+        "竞品分析、问题诊断、招投标、面试评估），每个场景有独立的维度配置。",
+        "核心改造包括：场景配置加载器、场景选择 API、动态维度创建、",
+        "前端场景选择界面，并将所有硬编码的 DIMENSION_INFO 引用替换为",
+        "基于会话的动态维度查询，支持向后兼容。"
+      ]
+    },
     {
       "version": "1.11.2",
       "date": "2026-02-02",
@@ -25,8 +38,7 @@
         "添加横轴、纵轴的中文解释",
         "添加四个象限的中文含义说明",
         "要求列出每个数据点对应的中文需求名称",
-        "确保用户能看懂英文象限图",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "确保用户能看懂英文象限图"
       ]
     },
     {
@@ -37,8 +49,7 @@
       "changes": [
         "quadrantChart 象限图：直观展示需求在重要性-紧急性坐标中的位置",
         "Markdown 表格：用中文详细说明每个需求的优先级（P0-P3）和理由",
-        "两种形式配合使用，兼顾可视化效果和中文可读性",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "两种形式配合使用，兼顾可视化效果和中文可读性"
       ]
     },
     {
@@ -50,8 +61,7 @@
         "将quadrantChart替换为flowchart模拟的四象限图",
         "使用subgraph表示四个象限：重要且紧急、重要不紧急、紧急不重要、不重要不紧急",
         "使用style设置不同象限的颜色区分",
-        "所有图表现在都支持中文标签",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "所有图表现在都支持中文标签"
       ]
     },
     {
@@ -65,8 +75,7 @@
         "对 .mermaid-container、img、svg 都应用分页控制",
         "Word:",
         "图片段落添加 keepLines: true 和 keepNext: true",
-        "确保图片不会被分页切割",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "确保图片不会被分页切割"
       ]
     },
     {
