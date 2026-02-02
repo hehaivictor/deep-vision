@@ -504,7 +504,7 @@
                             <h2 class="text-xl md:text-2xl font-semibold text-primary">访谈会话</h2>
                             <p class="text-muted text-sm mt-1">管理您的访谈会话</p>
                         </div>
-                        <button @click="showNewSessionModal = true"
+                        <button @click="resetScenarioSelection(); showNewSessionModal = true"
                                 class="btn-sage-blue text-white px-5 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
@@ -589,7 +589,7 @@
                                     </svg>
                                     <h3 class="text-lg font-medium text-gray-600 mb-2">暂无访谈会话</h3>
                                     <p class="text-muted mb-6">点击"新建访谈"开始您的第一次智能访谈</p>
-                                    <button @click="showNewSessionModal = true"
+                                    <button @click="resetScenarioSelection(); showNewSessionModal = true"
                                             class="btn-sage-blue text-white px-6 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer">
                                         新建访谈
                                     </button>
@@ -1428,7 +1428,7 @@
                     <div class="mb-4">
                         <label for="newTopic" class="block text-sm font-medium text-secondary mb-2">访谈主题 <span class="text-danger">*</span></label>
                         <input type="text" id="newTopic" x-model="newSessionTopic"
-                               @input="$el.value = $el.value"
+                               @input="onTopicInput()"
                                placeholder="例如：CRM系统需求访谈"
                                class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#F0F8FF] focus:border-[#F0F8FF]"
                                required>
@@ -1445,15 +1445,45 @@
 
                     <!-- 场景选择 -->
                     <div class="mb-5">
-                        <label class="block text-sm font-medium text-secondary mb-3">访谈场景</label>
+                        <div class="flex items-center justify-between mb-3">
+                            <label class="block text-sm font-medium text-secondary">访谈场景</label>
+                            <!-- 识别中指示器 -->
+                            <div x-show="recognizing" class="flex items-center gap-1.5 text-xs text-[#357BE2]">
+                                <span class="w-1.5 h-1.5 bg-[#357BE2] rounded-full animate-pulse"></span>
+                                <span>智能识别中...</span>
+                            </div>
+                            <!-- 识别结果提示 -->
+                            <div x-show="!recognizing && recognizedResult && recognizedResult.confidence >= 0.5"
+                                 x-cloak
+                                 class="flex items-center gap-1.5 text-xs text-[#357BE2]">
+                                <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                                    <path d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"/>
+                                </svg>
+                                <span>已根据主题推荐</span>
+                            </div>
+                        </div>
                         <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
                             <template x-for="scenario in scenarios" :key="scenario.id">
                                 <button type="button"
                                         @click="selectScenario(scenario)"
-                                        :class="selectedScenario?.id === scenario.id
-                                            ? 'border-[#357BE2] bg-[#F0F8FF] ring-1 ring-[#357BE2]'
-                                            : 'border-gray-200 hover:border-[#357BE2]/40'"
-                                        class="p-3 border-2 rounded-xl cursor-pointer transition-all duration-200 text-left group">
+                                        :class="[
+                                            selectedScenario?.id === scenario.id
+                                                ? 'border-[#357BE2] bg-[#F0F8FF] ring-1 ring-[#357BE2]'
+                                                : 'border-gray-200 hover:border-[#357BE2]/40',
+                                            recognizedResult?.recommended?.id === scenario.id && selectedScenario?.id !== scenario.id
+                                                ? 'border-[#357BE2]/30 bg-[#F0F8FF]/30'
+                                                : ''
+                                        ]"
+                                        class="p-3 border-2 rounded-xl cursor-pointer transition-all duration-200 text-left group relative">
+                                    <!-- AI 推荐标识 -->
+                                    <div x-show="recognizedResult?.recommended?.id === scenario.id && selectedScenario?.id === scenario.id"
+                                         x-cloak
+                                         class="absolute -top-2 -right-2 flex items-center gap-0.5 bg-[#357BE2] text-white text-[10px] px-1.5 py-0.5 rounded-full shadow-sm">
+                                        <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                                        </svg>
+                                        AI
+                                    </div>
                                     <div class="font-medium text-sm text-primary mb-1" x-text="scenario.name"></div>
                                     <div class="text-xs text-muted flex items-center gap-1">
                                         <span x-text="scenario.dimensions.length"></span>
@@ -1462,18 +1492,34 @@
                                             <span class="ml-1 text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full">评估</span>
                                         </template>
                                     </div>
-                                    <!-- 维度预览 -->
+                                    <!-- 维度预览 + 匹配关键词 -->
                                     <div x-show="selectedScenario?.id === scenario.id" class="mt-2 pt-2 border-t border-gray-100">
                                         <div class="flex flex-wrap gap-1">
                                             <template x-for="dim in scenario.dimensions" :key="dim.id">
                                                 <span class="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded" x-text="dim.name"></span>
                                             </template>
                                         </div>
+                                        <!-- 匹配的关键词 -->
+                                        <template x-if="recognizedResult?.recommended?.id === scenario.id && recognizedResult?.matched_keywords?.length > 0">
+                                            <div class="mt-1.5 flex flex-wrap items-center gap-1">
+                                                <span class="text-[10px] text-[#357BE2]/70">匹配:</span>
+                                                <template x-for="kw in recognizedResult.matched_keywords.slice(0, 3)" :key="kw">
+                                                    <span class="text-[10px] bg-[#357BE2]/10 text-[#357BE2] px-1.5 py-0.5 rounded" x-text="kw"></span>
+                                                </template>
+                                            </div>
+                                        </template>
                                     </div>
                                 </button>
                             </template>
                         </div>
-                        <p class="text-xs text-muted mt-2">选择与您访谈目标最匹配的场景，不同场景对应不同的访谈维度。不选则默认使用「产品需求」。</p>
+                        <p class="text-xs text-muted mt-2">
+                            <template x-if="recognizedResult && recognizedResult.confidence >= 0.5">
+                                <span>根据您的主题，我们推荐使用「<span class="text-[#357BE2]" x-text="recognizedResult.recommended?.name"></span>」场景。您也可以手动选择其他场景。</span>
+                            </template>
+                            <template x-if="!recognizedResult || recognizedResult.confidence < 0.5">
+                                <span>选择与您访谈目标最匹配的场景，不同场景对应不同的访谈维度。不选则默认使用「产品需求」。</span>
+                            </template>
+                        </p>
                     </div>
 
                     <!-- 访谈模式选择 -->
