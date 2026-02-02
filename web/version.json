@@ -1,7 +1,23 @@
 {
-  "version": "1.12.0",
+  "version": "1.13.0",
   "releaseDate": "2026-02-02",
   "changelog": [
+    {
+      "version": "1.13.0",
+      "date": "2026-02-02",
+      "type": "minor",
+      "title": "P1 场景自动识别功能",
+      "changes": [
+        "新增场景自动识别逻辑（500ms防抖）",
+        "主题输入时自动调用识别API",
+        "置信度>=0.5时自动选中推荐场景",
+        "手动选择场景后禁用自动覆盖",
+        "新增AI推荐徽章和识别状态指示器",
+        "显示匹配的关键词标签",
+        "动态提示文案根据识别结果变化",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.12.0",
       "date": "2026-02-02",
