@@ -10,8 +10,7 @@
       "changes": [
         "会话卡片从使用全局 dimensionOrder 改为读取每个会话自身的维度配置",
         "新增 getSessionDimKeys/getSessionDimName/getSessionDimCoverage 辅助函数",
-        "将进度条移至按钮行下方独立行，确保所有卡片进度条宽度统一",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "将进度条移至按钮行下方独立行，确保所有卡片进度条宽度统一"
       ]
     },
     {
@@ -23,8 +22,7 @@
         "明确带标签连接线正确语法：`A -->|标签| B`",
         "明确禁止错误语法：`A --|标签|--> B` 和双箭头",
         "更新示例代码使用更清晰的标签",
-        "更新部署架构图示例，包含 subgraph 和带标签连接",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "更新部署架构图示例，包含 subgraph 和带标签连接"
       ]
     },
     {
