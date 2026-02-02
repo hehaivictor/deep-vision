@@ -3199,6 +3199,67 @@ def get_scenario(scenario_id):
     return jsonify(scenario)
 
 
+@app.route('/api/scenarios/custom', methods=['POST'])
+def create_custom_scenario():
+    """创建自定义场景"""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "无效的请求数据"}), 400
+
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"error": "场景名称不能为空"}), 400
+
+    dimensions = data.get("dimensions", [])
+    if not dimensions or len(dimensions) < 1:
+        return jsonify({"error": "至少需要 1 个维度"}), 400
+    if len(dimensions) > 8:
+        return jsonify({"error": "最多支持 8 个维度"}), 400
+
+    # 验证维度数据
+    for i, dim in enumerate(dimensions):
+        if not dim.get("name", "").strip():
+            return jsonify({"error": f"第 {i+1} 个维度名称不能为空"}), 400
+        # 自动生成维度 ID
+        if not dim.get("id"):
+            dim["id"] = f"dim_{i+1}"
+        # 确保有必要字段
+        dim.setdefault("description", "")
+        dim.setdefault("key_aspects", [])
+        dim.setdefault("min_questions", 2)
+        dim.setdefault("max_questions", 4)
+
+    scenario = {
+        "name": name,
+        "description": data.get("description", "").strip(),
+        "icon": data.get("icon", "clipboard-list"),
+        "keywords": data.get("keywords", []),
+        "dimensions": dimensions,
+        "report": data.get("report", {"type": "standard"}),
+    }
+
+    scenario_id = scenario_loader.save_custom_scenario(scenario)
+
+    return jsonify({
+        "success": True,
+        "scenario_id": scenario_id,
+        "scenario": scenario_loader.get_scenario(scenario_id)
+    })
+
+
+@app.route('/api/scenarios/custom/<scenario_id>', methods=['DELETE'])
+def delete_custom_scenario(scenario_id):
+    """删除自定义场景"""
+    if not scenario_id.startswith("custom-"):
+        return jsonify({"error": "只能删除自定义场景"}), 400
+
+    success = scenario_loader.delete_custom_scenario(scenario_id)
+    if not success:
+        return jsonify({"error": "场景不存在或无法删除"}), 404
+
+    return jsonify({"success": True})
+
+
 @app.route('/api/scenarios/recognize', methods=['POST'])
 def recognize_scenario():
     """根据主题和描述智能识别最匹配的访谈场景"""

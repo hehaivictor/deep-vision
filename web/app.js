@@ -2213,6 +2213,121 @@ function deepVision() {
             this.autoRecognizeEnabled = true;
         },
 
+        // ============ 自定义场景 ============
+
+        // 自定义场景编辑器状态
+        showCustomScenarioModal: false,
+        customScenario: {
+            name: '',
+            description: '',
+            keywords: '',
+            dimensions: [
+                { id: 'dim_1', name: '', description: '', key_aspects: '' }
+            ]
+        },
+        savingCustomScenario: false,
+
+        // 打开自定义场景编辑器
+        openCustomScenarioEditor() {
+            this.customScenario = {
+                name: '',
+                description: '',
+                keywords: '',
+                dimensions: [
+                    { id: 'dim_1', name: '', description: '', key_aspects: '' }
+                ]
+            };
+            this.showCustomScenarioModal = true;
+        },
+
+        // 添加维度
+        addDimension() {
+            if (this.customScenario.dimensions.length >= 8) return;
+            const idx = this.customScenario.dimensions.length + 1;
+            this.customScenario.dimensions.push({
+                id: `dim_${idx}`,
+                name: '',
+                description: '',
+                key_aspects: ''
+            });
+        },
+
+        // 删除维度
+        removeDimension(index) {
+            if (this.customScenario.dimensions.length <= 1) return;
+            this.customScenario.dimensions.splice(index, 1);
+        },
+
+        // 保存自定义场景
+        async saveCustomScenario() {
+            const name = this.customScenario.name.trim();
+            if (!name) {
+                this.showToast('请输入场景名称', 'error');
+                return;
+            }
+
+            const dims = this.customScenario.dimensions.filter(d => d.name.trim());
+            if (dims.length === 0) {
+                this.showToast('至少需要一个维度', 'error');
+                return;
+            }
+
+            this.savingCustomScenario = true;
+            try {
+                const keywords = this.customScenario.keywords
+                    .split(/[,，、\s]+/)
+                    .map(k => k.trim())
+                    .filter(k => k);
+
+                const dimensions = dims.map((d, i) => ({
+                    id: `dim_${i + 1}`,
+                    name: d.name.trim(),
+                    description: d.description.trim(),
+                    key_aspects: d.key_aspects
+                        .split(/[,，、\s]+/)
+                        .map(k => k.trim())
+                        .filter(k => k),
+                    min_questions: 2,
+                    max_questions: 4
+                }));
+
+                await this.apiCall('/scenarios/custom', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        name,
+                        description: this.customScenario.description.trim(),
+                        keywords,
+                        dimensions
+                    })
+                });
+
+                await this.loadScenarios();
+                this.showCustomScenarioModal = false;
+                this.showToast(`场景「${name}」创建成功`, 'success');
+            } catch (error) {
+                this.showToast('创建场景失败: ' + error.message, 'error');
+            } finally {
+                this.savingCustomScenario = false;
+            }
+        },
+
+        // 删除自定义场景
+        async deleteCustomScenario(scenarioId, scenarioName) {
+            if (!confirm(`确定要删除场景「${scenarioName}」吗？`)) return;
+            try {
+                await this.apiCall(`/scenarios/custom/${scenarioId}`, {
+                    method: 'DELETE'
+                });
+                await this.loadScenarios();
+                if (this.selectedScenario?.id === scenarioId) {
+                    this.selectedScenario = null;
+                }
+                this.showToast(`场景「${scenarioName}」已删除`, 'success');
+            } catch (error) {
+                this.showToast('删除失败: ' + error.message, 'error');
+            }
+        },
+
         // 获取场景名称
         getScenarioName(session) {
             if (session?.scenario_config?.name) {
