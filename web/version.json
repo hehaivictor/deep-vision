@@ -1,7 +1,14 @@
 {
-  "version": "1.11.1",
-  "releaseDate": "2026-01-30",
+  "version": "1.11.2",
+  "releaseDate": "2026-02-02",
   "changelog": [
+    {
+      "version": "1.11.2",
+      "date": "2026-02-02",
+      "type": "patch",
+      "title": "版本 1.11.2",
+      "changes": []
+    },
     {
       "version": "1.11.1",
       "date": "2026-01-30",
