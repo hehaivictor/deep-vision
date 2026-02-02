@@ -78,6 +78,46 @@ function deepVision() {
         showScenarioSelector: false,
         scenarioLoaded: false,
 
+        // 场景专属提示文案配置
+        scenarioPlaceholders: {
+            'product-requirement': {
+                topic: '例如：CRM系统需求访谈、电商平台功能规划',
+                description: '例如：公司目前有200+销售人员，使用Excel管理客户信息效率低下。希望引入专业的CRM系统，重点解决客户跟进记录、销售漏斗管理和数据分析问题。预算范围50-100万，计划3个月内上线。'
+            },
+            'user-research': {
+                topic: '例如：外卖App用户体验调研、老年人智能手机使用习惯',
+                description: '例如：我们的外卖App月活用户500万，但30天留存率只有15%。希望了解用户流失原因，重点关注下单流程体验、配送时效满意度、以及与竞品的对比感受。'
+            },
+            'tech-solution': {
+                topic: '例如：微服务架构升级方案、数据中台建设规划',
+                description: '例如：当前系统是单体架构，日均请求量1000万，高峰期响应时间超过3秒。团队有10名后端开发，希望在保证业务连续性的前提下，逐步迁移到微服务架构。'
+            },
+            'business-model': {
+                topic: '例如：SaaS产品商业化路径、社区团购盈利模式',
+                description: '例如：我们的协同办公SaaS产品已有5000家企业试用，但付费转化率不到5%。希望探讨定价策略、增值服务设计、以及企业客户的付费决策因素。'
+            },
+            'competitive-analysis': {
+                topic: '例如：在线教育行业竞品分析、新能源汽车市场格局',
+                description: '例如：我们是K12在线教育赛道的新进入者，主要竞品包括猿辅导、作业帮、好未来。希望深入了解各家的产品定位、获客策略、课程体系差异和技术壁垒。'
+            },
+            'problem-diagnosis': {
+                topic: '例如：用户转化率下降原因分析、团队协作效率问题诊断',
+                description: '例如：最近3个月，我们的付费转化率从8%下降到4%，但流量和用户质量没有明显变化。已排除价格因素，怀疑与产品改版、竞品活动或用户需求变化有关。'
+            },
+            'bidding-tendering': {
+                topic: '例如：政务云平台建设项目、智慧园区解决方案招标',
+                description: '例如：某市政府计划建设统一的政务云平台，预算3000万，要求支持50+委办局业务上云，需满足等保三级要求。我方作为投标方，需要了解甲方核心诉求和评分重点。'
+            },
+            'interview-assessment': {
+                topic: '例如：高级产品经理候选人评估、技术总监能力面试',
+                description: '例如：候选人应聘高级产品经理岗位，简历显示有5年B端产品经验，主导过2个千万级项目。本次面试重点评估其需求分析能力、跨部门协调能力和商业思维。'
+            },
+            'default': {
+                topic: '例如：请输入本次访谈的主题',
+                description: '例如：请描述本次访谈的背景、目标和关注重点，帮助AI生成更精准的访谈问题。'
+            }
+        },
+
         // 场景自动识别
         recognizing: false,           // 识别中状态
         recognizeTimer: null,         // 防抖定时器
@@ -2147,6 +2187,36 @@ function deepVision() {
             if (scenario) {
                 this.autoRecognizeEnabled = false;
             }
+        },
+
+        // 获取当前场景的主题提示文案
+        getTopicPlaceholder() {
+            const scenarioId = this.selectedScenario?.id;
+            if (scenarioId && this.scenarioPlaceholders[scenarioId]) {
+                return this.scenarioPlaceholders[scenarioId].topic;
+            }
+            // 自定义场景：根据场景名称生成提示
+            if (this.selectedScenario?.custom && this.selectedScenario?.name) {
+                return `例如：${this.selectedScenario.name}相关的访谈主题`;
+            }
+            return this.scenarioPlaceholders['default'].topic;
+        },
+
+        // 获取当前场景的描述提示文案
+        getDescriptionPlaceholder() {
+            const scenarioId = this.selectedScenario?.id;
+            if (scenarioId && this.scenarioPlaceholders[scenarioId]) {
+                return this.scenarioPlaceholders[scenarioId].description;
+            }
+            // 自定义场景：根据场景描述生成提示
+            if (this.selectedScenario?.custom) {
+                const dims = this.selectedScenario.dimensions?.map(d => d.name).join('、') || '';
+                if (dims) {
+                    return `例如：请描述您的具体情况，包括${dims}等方面的背景信息，帮助AI生成更精准的访谈问题。`;
+                }
+                return `例如：请描述本次「${this.selectedScenario.name || '访谈'}」的背景、目标和关注重点。`;
+            }
+            return this.scenarioPlaceholders['default'].description;
         },
 
         // 场景自动识别（防抖触发）

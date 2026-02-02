@@ -1479,7 +1479,7 @@
                         <label for="newTopic" class="block text-sm font-medium text-secondary mb-2">访谈主题 <span class="text-danger">*</span></label>
                         <input type="text" id="newTopic" x-model="newSessionTopic"
                                @input="onTopicInput()"
-                               placeholder="例如：CRM系统需求访谈"
+                               :placeholder="getTopicPlaceholder()"
                                class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#F0F8FF] focus:border-[#F0F8FF]"
                                required>
                         <p class="text-xs text-muted mt-1">简洁描述本次访谈的主题或项目名称</p>
@@ -1488,7 +1488,7 @@
                         <label for="newDescription" class="block text-sm font-medium text-secondary mb-2">主题描述 <span class="text-xs text-gray-400">(可选)</span></label>
                         <textarea id="newDescription" x-model="newSessionDescription"
                                   @input="onTopicInput()"
-                                  placeholder="例如：公司目前有200+销售人员，使用Excel管理客户信息效率低下。希望引入专业的CRM系统，重点解决客户跟进记录、销售漏斗管理和数据分析问题。预算范围50-100万，计划3个月内上线。"
+                                  :placeholder="getDescriptionPlaceholder()"
                                   rows="5"
                                   class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#F0F8FF] focus:border-[#F0F8FF] resize-none"></textarea>
                         <p class="text-xs text-muted mt-1">输入详细描述可以让访谈问题更贴合您的实际需求</p>
