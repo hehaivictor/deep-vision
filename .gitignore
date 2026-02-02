@@ -1,5 +1,11 @@
 # 数据目录 - 包含过程数据和文档
 data/
+# 但场景配置是应用代码的一部分，需要跟踪
+!data/scenarios/
+!data/scenarios/builtin/
+!data/scenarios/builtin/*.json
+!data/scenarios/custom/
+!data/scenarios/custom/.gitkeep
 
 # Python
 __pycache__/

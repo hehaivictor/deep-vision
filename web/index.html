@@ -537,6 +537,9 @@
                                                 <span :class="getStatusBadgeClass(session.status)"
                                                       class="px-2.5 py-0.5 rounded-full text-xs font-medium whitespace-nowrap"
                                                       x-text="getStatusText(session.status)"></span>
+                                                <span x-show="session.scenario_config?.name"
+                                                      class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-50 text-blue-600 whitespace-nowrap"
+                                                      x-text="session.scenario_config?.name || ''"></span>
                                             </div>
                                             <div class="flex items-center gap-4 text-sm text-muted mb-4">
                                                 <span>创建: <span x-text="formatDate(session.created_at)"></span></span>
@@ -603,7 +606,7 @@
                     <!-- 左侧：进度面板 - 移动端显示为横向滚动卡片 -->
                     <div class="lg:col-span-4 xl:col-span-3 space-y-4 order-2 lg:order-1 self-start sticky top-4">
                         <!-- 访谈主题 -->
-                        <template x-if="currentSession && currentStep < 2">
+                        <template x-if="currentSession && currentStep <= 2">
                             <div class="bg-surface border border-border rounded-xl p-5 mt-6">
                                 <h3 class="font-semibold text-primary mb-3 flex items-center gap-2">
                                     <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1409,7 +1412,7 @@
              class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-3 sm:p-4"
              @click.self="showNewSessionModal = false"
              @keydown.escape.window="showNewSessionModal = false">
-            <div class="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
+            <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95"
                  x-transition:enter-end="opacity-100 scale-100">
@@ -1438,6 +1441,39 @@
                                   rows="5"
                                   class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#F0F8FF] focus:border-[#F0F8FF] resize-none"></textarea>
                         <p class="text-xs text-muted mt-1">输入详细描述可以让访谈问题更贴合您的实际需求</p>
+                    </div>
+
+                    <!-- 场景选择 -->
+                    <div class="mb-5">
+                        <label class="block text-sm font-medium text-secondary mb-3">访谈场景</label>
+                        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                            <template x-for="scenario in scenarios" :key="scenario.id">
+                                <button type="button"
+                                        @click="selectScenario(scenario)"
+                                        :class="selectedScenario?.id === scenario.id
+                                            ? 'border-[#357BE2] bg-[#F0F8FF] ring-1 ring-[#357BE2]'
+                                            : 'border-gray-200 hover:border-[#357BE2]/40'"
+                                        class="p-3 border-2 rounded-xl cursor-pointer transition-all duration-200 text-left group">
+                                    <div class="font-medium text-sm text-primary mb-1" x-text="scenario.name"></div>
+                                    <div class="text-xs text-muted flex items-center gap-1">
+                                        <span x-text="scenario.dimensions.length"></span>
+                                        <span>个维度</span>
+                                        <template x-if="scenario.report_type === 'assessment'">
+                                            <span class="ml-1 text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full">评估</span>
+                                        </template>
+                                    </div>
+                                    <!-- 维度预览 -->
+                                    <div x-show="selectedScenario?.id === scenario.id" class="mt-2 pt-2 border-t border-gray-100">
+                                        <div class="flex flex-wrap gap-1">
+                                            <template x-for="dim in scenario.dimensions" :key="dim.id">
+                                                <span class="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded" x-text="dim.name"></span>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </button>
+                            </template>
+                        </div>
+                        <p class="text-xs text-muted mt-2">选择与您访谈目标最匹配的场景，不同场景对应不同的访谈维度。不选则默认使用「产品需求」。</p>
                     </div>
 
                     <!-- 访谈模式选择 -->

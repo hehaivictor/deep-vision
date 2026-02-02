@@ -72,6 +72,12 @@ function deepVision() {
         dimensionOrder: ['customer_needs', 'business_process', 'tech_constraints', 'project_constraints'],
         currentDimension: 'customer_needs',
 
+        // 场景相关
+        scenarios: [],
+        selectedScenario: null,
+        showScenarioSelector: false,
+        scenarioLoaded: false,
+
         // 当前问题（AI 生成）
         currentQuestion: {
             text: '',
@@ -132,6 +138,7 @@ function deepVision() {
 
             await this.loadVersionInfo();
             await this.checkServerStatus();
+            await this.loadScenarios();
             await this.loadSessions();
             await this.loadReports();
             this.startQuoteRotation();
@@ -407,16 +414,19 @@ function deepVision() {
                     body: JSON.stringify({
                         topic: this.newSessionTopic.trim(),
                         description: this.newSessionDescription.trim() || null,
-                        interview_mode: this.selectedInterviewMode
+                        interview_mode: this.selectedInterviewMode,
+                        scenario_id: this.selectedScenario?.id || null
                     })
                 });
 
                 this.sessions.unshift(session);
                 this.currentSession = session;
+                this.updateDimensionsFromSession(session);
                 this.showNewSessionModal = false;
                 this.newSessionTopic = '';
                 this.newSessionDescription = '';
                 this.selectedInterviewMode = 'standard';  // 重置为默认值
+                this.selectedScenario = null;  // 重置场景选择
                 this.currentStep = 0;
                 this.currentView = 'interview';
                 this.showToast('会话创建成功', 'success');
@@ -430,6 +440,7 @@ function deepVision() {
         async openSession(sessionId) {
             try {
                 this.currentSession = await this.apiCall(`/sessions/${sessionId}`);
+                this.updateDimensionsFromSession(this.currentSession);
                 this.currentView = 'interview';
 
                 // 检查所有维度是否已完成
@@ -447,7 +458,7 @@ function deepVision() {
                 } else {
                     // 还没开始访谈
                     this.currentStep = 0;
-                    this.currentDimension = 'customer_needs';
+                    this.currentDimension = this.dimensionOrder[0] || 'customer_needs';
                 }
             } catch (error) {
                 this.showToast('加载会话失败', 'error');
@@ -1173,10 +1184,11 @@ function deepVision() {
                 if (result.success) {
                     // 刷新会话数据
                     this.currentSession = await this.apiCall(`/sessions/${this.currentSession.session_id}`);
+                    this.updateDimensionsFromSession(this.currentSession);
 
                     // 重置前端状态
                     this.currentStep = 0;
-                    this.currentDimension = 'customer_needs';
+                    this.currentDimension = this.dimensionOrder[0] || 'customer_needs';
                     this.currentQuestion = null;
 
                     this.showToast('已保存当前访谈内容，开始新一轮访谈', 'success');
@@ -2052,6 +2064,50 @@ function deepVision() {
 
         getDimensionName(key) {
             return this.dimensionNames[key] || key;
+        },
+
+        // 从会话配置更新维度信息
+        updateDimensionsFromSession(session) {
+            if (session?.scenario_config?.dimensions) {
+                this.dimensionOrder = session.scenario_config.dimensions.map(d => d.id);
+                const names = {};
+                session.scenario_config.dimensions.forEach(d => {
+                    names[d.id] = d.name;
+                });
+                this.dimensionNames = names;
+            }
+        },
+
+        // 加载场景列表
+        async loadScenarios() {
+            try {
+                this.scenarios = await this.apiCall('/scenarios');
+                this.scenarioLoaded = true;
+            } catch (error) {
+                console.warn('加载场景列表失败:', error);
+                this.scenarios = [];
+            }
+        },
+
+        // 选择场景
+        selectScenario(scenario) {
+            if (this.selectedScenario?.id === scenario.id) {
+                this.selectedScenario = null;  // 取消选择
+            } else {
+                this.selectedScenario = scenario;
+            }
+        },
+
+        // 获取场景名称
+        getScenarioName(session) {
+            if (session?.scenario_config?.name) {
+                return session.scenario_config.name;
+            }
+            if (session?.scenario_id) {
+                const scenario = this.scenarios.find(s => s.id === session.scenario_id);
+                return scenario?.name || session.scenario_id;
+            }
+            return '产品需求';
         },
 
         getStatusBadgeClass(status) {
