@@ -1,7 +1,20 @@
 {
-  "version": "1.20.0",
+  "version": "1.20.1",
   "releaseDate": "2026-02-02",
   "changelog": [
+    {
+      "version": "1.20.1",
+      "date": "2026-02-02",
+      "type": "patch",
+      "title": "修复 mermaid flowchart 连接线语法规则说明",
+      "changes": [
+        "明确带标签连接线正确语法：`A -->|标签| B`",
+        "明确禁止错误语法：`A --|标签|--> B` 和双箭头",
+        "更新示例代码使用更清晰的标签",
+        "更新部署架构图示例，包含 subgraph 和带标签连接",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.20.0",
       "date": "2026-02-02",
