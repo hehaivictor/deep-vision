@@ -2193,9 +2193,26 @@ function deepVision() {
 
                 // 如果置信度高于 0.5 且用户未手动选择，自动选中推荐场景
                 if (result.confidence >= 0.5 && this.autoRecognizeEnabled) {
-                    const recommendedScenario = this.scenarios.find(s => s.id === result.recommended.id);
-                    if (recommendedScenario) {
-                        this.selectedScenario = recommendedScenario;
+                    // 确保 scenarios 已加载
+                    if (!this.scenarios || this.scenarios.length === 0) {
+                        console.warn('场景列表未加载，等待加载后重试');
+                        await this.loadScenarios();
+                    }
+
+                    const recommendedId = result.recommended?.id;
+                    if (recommendedId) {
+                        let recommendedScenario = this.scenarios.find(s => s.id === recommendedId);
+
+                        // 如果精确匹配失败，尝试名称匹配（兼容 AI 可能返回不同格式的 ID）
+                        if (!recommendedScenario && result.recommended?.name) {
+                            recommendedScenario = this.scenarios.find(s => s.name === result.recommended.name);
+                        }
+
+                        if (recommendedScenario) {
+                            this.selectedScenario = recommendedScenario;
+                        } else {
+                            console.warn('未找到推荐的场景:', recommendedId, '可用场景:', this.scenarios.map(s => s.id));
+                        }
                     }
                 }
             } catch (error) {
