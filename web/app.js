@@ -2548,29 +2548,6 @@ function deepVision() {
             this.showAiGenerateModal = true;
         },
 
-        // 切换到手动编辑模式
-        switchToManualEdit() {
-            if (this.aiGeneratedPreview) {
-                this.customScenario = {
-                    name: this.aiGeneratedPreview.name || '',
-                    description: this.aiGeneratedPreview.description || '',
-                    keywords: Array.isArray(this.aiGeneratedPreview.keywords)
-                        ? this.aiGeneratedPreview.keywords.join(', ')
-                        : '',
-                    dimensions: this.aiGeneratedPreview.dimensions.map(d => ({
-                        id: d.id,
-                        name: d.name || '',
-                        description: d.description || '',
-                        key_aspects: Array.isArray(d.key_aspects)
-                            ? d.key_aspects.join(', ')
-                            : ''
-                    }))
-                };
-            }
-            this.showAiPreviewModal = false;
-            this.showCustomScenarioModal = true;
-        },
-
         // 获取场景名称
         getScenarioName(session) {
             if (session?.scenario_config?.name) {
