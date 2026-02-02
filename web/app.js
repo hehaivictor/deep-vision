@@ -43,6 +43,9 @@ function deepVision() {
         newSessionTopic: '',
         newSessionDescription: '',
         selectedInterviewMode: 'standard',  // 默认标准模式
+        hoveredDepthMode: null,  // 深度选项悬停状态
+        showScenarioSelector: false,  // 场景选择器面板
+        scenarioSearchQuery: '',  // 场景搜索关键词
         showNewSessionModal: false,
         showDeleteModal: false,
         sessionToDelete: null,
@@ -473,6 +476,8 @@ function deepVision() {
                 this.newSessionDescription = '';
                 this.selectedInterviewMode = 'standard';  // 重置为默认值
                 this.selectedScenario = null;  // 重置场景选择
+                this.showScenarioSelector = false;  // 重置场景选择器
+                this.scenarioSearchQuery = '';  // 重置搜索关键词
                 this.currentStep = 0;
                 this.currentView = 'interview';
                 this.showToast('会话创建成功', 'success');
@@ -2298,6 +2303,8 @@ function deepVision() {
             this.selectedScenario = null;
             this.recognizedResult = null;
             this.autoRecognizeEnabled = true;
+            this.showScenarioSelector = false;
+            this.scenarioSearchQuery = '';
         },
 
         // 一键生成专属场景（基于用户已输入的主题和描述）

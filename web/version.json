@@ -18,8 +18,7 @@
         "招投标：政务云、智慧园区",
         "面试评估：候选人评估、能力面试",
         "自定义场景根据场景名称和维度自动生成提示文案",
-        "帮助用户更好理解如何使用不同场景",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "帮助用户更好理解如何使用不同场景"
       ]
     },
     {
@@ -30,8 +29,7 @@
       "changes": [
         "确保 scenarios 加载完成后再匹配",
         "如果 ID 匹配失败，尝试用名称匹配（兼容 AI 返回格式差异）",
-        "添加调试日志帮助诊断",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "添加调试日志帮助诊断"
       ]
     },
     {
@@ -45,8 +43,7 @@
         "提供「AI 一键生成专属场景」按钮",
         "基于用户已输入的主题+描述直接生成",
         "生成后自动选中新场景",
-        "优化用户体验，无需手动点击\"+\"创建场景",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "优化用户体验，无需手动点击\"+\"创建场景"
       ]
     },
     {
@@ -59,8 +56,7 @@
         "用户只需描述想做什么，AI 自动生成场景名称、描述、关键词和维度",
         "新增 AI 输入弹窗和预览编辑弹窗",
         "支持预览编辑、重新生成、切换手动编辑",
-        "创建按钮改为「AI 智能创建」闪电图标",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "创建按钮改为「AI 智能创建」闪电图标"
       ]
     },
     {
@@ -73,8 +69,7 @@
         "用户只需描述想做什么，AI 自动生成场景名称、描述、关键词和维度",
         "新增 AI 输入弹窗和预览编辑弹窗",
         "支持预览编辑、重新生成、切换手动编辑",
-        "创建按钮改为「AI 智能创建」闪电图标",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "创建按钮改为「AI 智能创建」闪电图标"
       ]
     },
     {
@@ -83,8 +78,7 @@
       "type": "patch",
       "title": "修复自定义场景删除按钮不显示的问题",
       "changes": [
-        "场景列表 API 添加 custom 字段返回",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "场景列表 API 添加 custom 字段返回"
       ]
     },
     {
@@ -98,8 +92,7 @@
         "场景编辑器弹窗：名称、描述、关键词、维度配置",
         "支持动态增删维度（1-8个）",
         "自定义场景显示紫色标识和悬停删除按钮",
-        "自定义场景保存到 data/scenarios/custom/ 目录",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "自定义场景保存到 data/scenarios/custom/ 目录"
       ]
     },
     {
@@ -113,8 +106,7 @@
         "新增评估报告生成（综合评分、推荐等级、能力分析）",
         "前端显示维度评分和推荐等级徽章",
         "评估进度条按评分比例显示",
-        "支持 A/B/C/D 四级推荐等级",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "支持 A/B/C/D 四级推荐等级"
       ]
     },
     {
@@ -128,8 +120,7 @@
         "显示 AI 推荐理由替代匹配关键词",
         "描述输入框变化也触发重新识别",
         "增加防抖时间至 800ms 适应 AI 调用",
-        "AI 失败时自动回退到关键词匹配",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "AI 失败时自动回退到关键词匹配"
       ]
     },
     {
@@ -144,8 +135,7 @@
         "手动选择场景后禁用自动覆盖",
         "新增AI推荐徽章和识别状态指示器",
         "显示匹配的关键词标签",
-        "动态提示文案根据识别结果变化",
-        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+        "动态提示文案根据识别结果变化"
       ]
     },
     {
