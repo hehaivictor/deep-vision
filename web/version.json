@@ -1,7 +1,22 @@
 {
-  "version": "1.13.0",
+  "version": "1.14.0",
   "releaseDate": "2026-02-02",
   "changelog": [
+    {
+      "version": "1.14.0",
+      "date": "2026-02-02",
+      "type": "minor",
+      "title": "使用 AI 智能识别访谈场景",
+      "changes": [
+        "场景识别改用 LLM 语义理解，替代关键词机械匹配",
+        "支持同时分析主题和描述进行推荐",
+        "显示 AI 推荐理由替代匹配关键词",
+        "描述输入框变化也触发重新识别",
+        "增加防抖时间至 800ms 适应 AI 调用",
+        "AI 失败时自动回退到关键词匹配",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.13.0",
       "date": "2026-02-02",
