@@ -541,24 +541,9 @@
                                                       class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-50 text-blue-600 whitespace-nowrap"
                                                       x-text="session.scenario_config?.name || ''"></span>
                                             </div>
-                                            <div class="flex items-center gap-4 text-sm text-muted mb-4">
+                                            <div class="flex items-center gap-4 text-sm text-muted">
                                                 <span>创建: <span x-text="formatDate(session.created_at)"></span></span>
                                                 <span>问答: <span x-text="session.interview_count || 0"></span> 条</span>
-                                            </div>
-                                            <!-- 四维度进度条 -->
-                                            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                                                <template x-for="dimKey in dimensionOrder" :key="dimKey">
-                                                    <div class="space-y-1.5 w-full min-w-0">
-                                                        <div class="flex justify-between text-xs">
-                                                            <span class="text-muted truncate" x-text="getDimensionName(dimKey)"></span>
-                                                            <span class="font-medium ml-2 shrink-0" :class="session.dimensions[dimKey].coverage >= 100 ? 'text-primary' : 'text-secondary'" x-text="session.dimensions[dimKey].coverage + '%'"></span>
-                                                        </div>
-                                                        <div class="h-2 bg-gray-100 rounded-full overflow-hidden w-full">
-                                                            <div class="h-full rounded-full progress-bar"
-                                                                 :style="getProgressBarStyle(session.dimensions[dimKey].coverage)"></div>
-                                                        </div>
-                                                    </div>
-                                                </template>
                                             </div>
                                         </div>
                                         <div class="flex items-center gap-2 shrink-0">
@@ -576,6 +561,21 @@
                                                 </svg>
                                             </button>
                                         </div>
+                                    </div>
+                                    <!-- 四维度进度条（独立行，宽度统一） -->
+                                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+                                        <template x-for="dimKey in getSessionDimKeys(session)" :key="dimKey">
+                                            <div class="space-y-1.5 w-full min-w-0">
+                                                <div class="flex justify-between text-xs">
+                                                    <span class="text-muted truncate" x-text="getSessionDimName(session, dimKey)"></span>
+                                                    <span class="font-medium ml-2 shrink-0" :class="getSessionDimCoverage(session, dimKey) >= 100 ? 'text-primary' : 'text-secondary'" x-text="getSessionDimCoverage(session, dimKey) + '%'"></span>
+                                                </div>
+                                                <div class="h-2 bg-gray-100 rounded-full overflow-hidden w-full">
+                                                    <div class="h-full rounded-full progress-bar"
+                                                         :style="getProgressBarStyle(getSessionDimCoverage(session, dimKey))"></div>
+                                                </div>
+                                            </div>
+                                        </template>
                                     </div>
                                 </div>
                             </template>

@@ -2117,6 +2117,28 @@ function deepVision() {
             return this.dimensionNames[key] || key;
         },
 
+        // 获取指定会话的维度 key 列表
+        getSessionDimKeys(session) {
+            if (session?.scenario_config?.dimensions) {
+                return session.scenario_config.dimensions.map(d => d.id);
+            }
+            return Object.keys(session?.dimensions || {});
+        },
+
+        // 获取指定会话中某个维度的名称
+        getSessionDimName(session, key) {
+            if (session?.scenario_config?.dimensions) {
+                const dim = session.scenario_config.dimensions.find(d => d.id === key);
+                if (dim) return dim.name;
+            }
+            return this.dimensionNames[key] || key;
+        },
+
+        // 安全获取会话维度的覆盖度
+        getSessionDimCoverage(session, key) {
+            return session?.dimensions?.[key]?.coverage ?? 0;
+        },
+
         // 判断当前会话是否为评估场景
         isAssessmentSession() {
             return this.currentSession?.scenario_config?.report?.type === 'assessment';
