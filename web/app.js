@@ -23,6 +23,9 @@ function deepVision() {
         webSearching: false,  // Web Search API 调用状态
         webSearchPollInterval: null,  // Web Search 状态轮询定时器
         quoteRotationInterval: null,  // 诗句轮播定时器
+        currentTipIndex: 0,  // 访谈小技巧当前索引
+        currentTip: '',  // 当前显示的小技巧文本
+        tipRotationInterval: null,  // 小技巧轮播定时器
 
         // ========== 方案B+D 新增状态变量 ==========
         thinkingStage: null,           // 思考阶段数据
@@ -49,6 +52,15 @@ function deepVision() {
         showNewSessionModal: false,
         showDeleteModal: false,
         sessionToDelete: null,
+
+        // 会话列表筛选和分页
+        sessionSearchQuery: '',
+        sessionStatusFilter: 'all',
+        sessionSortOrder: 'newest',
+        filteredSessions: [],
+        currentPage: 1,
+        pageSize: 10,
+        searchDebounceTimer: null,
 
         // 确认重新访谈对话框
         showRestartModal: false,
@@ -326,6 +338,27 @@ function deepVision() {
             this.thinkingStage = null;  // 重置状态
         },
 
+        // 访谈小技巧轮播
+        startTipRotation() {
+            const tips = typeof SITE_CONFIG !== 'undefined' ? SITE_CONFIG.researchTips : null;
+            if (!tips || tips.length === 0) return;
+
+            this.currentTipIndex = Math.floor(Math.random() * tips.length);
+            this.currentTip = tips[this.currentTipIndex];
+            this.stopTipRotation();
+            this.tipRotationInterval = setInterval(() => {
+                this.currentTipIndex = (this.currentTipIndex + 1) % tips.length;
+                this.currentTip = tips[this.currentTipIndex];
+            }, 5000);
+        },
+
+        stopTipRotation() {
+            if (this.tipRotationInterval) {
+                clearInterval(this.tipRotationInterval);
+                this.tipRotationInterval = null;
+            }
+        },
+
         // ========== 方案D: 骨架填充 ==========
         async startSkeletonFill(result) {
             const questionText = result.question || '';
@@ -425,6 +458,7 @@ function deepVision() {
             this.loading = true;
             try {
                 this.sessions = await this.apiCall('/sessions');
+                this.filterSessions();  // 加载完成后执行筛选
             } catch (error) {
                 this.showToast('加载会话列表失败', 'error');
             } finally {
@@ -469,6 +503,7 @@ function deepVision() {
                 });
 
                 this.sessions.unshift(session);
+                this.filterSessions();  // 刷新筛选列表
                 this.currentSession = session;
                 this.updateDimensionsFromSession(session);
                 this.showNewSessionModal = false;
@@ -531,6 +566,7 @@ function deepVision() {
             try {
                 await this.apiCall(`/sessions/${this.sessionToDelete}`, { method: 'DELETE' });
                 this.sessions = this.sessions.filter(s => s.session_id !== this.sessionToDelete);
+                this.filterSessions();  // 刷新筛选列表
                 this.showDeleteModal = false;
                 this.sessionToDelete = null;
                 this.showToast('会话已删除', 'success');
@@ -727,6 +763,7 @@ function deepVision() {
             this.loadingQuestion = true;
             this.skeletonMode = false;
             this.interactionReady = false;
+            this.startTipRotation();
             // 重置问题状态，清除上一次可能的错误
             this.currentQuestion = {
                 text: '', options: [], multiSelect: false,
@@ -766,6 +803,7 @@ function deepVision() {
                 // 关闭加载状态
                 this.loadingQuestion = false;
                 this.thinkingStage = null;
+                this.stopTipRotation();
 
                 // 检查是否有错误
                 if (!response.ok || result.error) {
@@ -2137,6 +2175,115 @@ function deepVision() {
         // 安全获取会话维度的覆盖度
         getSessionDimCoverage(session, key) {
             return session?.dimensions?.[key]?.coverage ?? 0;
+        },
+
+        // 计算会话的总进度（所有维度覆盖度的平均值）
+        getSessionTotalProgress(session) {
+            const dimKeys = this.getSessionDimKeys(session);
+            if (!dimKeys || dimKeys.length === 0) return 0;
+
+            let total = 0;
+            for (const key of dimKeys) {
+                total += this.getSessionDimCoverage(session, key);
+            }
+            return Math.round(total / dimKeys.length);
+        },
+
+        // ============ 会话列表筛选和分页 ============
+
+        // 搜索输入防抖
+        onSessionSearchInput() {
+            if (this.searchDebounceTimer) {
+                clearTimeout(this.searchDebounceTimer);
+            }
+            this.searchDebounceTimer = setTimeout(() => {
+                this.filterSessions();
+            }, 300);
+        },
+
+        // 筛选和排序会话
+        filterSessions() {
+            let result = [...this.sessions];
+
+            // 按搜索关键词筛选
+            if (this.sessionSearchQuery.trim()) {
+                const query = this.sessionSearchQuery.toLowerCase();
+                result = result.filter(s =>
+                    s.topic?.toLowerCase().includes(query) ||
+                    s.scenario_config?.name?.toLowerCase().includes(query)
+                );
+            }
+
+            // 按状态筛选
+            if (this.sessionStatusFilter !== 'all') {
+                result = result.filter(s => s.status === this.sessionStatusFilter);
+            }
+
+            // 排序
+            switch (this.sessionSortOrder) {
+                case 'newest':
+                    result.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+                    break;
+                case 'oldest':
+                    result.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+                    break;
+                case 'progress':
+                    result.sort((a, b) => this.getSessionTotalProgress(b) - this.getSessionTotalProgress(a));
+                    break;
+            }
+
+            this.filteredSessions = result;
+            this.currentPage = 1;  // 重置到第一页
+        },
+
+        // 分页相关计算属性
+        get totalPages() {
+            return Math.ceil(this.filteredSessions.length / this.pageSize);
+        },
+
+        get paginatedSessions() {
+            const start = (this.currentPage - 1) * this.pageSize;
+            const end = start + this.pageSize;
+            return this.filteredSessions.slice(start, end);
+        },
+
+        get paginationStart() {
+            if (this.filteredSessions.length === 0) return 0;
+            return (this.currentPage - 1) * this.pageSize + 1;
+        },
+
+        get paginationEnd() {
+            return Math.min(this.currentPage * this.pageSize, this.filteredSessions.length);
+        },
+
+        get visiblePages() {
+            const pages = [];
+            const total = this.totalPages;
+            const current = this.currentPage;
+
+            if (total <= 7) {
+                for (let i = 1; i <= total; i++) pages.push(i);
+            } else {
+                if (current <= 3) {
+                    pages.push(1, 2, 3, 4, '...', total);
+                } else if (current >= total - 2) {
+                    pages.push(1, '...', total - 3, total - 2, total - 1, total);
+                } else {
+                    pages.push(1, '...', current - 1, current, current + 1, '...', total);
+                }
+            }
+            return pages;
+        },
+
+        goToPage(page) {
+            if (page >= 1 && page <= this.totalPages) {
+                this.currentPage = page;
+                // 滚动到列表顶部
+                const listEl = document.querySelector('[x-if="currentView === \'sessions\'"]');
+                if (listEl) {
+                    listEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            }
         },
 
         // 判断当前会话是否为评估场景

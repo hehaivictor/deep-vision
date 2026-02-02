@@ -442,13 +442,13 @@
                 </div>
                 <nav class="flex items-center gap-2 md:gap-3">
                     <button @click="switchView('sessions')"
-                            :class="currentView === 'sessions' ? 'bg-[#357BE2] text-white' : 'text-primary hover:bg-surface-secondary'"
+                            :class="currentView === 'sessions' ? 'bg-gray-900 text-white' : 'text-primary hover:bg-surface-secondary'"
                             class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium">
                         <span class="hidden sm:inline">会话管理</span>
                         <span class="sm:hidden">会话</span>
                     </button>
                     <button @click="switchView('reports')"
-                            :class="currentView === 'reports' ? 'bg-[#357BE2] text-white' : 'text-primary hover:bg-surface-secondary'"
+                            :class="currentView === 'reports' ? 'bg-gray-900 text-white' : 'text-primary hover:bg-surface-secondary'"
                             class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium">
                         <span class="hidden sm:inline">访谈报告</span>
                         <span class="sm:hidden">报告</span>
@@ -513,6 +513,58 @@
                         </button>
                     </div>
 
+                    <!-- 搜索和筛选栏 -->
+                    <div class="bg-surface border border-border rounded-xl p-3 md:p-4">
+                        <div class="flex flex-col sm:flex-row gap-3">
+                            <!-- 搜索框 -->
+                            <div class="relative flex-1">
+                                <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                                </svg>
+                                <input type="text"
+                                       x-model="sessionSearchQuery"
+                                       @input="onSessionSearchInput()"
+                                       placeholder="搜索访谈主题..."
+                                       class="w-full pl-9 pr-8 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                <button x-show="sessionSearchQuery"
+                                        @click="sessionSearchQuery = ''; filterSessions()"
+                                        class="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 cursor-pointer">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                    </svg>
+                                </button>
+                            </div>
+
+                            <!-- 状态筛选 -->
+                            <div class="flex gap-2">
+                                <button @click="sessionStatusFilter = 'all'; filterSessions()"
+                                        :class="sessionStatusFilter === 'all' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                        class="px-3 py-2 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap">
+                                    全部
+                                </button>
+                                <button @click="sessionStatusFilter = 'in_progress'; filterSessions()"
+                                        :class="sessionStatusFilter === 'in_progress' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                        class="px-3 py-2 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap">
+                                    进行中
+                                </button>
+                                <button @click="sessionStatusFilter = 'completed'; filterSessions()"
+                                        :class="sessionStatusFilter === 'completed' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                        class="px-3 py-2 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap">
+                                    已完成
+                                </button>
+                            </div>
+
+                            <!-- 排序 -->
+                            <select x-model="sessionSortOrder"
+                                    @change="filterSessions()"
+                                    class="px-3 pr-8 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer bg-white appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20fill%3D%22none%22%20viewBox%3D%220%200%2024%2024%22%20stroke%3D%22%236b7280%22%3E%3Cpath%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20stroke-width%3D%222%22%20d%3D%22M19%209l-7%207-7-7%22%2F%3E%3C%2Fsvg%3E')] bg-[length:16px] bg-[right_8px_center] bg-no-repeat">
+                                <option value="newest">最新优先</option>
+                                <option value="oldest">最早优先</option>
+                                <option value="progress">进度排序</option>
+                            </select>
+                        </div>
+                    </div>
+
                     <!-- 加载状态 -->
                     <template x-if="loading">
                         <div class="text-center py-12">
@@ -526,61 +578,102 @@
 
                     <!-- 会话列表 -->
                     <template x-if="!loading">
-                        <div class="grid gap-4">
-                            <template x-for="session in sessions" :key="session.session_id">
-                                <div class="bg-surface border border-border rounded-xl hover:shadow-sm transition-all duration-200 p-4 md:p-6 cursor-pointer hover:shadow-sm/20"
-                                     @click="openSession(session.session_id)">
-                                    <div class="flex flex-col md:flex-row md:items-start justify-between gap-4">
-                                        <div class="flex-1 min-w-0">
-                                            <div class="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 mb-2">
-                                                <h3 class="text-base md:text-lg font-semibold text-primary break-words" x-text="session.topic"></h3>
+                        <div class="space-y-4">
+                            <!-- 结果统计 -->
+                            <div class="flex items-center justify-between text-sm text-muted" x-show="filteredSessions.length > 0">
+                                <span>显示 <span x-text="paginationStart"></span>-<span x-text="paginationEnd"></span> / 共 <span x-text="filteredSessions.length"></span> 条</span>
+                            </div>
+
+                            <!-- 会话卡片列表 -->
+                            <div class="grid gap-3">
+                                <template x-for="session in paginatedSessions" :key="session.session_id">
+                                    <div class="bg-surface border border-border rounded-xl hover:shadow-sm transition-all duration-200 p-4 cursor-pointer"
+                                         @click="openSession(session.session_id)">
+                                        <!-- 头部：标题 + 标签 + 操作按钮 -->
+                                        <div class="flex items-start justify-between gap-3 mb-1">
+                                            <div class="flex flex-wrap items-center gap-2 min-w-0">
+                                                <h3 class="text-base font-semibold text-primary break-words" x-text="session.topic"></h3>
                                                 <span :class="getStatusBadgeClass(session.status)"
-                                                      class="px-2.5 py-0.5 rounded-full text-xs font-medium whitespace-nowrap"
+                                                      class="px-2 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap"
                                                       x-text="getStatusText(session.status)"></span>
                                                 <span x-show="session.scenario_config?.name"
                                                       class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-50 text-blue-600 whitespace-nowrap"
                                                       x-text="session.scenario_config?.name || ''"></span>
                                             </div>
-                                            <div class="flex items-center gap-4 text-sm text-muted">
-                                                <span>创建: <span x-text="formatDate(session.created_at)"></span></span>
-                                                <span>问答: <span x-text="session.interview_count || 0"></span> 条</span>
+                                            <div class="flex items-center gap-1 shrink-0">
+                                                <button @click.stop="continueSession(session.session_id)"
+                                                        x-show="session.status !== 'completed'"
+                                                        class="px-2.5 py-1 bg-[#357BE2] text-white rounded-md text-xs font-medium hover:bg-[#2563EB] transition-colors cursor-pointer whitespace-nowrap">
+                                                    继续
+                                                </button>
+                                                <button @click.stop="confirmDeleteSession(session.session_id)"
+                                                        class="p-1.5 text-gray-300 hover:text-danger hover:bg-red-50 rounded-md transition-colors cursor-pointer"
+                                                        aria-label="删除会话">
+                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                              d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                    </svg>
+                                                </button>
                                             </div>
                                         </div>
-                                        <div class="flex items-center gap-2 shrink-0">
-                                            <button @click.stop="continueSession(session.session_id)"
-                                                    x-show="session.status !== 'completed'"
-                                                    class="px-3 py-1.5 bg-cta/10 text-primary rounded-lg text-sm font-medium hover:bg-cta/20 transition-colors cursor-pointer whitespace-nowrap">
-                                                继续
-                                            </button>
-                                            <button @click.stop="confirmDeleteSession(session.session_id)"
-                                                    class="p-2 text-gray-500 hover:text-danger hover:bg-red-50 rounded-lg transition-colors cursor-pointer min-w-[40px] min-h-[40px] flex items-center justify-center"
-                                                    aria-label="删除会话">
-                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                                                </svg>
-                                            </button>
+
+                                        <!-- 元信息 -->
+                                        <div class="flex items-center gap-1 text-xs text-muted mb-3">
+                                            <span>创建: <span x-text="formatDate(session.created_at)"></span></span>
+                                            <span class="mx-1">·</span>
+                                            <span>问答: <span x-text="session.interview_count || 0"></span> 条</span>
+                                        </div>
+
+                                        <!-- 维度进度 + 总进度 组合区域 -->
+                                        <div class="bg-gray-50/50 rounded-lg p-3 -mx-1">
+                                            <!-- 维度进度列表 - 紧凑两列布局 -->
+                                            <div class="grid grid-cols-2 gap-x-6 gap-y-1.5 mb-3">
+                                                <template x-for="dimKey in getSessionDimKeys(session)" :key="dimKey">
+                                                    <div class="flex items-center gap-2">
+                                                        <span class="w-14 text-[11px] text-muted truncate shrink-0" x-text="getSessionDimName(session, dimKey)"></span>
+                                                        <div class="flex-1 h-1 bg-gray-200/80 rounded-full overflow-hidden">
+                                                            <div class="h-full rounded-full transition-all duration-500"
+                                                                 :style="getProgressBarStyle(getSessionDimCoverage(session, dimKey))"></div>
+                                                        </div>
+                                                        <span class="w-7 text-[11px] text-right shrink-0"
+                                                              :class="getSessionDimCoverage(session, dimKey) >= 100 ? 'text-primary font-medium' : 'text-gray-400'"
+                                                              x-text="getSessionDimCoverage(session, dimKey) + '%'"></span>
+                                                    </div>
+                                                </template>
+                                            </div>
+
+                                            <!-- 总进度条 -->
+                                            <div class="flex items-center gap-2 pt-2 border-t border-gray-200/60">
+                                                <span class="text-[11px] text-muted shrink-0">总进度</span>
+                                                <div class="flex-1 h-1.5 bg-gray-200/80 rounded-full overflow-hidden">
+                                                    <div class="h-full rounded-full transition-all duration-500"
+                                                         :style="getProgressBarStyle(getSessionTotalProgress(session))"></div>
+                                                </div>
+                                                <span class="text-xs font-medium shrink-0"
+                                                      :class="getSessionTotalProgress(session) >= 100 ? 'text-primary' : 'text-gray-500'"
+                                                      x-text="getSessionTotalProgress(session) + '%'"></span>
+                                            </div>
                                         </div>
                                     </div>
-                                    <!-- 四维度进度条（独立行，宽度统一） -->
-                                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
-                                        <template x-for="dimKey in getSessionDimKeys(session)" :key="dimKey">
-                                            <div class="space-y-1.5 w-full min-w-0">
-                                                <div class="flex justify-between text-xs">
-                                                    <span class="text-muted truncate" x-text="getSessionDimName(session, dimKey)"></span>
-                                                    <span class="font-medium ml-2 shrink-0" :class="getSessionDimCoverage(session, dimKey) >= 100 ? 'text-primary' : 'text-secondary'" x-text="getSessionDimCoverage(session, dimKey) + '%'"></span>
-                                                </div>
-                                                <div class="h-2 bg-gray-100 rounded-full overflow-hidden w-full">
-                                                    <div class="h-full rounded-full progress-bar"
-                                                         :style="getProgressBarStyle(getSessionDimCoverage(session, dimKey))"></div>
-                                                </div>
-                                            </div>
-                                        </template>
-                                    </div>
+                                </template>
+                            </div>
+
+                            <!-- 空状态：无搜索结果 -->
+                            <template x-if="filteredSessions.length === 0 && sessions.length > 0">
+                                <div class="text-center py-12 bg-surface border border-border rounded-xl">
+                                    <svg class="w-16 h-16 mx-auto text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                                    </svg>
+                                    <h3 class="text-lg font-medium text-gray-600 mb-2">未找到匹配的会话</h3>
+                                    <p class="text-muted mb-4">尝试调整搜索条件或筛选器</p>
+                                    <button @click="sessionSearchQuery = ''; sessionStatusFilter = 'all'; filterSessions()"
+                                            class="text-primary hover:text-primary/80 text-sm font-medium cursor-pointer">
+                                        清除筛选条件
+                                    </button>
                                 </div>
                             </template>
 
-                            <!-- 空状态 -->
+                            <!-- 空状态：无会话 -->
                             <template x-if="sessions.length === 0">
                                 <div class="text-center py-16 bg-surface border border-border rounded-xl">
                                     <svg class="w-20 h-20 mx-auto text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -593,6 +686,39 @@
                                             class="btn-sage-blue text-white px-6 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer">
                                         新建访谈
                                     </button>
+                                </div>
+                            </template>
+
+                            <!-- 分页控件 -->
+                            <template x-if="totalPages > 1">
+                                <div class="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
+                                    <div class="flex items-center gap-2">
+                                        <button @click="goToPage(currentPage - 1)"
+                                                :disabled="currentPage === 1"
+                                                :class="currentPage === 1 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100 cursor-pointer'"
+                                                class="p-2 rounded-lg border border-gray-200 transition-colors">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                                            </svg>
+                                        </button>
+
+                                        <template x-for="page in visiblePages" :key="page">
+                                            <button @click="page !== '...' && goToPage(page)"
+                                                    :class="page === currentPage ? 'bg-primary text-white' : (page === '...' ? 'cursor-default' : 'hover:bg-gray-100 cursor-pointer')"
+                                                    class="min-w-[36px] h-9 px-3 rounded-lg border border-gray-200 text-sm font-medium transition-colors"
+                                                    x-text="page">
+                                            </button>
+                                        </template>
+
+                                        <button @click="goToPage(currentPage + 1)"
+                                                :disabled="currentPage === totalPages"
+                                                :class="currentPage === totalPages ? 'opacity-50 cursor-not-allowed' : 'hover:bg-gray-100 cursor-pointer'"
+                                                class="p-2 rounded-lg border border-gray-200 transition-colors">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                                            </svg>
+                                        </button>
+                                    </div>
                                 </div>
                             </template>
                         </div>
@@ -613,6 +739,9 @@
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
                                     </svg>
                                     访谈主题
+                                    <span x-show="currentSession.scenario_config?.name"
+                                          class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-50 text-blue-600 whitespace-nowrap"
+                                          x-text="currentSession.scenario_config?.name || ''"></span>
                                 </h3>
                                 <p class="text-sm text-secondary break-words" x-text="currentSession.topic"></p>
                                 <template x-if="currentSession.description">
@@ -984,7 +1113,7 @@
                                             <svg class="w-4 h-4 text-amber-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
                                             </svg>
-                                            <span x-text="SITE_CONFIG.researchTips[currentTipIndex]"></span>
+                                            <span x-text="currentTip"></span>
                                         </div>
                                         </div>
                                     </div>
