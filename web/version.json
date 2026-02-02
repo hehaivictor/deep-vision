@@ -1,7 +1,19 @@
 {
-  "version": "1.19.0",
+  "version": "1.19.1",
   "releaseDate": "2026-02-02",
   "changelog": [
+    {
+      "version": "1.19.1",
+      "date": "2026-02-02",
+      "type": "patch",
+      "title": "修复推荐场景未自动选中的问题",
+      "changes": [
+        "确保 scenarios 加载完成后再匹配",
+        "如果 ID 匹配失败，尝试用名称匹配（兼容 AI 返回格式差异）",
+        "添加调试日志帮助诊断",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.19.0",
       "date": "2026-02-02",
