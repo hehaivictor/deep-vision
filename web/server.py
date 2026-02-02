@@ -11,7 +11,7 @@ Deep Vision Web Server - AI 驱动版本
 - 智能追问（识别表面需求，挖掘本质）
 - 冲突检测（检测回答与参考文档的冲突）
 - 知识增强（专业领域信息融入选项）
-- 生成专业调研报告
+- 生成专业访谈报告
 """
 
 import base64
@@ -637,24 +637,25 @@ def mark_report_as_deleted(filename: str):
 def get_deleted_docs() -> dict:
     """获取已删除文档的记录"""
     if not DELETED_DOCS_FILE.exists():
-        return {"reference_docs": [], "research_docs": []}
+        return {"reference_materials": []}
     try:
         data = json.loads(DELETED_DOCS_FILE.read_text(encoding="utf-8"))
-        return {
-            "reference_docs": data.get("reference_docs", []),
-            "research_docs": data.get("research_docs", [])
-        }
+        # 兼容旧格式
+        materials = data.get("reference_materials", [])
+        materials.extend(data.get("reference_docs", []))
+        materials.extend(data.get("research_docs", []))
+        return {"reference_materials": materials}
     except Exception:
-        return {"reference_docs": [], "research_docs": []}
+        return {"reference_materials": []}
 
 
-def mark_doc_as_deleted(session_id: str, doc_name: str, doc_type: str):
+def mark_doc_as_deleted(session_id: str, doc_name: str, doc_type: str = "reference_materials"):
     """标记文档为已删除（软删除）
 
     Args:
         session_id: 会话 ID
         doc_name: 文档名称
-        doc_type: 文档类型 ('reference_docs' 或 'research_docs')
+        doc_type: 文档类型（默认 'reference_materials'）
     """
     deleted = get_deleted_docs()
     record = {
@@ -662,13 +663,45 @@ def mark_doc_as_deleted(session_id: str, doc_name: str, doc_type: str):
         "doc_name": doc_name,
         "deleted_at": get_utc_now()
     }
-    if doc_type not in deleted:
-        deleted[doc_type] = []
-    deleted[doc_type].append(record)
+    if "reference_materials" not in deleted:
+        deleted["reference_materials"] = []
+    deleted["reference_materials"].append(record)
     DELETED_DOCS_FILE.write_text(
         json.dumps(deleted, ensure_ascii=False, indent=2),
         encoding="utf-8"
     )
+
+
+def migrate_session_docs(session: dict) -> dict:
+    """迁移旧会话数据：将 reference_docs + research_docs 合并为 reference_materials
+
+    Args:
+        session: 会话数据字典
+
+    Returns:
+        迁移后的会话数据
+    """
+    # 如果已经有 reference_materials，检查是否还有旧字段需要迁移
+    if "reference_materials" not in session:
+        session["reference_materials"] = []
+
+    # 迁移 reference_docs
+    if "reference_docs" in session:
+        for doc in session["reference_docs"]:
+            if "source" not in doc:
+                doc["source"] = "upload"
+            session["reference_materials"].append(doc)
+        del session["reference_docs"]
+
+    # 迁移 research_docs
+    if "research_docs" in session:
+        for doc in session["research_docs"]:
+            if "source" not in doc:
+                doc["source"] = "auto"
+            session["reference_materials"].append(doc)
+        del session["research_docs"]
+
+    return session
 
 
 # ============ 联网搜索功能 ============
@@ -991,10 +1024,10 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
             for qa in recent_qa[-3:]  # 只取最近3条
         ])
 
-    prompt = f"""你是一个智能搜索决策助手。请判断在当前调研场景下，是否需要联网搜索来获取更准确、更专业的信息。
+    prompt = f"""你是一个智能搜索决策助手。请判断在当前访谈场景下，是否需要联网搜索来获取更准确、更专业的信息。
 
-## 当前调研信息
-- 调研主题：{topic}
+## 当前访谈信息
+- 访谈主题：{topic}
 - 当前维度：{dim_name}
 - 最近问答：
 {recent_context if recent_context else "（尚未开始问答）"}
@@ -1200,7 +1233,7 @@ def summarize_document(content: str, doc_name: str = "文档", topic: str = "") 
     Args:
         content: 文档原始内容
         doc_name: 文档名称（用于提示）
-        topic: 调研主题（用于生成更相关的摘要）
+        topic: 访谈主题（用于生成更相关的摘要）
 
     Returns:
         tuple[str, bool]: (处理后的内容, 是否生成了摘要)
@@ -1305,7 +1338,7 @@ def process_document_for_context(doc: dict, remaining_length: int, topic: str = 
     Args:
         doc: 文档字典，包含 name 和 content
         remaining_length: 剩余可用长度
-        topic: 调研主题
+        topic: 访谈主题
 
     Returns:
         tuple[str, str, int, bool]: (文档名, 处理后的内容, 使用的长度, 是否被摘要/截断)
@@ -1418,7 +1451,7 @@ def _build_summary_prompt(topic: str, logs: list) -> str:
 
     return f"""请将以下访谈记录压缩为简洁的摘要，保留关键信息点。
 
-调研主题：{topic}
+访谈主题：{topic}
 
 访谈记录：
 {logs_text}
@@ -2117,25 +2150,27 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     """
     topic = session.get("topic", "未知项目")
     description = session.get("description")
-    reference_docs = session.get("reference_docs", [])
-    research_docs = session.get("research_docs", [])
+    # 兼容旧数据：优先使用 reference_materials，否则合并旧字段
+    reference_materials = session.get("reference_materials", [])
+    if not reference_materials:
+        reference_materials = session.get("reference_docs", []) + session.get("research_docs", [])
     interview_log = session.get("interview_log", [])
     dim_info = DIMENSION_INFO.get(dimension, {})
 
     # 构建上下文
-    context_parts = [f"当前调研主题：{topic}"]
+    context_parts = [f"当前访谈主题：{topic}"]
 
     # 如果有主题描述，添加到上下文中（限制长度）
     if description:
         context_parts.append(f"\n主题描述：{description[:500]}")
 
-    # 添加参考文档内容（使用总长度限制 + 智能摘要）
+    # 添加参考资料内容（使用总长度限制 + 智能摘要）
     total_doc_length = 0
     truncated_docs = []  # 记录被处理的文档（摘要或截断）
     summarized_docs = []  # 记录使用智能摘要的文档
-    if reference_docs:
-        context_parts.append("\n## 参考文档内容：")
-        for doc in reference_docs:
+    if reference_materials:
+        context_parts.append("\n## 参考资料：")
+        for doc in reference_materials:
             if doc.get("content") and total_doc_length < MAX_TOTAL_DOCS:
                 remaining = MAX_TOTAL_DOCS - total_doc_length
                 original_length = len(doc["content"])
@@ -2146,38 +2181,15 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
                 )
 
                 if processed_content:
-                    context_parts.append(f"### {doc_name}")
+                    # 根据 source 添加标记
+                    source_marker = "🔄 " if doc.get("source") == "auto" else ""
+                    context_parts.append(f"### {source_marker}{doc_name}")
                     context_parts.append(processed_content)
                     total_doc_length += used_length
 
                     # 记录处理情况
                     if was_processed:
                         if used_length < original_length * 0.6:  # 如果内容减少超过40%，可能是摘要
-                            summarized_docs.append(f"{doc_name}（原{original_length}字符，摘要至{used_length}字符）")
-                        else:
-                            truncated_docs.append(f"{doc_name}（原{original_length}字符，截取{used_length}字符）")
-
-    # 添加已有调研成果内容（共享总长度限制 + 智能摘要）
-    if research_docs and total_doc_length < MAX_TOTAL_DOCS:
-        context_parts.append("\n## 已有调研成果（供参考）：")
-        for doc in research_docs:
-            if doc.get("content") and total_doc_length < MAX_TOTAL_DOCS:
-                remaining = MAX_TOTAL_DOCS - total_doc_length
-                original_length = len(doc["content"])
-
-                # 使用智能摘要处理文档
-                doc_name, processed_content, used_length, was_processed = process_document_for_context(
-                    doc, remaining, topic
-                )
-
-                if processed_content:
-                    context_parts.append(f"### {doc_name}")
-                    context_parts.append(processed_content)
-                    total_doc_length += used_length
-
-                    # 记录处理情况
-                    if was_processed:
-                        if used_length < original_length * 0.6:
                             summarized_docs.append(f"{doc_name}（原{original_length}字符，摘要至{used_length}字符）")
                         else:
                             truncated_docs.append(f"{doc_name}（原{original_length}字符，截取{used_length}字符）")
@@ -2221,7 +2233,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
             # 获取或生成历史摘要
             history_summary = generate_history_summary(session, exclude_recent=CONTEXT_WINDOW_SIZE)
             if history_summary:
-                context_parts.append(f"\n### 历史调研摘要（共{len(interview_log) - CONTEXT_WINDOW_SIZE}条）：")
+                context_parts.append(f"\n### 历史访谈摘要（共{len(interview_log) - CONTEXT_WINDOW_SIZE}条）：")
                 context_parts.append(history_summary)
                 context_parts.append("\n### 最近问答记录：")
 
@@ -2315,7 +2327,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 - 针对上一个回答进行深入提问
 - 问题要更具体，引导用户给出明确答案
 
-如果判断不需要追问，请生成新问题继续调研。
+如果判断不需要追问，请生成新问题继续访谈。
 """
 
     # 构建追问模式的提示
@@ -2341,7 +2353,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 1. 生成 1 个针对性的问题，用于收集该维度的关键信息
 2. 为这个问题提供 3-4 个具体的选项
 3. 选项要基于：
-   - 调研主题的行业特点
+   - 访谈主题的行业特点
    - 参考文档中的信息（如有）
    - 联网搜索的行业知识（如有）
    - 已收集的上下文信息
@@ -2353,7 +2365,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 
     prompt = f"""**严格输出要求：你的回复必须是纯 JSON 对象，不要添加任何解释、markdown 代码块或其他文本。第一个字符必须是 {{，最后一个字符必须是 }}**
 
-你是一个专业的需求调研访谈师，正在进行"{topic}"的需求调研。
+你是一个专业的访谈师，正在进行"{topic}"的访谈。
 你的核心职责是**深度挖掘用户的真实需求**，不满足于表面回答。
 
 {chr(10).join(context_parts)}
@@ -2406,17 +2418,19 @@ def build_report_prompt(session: dict) -> str:
     description = session.get("description")  # 获取主题描述
     interview_log = session.get("interview_log", [])
     dimensions = session.get("dimensions", {})
-    reference_docs = session.get("reference_docs", [])
-    research_docs = session.get("research_docs", [])  # 获取已有调研成果
+    # 兼容旧数据：优先使用 reference_materials，否则合并旧字段
+    reference_materials = session.get("reference_materials", [])
+    if not reference_materials:
+        reference_materials = session.get("reference_docs", []) + session.get("research_docs", [])
 
     # 按维度整理问答
     qa_by_dim = {}
     for dim_key in DIMENSION_INFO:
         qa_by_dim[dim_key] = [log for log in interview_log if log.get("dimension") == dim_key]
 
-    prompt = f"""你是一个专业的需求分析师，需要基于以下访谈记录生成一份专业的需求调研报告。
+    prompt = f"""你是一个专业的需求分析师，需要基于以下访谈记录生成一份专业的访谈报告。
 
-## 调研主题
+## 访谈主题
 {topic}
 """
 
@@ -2428,14 +2442,16 @@ def build_report_prompt(session: dict) -> str:
 """
 
     prompt += """
-## 参考文档
+## 参考资料
 """
 
-    if reference_docs:
-        prompt += "以下是用户提供的参考文档，请在生成报告时参考这些内容：\n\n"
-        for doc in reference_docs:
+    if reference_materials:
+        prompt += "以下是用户提供的参考资料，请在生成报告时参考这些内容：\n\n"
+        for doc in reference_materials:
             doc_name = doc.get('name', '文档')
-            prompt += f"### {doc_name}\n"
+            # 根据 source 添加标记
+            source_marker = "🔄 " if doc.get("source") == "auto" else ""
+            prompt += f"### {source_marker}{doc_name}\n"
             if doc.get("content"):
                 content = doc["content"]
                 original_length = len(content)
@@ -2459,35 +2475,7 @@ def build_report_prompt(session: dict) -> str:
             else:
                 prompt += "*[文档内容为空]*\n\n"
     else:
-        prompt += "无参考文档\n"
-
-    # 添加已有调研成果
-    if research_docs:
-        prompt += "\n## 已有调研成果\n"
-        prompt += "以下是用户提供的已有调研成果，请在生成报告时参考并整合这些内容：\n\n"
-        for doc in research_docs:
-            doc_name = doc.get('name', '调研文档')
-            prompt += f"### {doc_name}\n"
-            if doc.get("content"):
-                content = doc["content"]
-                original_length = len(content)
-
-                # 使用智能摘要处理长文档
-                if original_length > SMART_SUMMARY_THRESHOLD and ENABLE_SMART_SUMMARY:
-                    processed_content, is_summarized = summarize_document(content, doc_name, topic)
-                    if is_summarized:
-                        prompt += f"{processed_content}\n"
-                        prompt += f"*[原调研成果 {original_length} 字符，已通过AI生成摘要保留关键信息]*\n\n"
-                    elif len(processed_content) > MAX_DOC_LENGTH:
-                        prompt += f"{processed_content[:MAX_DOC_LENGTH]}\n"
-                        prompt += f"*[调研成果内容过长，已截取前 {MAX_DOC_LENGTH} 字符]*\n\n"
-                    else:
-                        prompt += f"{processed_content}\n\n"
-                elif original_length > MAX_DOC_LENGTH:
-                    prompt += f"{content[:MAX_DOC_LENGTH]}\n"
-                    prompt += f"*[调研成果内容过长，已截取前 {MAX_DOC_LENGTH} 字符]*\n\n"
-                else:
-                    prompt += f"{content}\n\n"
+        prompt += "无参考资料\n"
 
     prompt += "\n## 访谈记录\n"
 
@@ -2504,9 +2492,9 @@ def build_report_prompt(session: dict) -> str:
     prompt += """
 ## 报告要求
 
-请生成一份专业的需求调研报告，包含以下章节：
+请生成一份专业的访谈报告，包含以下章节：
 
-1. **调研概述** - 基本信息、调研背景
+1. **访谈概述** - 基本信息、访谈背景
 2. **需求摘要** - 核心需求列表、优先级矩阵
 3. **详细需求分析**
    - 客户/用户需求（痛点、期望、场景、角色）
@@ -2628,7 +2616,7 @@ flowchart LR
 - **flowchart、pie 等图表使用中文标签**，quadrantChart 因技术限制必须用英文
 - 报告要专业、结构清晰、可操作
 - **Mermaid 语法要求严格，请仔细检查每个图表的语法正确性**
-- 报告末尾使用署名：*此报告由 Deep Vision 深瞳-智能需求调研助手生成*
+- 报告末尾使用署名：*此报告由 Deep Vision 深瞳-智能访谈助手生成*
 
 请生成完整的报告："""
 
@@ -2910,7 +2898,7 @@ def create_session():
     if not data:
         return jsonify({"error": "无效的请求数据"}), 400
 
-    topic = data.get("topic", "未命名调研")
+    topic = data.get("topic", "未命名访谈")
     description = data.get("description")  # 获取可选的主题描述
     interview_mode = data.get("interview_mode", DEFAULT_INTERVIEW_MODE)  # 获取访谈模式
 
@@ -2946,8 +2934,7 @@ def create_session():
             "tech_constraints": {"coverage": 0, "items": []},
             "project_constraints": {"coverage": 0, "items": []}
         },
-        "reference_docs": [],
-        "research_docs": [],  # 已有调研成果文档
+        "reference_materials": [],  # 参考资料（合并原 reference_docs 和 research_docs）
         "interview_log": [],
         "requirements": [],
         "summary": None
@@ -2976,6 +2963,9 @@ def get_session(session_id):
     session = safe_load_session(session_file)
     if session is None:
         return jsonify({"error": "会话数据损坏"}), 500
+
+    # 数据迁移：兼容旧会话格式
+    session = migrate_session_docs(session)
     return jsonify(session)
 
 
@@ -3327,9 +3317,8 @@ def get_next_question(session_id):
 
         # 日志：记录 prompt 长度（便于监控和调优）
         if ENABLE_DEBUG_LOG:
-            ref_docs_count = len(session.get("reference_docs", []))
-            research_docs_count = len(session.get("research_docs", []))
-            print(f"📊 访谈 Prompt 统计：总长度={len(prompt)}字符，参考文档={ref_docs_count}个，调研成果={research_docs_count}个")
+            ref_docs_count = len(session.get("reference_materials", session.get("reference_docs", []) + session.get("research_docs", [])))
+            print(f"📊 访谈 Prompt 统计：总长度={len(prompt)}字符，参考资料={ref_docs_count}个")
             if truncated_docs:
                 print(f"⚠️  文档截断：{len(truncated_docs)}个文档被截断")
 
@@ -3763,10 +3752,13 @@ def upload_document(session_id):
 
     # 更新会话
     session = json.loads(session_file.read_text(encoding="utf-8"))
-    session["reference_docs"].append({
+    # 数据迁移：兼容旧会话
+    session = migrate_session_docs(session)
+    session["reference_materials"].append({
         "name": filename,
         "type": ext,
         "content": content[:10000],  # 限制长度
+        "source": "upload",  # 用户上传
         "uploaded_at": get_utc_now()
     })
     session["updated_at"] = get_utc_now()
@@ -3781,7 +3773,7 @@ def upload_document(session_id):
 
 @app.route('/api/sessions/<session_id>/documents/<path:doc_name>', methods=['DELETE'])
 def delete_document(session_id, doc_name):
-    """删除参考文档（软删除）"""
+    """删除参考资料（软删除）"""
     # 路径遍历防护
     if '..' in doc_name or doc_name.startswith('/'):
         return jsonify({"error": "无效的文档名"}), 400
@@ -3791,22 +3783,24 @@ def delete_document(session_id, doc_name):
         return jsonify({"error": "会话不存在"}), 404
 
     session = json.loads(session_file.read_text(encoding="utf-8"))
+    # 数据迁移：兼容旧会话
+    session = migrate_session_docs(session)
 
     # 查找并删除文档
-    original_count = len(session["reference_docs"])
-    session["reference_docs"] = [
-        doc for doc in session["reference_docs"]
+    original_count = len(session["reference_materials"])
+    session["reference_materials"] = [
+        doc for doc in session["reference_materials"]
         if doc["name"] != doc_name
     ]
 
-    if len(session["reference_docs"]) == original_count:
+    if len(session["reference_materials"]) == original_count:
         return jsonify({"error": "文档不存在"}), 404
 
     session["updated_at"] = get_utc_now()
     session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 软删除：记录到删除日志，文件保留在 temp/converted 目录
-    mark_doc_as_deleted(session_id, doc_name, "reference_docs")
+    mark_doc_as_deleted(session_id, doc_name)
 
     return jsonify({
         "success": True,
@@ -3815,152 +3809,26 @@ def delete_document(session_id, doc_name):
     })
 
 
-# ============ 已有调研成果 API ============
+# ============ 重新访谈 API ============
 
-@app.route('/api/sessions/<session_id>/research-docs', methods=['POST'])
-def upload_research_doc(session_id):
-    """上传已有调研成果文档"""
-    session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return jsonify({"error": "会话不存在"}), 404
-
-    if 'file' not in request.files:
-        return jsonify({"error": "未找到文件"}), 400
-
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "文件名为空"}), 400
-
-    filename = file.filename
-    filepath = TEMP_DIR / filename
-    file.save(filepath)
-
-    # 读取文件内容
-    ext = Path(filename).suffix.lower()
-    content = ""
-
-    try:
-        # 图片处理
-        if ext in SUPPORTED_IMAGE_TYPES:
-            content = describe_image_with_vision(filepath, filename)
-        elif ext in ['.md', '.txt']:
-            content = filepath.read_text(encoding="utf-8")
-            if not content or not content.strip():
-                return jsonify({"error": "文件内容为空"}), 400
-        elif ext in ['.pdf', '.docx', '.xlsx', '.pptx']:
-            # 调用转换脚本
-            import subprocess
-            convert_script = SKILL_DIR / "scripts" / "convert_doc.py"
-            if convert_script.exists():
-                try:
-                    result = subprocess.run(
-                        ["uv", "run", str(convert_script), "convert", str(filepath)],
-                        capture_output=True, text=True, cwd=str(SKILL_DIR)
-                    )
-                    if result.returncode == 0:
-                        converted_file = CONVERTED_DIR / f"{Path(filename).stem}.md"
-                        if converted_file.exists():
-                            content = converted_file.read_text(encoding="utf-8")
-                        else:
-                            content = f"[{ext.upper()[1:]} 解析失败: 未找到转换后的文件]"
-                    else:
-                        error_msg = result.stderr[:200] if result.stderr else "未知错误"
-                        content = f"[{ext.upper()[1:]} 解析失败: {error_msg}]"
-                except Exception as e:
-                    print(f"转换文档失败: {e}")
-                    content = f"[{ext.upper()[1:]} 解析失败: {str(e)[:200]}]"
-            else:
-                content = f"[{ext.upper()[1:]} 文件: {filename}] (转换脚本不存在)"
-    except UnicodeDecodeError as e:
-        return jsonify({"error": f"文件编码错误: {str(e)}"}), 400
-    except Exception as e:
-        return jsonify({"error": f"文件处理失败: {str(e)}"}), 500
-
-    if not content or not content.strip():
-        return jsonify({"error": "文件解析后内容为空"}), 400
-
-    # 更新会话
-    session = json.loads(session_file.read_text(encoding="utf-8"))
-
-    # 确保 research_docs 字段存在（兼容旧会话）
-    if "research_docs" not in session:
-        session["research_docs"] = []
-
-    session["research_docs"].append({
-        "name": filename,
-        "type": ext,
-        "content": content[:10000],  # 限制长度
-        "uploaded_at": get_utc_now()
-    })
-    session["updated_at"] = get_utc_now()
-    session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    return jsonify({
-        "success": True,
-        "filename": filename,
-        "content_length": len(content)
-    })
-
-
-@app.route('/api/sessions/<session_id>/research-docs/<path:doc_name>', methods=['DELETE'])
-def delete_research_doc(session_id, doc_name):
-    """删除已有调研成果文档（软删除）"""
-    # 路径遍历防护
-    if '..' in doc_name or doc_name.startswith('/'):
-        return jsonify({"error": "无效的文档名"}), 400
-
+@app.route('/api/sessions/<session_id>/restart-interview', methods=['POST'])
+def restart_interview(session_id):
+    """重新访谈：将当前访谈记录保存为参考资料，然后重置访谈状态"""
     session_file = SESSIONS_DIR / f"{session_id}.json"
     if not session_file.exists():
         return jsonify({"error": "会话不存在"}), 404
 
     session = json.loads(session_file.read_text(encoding="utf-8"))
-
-    # 确保 research_docs 字段存在（兼容旧会话）
-    if "research_docs" not in session:
-        session["research_docs"] = []
-        return jsonify({"error": "文档不存在"}), 404
-
-    # 查找并删除文档
-    original_count = len(session["research_docs"])
-    session["research_docs"] = [
-        doc for doc in session["research_docs"]
-        if doc["name"] != doc_name
-    ]
-
-    if len(session["research_docs"]) == original_count:
-        return jsonify({"error": "文档不存在"}), 404
-
-    session["updated_at"] = get_utc_now()
-    session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    # 软删除：记录到删除日志，文件保留在 temp/converted 目录
-    mark_doc_as_deleted(session_id, doc_name, "research_docs")
-
-    return jsonify({
-        "success": True,
-        "deleted": doc_name,
-        "message": "文档已从列表中移除（文件已存档）"
-    })
-
-
-# ============ 重新调研 API ============
-
-@app.route('/api/sessions/<session_id>/restart-research', methods=['POST'])
-def restart_research(session_id):
-    """重新调研：将当前访谈记录保存为调研成果，然后重置访谈状态"""
-    session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return jsonify({"error": "会话不存在"}), 404
-
-    session = json.loads(session_file.read_text(encoding="utf-8"))
+    # 数据迁移：兼容旧会话
+    session = migrate_session_docs(session)
 
     # 整理当前访谈记录为 markdown 格式
     interview_log = session.get("interview_log", [])
     if not interview_log:
         return jsonify({"error": "没有访谈记录可以保存"}), 400
 
-    # 生成调研成果文档内容
-    research_content = f"""# 调研记录 - {session.get('topic', '未命名调研')}
+    # 生成访谈记录文档内容
+    research_content = f"""# 访谈记录 - {session.get('topic', '未命名访谈')}
 
 生成时间: {get_utc_now()}
 
@@ -3993,22 +3861,19 @@ def restart_research(session_id):
                     research_content += f"回答: {follow_a}\n\n"
                 research_content += "---\n\n"
 
-    # 确保 research_docs 字段存在
-    if "research_docs" not in session:
-        session["research_docs"] = []
-
-    # 添加到调研成果列表
-    doc_name = f"调研记录-{get_utc_now().replace(':', '-').replace(' ', '_')}.md"
+    # 添加到参考资料列表
+    doc_name = f"访谈记录-{get_utc_now().replace(':', '-').replace(' ', '_')}.md"
 
     # 限制内容长度，避免过长导致 AI prompt 问题
     max_length = 2000
     if len(research_content) > max_length:
         research_content = research_content[:max_length] + "\n\n...(内容过长已截断)"
 
-    session["research_docs"].append({
+    session["reference_materials"].append({
         "name": doc_name,
         "type": ".md",
         "content": research_content,
+        "source": "auto",  # 系统自动生成
         "uploaded_at": get_utc_now()
     })
 
@@ -4028,7 +3893,7 @@ def restart_research(session_id):
 
     return jsonify({
         "success": True,
-        "message": "已保存当前调研成果并重置访谈",
+        "message": "已保存当前访谈内容并重置访谈",
         "research_doc_name": doc_name
     })
 
@@ -4037,7 +3902,7 @@ def restart_research(session_id):
 
 @app.route('/api/sessions/<session_id>/generate-report', methods=['POST'])
 def generate_report(session_id):
-    """生成调研报告（AI 生成）"""
+    """生成访谈报告（AI 生成）"""
     session_file = SESSIONS_DIR / f"{session_id}.json"
     if not session_file.exists():
         return jsonify({"error": "会话不存在"}), 404
@@ -4050,10 +3915,9 @@ def generate_report(session_id):
 
         # 日志：记录报告生成 prompt 统计
         if ENABLE_DEBUG_LOG:
-            ref_docs_count = len(session.get("reference_docs", []))
-            research_docs_count = len(session.get("research_docs", []))
+            ref_docs_count = len(session.get("reference_materials", session.get("reference_docs", []) + session.get("research_docs", [])))
             interview_count = len(session.get("interview_log", []))
-            print(f"📊 报告生成 Prompt 统计：总长度={len(prompt)}字符，参考文档={ref_docs_count}个，调研成果={research_docs_count}个，访谈记录={interview_count}条")
+            print(f"📊 报告生成 Prompt 统计：总长度={len(prompt)}字符，参考资料={ref_docs_count}个，访谈记录={interview_count}条")
 
         report_content = call_claude(
             prompt,
@@ -4112,7 +3976,7 @@ def generate_interview_appendix(session: dict) -> str:
         return ""
 
     appendix = "\n\n---\n\n## 附录：完整访谈记录\n\n"
-    appendix += f"> 本次调研共收集了 {len(interview_log)} 个问题的回答\n\n"
+    appendix += f"> 本次访谈共收集了 {len(interview_log)} 个问题的回答\n\n"
 
     for i, log in enumerate(interview_log, 1):
         dim_name = DIMENSION_INFO.get(log.get('dimension', ''), {}).get('name', '未分类')
@@ -4132,16 +3996,16 @@ def generate_simple_report(session: dict) -> str:
     interview_log = session.get("interview_log", [])
     now = datetime.now()
 
-    content = f"""# {topic} 需求调研报告
+    content = f"""# {topic} 访谈报告
 
-**调研日期**: {now.strftime('%Y-%m-%d')}
+**访谈日期**: {now.strftime('%Y-%m-%d')}
 **报告编号**: deep-vision-{now.strftime('%Y%m%d')}
 
 ---
 
-## 1. 调研概述
+## 1. 访谈概述
 
-本次调研主题为「{topic}」，共收集了 {len(interview_log)} 个问题的回答。
+本次访谈主题为「{topic}」，共收集了 {len(interview_log)} 个问题的回答。
 
 ## 2. 需求摘要
 
@@ -4161,7 +4025,7 @@ def generate_simple_report(session: dict) -> str:
     content += generate_interview_appendix(session)
 
     content += """
-*此报告由 Deep Vision 深瞳-智能需求调研助手生成*
+*此报告由 Deep Vision 深瞳-智能访谈助手生成*
 """
 
     return content
