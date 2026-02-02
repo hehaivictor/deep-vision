@@ -1,0 +1,47 @@
+{
+  "id": "user-research",
+  "name": "用户研究",
+  "name_en": "User Research",
+  "description": "适用于用户画像构建、使用习惯调研、体验洞察",
+  "icon": "users",
+  "keywords": ["用户", "画像", "习惯", "偏好", "调研", "体验", "反馈", "满意度"],
+  "dimensions": [
+    {
+      "id": "user_profile",
+      "name": "用户背景",
+      "description": "用户角色、工作场景、技术水平、使用经验",
+      "key_aspects": ["用户角色", "工作场景", "技术水平", "使用经验"],
+      "min_questions": 2,
+      "max_questions": 4
+    },
+    {
+      "id": "usage_scenarios",
+      "name": "使用场景",
+      "description": "典型任务流程、使用频率、触发场景、环境上下文",
+      "key_aspects": ["典型任务", "使用频率", "触发场景", "环境上下文"],
+      "min_questions": 2,
+      "max_questions": 4
+    },
+    {
+      "id": "pain_expectations",
+      "name": "痛点期望",
+      "description": "当前痛点、未被满足的需求、期望改善方向",
+      "key_aspects": ["当前痛点", "未满足需求", "期望改善", "替代方案"],
+      "min_questions": 2,
+      "max_questions": 4
+    },
+    {
+      "id": "behavior_patterns",
+      "name": "行为模式",
+      "description": "决策因素、信息获取渠道、学习方式、协作方式",
+      "key_aspects": ["决策因素", "信息渠道", "学习方式", "协作方式"],
+      "min_questions": 2,
+      "max_questions": 4
+    }
+  ],
+  "report": {
+    "type": "standard",
+    "template": "default",
+    "sections": ["overview", "user_persona", "scenario_analysis", "pain_points", "behavior_insights", "recommendations", "appendix"]
+  }
+}

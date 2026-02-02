@@ -1,0 +1,115 @@
+{
+  "id": "interview-assessment",
+  "name": "面试评估",
+  "name_en": "Interview Assessment",
+  "description": "通过开放式访谈评估候选人的真实能力，生成专业评估报告",
+  "icon": "user-check",
+  "keywords": ["面试", "候选人", "评估", "招聘", "能力", "技术面", "简历", "人才"],
+  "dimensions": [
+    {
+      "id": "topic_cognition",
+      "name": "主题认知",
+      "description": "对所选主题的理解深度、知识广度、洞察能力",
+      "key_aspects": ["理解深度", "知识广度", "本质洞察", "行业认知"],
+      "weight": 0.25,
+      "min_questions": 2,
+      "max_questions": 4,
+      "scoring_criteria": {
+        "5": "有独到见解，能触及问题本质，展现深厚积累",
+        "4": "理解全面准确，有自己的思考和见解",
+        "3": "基本正确，但停留在表面，缺乏深入思考",
+        "2": "有明显认知偏差或理解错误",
+        "1": "对主题完全不了解或回答离题"
+      }
+    },
+    {
+      "id": "thinking_structure",
+      "name": "思维结构",
+      "description": "分析问题的逻辑框架、推理能力、系统思维",
+      "key_aspects": ["逻辑框架", "分析能力", "系统思维", "抽象能力"],
+      "weight": 0.25,
+      "min_questions": 2,
+      "max_questions": 4,
+      "scoring_criteria": {
+        "5": "框架清晰严密，逻辑严谨，考虑全面且有层次",
+        "4": "有明确的思路框架，逻辑基本完整",
+        "3": "能够拆解问题，但不够系统或有遗漏",
+        "2": "思路混乱，逻辑跳跃，缺乏条理",
+        "1": "无法有效组织思路，回答杂乱无章"
+      }
+    },
+    {
+      "id": "practical_experience",
+      "name": "实践经验",
+      "description": "真实项目经验、问题解决能力、实战深度",
+      "key_aspects": ["项目经验", "问题解决", "实战深度", "反思总结"],
+      "weight": 0.30,
+      "min_questions": 2,
+      "max_questions": 4,
+      "scoring_criteria": {
+        "5": "经验丰富，细节真实可信，有深刻的反思和总结",
+        "4": "有实际经验，能说出关键细节和具体做法",
+        "3": "经验有限，描述较笼统，缺少具体案例",
+        "2": "疑似缺乏真实经验，描述空洞或不合理",
+        "1": "明显是编造或照搬他人经验"
+      }
+    },
+    {
+      "id": "boundary_awareness",
+      "name": "边界认知",
+      "description": "对自身能力边界的认知、对方案局限性的理解",
+      "key_aspects": ["自我认知", "局限理解", "风险意识", "学习态度"],
+      "weight": 0.20,
+      "min_questions": 2,
+      "max_questions": 3,
+      "scoring_criteria": {
+        "5": "清晰认识边界和局限，诚实面对未知，有成长意识",
+        "4": "能指出主要局限和不足，态度诚恳",
+        "3": "有一定认识但不够全面，偶有过度自信",
+        "2": "过度自信，忽视局限，难以接受质疑",
+        "1": "完全没有边界意识，夸大能力或逃避问题"
+      }
+    }
+  ],
+  "report": {
+    "type": "assessment",
+    "template": "assessment",
+    "sections": ["candidate_overview", "ability_scores", "radar_chart", "dimension_analysis", "strengths", "weaknesses", "recommendation_level", "hiring_suggestion", "follow_up_questions", "appendix"]
+  },
+  "assessment": {
+    "score_range": {
+      "min": 1,
+      "max": 5
+    },
+    "recommendation_levels": [
+      {
+        "level": "A",
+        "name": "强烈推荐",
+        "description": "各维度表现优秀，建议优先录用",
+        "threshold": 4.5,
+        "color": "#22c55e"
+      },
+      {
+        "level": "B",
+        "name": "推荐",
+        "description": "整体表现良好，建议录用",
+        "threshold": 3.5,
+        "color": "#3b82f6"
+      },
+      {
+        "level": "C",
+        "name": "待定",
+        "description": "表现一般，建议进一步面试评估",
+        "threshold": 2.5,
+        "color": "#eab308"
+      },
+      {
+        "level": "D",
+        "name": "不推荐",
+        "description": "表现不佳，不建议录用",
+        "threshold": 0,
+        "color": "#ef4444"
+      }
+    ]
+  }
+}
