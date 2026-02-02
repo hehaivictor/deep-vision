@@ -1,0 +1,47 @@
+{
+  "id": "tech-solution",
+  "name": "技术方案",
+  "name_en": "Technical Solution",
+  "description": "适用于架构评审、技术选型、系统迁移、重构规划",
+  "icon": "cpu",
+  "keywords": ["架构", "选型", "技术栈", "迁移", "重构", "系统", "平台", "框架"],
+  "dimensions": [
+    {
+      "id": "current_state",
+      "name": "现状评估",
+      "description": "现有系统架构、技术债务、性能瓶颈、团队能力",
+      "key_aspects": ["系统架构", "技术债务", "性能瓶颈", "团队能力"],
+      "min_questions": 2,
+      "max_questions": 4
+    },
+    {
+      "id": "target_architecture",
+      "name": "目标架构",
+      "description": "期望架构形态、扩展性要求、可用性目标",
+      "key_aspects": ["架构形态", "扩展性", "可用性", "可维护性"],
+      "min_questions": 2,
+      "max_questions": 4
+    },
+    {
+      "id": "tech_selection",
+      "name": "技术选型",
+      "description": "候选技术栈对比、社区成熟度、学习成本、迁移风险",
+      "key_aspects": ["候选方案", "成熟度评估", "学习成本", "迁移风险"],
+      "min_questions": 2,
+      "max_questions": 4
+    },
+    {
+      "id": "implementation_path",
+      "name": "实施路径",
+      "description": "阶段划分、里程碑定义、回滚策略、验证方案",
+      "key_aspects": ["阶段划分", "里程碑", "回滚策略", "验证方案"],
+      "min_questions": 2,
+      "max_questions": 4
+    }
+  ],
+  "report": {
+    "type": "standard",
+    "template": "default",
+    "sections": ["overview", "current_state_analysis", "target_architecture", "tech_comparison", "implementation_roadmap", "risks", "recommendations", "appendix"]
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "id": "business-model",
+  "name": "商业模式",
+  "name_en": "Business Model",
+  "description": "适用于商业计划书编写、融资准备、战略规划",
+  "icon": "briefcase",
+  "keywords": ["商业", "模式", "盈利", "变现", "BP", "融资", "战略", "商业计划"],
+  "dimensions": [
+    {
+      "id": "value_proposition",
+      "name": "价值主张",
+      "description": "核心价值、差异化优势、客户获益、竞争壁垒",
+      "key_aspects": ["核心价值", "差异化优势", "客户获益", "竞争壁垒"],
+      "min_questions": 2,
+      "max_questions": 4
+    },
+    {
+      "id": "customer_segments",
+      "name": "客户细分",
+      "description": "目标客群、市场规模、客户特征、获客渠道",
+      "key_aspects": ["目标客群", "市场规模", "客户特征", "获客渠道"],
+      "min_questions": 2,
+      "max_questions": 4
+    },
+    {
+      "id": "revenue_model",
+      "name": "收入模式",
+      "description": "定价策略、收入来源、付费意愿、单位经济",
+      "key_aspects": ["定价策略", "收入来源", "付费意愿", "单位经济"],
+      "min_questions": 2,
+      "max_questions": 4
+    },
+    {
+      "id": "cost_structure",
+      "name": "成本结构",
+      "description": "固定成本、可变成本、关键资源、合作伙伴",
+      "key_aspects": ["固定成本", "可变成本", "关键资源", "合作伙伴"],
+      "min_questions": 2,
+      "max_questions": 4
+    }
+  ],
+  "report": {
+    "type": "standard",
+    "template": "default",
+    "sections": ["overview", "value_proposition", "market_analysis", "revenue_model", "cost_analysis", "financial_projection", "risks", "recommendations", "appendix"]
+  }
+}

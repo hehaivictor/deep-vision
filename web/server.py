@@ -107,6 +107,12 @@ DELETED_DOCS_FILE = DATA_DIR / ".deleted_docs.json"  # 软删除记录文件
 for d in [SESSIONS_DIR, REPORTS_DIR, CONVERTED_DIR, TEMP_DIR, METRICS_DIR, SUMMARIES_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
+# ============ 场景配置加载器 ============
+import sys
+sys.path.insert(0, str(SKILL_DIR))
+from scripts.scenario_loader import get_scenario_loader
+scenario_loader = get_scenario_loader(DATA_DIR / "scenarios")
+
 # Web Search 状态追踪（用于前端呼吸灯效果）
 web_search_active = False
 
@@ -326,9 +332,12 @@ def prefetch_first_question(session_id: str):
 
             session_data = json.loads(session_file.read_text(encoding="utf-8"))
 
+            # 获取第一个维度（动态场景支持）
+            first_dim = get_dimension_order_for_session(session_data)[0] if get_dimension_order_for_session(session_data) else "customer_needs"
+
             # 首题不依赖任何历史记录
             prompt, truncated_docs = build_interview_prompt(
-                session_data, "customer_needs", []
+                session_data, first_dim, []
             )
 
             response = call_claude(
@@ -341,13 +350,13 @@ def prefetch_first_question(session_id: str):
             if response:
                 result = parse_question_response(response, debug=False)
                 if result:
-                    result["dimension"] = "customer_needs"
+                    result["dimension"] = first_dim
                     result["ai_generated"] = True
 
                     with prefetch_cache_lock:
                         if session_id not in prefetch_cache:
                             prefetch_cache[session_id] = {}
-                        prefetch_cache[session_id]["customer_needs"] = {
+                        prefetch_cache[session_id][first_dim] = {
                             "question_data": result,
                             "created_at": _time.time(),
                             "topic": session_data.get("topic"),
@@ -1013,7 +1022,8 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
     if not ENABLE_WEB_SEARCH or not claude_client:
         return {"need_search": False, "reason": "搜索功能未启用", "search_query": ""}
 
-    dim_info = DIMENSION_INFO.get(dimension, {})
+    search_dim_info = get_dimension_info_for_session(context) if context else DIMENSION_INFO
+    dim_info = search_dim_info.get(dimension, {})
     dim_name = dim_info.get("name", dimension)
 
     # 构建最近的问答上下文
@@ -1124,10 +1134,11 @@ def smart_search_decision(topic: str, dimension: str, context: dict, recent_qa: 
 
 def generate_search_query(topic: str, dimension: str, context: dict) -> str:
     """生成搜索查询（兜底模板，当 AI 未生成搜索词时使用）"""
-    dim_info = DIMENSION_INFO.get(dimension, {})
+    gen_query_dim_info = get_dimension_info_for_session(context) if context else DIMENSION_INFO
+    dim_info = gen_query_dim_info.get(dimension, {})
     dim_name = dim_info.get("name", dimension)
 
-    # 构建搜索查询
+    # 构建搜索查询 - 对于非默认维度使用通用模板
     if dimension == "tech_constraints":
         return f"{topic} 技术选型 最佳实践 2026"
     elif dimension == "customer_needs":
@@ -1137,6 +1148,7 @@ def generate_search_query(topic: str, dimension: str, context: dict) -> str:
     elif dimension == "project_constraints":
         return f"{topic} 项目实施 成本预算 周期"
     else:
+        # 非默认维度，使用维度名称构建通用搜索词
         return f"{topic} {dim_name}"
 
 
@@ -1164,6 +1176,56 @@ DIMENSION_INFO = {
         "key_aspects": ["预算范围", "时间节点", "资源限制", "优先级"]
     }
 }
+
+
+def get_dimension_info_for_session(session: dict) -> dict:
+    """
+    获取会话的维度信息（支持动态场景）
+
+    优先从会话的 scenario_config 中获取，
+    如果不存在则使用默认的 DIMENSION_INFO。
+
+    Args:
+        session: 会话数据
+
+    Returns:
+        维度信息字典 {dim_id: {name, description, key_aspects}}
+    """
+    scenario_config = session.get("scenario_config")
+
+    if scenario_config and "dimensions" in scenario_config:
+        return {
+            dim["id"]: {
+                "name": dim.get("name", dim["id"]),
+                "description": dim.get("description", ""),
+                "key_aspects": dim.get("key_aspects", []),
+                "weight": dim.get("weight"),
+                "scoring_criteria": dim.get("scoring_criteria")
+            }
+            for dim in scenario_config["dimensions"]
+        }
+
+    # 向后兼容：返回默认维度
+    return DIMENSION_INFO
+
+
+def get_dimension_order_for_session(session: dict) -> list:
+    """
+    获取会话的维度顺序列表
+
+    Args:
+        session: 会话数据
+
+    Returns:
+        维度 ID 列表
+    """
+    scenario_config = session.get("scenario_config")
+
+    if scenario_config and "dimensions" in scenario_config:
+        return [dim["id"] for dim in scenario_config["dimensions"]]
+
+    # 向后兼容：返回默认顺序
+    return list(DIMENSION_INFO.keys())
 
 
 # ============ 滑动窗口上下文管理 ============
@@ -1410,10 +1472,10 @@ def generate_history_summary(session: dict, exclude_recent: int = 5) -> Optional
     # 需要生成新摘要
     if not claude_client:
         # 无 AI 时使用简单摘要
-        return _generate_simple_summary(history_logs)
+        return _generate_simple_summary(history_logs, session)
 
     # 构建摘要生成 prompt
-    summary_prompt = _build_summary_prompt(session.get("topic", ""), history_logs)
+    summary_prompt = _build_summary_prompt(session.get("topic", ""), history_logs, session)
 
     try:
         if ENABLE_DEBUG_LOG:
@@ -1429,11 +1491,14 @@ def generate_history_summary(session: dict, exclude_recent: int = 5) -> Optional
         print(f"⚠️ 生成历史摘要失败: {e}")
 
     # 失败时回退到简单摘要
-    return _generate_simple_summary(history_logs)
+    return _generate_simple_summary(history_logs, session)
 
 
-def _build_summary_prompt(topic: str, logs: list) -> str:
+def _build_summary_prompt(topic: str, logs: list, session: dict = None) -> str:
     """构建摘要生成的 prompt"""
+    # 获取维度信息
+    summary_dim_info = get_dimension_info_for_session(session) if session else DIMENSION_INFO
+
     # 按维度整理
     by_dim = {}
     for log in logs:
@@ -1444,7 +1509,7 @@ def _build_summary_prompt(topic: str, logs: list) -> str:
 
     logs_text = ""
     for dim, dim_logs in by_dim.items():
-        dim_name = DIMENSION_INFO.get(dim, {}).get("name", dim)
+        dim_name = summary_dim_info.get(dim, {}).get("name", dim)
         logs_text += f"\n【{dim_name}】\n"
         for log in dim_logs:
             logs_text += f"Q: {log['question'][:80]}\nA: {log['answer'][:100]}\n"
@@ -1466,12 +1531,13 @@ def _build_summary_prompt(topic: str, logs: list) -> str:
 摘要："""
 
 
-def _generate_simple_summary(logs: list) -> str:
+def _generate_simple_summary(logs: list, session: dict = None) -> str:
     """生成简单摘要（无 AI 时使用）"""
+    simple_sum_dim_info = get_dimension_info_for_session(session) if session else DIMENSION_INFO
     by_dim = {}
     for log in logs:
         dim = log.get("dimension", "other")
-        dim_name = DIMENSION_INFO.get(dim, {}).get("name", dim)
+        dim_name = simple_sum_dim_info.get(dim, {}).get("name", dim)
         if dim_name not in by_dim:
             by_dim[dim_name] = []
         # 只保留答案的关键部分
@@ -1511,7 +1577,7 @@ def update_context_summary(session: dict, session_file) -> None:
     history_logs = interview_log[:history_count]
 
     if claude_client:
-        summary_prompt = _build_summary_prompt(session.get("topic", ""), history_logs)
+        summary_prompt = _build_summary_prompt(session.get("topic", ""), history_logs, session)
         try:
             summary_text = call_claude(summary_prompt, max_tokens=300, call_type="summary")
             if summary_text:
@@ -1529,7 +1595,7 @@ def update_context_summary(session: dict, session_file) -> None:
     else:
         # 无 AI 时使用简单摘要
         session["context_summary"] = {
-            "text": _generate_simple_summary(history_logs),
+            "text": _generate_simple_summary(history_logs, session),
             "log_count": history_count,
             "updated_at": get_utc_now()
         }
@@ -1723,7 +1789,8 @@ def calculate_dimension_saturation(session: dict, dimension: str) -> dict:
             "level": "low"
         }
 
-    dim_info = DIMENSION_INFO.get(dimension, {})
+    session_dim_info = get_dimension_info_for_session(session)
+    dim_info = session_dim_info.get(dimension, {})
     key_aspects = dim_info.get("key_aspects", [])
 
     # 1. 信息覆盖度：检查关键方面是否被提及
@@ -2155,7 +2222,8 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     if not reference_materials:
         reference_materials = session.get("reference_docs", []) + session.get("research_docs", [])
     interview_log = session.get("interview_log", [])
-    dim_info = DIMENSION_INFO.get(dimension, {})
+    session_dim_info = get_dimension_info_for_session(session)
+    dim_info = session_dim_info.get(dimension, {})
 
     # 构建上下文
     context_parts = [f"当前访谈主题：{topic}"]
@@ -2247,7 +2315,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
             follow_up_mark = " [追问]" if log.get("is_follow_up") else ""
             context_parts.append(f"- Q: {log['question']}{follow_up_mark}")
             context_parts.append(f"  A: {log['answer']}")
-            dim_name = DIMENSION_INFO.get(log.get("dimension", ""), {}).get("name", "")
+            dim_name = session_dim_info.get(log.get("dimension", ""), {}).get("name", "")
             if dim_name:
                 context_parts.append(f"  (维度: {dim_name})")
 
@@ -2423,9 +2491,12 @@ def build_report_prompt(session: dict) -> str:
     if not reference_materials:
         reference_materials = session.get("reference_docs", []) + session.get("research_docs", [])
 
+    # 获取会话的动态维度信息
+    report_dim_info = get_dimension_info_for_session(session)
+
     # 按维度整理问答
     qa_by_dim = {}
-    for dim_key in DIMENSION_INFO:
+    for dim_key in report_dim_info:
         qa_by_dim[dim_key] = [log for log in interview_log if log.get("dimension") == dim_key]
 
     prompt = f"""你是一个专业的需求分析师，需要基于以下访谈记录生成一份专业的访谈报告。
@@ -2479,7 +2550,7 @@ def build_report_prompt(session: dict) -> str:
 
     prompt += "\n## 访谈记录\n"
 
-    for dim_key, dim_info in DIMENSION_INFO.items():
+    for dim_key, dim_info in report_dim_info.items():
         prompt += f"\n### {dim_info['name']}\n"
         qa_list = qa_by_dim.get(dim_key, [])
         if qa_list:
@@ -2866,6 +2937,82 @@ def static_files(filename):
     return send_from_directory('.', filename)
 
 
+# ============ 场景 API ============
+
+@app.route('/api/scenarios', methods=['GET'])
+def list_scenarios():
+    """获取所有场景列表"""
+    scenarios = scenario_loader.get_all_scenarios()
+    # 返回简化的场景信息
+    return jsonify([
+        {
+            "id": s.get("id"),
+            "name": s.get("name"),
+            "name_en": s.get("name_en"),
+            "description": s.get("description"),
+            "icon": s.get("icon"),
+            "keywords": s.get("keywords", []),
+            "builtin": s.get("builtin", True),
+            "dimensions": [
+                {
+                    "id": d.get("id"),
+                    "name": d.get("name"),
+                    "description": d.get("description")
+                }
+                for d in s.get("dimensions", [])
+            ],
+            "report_type": s.get("report", {}).get("type", "standard")
+        }
+        for s in scenarios
+    ])
+
+
+@app.route('/api/scenarios/<scenario_id>', methods=['GET'])
+def get_scenario(scenario_id):
+    """获取场景详情"""
+    scenario = scenario_loader.get_scenario(scenario_id)
+    if not scenario:
+        return jsonify({"error": "场景不存在"}), 404
+    return jsonify(scenario)
+
+
+@app.route('/api/scenarios/recognize', methods=['POST'])
+def recognize_scenario():
+    """根据主题自动识别场景"""
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "无效的请求数据"}), 400
+
+    topic = data.get("topic", "")
+    if not topic:
+        return jsonify({"error": "主题不能为空"}), 400
+
+    # 基于关键词匹配识别场景
+    result = scenario_loader.match_by_keywords(topic)
+
+    # 获取推荐场景的完整信息
+    recommended_scenario = scenario_loader.get_scenario(result["scenario_id"])
+
+    return jsonify({
+        "recommended": {
+            "id": result["scenario_id"],
+            "name": recommended_scenario.get("name") if recommended_scenario else result["scenario_id"],
+            "description": recommended_scenario.get("description") if recommended_scenario else "",
+            "icon": recommended_scenario.get("icon") if recommended_scenario else "clipboard-list",
+            "dimensions_count": len(recommended_scenario.get("dimensions", [])) if recommended_scenario else 4
+        },
+        "confidence": result["confidence"],
+        "matched_keywords": result.get("matched_keywords", []),
+        "alternatives": [
+            {
+                "id": alt["scenario_id"],
+                "name": scenario_loader.get_scenario(alt["scenario_id"]).get("name", alt["scenario_id"]) if scenario_loader.get_scenario(alt["scenario_id"]) else alt["scenario_id"]
+            }
+            for alt in result.get("alternatives", [])
+        ]
+    })
+
+
 # ============ 会话 API ============
 
 @app.route('/api/sessions', methods=['GET'])
@@ -2882,7 +3029,9 @@ def list_sessions():
                 "created_at": data.get("created_at"),
                 "updated_at": data.get("updated_at"),
                 "dimensions": data.get("dimensions", {}),
-                "interview_count": len(data.get("interview_log", []))
+                "interview_count": len(data.get("interview_log", [])),
+                "scenario_id": data.get("scenario_id"),
+                "scenario_config": data.get("scenario_config")
             })
         except Exception as e:
             print(f"读取会话失败 {f}: {e}")
@@ -2901,6 +3050,7 @@ def create_session():
     topic = data.get("topic", "未命名访谈")
     description = data.get("description")  # 获取可选的主题描述
     interview_mode = data.get("interview_mode", DEFAULT_INTERVIEW_MODE)  # 获取访谈模式
+    scenario_id = data.get("scenario_id")  # 获取场景ID
 
     # 验证 topic
     if not isinstance(topic, str) or not topic.strip():
@@ -2916,6 +3066,23 @@ def create_session():
     if interview_mode not in INTERVIEW_MODES:
         interview_mode = DEFAULT_INTERVIEW_MODE
 
+    # 加载场景配置（如果未指定，使用默认场景）
+    if not scenario_id:
+        scenario_id = "product-requirement"
+    scenario_config = scenario_loader.get_scenario(scenario_id)
+    if not scenario_config:
+        scenario_config = scenario_loader.get_default_scenario()
+        scenario_id = scenario_config.get("id", "product-requirement")
+
+    # 根据场景配置创建动态维度
+    dimensions = {}
+    for dim in scenario_config.get("dimensions", []):
+        dimensions[dim["id"]] = {
+            "coverage": 0,
+            "items": [],
+            "score": None  # 用于评估型场景
+        }
+
     session_id = generate_session_id()
     now = get_utc_now()
 
@@ -2927,13 +3094,9 @@ def create_session():
         "created_at": now,
         "updated_at": now,
         "status": "in_progress",
-        "scenario": None,
-        "dimensions": {
-            "customer_needs": {"coverage": 0, "items": []},
-            "business_process": {"coverage": 0, "items": []},
-            "tech_constraints": {"coverage": 0, "items": []},
-            "project_constraints": {"coverage": 0, "items": []}
-        },
+        "scenario_id": scenario_id,  # 存储场景ID
+        "scenario_config": scenario_config,  # 存储场景完整配置
+        "dimensions": dimensions,  # 动态维度
         "reference_materials": [],  # 参考资料（合并原 reference_docs 和 research_docs）
         "interview_log": [],
         "requirements": [],
@@ -3195,7 +3358,8 @@ def get_next_question(session_id):
 
     session = json.loads(session_file.read_text(encoding="utf-8"))
     data = request.get_json() or {}
-    dimension = data.get("dimension", "customer_needs")
+    default_dim = get_dimension_order_for_session(session)[0] if get_dimension_order_for_session(session) else "customer_needs"
+    dimension = data.get("dimension", default_dim)
 
     # ========== 步骤5: 检查预生成缓存 ==========
     prefetched = get_prefetch_result(session_id, dimension)
@@ -3494,7 +3658,7 @@ def submit_answer(session_id):
         return jsonify({"error": "答案不能为空"}), 400
     if len(answer) > 5000:
         return jsonify({"error": "答案长度不能超过5000字符"}), 400
-    if not dimension or dimension not in DIMENSION_INFO:
+    if not dimension or dimension not in session.get("dimensions", {}):
         return jsonify({"error": "无效的维度"}), 400
     if not isinstance(options, list):
         return jsonify({"error": "选项必须是列表"}), 400
@@ -3604,7 +3768,7 @@ def skip_follow_up(session_id):
     dimension = data.get("dimension")
 
     # 验证 dimension
-    if not dimension or dimension not in DIMENSION_INFO:
+    if not dimension or dimension not in session.get("dimensions", {}):
         return jsonify({"error": "无效的维度"}), 400
 
     interview_log = session.get("interview_log", [])
@@ -3647,10 +3811,8 @@ def complete_dimension(session_id):
     dimension = data.get("dimension")
 
     # 验证维度有效性
-    if not dimension or dimension not in DIMENSION_INFO:
+    if not dimension or dimension not in session.get("dimensions", {}):
         return jsonify({"error": "无效的维度"}), 400
-    if dimension not in session.get("dimensions", {}):
-        return jsonify({"error": "会话中不存在该维度"}), 400
 
     # 检查覆盖度是否已达到至少 50%
     current_coverage = session["dimensions"][dimension]["coverage"]
@@ -3675,7 +3837,9 @@ def complete_dimension(session_id):
     if ENABLE_DEBUG_LOG:
         print(f"⏭️ 用户完成维度: dimension={dimension}, coverage={current_coverage}%")
 
-    return jsonify({"success": True, "message": f"{DIMENSION_INFO.get(dimension, {}).get('name', dimension)}维度已完成"})
+    session_dim_info = get_dimension_info_for_session(session)
+    dim_name = session_dim_info.get(dimension, {}).get('name', dimension)
+    return jsonify({"success": True, "message": f"{dim_name}维度已完成"})
 
 
 # ============ 文档上传 API ============
@@ -3842,7 +4006,8 @@ def restart_interview(session_id):
     research_content += "## 访谈记录\n\n"
 
     # 按维度整理访谈记录
-    for dim_key, dim_info in DIMENSION_INFO.items():
+    restart_dim_info = get_dimension_info_for_session(session)
+    for dim_key, dim_info in restart_dim_info.items():
         dim_logs = [log for log in interview_log if log.get("dimension") == dim_key]
         if dim_logs:
             research_content += f"### {dim_info['name']}\n\n"
@@ -3877,13 +4042,12 @@ def restart_interview(session_id):
         "uploaded_at": get_utc_now()
     })
 
-    # 重置访谈状态
+    # 重置访谈状态 - 从场景配置动态创建维度
     session["interview_log"] = []
+    reset_dim_info = get_dimension_info_for_session(session)
     session["dimensions"] = {
-        "customer_needs": {"coverage": 0, "items": []},
-        "business_process": {"coverage": 0, "items": []},
-        "tech_constraints": {"coverage": 0, "items": []},
-        "project_constraints": {"coverage": 0, "items": []}
+        dim_key: {"coverage": 0, "items": [], "score": None}
+        for dim_key in reset_dim_info
     }
     session["status"] = "in_progress"  # 重置状态为进行中
     session["updated_at"] = get_utc_now()
@@ -3978,8 +4142,9 @@ def generate_interview_appendix(session: dict) -> str:
     appendix = "\n\n---\n\n## 附录：完整访谈记录\n\n"
     appendix += f"> 本次访谈共收集了 {len(interview_log)} 个问题的回答\n\n"
 
+    appendix_dim_info = get_dimension_info_for_session(session)
     for i, log in enumerate(interview_log, 1):
-        dim_name = DIMENSION_INFO.get(log.get('dimension', ''), {}).get('name', '未分类')
+        dim_name = appendix_dim_info.get(log.get('dimension', ''), {}).get('name', '未分类')
         appendix += f"### Q{i}: {log['question']}\n\n"
         appendix += f"**回答**: {log['answer']}\n\n"
         appendix += f"**维度**: {dim_name}\n\n"
@@ -4011,7 +4176,8 @@ def generate_simple_report(session: dict) -> str:
 
 """
 
-    for dim_key, dim_info in DIMENSION_INFO.items():
+    simple_dim_info = get_dimension_info_for_session(session)
+    for dim_key, dim_info in simple_dim_info.items():
         content += f"### {dim_info['name']}\n\n"
         logs = [log for log in interview_log if log.get("dimension") == dim_key]
         if logs:

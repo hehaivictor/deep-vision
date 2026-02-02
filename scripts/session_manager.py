@@ -83,18 +83,39 @@ def get_utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def create_session(topic: str) -> str:
+def create_session(topic: str, scenario_id: str = None) -> str:
     """
     创建新的访谈会话
 
     Args:
         topic: 访谈主题
+        scenario_id: 场景ID（可选，默认使用 product-requirement）
 
     Returns:
         str: 会话ID
     """
+    from scripts.scenario_loader import get_scenario_loader
+
     session_id = generate_session_id()
     session_file = get_session_dir() / f"{session_id}.json"
+
+    # 加载场景配置
+    loader = get_scenario_loader()
+    if not scenario_id:
+        scenario_id = "product-requirement"
+    scenario_config = loader.get_scenario(scenario_id)
+    if not scenario_config:
+        scenario_config = loader.get_default_scenario()
+        scenario_id = scenario_config.get("id", "product-requirement")
+
+    # 根据场景配置创建动态维度
+    dimensions = {}
+    for dim in scenario_config.get("dimensions", []):
+        dimensions[dim["id"]] = {
+            "coverage": 0,
+            "items": [],
+            "score": None  # 用于评估型场景
+        }
 
     session_data = {
         "session_id": session_id,
@@ -102,13 +123,9 @@ def create_session(topic: str) -> str:
         "created_at": get_utc_now(),
         "updated_at": get_utc_now(),
         "status": "in_progress",
-        "scenario": None,  # 访谈场景
-        "dimensions": {
-            "customer_needs": {"coverage": 0, "items": []},
-            "business_process": {"coverage": 0, "items": []},
-            "tech_constraints": {"coverage": 0, "items": []},
-            "project_constraints": {"coverage": 0, "items": []}
-        },
+        "scenario_id": scenario_id,
+        "scenario_config": scenario_config,
+        "dimensions": dimensions,
         "reference_docs": [],
         "interview_log": [],
         "requirements": [],
@@ -120,7 +137,7 @@ def create_session(topic: str) -> str:
         encoding="utf-8"
     )
 
-    log_info(f"创建会话: {session_id}")
+    log_info(f"创建会话: {session_id} (场景: {scenario_id})")
     return session_id
 
 
@@ -404,12 +421,19 @@ def get_progress_display(session_id: str) -> str:
     if not session:
         return ""
 
-    dimension_names = {
-        "customer_needs": "客户需求",
-        "business_process": "业务流程",
-        "tech_constraints": "技术约束",
-        "project_constraints": "项目约束"
-    }
+    # 从场景配置中获取维度名称，兼容旧会话
+    dimension_names = {}
+    scenario_config = session.get("scenario_config")
+    if scenario_config and "dimensions" in scenario_config:
+        for dim in scenario_config["dimensions"]:
+            dimension_names[dim["id"]] = dim.get("name", dim["id"])
+    else:
+        dimension_names = {
+            "customer_needs": "客户需求",
+            "business_process": "业务流程",
+            "tech_constraints": "技术约束",
+            "project_constraints": "项目约束"
+        }
 
     lines = ["📊 访谈进度"]
 
