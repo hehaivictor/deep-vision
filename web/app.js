@@ -78,6 +78,12 @@ function deepVision() {
         showScenarioSelector: false,
         scenarioLoaded: false,
 
+        // 场景自动识别
+        recognizing: false,           // 识别中状态
+        recognizeTimer: null,         // 防抖定时器
+        recognizedResult: null,       // 识别结果 {recommended, confidence, matched_keywords, alternatives}
+        autoRecognizeEnabled: true,   // 是否启用自动识别
+
         // 当前问题（AI 生成）
         currentQuestion: {
             text: '',
@@ -2096,6 +2102,71 @@ function deepVision() {
             } else {
                 this.selectedScenario = scenario;
             }
+            // 手动选择时禁用自动识别覆盖
+            if (scenario) {
+                this.autoRecognizeEnabled = false;
+            }
+        },
+
+        // 场景自动识别（防抖触发）
+        onTopicInput() {
+            // 清除之前的定时器
+            if (this.recognizeTimer) {
+                clearTimeout(this.recognizeTimer);
+            }
+
+            const topic = this.newSessionTopic.trim();
+
+            // 主题少于 3 个字符时不触发识别
+            if (topic.length < 3) {
+                this.recognizedResult = null;
+                return;
+            }
+
+            // 如果用户已手动选择场景，不自动覆盖
+            if (!this.autoRecognizeEnabled && this.selectedScenario) {
+                return;
+            }
+
+            // 500ms 防抖
+            this.recognizeTimer = setTimeout(() => {
+                this.recognizeScenario(topic);
+            }, 500);
+        },
+
+        // 调用场景识别 API
+        async recognizeScenario(topic) {
+            if (!topic || topic.length < 3) return;
+
+            this.recognizing = true;
+            try {
+                const result = await this.apiCall('/scenarios/recognize', {
+                    method: 'POST',
+                    body: JSON.stringify({ topic })
+                });
+
+                this.recognizedResult = result;
+
+                // 如果置信度高于 0.5 且用户未手动选择，自动选中推荐场景
+                if (result.confidence >= 0.5 && this.autoRecognizeEnabled) {
+                    const recommendedScenario = this.scenarios.find(s => s.id === result.recommended.id);
+                    if (recommendedScenario) {
+                        this.selectedScenario = recommendedScenario;
+                    }
+                }
+            } catch (error) {
+                console.warn('场景识别失败:', error);
+                this.recognizedResult = null;
+            } finally {
+                this.recognizing = false;
+            }
+        },
+
+        // 重置场景选择状态（打开新建弹窗时调用）
+        resetScenarioSelection() {
+            this.selectedScenario = null;
+            this.recognizedResult = null;
+            this.autoRecognizeEnabled = true;
         },
 
         // 获取场景名称
