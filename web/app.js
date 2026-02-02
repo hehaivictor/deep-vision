@@ -2227,6 +2227,14 @@ function deepVision() {
         },
         savingCustomScenario: false,
 
+        // AI 场景生成器状态
+        showAiGenerateModal: false,      // AI 输入弹窗
+        showAiPreviewModal: false,       // AI 预览弹窗
+        aiScenarioDescription: '',       // 用户输入的描述
+        aiGenerating: false,             // AI 生成中
+        aiGeneratedPreview: null,        // AI 生成的预览数据
+        aiExplanation: '',               // AI 设计说明
+
         // 打开自定义场景编辑器
         openCustomScenarioEditor() {
             this.customScenario = {
@@ -2326,6 +2334,178 @@ function deepVision() {
             } catch (error) {
                 this.showToast('删除失败: ' + error.message, 'error');
             }
+        },
+
+        // ============ AI 场景生成器 ============
+
+        // 打开 AI 场景生成输入弹窗
+        openAiScenarioGenerator() {
+            this.aiScenarioDescription = '';
+            this.aiGeneratedPreview = null;
+            this.aiExplanation = '';
+            this.showAiGenerateModal = true;
+        },
+
+        // AI 生成场景配置
+        async generateScenarioWithAi() {
+            const description = this.aiScenarioDescription.trim();
+            if (!description) {
+                this.showToast('请输入您想做什么的描述', 'error');
+                return;
+            }
+            if (description.length < 10) {
+                this.showToast('描述太短，请至少输入10个字', 'error');
+                return;
+            }
+            if (description.length > 500) {
+                this.showToast('描述不能超过500字', 'error');
+                return;
+            }
+
+            this.aiGenerating = true;
+            try {
+                const result = await this.apiCall('/scenarios/generate', {
+                    method: 'POST',
+                    body: JSON.stringify({ user_description: description })
+                });
+
+                if (result.success && result.generated_scenario) {
+                    this.aiGeneratedPreview = result.generated_scenario;
+                    this.aiExplanation = result.ai_explanation || '';
+                    this.showAiGenerateModal = false;
+                    this.showAiPreviewModal = true;
+                } else {
+                    this.showToast(result.error || '生成失败，请重试', 'error');
+                }
+            } catch (error) {
+                this.showToast('生成场景失败: ' + error.message, 'error');
+            } finally {
+                this.aiGenerating = false;
+            }
+        },
+
+        // 编辑 AI 生成的维度
+        editAiDimension(index, field, value) {
+            if (this.aiGeneratedPreview && this.aiGeneratedPreview.dimensions[index]) {
+                if (field === 'key_aspects') {
+                    this.aiGeneratedPreview.dimensions[index][field] = value
+                        .split(/[,，、\s]+/)
+                        .map(k => k.trim())
+                        .filter(k => k);
+                } else {
+                    this.aiGeneratedPreview.dimensions[index][field] = value;
+                }
+            }
+        },
+
+        // 添加维度到 AI 预览
+        addAiDimension() {
+            if (!this.aiGeneratedPreview) return;
+            if (this.aiGeneratedPreview.dimensions.length >= 8) {
+                this.showToast('最多支持8个维度', 'warning');
+                return;
+            }
+            const idx = this.aiGeneratedPreview.dimensions.length + 1;
+            this.aiGeneratedPreview.dimensions.push({
+                id: `dim_${idx}`,
+                name: '',
+                description: '',
+                key_aspects: [],
+                min_questions: 2,
+                max_questions: 4
+            });
+        },
+
+        // 删除 AI 预览中的维度
+        removeAiDimension(index) {
+            if (!this.aiGeneratedPreview) return;
+            if (this.aiGeneratedPreview.dimensions.length <= 1) {
+                this.showToast('至少需要1个维度', 'warning');
+                return;
+            }
+            this.aiGeneratedPreview.dimensions.splice(index, 1);
+        },
+
+        // 确认保存 AI 生成的场景
+        async saveAiGeneratedScenario() {
+            if (!this.aiGeneratedPreview) return;
+
+            const name = this.aiGeneratedPreview.name?.trim();
+            if (!name) {
+                this.showToast('场景名称不能为空', 'error');
+                return;
+            }
+
+            const validDims = this.aiGeneratedPreview.dimensions.filter(d => d.name?.trim());
+            if (validDims.length === 0) {
+                this.showToast('至少需要一个有效维度', 'error');
+                return;
+            }
+
+            this.savingCustomScenario = true;
+            try {
+                let keywords = this.aiGeneratedPreview.keywords || [];
+                if (typeof keywords === 'string') {
+                    keywords = keywords.split(/[,，、\s]+/).map(k => k.trim()).filter(k => k);
+                }
+
+                const dimensions = validDims.map((d, i) => ({
+                    id: `dim_${i + 1}`,
+                    name: d.name.trim(),
+                    description: d.description?.trim() || '',
+                    key_aspects: Array.isArray(d.key_aspects) ? d.key_aspects : [],
+                    min_questions: 2,
+                    max_questions: 4
+                }));
+
+                await this.apiCall('/scenarios/custom', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        name,
+                        description: this.aiGeneratedPreview.description?.trim() || '',
+                        keywords,
+                        dimensions
+                    })
+                });
+
+                await this.loadScenarios();
+                this.showAiPreviewModal = false;
+                this.aiGeneratedPreview = null;
+                this.showToast(`场景「${name}」创建成功`, 'success');
+            } catch (error) {
+                this.showToast('保存场景失败: ' + error.message, 'error');
+            } finally {
+                this.savingCustomScenario = false;
+            }
+        },
+
+        // 重新生成场景
+        regenerateScenario() {
+            this.showAiPreviewModal = false;
+            this.showAiGenerateModal = true;
+        },
+
+        // 切换到手动编辑模式
+        switchToManualEdit() {
+            if (this.aiGeneratedPreview) {
+                this.customScenario = {
+                    name: this.aiGeneratedPreview.name || '',
+                    description: this.aiGeneratedPreview.description || '',
+                    keywords: Array.isArray(this.aiGeneratedPreview.keywords)
+                        ? this.aiGeneratedPreview.keywords.join(', ')
+                        : '',
+                    dimensions: this.aiGeneratedPreview.dimensions.map(d => ({
+                        id: d.id,
+                        name: d.name || '',
+                        description: d.description || '',
+                        key_aspects: Array.isArray(d.key_aspects)
+                            ? d.key_aspects.join(', ')
+                            : ''
+                    }))
+                };
+            }
+            this.showAiPreviewModal = false;
+            this.showCustomScenarioModal = true;
         },
 
         // 获取场景名称
