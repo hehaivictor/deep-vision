@@ -1,7 +1,17 @@
 {
-  "version": "1.16.0",
+  "version": "1.16.1",
   "releaseDate": "2026-02-02",
   "changelog": [
+    {
+      "version": "1.16.1",
+      "date": "2026-02-02",
+      "type": "patch",
+      "title": "修复自定义场景删除按钮不显示的问题",
+      "changes": [
+        "场景列表 API 添加 custom 字段返回",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.16.0",
       "date": "2026-02-02",
