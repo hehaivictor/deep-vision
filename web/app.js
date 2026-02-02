@@ -1,11 +1,11 @@
 /**
- * Deep Vision - AI 驱动的智能需求调研前端
+ * Deep Vision - AI 驱动的智能访谈前端
  *
  * 核心功能：
  * - 调用后端 AI API 动态生成问题和选项
  * - 支持智能追问（挖掘本质需求）
  * - 支持冲突检测（与参考文档对比）
- * - 生成专业调研报告
+ * - 生成专业访谈报告
  */
 
 // 从配置文件获取 API 地址，如果配置文件未加载则使用默认值
@@ -47,7 +47,7 @@ function deepVision() {
         showDeleteModal: false,
         sessionToDelete: null,
 
-        // 确认重新调研对话框
+        // 确认重新访谈对话框
         showRestartModal: false,
 
         // 确认删除文档对话框
@@ -389,14 +389,14 @@ function deepVision() {
 
             // 验证主题长度
             if (this.newSessionTopic.length > topicMaxLength) {
-                this.showToast(`调研主题不能超过${topicMaxLength}个字符`, 'error');
+                this.showToast(`访谈主题不能超过${topicMaxLength}个字符`, 'error');
                 this.loading = false;
                 return;
             }
 
             // 验证描述长度
             if (this.newSessionDescription.length > descMaxLength) {
-                this.showToast(`调研描述不能超过${descMaxLength}个字符`, 'error');
+                this.showToast(`访谈描述不能超过${descMaxLength}个字符`, 'error');
                 this.loading = false;
                 return;
             }
@@ -585,11 +585,11 @@ function deepVision() {
         },
 
         async removeDocument(index) {
-            if (!this.currentSession || !this.currentSession.reference_docs) {
+            if (!this.currentSession || !this.currentSession.reference_materials) {
                 return;
             }
 
-            const doc = this.currentSession.reference_docs[index];
+            const doc = this.currentSession.reference_materials[index];
 
             // 使用自定义确认对话框
             this.docToDelete = doc;
@@ -615,71 +615,6 @@ function deepVision() {
             this.showDeleteDocModal = true;
         },
 
-        // ============ 已有调研成果上传 ============
-        async uploadResearchDoc(event) {
-            // 支持拖放上传和点击上传
-            const files = event.dataTransfer?.files || event.target?.files;
-            if (!files?.length || !this.currentSession) return;
-
-            for (const file of files) {
-                const formData = new FormData();
-                formData.append('file', file);
-
-                try {
-                    const response = await fetch(
-                        `${API_BASE}/sessions/${this.currentSession.session_id}/research-docs`,
-                        { method: 'POST', body: formData }
-                    );
-
-                    if (response.ok) {
-                        const result = await response.json();
-                        // 刷新会话数据
-                        this.currentSession = await this.apiCall(`/sessions/${this.currentSession.session_id}`);
-                        this.showToast(`调研成果 ${file.name} 上传成功`, 'success');
-                    } else {
-                        throw new Error('上传失败');
-                    }
-                } catch (error) {
-                    this.showToast(`上传 ${file.name} 失败`, 'error');
-                }
-            }
-
-            // 清除 input 值（仅点击上传时）
-            if (event.target?.value !== undefined) {
-                event.target.value = '';
-            }
-        },
-
-        async removeResearchDoc(index) {
-            if (!this.currentSession || !this.currentSession.research_docs) {
-                return;
-            }
-
-            const doc = this.currentSession.research_docs[index];
-
-            // 使用自定义确认对话框
-            this.docToDelete = doc;
-            this.docDeleteCallback = async () => {
-                try {
-                    const response = await fetch(
-                        `${API_BASE}/sessions/${this.currentSession.session_id}/research-docs/${encodeURIComponent(doc.name)}`,
-                        { method: 'DELETE' }
-                    );
-
-                    if (response.ok) {
-                        // 刷新会话数据
-                        this.currentSession = await this.apiCall(`/sessions/${this.currentSession.session_id}`);
-                        this.showToast(`调研成果 ${doc.name} 已删除`, 'success');
-                    } else {
-                        throw new Error('删除失败');
-                    }
-                } catch (error) {
-                    console.error('删除调研成果错误:', error);
-                    this.showToast(`删除调研成果失败`, 'error');
-                }
-            };
-            this.showDeleteDocModal = true;
-        },
 
         async confirmDeleteDoc() {
             if (this.docDeleteCallback) {
@@ -1011,7 +946,7 @@ function deepVision() {
                         // 所有维度都已完成，直接进入确认阶段
                         this.currentStep = 2;
                         this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false };
-                        this.showToast('所有维度调研完成！', 'success');
+                        this.showToast('所有维度访谈完成！', 'success');
                         return;  // 不再调用 fetchNextQuestion
                     }
                 }
@@ -1220,7 +1155,7 @@ function deepVision() {
             this.currentStep = 2;
         },
 
-        // ============ 重新调研 ============
+        // ============ 重新访谈 ============
         confirmRestartResearch() {
             this.showRestartModal = true;
         },
@@ -1231,7 +1166,7 @@ function deepVision() {
 
             try {
                 const result = await this.apiCall(
-                    `/sessions/${this.currentSession.session_id}/restart-research`,
+                    `/sessions/${this.currentSession.session_id}/restart-interview`,
                     { method: 'POST' }
                 );
 
@@ -1244,13 +1179,13 @@ function deepVision() {
                     this.currentDimension = 'customer_needs';
                     this.currentQuestion = null;
 
-                    this.showToast('已保存当前调研成果，开始新一轮调研', 'success');
+                    this.showToast('已保存当前访谈内容，开始新一轮访谈', 'success');
                 } else {
-                    this.showToast('重新调研失败', 'error');
+                    this.showToast('重新访谈失败', 'error');
                 }
             } catch (error) {
-                console.error('重新调研错误:', error);
-                this.showToast('重新调研失败', 'error');
+                console.error('重新访谈错误:', error);
+                this.showToast('重新访谈失败', 'error');
             }
         },
 
