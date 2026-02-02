@@ -2213,6 +2213,42 @@ function deepVision() {
             this.autoRecognizeEnabled = true;
         },
 
+        // 一键生成专属场景（基于用户已输入的主题和描述）
+        async generateScenarioFromInput() {
+            const topic = this.newSessionTopic.trim();
+            const description = this.newSessionDescription.trim();
+            const userInput = description ? `${topic}。${description}` : topic;
+
+            if (userInput.length < 10) {
+                this.showToast('请先补充更多主题描述', 'error');
+                return;
+            }
+
+            this.aiScenarioDescription = userInput;
+            this.aiGenerating = true;
+            this.aiGeneratedPreview = null;
+            this.aiExplanation = '';
+
+            try {
+                const result = await this.apiCall('/scenarios/generate', {
+                    method: 'POST',
+                    body: JSON.stringify({ user_description: userInput })
+                });
+
+                if (result.success && result.generated_scenario) {
+                    this.aiGeneratedPreview = result.generated_scenario;
+                    this.aiExplanation = result.ai_explanation || '';
+                    this.showAiPreviewModal = true;
+                } else {
+                    this.showToast(result.error || '生成失败，请重试', 'error');
+                }
+            } catch (error) {
+                this.showToast('生成场景失败: ' + error.message, 'error');
+            } finally {
+                this.aiGenerating = false;
+            }
+        },
+
         // ============ 自定义场景 ============
 
         // 自定义场景编辑器状态
@@ -2458,7 +2494,7 @@ function deepVision() {
                     max_questions: 4
                 }));
 
-                await this.apiCall('/scenarios/custom', {
+                const result = await this.apiCall('/scenarios/custom', {
                     method: 'POST',
                     body: JSON.stringify({
                         name,
@@ -2469,9 +2505,19 @@ function deepVision() {
                 });
 
                 await this.loadScenarios();
+
+                // 自动选中新创建的场景
+                if (result.scenario_id) {
+                    const newScenario = this.scenarios.find(s => s.id === result.scenario_id);
+                    if (newScenario) {
+                        this.selectedScenario = newScenario;
+                        this.autoRecognizeEnabled = false; // 禁用自动覆盖
+                    }
+                }
+
                 this.showAiPreviewModal = false;
                 this.aiGeneratedPreview = null;
-                this.showToast(`场景「${name}」创建成功`, 'success');
+                this.showToast(`场景「${name}」创建成功并已选中`, 'success');
             } catch (error) {
                 this.showToast('保存场景失败: ' + error.message, 'error');
             } finally {
