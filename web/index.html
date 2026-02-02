@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Deep Vision 深瞳 - 智能需求调研助手</title>
+    <title>Deep Vision 深瞳 - 智能访谈助手</title>
     <!-- 本地化资源 - 支持内网部署 -->
     <script src="vendor/css/tailwind-full.js"></script>
     <link rel="stylesheet" href="vendor/css/fonts.css">
@@ -450,14 +450,14 @@
                     <button @click="switchView('reports')"
                             :class="currentView === 'reports' ? 'bg-[#357BE2] text-white' : 'text-primary hover:bg-surface-secondary'"
                             class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium">
-                        <span class="hidden sm:inline">调研报告</span>
+                        <span class="hidden sm:inline">访谈报告</span>
                         <span class="sm:hidden">报告</span>
                     </button>
                 </nav>
             </div>
         </header>
 
-        <!-- 流程步骤指示器（仅在调研中显示） -->
+        <!-- 流程步骤指示器（仅在访谈中显示） -->
         <template x-if="currentView === 'interview' && currentSession">
             <div class="bg-white border-b border-gray-200 shadow-sm">
                 <div class="max-w-7xl mx-auto px-4 py-3">
@@ -501,15 +501,15 @@
                 <div class="space-y-4 md:space-y-6">
                     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                         <div>
-                            <h2 class="text-xl md:text-2xl font-semibold text-primary">调研会话</h2>
-                            <p class="text-muted text-sm mt-1">管理您的需求调研会话</p>
+                            <h2 class="text-xl md:text-2xl font-semibold text-primary">访谈会话</h2>
+                            <p class="text-muted text-sm mt-1">管理您的访谈会话</p>
                         </div>
                         <button @click="showNewSessionModal = true"
                                 class="btn-sage-blue text-white px-5 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                             </svg>
-                            新建调研
+                            新建访谈
                         </button>
                     </div>
 
@@ -584,11 +584,11 @@
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1"
                                               d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
                                     </svg>
-                                    <h3 class="text-lg font-medium text-gray-600 mb-2">暂无调研会话</h3>
-                                    <p class="text-muted mb-6">点击"新建调研"开始您的第一次智能需求调研</p>
+                                    <h3 class="text-lg font-medium text-gray-600 mb-2">暂无访谈会话</h3>
+                                    <p class="text-muted mb-6">点击"新建访谈"开始您的第一次智能访谈</p>
                                     <button @click="showNewSessionModal = true"
                                             class="btn-sage-blue text-white px-6 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer">
-                                        新建调研
+                                        新建访谈
                                     </button>
                                 </div>
                             </template>
@@ -597,19 +597,19 @@
                 </div>
             </template>
 
-            <!-- ========== 调研访谈视图 ========== -->
+            <!-- ========== 访谈视图 ========== -->
             <template x-if="currentView === 'interview' && currentSession">
                 <div class="grid lg:grid-cols-12 gap-4 lg:gap-6 items-start content-start">
                     <!-- 左侧：进度面板 - 移动端显示为横向滚动卡片 -->
                     <div class="lg:col-span-4 xl:col-span-3 space-y-4 order-2 lg:order-1 self-start sticky top-4">
-                        <!-- 调研主题 -->
+                        <!-- 访谈主题 -->
                         <template x-if="currentSession && currentStep < 2">
                             <div class="bg-surface border border-border rounded-xl p-5 mt-6">
                                 <h3 class="font-semibold text-primary mb-3 flex items-center gap-2">
                                     <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
                                     </svg>
-                                    调研主题
+                                    访谈主题
                                 </h3>
                                 <p class="text-sm text-secondary break-words" x-text="currentSession.topic"></p>
                                 <template x-if="currentSession.description">
@@ -618,7 +618,7 @@
                             </div>
                         </template>
 
-                        <!-- 调研进度 -->
+                        <!-- 访谈进度 -->
                         <div class="bg-surface border border-border rounded-xl p-5">
                             <div class="flex items-center justify-between mb-4">
                                 <h3 class="font-semibold text-primary flex items-center gap-2">
@@ -722,23 +722,21 @@
                             </div>
                         </div>
 
-                        <!-- 参考文档（仅在访谈阶段显示） -->
+                        <!-- 参考资料（仅在访谈阶段显示） -->
                         <template x-if="currentStep === 1">
                             <div class="bg-surface border border-border rounded-xl p-5">
                                 <h3 class="font-semibold text-primary mb-3 flex items-center gap-2">
                                     <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
                                     </svg>
-                                    参考文档
+                                    参考资料
                                 </h3>
-                                <p class="text-xs text-muted mb-3">上传需求背景资料，帮助 AI 理解项目上下文</p>
-                                <template x-if="currentSession.reference_docs && currentSession.reference_docs.length > 0">
+                                <p class="text-xs text-muted mb-3">上传已有的文档供 AI 参考</p>
+                                <template x-if="currentSession.reference_materials && currentSession.reference_materials.length > 0">
                                     <div class="space-y-2">
-                                        <template x-for="(doc, index) in currentSession.reference_docs" :key="doc.name">
+                                        <template x-for="(doc, index) in currentSession.reference_materials" :key="doc.name">
                                             <div class="flex items-center gap-2 p-2 bg-gray-50 rounded-lg text-sm group">
-                                                <svg class="w-4 h-4 text-primary shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                                                </svg>
+                                                <span class="shrink-0" x-text="doc.source === 'auto' ? '🔄' : '📄'"></span>
                                                 <span class="truncate flex-1" x-text="doc.name"></span>
                                                 <button @click.stop="removeDocument(index)" class="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-all cursor-pointer" title="删除文档">
                                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -749,8 +747,8 @@
                                         </template>
                                     </div>
                                 </template>
-                                <template x-if="!currentSession.reference_docs || currentSession.reference_docs.length === 0">
-                                    <p class="text-sm text-muted">暂无参考文档</p>
+                                <template x-if="!currentSession.reference_materials || currentSession.reference_materials.length === 0">
+                                    <p class="text-sm text-muted">暂无参考资料</p>
                                 </template>
                                 <label class="mt-3 flex items-center justify-center gap-2 p-3 border-2 border-dashed rounded-lg cursor-pointer transition-all duration-200"
                                        :class="isDraggingDoc ? 'border-cta bg-cta/5' : 'border-gray-200 hover:border-cta/50'"
@@ -766,51 +764,6 @@
                                 </label>
                             </div>
                         </template>
-
-                        <!-- 已有调研成果（仅在访谈阶段显示） -->
-                        <template x-if="currentStep === 1">
-                            <div class="bg-surface border border-border rounded-xl p-5">
-                                <h3 class="font-semibold text-primary mb-3 flex items-center gap-2">
-                                    <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
-                                    </svg>
-                                    已有调研成果
-                                </h3>
-                                <p class="text-xs text-muted mb-3">上传已有的调研报告，AI 会参考这些内容</p>
-                                <template x-if="currentSession.research_docs && currentSession.research_docs.length > 0">
-                                    <div class="space-y-2">
-                                        <template x-for="(doc, index) in currentSession.research_docs" :key="doc.name">
-                                            <div class="flex items-center gap-2 p-2 bg-gray-50 rounded-lg text-sm group">
-                                                <svg class="w-4 h-4 text-primary shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
-                                                </svg>
-                                                <span class="truncate flex-1" x-text="doc.name"></span>
-                                                <button @click.stop="removeResearchDoc(index)" class="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-all cursor-pointer" title="删除文档">
-                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                                                    </svg>
-                                                </button>
-                                            </div>
-                                        </template>
-                                    </div>
-                                </template>
-                                <template x-if="!currentSession.research_docs || currentSession.research_docs.length === 0">
-                                    <p class="text-sm text-muted">暂无调研成果</p>
-                                </template>
-                                <label class="mt-3 flex items-center justify-center gap-2 p-3 border-2 border-dashed rounded-lg cursor-pointer transition-all duration-200"
-                                       :class="isDraggingResearch ? 'border-cta bg-cta/5' : 'border-gray-200 hover:border-cta/50'"
-                                       @dragover.prevent="isDraggingResearch = true"
-                                       @dragenter.prevent="isDraggingResearch = true"
-                                       @dragleave.prevent="isDraggingResearch = false"
-                                       @drop.prevent="isDraggingResearch = false; uploadResearchDoc($event)">
-                                    <svg class="w-5 h-5" :class="isDraggingResearch ? 'text-primary' : 'text-muted'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
-                                    </svg>
-                                    <span class="text-sm" :class="isDraggingResearch ? 'text-primary' : 'text-muted'" x-text="isDraggingResearch ? '松开上传' : '上传调研成果'"></span>
-                                    <input type="file" class="hidden" @change="uploadResearchDoc($event)" accept=".md,.txt,.pdf,.docx,.xlsx,.pptx,.jpg,.jpeg,.png,.gif,.webp">
-                                </label>
-                            </div>
-                        </template>
                     </div>
 
                     <!-- 右侧：访谈区域 - 移动端显示在上方 -->
@@ -822,9 +775,9 @@
                                     <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
                                     </svg>
-                                    参考文档
+                                    参考资料
                                 </h4>
-                                <p class="text-muted mb-6">您可以上传参考文档帮助我们更好地理解您的需求背景（可选）</p>
+                                <p class="text-muted mb-6">上传已有的文档供 AI 参考（可选）</p>
 
                                 <div class="grid gap-4 sm:grid-cols-2">
                                     <label class="flex flex-col items-center justify-center p-6 md:p-8 border-2 border-dashed rounded-xl cursor-pointer transition-all duration-200 group"
@@ -842,7 +795,7 @@
                                     </label>
 
                                     <div class="flex flex-col p-4 border-2 border-gray-200 rounded-xl bg-gray-50">
-                                        <template x-if="currentSession.reference_docs && currentSession.reference_docs.length > 0">
+                                        <template x-if="currentSession.reference_materials && currentSession.reference_materials.length > 0">
                                             <div>
                                                 <div class="flex items-center gap-2 mb-3">
                                                     <div class="w-8 h-8 bg-primary/10 rounded-full flex items-center justify-center">
@@ -850,14 +803,12 @@
                                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                                                         </svg>
                                                     </div>
-                                                    <span class="font-medium text-primary" x-text="currentSession.reference_docs.length + ' 个文档已上传'"></span>
+                                                    <span class="font-medium text-primary" x-text="currentSession.reference_materials.length + ' 个资料已上传'"></span>
                                                 </div>
                                                 <div class="space-y-2 max-h-48 overflow-y-auto">
-                                                    <template x-for="(doc, index) in currentSession.reference_docs" :key="doc.name">
+                                                    <template x-for="(doc, index) in currentSession.reference_materials" :key="doc.name">
                                                         <div class="flex items-center gap-2 p-2 bg-white rounded-lg text-sm group">
-                                                            <svg class="w-4 h-4 text-primary shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                                                            </svg>
+                                                            <span class="shrink-0" x-text="doc.source === 'auto' ? '🔄' : '📄'"></span>
                                                             <span class="truncate flex-1" x-text="doc.name"></span>
                                                             <button @click="removeDocument(index)" class="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-all cursor-pointer" title="删除文档">
                                                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -869,83 +820,16 @@
                                                 </div>
                                             </div>
                                         </template>
-                                        <template x-if="!currentSession.reference_docs || currentSession.reference_docs.length === 0">
+                                        <template x-if="!currentSession.reference_materials || currentSession.reference_materials.length === 0">
                                             <div class="text-center flex flex-col items-center justify-center h-full min-h-[160px]">
                                                 <div class="w-12 h-12 bg-gray-200 rounded-full flex items-center justify-center mx-auto mb-3">
                                                     <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
                                                     </svg>
                                                 </div>
-                                                <span class="text-muted">暂无上传文档</span>
+                                                <span class="text-muted">暂无参考资料</span>
                                             </div>
                                         </template>
-                                    </div>
-                                </div>
-
-                                <!-- 已有调研成果上传区域 -->
-                                <div class="mt-6 pt-6 border-t border-gray-200">
-                                    <h4 class="text-lg font-medium text-primary mb-2 flex items-center gap-2">
-                                        <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
-                                        </svg>
-                                        已有调研成果
-                                    </h4>
-                                    <p class="text-muted mb-4">如果您已有相关的调研报告或分析文档，可以上传供 AI 参考（可选）</p>
-
-                                    <div class="grid gap-4 sm:grid-cols-2">
-                                        <label class="flex flex-col items-center justify-center p-6 md:p-8 border-2 border-dashed rounded-xl cursor-pointer transition-all duration-200 group"
-                                               :class="isDraggingResearch ? 'border-cta bg-cta/5 scale-[1.02]' : 'border-gray-200 hover:border-cta'"
-                                               @dragover.prevent="isDraggingResearch = true"
-                                               @dragenter.prevent="isDraggingResearch = true"
-                                               @dragleave.prevent="isDraggingResearch = false"
-                                               @drop.prevent="isDraggingResearch = false; uploadResearchDoc($event)">
-                                            <svg class="w-12 h-12 mb-3 transition-colors" :class="isDraggingResearch ? 'text-primary' : 'text-gray-300 group-hover:text-primary'" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
-                                            </svg>
-                                            <span class="font-medium" :class="isDraggingResearch ? 'text-primary' : 'text-secondary group-hover:text-primary'" x-text="isDraggingResearch ? '松开以上传文件' : '点击或拖拽上传'"></span>
-                                            <span class="text-xs text-muted mt-1">支持 .md, .txt, .pdf, .docx, .xlsx, .pptx, 图片</span>
-                                            <input type="file" class="hidden" @change="uploadResearchDoc($event)" accept=".md,.txt,.pdf,.docx,.xlsx,.pptx,.jpg,.jpeg,.png,.gif,.webp" multiple>
-                                        </label>
-
-                                        <div class="flex flex-col p-4 border-2 border-gray-200 rounded-xl bg-gray-50">
-                                            <template x-if="currentSession.research_docs && currentSession.research_docs.length > 0">
-                                                <div>
-                                                    <div class="flex items-center gap-2 mb-3">
-                                                        <div class="w-8 h-8 bg-primary/10 rounded-full flex items-center justify-center">
-                                                            <svg class="w-4 h-4 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                                                            </svg>
-                                                        </div>
-                                                        <span class="font-medium text-primary" x-text="currentSession.research_docs.length + ' 个调研成果已上传'"></span>
-                                                    </div>
-                                                    <div class="space-y-2 max-h-48 overflow-y-auto">
-                                                        <template x-for="(doc, index) in currentSession.research_docs" :key="doc.name">
-                                                            <div class="flex items-center gap-2 p-2 bg-white rounded-lg text-sm group">
-                                                                <svg class="w-4 h-4 text-primary shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
-                                                                </svg>
-                                                                <span class="truncate flex-1" x-text="doc.name"></span>
-                                                                <button @click="removeResearchDoc(index)" class="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500 transition-all cursor-pointer" title="删除文档">
-                                                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                                                                    </svg>
-                                                                </button>
-                                                            </div>
-                                                        </template>
-                                                    </div>
-                                                </div>
-                                            </template>
-                                            <template x-if="!currentSession.research_docs || currentSession.research_docs.length === 0">
-                                                <div class="text-center flex flex-col items-center justify-center h-full min-h-[160px]">
-                                                    <div class="w-12 h-12 bg-gray-200 rounded-full flex items-center justify-center mx-auto mb-3">
-                                                        <svg class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
-                                                        </svg>
-                                                    </div>
-                                                    <span class="text-muted">暂无调研成果</span>
-                                                </div>
-                                            </template>
-                                        </div>
                                     </div>
                                 </div>
 
@@ -1020,7 +904,7 @@
                                             <span class="wave-dots"><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span><span>.</span></span>
                                         </p>
 
-                                        <!-- 调研小技巧 -->
+                                        <!-- 访谈小技巧 -->
                                         <p class="text-sm text-muted mt-6 text-center"
                                            x-text="'💡 ' + SITE_CONFIG.researchTips[currentTipIndex]"></p>
                                         </div>
@@ -1178,7 +1062,7 @@
                                             </svg>
                                         </div>
                                         <h3 class="text-xl font-semibold text-primary mb-2">🎉 所有问题已完成</h3>
-                                        <p class="text-muted text-sm">您已经完成了全部 4 个维度的调研访谈</p>
+                                        <p class="text-muted text-sm">您已经完成了全部 4 个维度的访谈</p>
                                         <p class="text-muted text-sm mt-1">请点击下方"确认需求"按钮进入下一阶段</p>
                                     </div>
 
@@ -1365,7 +1249,7 @@
                                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
                                         </svg>
-                                        <span>重新调研</span>
+                                        <span>重新访谈</span>
                                     </button>
                                 </div>
                             </div>
@@ -1379,8 +1263,8 @@
                 <div class="space-y-4 md:space-y-6">
                     <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                         <div>
-                            <h2 class="text-xl md:text-2xl font-semibold text-primary">调研报告</h2>
-                            <p class="text-muted text-sm mt-1">查看和管理已生成的调研报告</p>
+                            <h2 class="text-xl md:text-2xl font-semibold text-primary">访谈报告</h2>
+                            <p class="text-muted text-sm mt-1">查看和管理已生成的访谈报告</p>
                         </div>
                     </div>
 
@@ -1427,8 +1311,8 @@
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1"
                                               d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
                                     </svg>
-                                    <h3 class="text-lg font-medium text-gray-600 mb-2">暂无调研报告</h3>
-                                    <p class="text-muted">完成调研后会在这里显示生成的报告</p>
+                                    <h3 class="text-lg font-medium text-gray-600 mb-2">暂无访谈报告</h3>
+                                    <p class="text-muted">完成访谈后会在这里显示生成的报告</p>
                                 </div>
                             </template>
                         </div>
@@ -1530,7 +1414,7 @@
                  x-transition:enter-start="opacity-0 scale-95"
                  x-transition:enter-end="opacity-100 scale-100">
                 <div class="flex items-center justify-between mb-4">
-                    <h3 class="text-xl font-semibold text-primary">新建调研会话</h3>
+                    <h3 class="text-xl font-semibold text-primary">新建访谈会话</h3>
                     <button @click="showNewSessionModal = false" class="text-gray-400 hover:text-gray-600 cursor-pointer">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -1539,13 +1423,13 @@
                 </div>
                 <form @submit.prevent="createNewSession()">
                     <div class="mb-4">
-                        <label for="newTopic" class="block text-sm font-medium text-secondary mb-2">调研主题 <span class="text-danger">*</span></label>
+                        <label for="newTopic" class="block text-sm font-medium text-secondary mb-2">访谈主题 <span class="text-danger">*</span></label>
                         <input type="text" id="newTopic" x-model="newSessionTopic"
                                @input="$el.value = $el.value"
-                               placeholder="例如：CRM系统需求调研"
+                               placeholder="例如：CRM系统需求访谈"
                                class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#F0F8FF] focus:border-[#F0F8FF]"
                                required>
-                        <p class="text-xs text-muted mt-1">简洁描述本次调研的主题或项目名称</p>
+                        <p class="text-xs text-muted mt-1">简洁描述本次访谈的主题或项目名称</p>
                     </div>
                     <div class="mb-4">
                         <label for="newDescription" class="block text-sm font-medium text-secondary mb-2">主题描述 <span class="text-xs text-gray-400">(可选)</span></label>
@@ -1602,7 +1486,7 @@
                                 :disabled="!newSessionTopic.trim()"
                                 :class="newSessionTopic.trim() ? 'btn-sage-blue cursor-pointer' : 'bg-gray-300 cursor-not-allowed'"
                                 class="px-5 py-2.5 text-white rounded-lg font-medium transition-colors duration-200">
-                            开始调研
+                            开始访谈
                         </button>
                     </div>
                 </form>
@@ -1662,7 +1546,7 @@
                     <template x-if="milestoneData && milestoneData.isLastDimension">
                         <div class="mb-6">
                             <p class="text-green-600 font-medium">所有维度已完成！</p>
-                            <p class="text-muted text-sm mt-1">您可以确认需求并生成调研报告</p>
+                            <p class="text-muted text-sm mt-1">您可以确认需求并生成访谈报告</p>
                         </div>
                     </template>
 
@@ -1705,7 +1589,7 @@
             </div>
         </div>
 
-        <!-- ========== 重新调研确认弹窗 ========== -->
+        <!-- ========== 重新访谈确认弹窗 ========== -->
         <div x-show="showRestartModal"
              x-transition:enter="transition ease-out duration-200"
              x-transition:enter-start="opacity-0"
@@ -1719,8 +1603,8 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                         </svg>
                     </div>
-                    <h3 class="text-lg font-semibold text-primary mb-2">确认重新调研</h3>
-                    <p class="text-muted mb-6">当前调研成果将被保存为历史记录，并开始新一轮调研。确定继续吗？</p>
+                    <h3 class="text-lg font-semibold text-primary mb-2">确认重新访谈</h3>
+                    <p class="text-muted mb-6">当前访谈内容将被保存为参考资料，并开始新一轮访谈。确定继续吗？</p>
                     <div class="flex gap-3 justify-center">
                         <button @click="showRestartModal = false"
                                 class="px-5 py-2 border border-gray-300 rounded-lg font-medium hover:bg-gray-50 transition-colors cursor-pointer">
@@ -1728,7 +1612,7 @@
                         </button>
                         <button @click="restartResearch()"
                                 class="px-5 py-2 btn-sage-blue text-white rounded-lg font-medium transition-colors cursor-pointer">
-                            确认重新调研
+                            确认重新访谈
                         </button>
                     </div>
                 </div>

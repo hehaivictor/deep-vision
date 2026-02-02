@@ -6,7 +6,7 @@
 """
 Deep-Vision 会话管理工具
 
-用途: 管理调研会话的保存、恢复和清理
+用途: 管理访谈会话的保存、恢复和清理
 使用方式: uvx scripts/session_manager.py <命令> [参数]
 """
 
@@ -85,10 +85,10 @@ def get_utc_now() -> str:
 
 def create_session(topic: str) -> str:
     """
-    创建新的调研会话
+    创建新的访谈会话
 
     Args:
-        topic: 调研主题
+        topic: 访谈主题
 
     Returns:
         str: 会话ID
@@ -102,7 +102,7 @@ def create_session(topic: str) -> str:
         "created_at": get_utc_now(),
         "updated_at": get_utc_now(),
         "status": "in_progress",
-        "scenario": None,  # 调研场景
+        "scenario": None,  # 访谈场景
         "dimensions": {
             "customer_needs": {"coverage": 0, "items": []},
             "business_process": {"coverage": 0, "items": []},
@@ -411,7 +411,7 @@ def get_progress_display(session_id: str) -> str:
         "project_constraints": "项目约束"
     }
 
-    lines = ["📊 调研进度"]
+    lines = ["📊 访谈进度"]
 
     for dim_key, dim_name in dimension_names.items():
         coverage = session["dimensions"].get(dim_key, {}).get("coverage", 0)
@@ -440,7 +440,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  uvx scripts/session_manager.py create "CRM系统需求调研"
+  uvx scripts/session_manager.py create "CRM系统需求访谈"
   uvx scripts/session_manager.py list
   uvx scripts/session_manager.py get dv-20260120-abc12345
   uvx scripts/session_manager.py progress dv-20260120-abc12345
@@ -451,7 +451,7 @@ def main():
 
     # create 命令
     create_parser = subparsers.add_parser("create", help="创建新会话")
-    create_parser.add_argument("topic", help="调研主题")
+    create_parser.add_argument("topic", help="访谈主题")
 
     # list 命令
     subparsers.add_parser("list", help="列出所有会话")
@@ -484,7 +484,7 @@ def main():
     cleanup_parser.add_argument("days", type=int, nargs="?", default=30, help="保留天数（默认30天）")
 
     # progress 命令
-    progress_parser = subparsers.add_parser("progress", help="显示调研进度")
+    progress_parser = subparsers.add_parser("progress", help="显示访谈进度")
     progress_parser.add_argument("session_id", help="会话ID")
 
     # add-log 命令

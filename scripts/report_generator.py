@@ -6,7 +6,7 @@
 """
 Deep-Vision 报告生成工具
 
-用途: 基于会话数据生成专业的需求调研报告
+用途: 基于会话数据生成专业的需求访谈报告
 使用方式: uvx scripts/report_generator.py generate <会话ID> [输出文件]
 """
 
@@ -288,10 +288,10 @@ def generate_requirement_diagram(dimensions: dict) -> str:
 
 def generate_user_journey(session: dict) -> str:
     """生成用户旅程图的Mermaid代码"""
-    scenario = session.get("scenario") or "需求调研"
+    scenario = session.get("scenario") or "需求访谈"
 
     return f"""    section 启动
-      确定调研主题: 5: 用户
+      确定访谈主题: 5: 用户
       准备参考文档: 4: 用户
     section 访谈
       回答选择题: 5: 用户
@@ -300,7 +300,7 @@ def generate_user_journey(session: dict) -> str:
       审核需求摘要: 5: 用户
       提出修正意见: 4: 用户
     section 完成
-      获取调研报告: 5: 用户"""
+      获取访谈报告: 5: 用户"""
 
 
 def generate_system_architecture(dimensions: dict) -> str:
@@ -362,7 +362,7 @@ def render_template(template: str, session: dict) -> str:
         "{{DATE}}": now.strftime("%Y-%m-%d %H:%M"),
         "{{DATE_SHORT}}": now.strftime("%Y%m%d"),
         "{{PROJECT_SLUG}}": slugify(session.get("topic", "project")),
-        "{{SCENARIO}}": session.get("scenario") or "通用需求调研",
+        "{{SCENARIO}}": session.get("scenario") or "通用需求访谈",
         "{{DURATION}}": "约30分钟",  # 可以根据interview_log计算
         "{{DIMENSIONS_COVERED}}": calculate_dimensions_covered(dimensions),
         "{{FULL_INTERVIEW_LOG}}": format_interview_log(session.get("interview_log", [])),
@@ -397,7 +397,7 @@ def generate_simple_report(session: dict) -> str:
     dimensions = session.get("dimensions", {})
     interview_log = session.get("interview_log", [])
     requirements = session.get("requirements", [])
-    scenario = session.get("scenario") or "通用需求调研"
+    scenario = session.get("scenario") or "通用需求访谈"
 
     # 从访谈记录中提取各维度的详细信息
     dim_answers = {
@@ -415,23 +415,23 @@ def generate_simple_report(session: dict) -> str:
             })
 
     report_lines = [
-        f"# {topic} 需求调研报告",
+        f"# {topic} 需求访谈报告",
         "",
-        f"**调研日期**: {now.strftime('%Y-%m-%d %H:%M')}",
-        f"**调研场景**: {scenario}",
+        f"**访谈日期**: {now.strftime('%Y-%m-%d %H:%M')}",
+        f"**访谈场景**: {scenario}",
         f"**报告编号**: deep-vision-{now.strftime('%Y%m%d')}-{slugify(topic)}",
         "",
         "---",
         "",
-        "## 1. 调研概述",
+        "## 1. 访谈概述",
         "",
         "### 1.1 基本信息",
         "",
         "| 项目 | 内容 |",
         "|-----|------|",
-        f"| 调研主题 | {topic} |",
-        f"| 调研场景 | {scenario} |",
-        f"| 调研时长 | 约{len(interview_log) * 2}分钟 |",
+        f"| 访谈主题 | {topic} |",
+        f"| 访谈场景 | {scenario} |",
+        f"| 访谈时长 | 约{len(interview_log) * 2}分钟 |",
         f"| 完成维度 | {calculate_dimensions_covered(dimensions)} |",
         "",
         "### 1.2 参考文档",
@@ -448,7 +448,7 @@ def generate_simple_report(session: dict) -> str:
             else:
                 report_lines.append(f"| {doc} | - |")
     else:
-        report_lines.append("*本次调研未使用参考文档*")
+        report_lines.append("*本次访谈未使用参考文档*")
 
     report_lines.extend([
         "",
@@ -685,7 +685,7 @@ def generate_simple_report(session: dict) -> str:
         "",
         "## 5. 竞品对比",
         "",
-        "*本次调研未涉及竞品对比分析*",
+        "*本次访谈未涉及竞品对比分析*",
         "",
         "---",
         "",
@@ -697,7 +697,7 @@ def generate_simple_report(session: dict) -> str:
 
     # 根据技术约束生成建议
     if tech_items:
-        report_lines.append("基于本次调研收集的技术约束，建议：")
+        report_lines.append("基于本次访谈收集的技术约束，建议：")
         report_lines.append("")
         for i, item in enumerate(tech_items[:3], 1):
             if isinstance(item, dict):
@@ -732,7 +732,7 @@ def generate_simple_report(session: dict) -> str:
         "|-------|-------|---------|---------|",
     ])
 
-    # 根据调研内容生成风险评估
+    # 根据访谈内容生成风险评估
     if project_items:
         for item in project_items[:2]:
             if isinstance(item, dict):
@@ -793,13 +793,13 @@ def generate_simple_report(session: dict) -> str:
         "",
         "## 文档信息",
         "",
-        "- **生成工具**: Deep-Vision 智能需求调研技能",
+        "- **生成工具**: Deep-Vision 智能访谈技能",
         f"- **生成日期**: {now.strftime('%Y-%m-%d %H:%M')}",
         "- **版本**: v1.1",
         "",
         "---",
         "",
-        "*此报告由 Deep-Vision 智能需求调研技能自动生成，内容严格基于访谈收集的信息*",
+        "*此报告由 Deep-Vision 智能访谈技能自动生成，内容严格基于访谈收集的信息*",
     ])
 
     return "\n".join(report_lines)
@@ -807,7 +807,7 @@ def generate_simple_report(session: dict) -> str:
 
 def generate_report(session_id: str, output_path: Optional[str] = None) -> Optional[str]:
     """
-    生成调研报告
+    生成访谈报告
 
     Args:
         session_id: 会话ID
@@ -864,7 +864,7 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="命令")
 
     # generate 命令
-    gen_parser = subparsers.add_parser("generate", help="生成调研报告")
+    gen_parser = subparsers.add_parser("generate", help="生成访谈报告")
     gen_parser.add_argument("session_id", help="会话ID")
     gen_parser.add_argument("output", nargs="?", help="输出文件路径（可选）")
 
