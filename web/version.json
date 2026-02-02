@@ -1,7 +1,22 @@
 {
-  "version": "1.14.0",
+  "version": "1.15.0",
   "releaseDate": "2026-02-02",
   "changelog": [
+    {
+      "version": "1.15.0",
+      "date": "2026-02-02",
+      "type": "minor",
+      "title": "P2 面试评估功能",
+      "changes": [
+        "评估场景下 AI 自动为每次回答打分（1-5分）",
+        "基于场景配置的评分标准进行评估",
+        "新增评估报告生成（综合评分、推荐等级、能力分析）",
+        "前端显示维度评分和推荐等级徽章",
+        "评估进度条按评分比例显示",
+        "支持 A/B/C/D 四级推荐等级",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.14.0",
       "date": "2026-02-02",
