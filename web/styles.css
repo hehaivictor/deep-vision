@@ -1,5 +1,20 @@
 /* Manus 风格优化 - 极简黑白设计 */
 
+/* 自定义滚动条样式 */
+.custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 2px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #9ca3af;
+}
+
 /* 全局样式重置 */
 * {
     -webkit-font-smoothing: antialiased;
