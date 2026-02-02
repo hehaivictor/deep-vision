@@ -1,7 +1,22 @@
 {
-  "version": "1.15.0",
+  "version": "1.16.0",
   "releaseDate": "2026-02-02",
   "changelog": [
+    {
+      "version": "1.16.0",
+      "date": "2026-02-02",
+      "type": "minor",
+      "title": "P3 用户自定义场景",
+      "changes": [
+        "新增自定义场景 CRUD API（创建/删除）",
+        "场景选择区域新增「自定义场景」创建入口",
+        "场景编辑器弹窗：名称、描述、关键词、维度配置",
+        "支持动态增删维度（1-8个）",
+        "自定义场景显示紫色标识和悬停删除按钮",
+        "自定义场景保存到 data/scenarios/custom/ 目录",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.15.0",
       "date": "2026-02-02",
