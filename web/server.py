@@ -2059,6 +2059,84 @@ def should_follow_up_comprehensive(session: dict, dimension: str,
     }
 
 
+def score_assessment_answer(session: dict, dimension: str, question: str, answer: str) -> Optional[float]:
+    """
+    为评估场景的回答打分（1-5分）
+
+    Args:
+        session: 会话数据
+        dimension: 维度ID
+        question: 问题
+        answer: 回答
+
+    Returns:
+        float: 1.0-5.0 的分数，失败返回 None
+    """
+    if not claude_client:
+        return None
+
+    # 获取维度配置
+    scenario_config = session.get("scenario_config", {})
+    dim_config = None
+    for dim in scenario_config.get("dimensions", []):
+        if dim.get("id") == dimension:
+            dim_config = dim
+            break
+
+    if not dim_config:
+        return None
+
+    # 构建评分标准文本
+    scoring_criteria = dim_config.get("scoring_criteria", {})
+    criteria_text = "\n".join(
+        f"  {score}分: {desc}"
+        for score, desc in sorted(scoring_criteria.items(), key=lambda x: int(x[0]), reverse=True)
+    )
+
+    if not criteria_text:
+        criteria_text = """  5分: 回答非常优秀，展现深厚专业能力
+  4分: 回答良好，有清晰的思路和见解
+  3分: 回答基本合格，但缺乏深度
+  2分: 回答有明显不足或偏差
+  1分: 回答很差，无法展现相关能力"""
+
+    prompt = f"""你是一位专业面试官。请根据以下评分标准，对候选人的回答进行评分。
+
+【评估维度】{dim_config.get("name", dimension)}
+【维度说明】{dim_config.get("description", "")}
+
+【评分标准】
+{criteria_text}
+
+【面试问题】
+{question}
+
+【候选人回答】
+{answer}
+
+请严格按照评分标准打分，只返回一个数字（1-5之间的整数或小数，如 3.5），不要有任何其他文字："""
+
+    try:
+        response = claude_client.messages.create(
+            model=MODEL_NAME,
+            max_tokens=10,
+            timeout=15.0,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        raw = response.content[0].text.strip()
+        # 提取数字
+        import re
+        match = re.search(r'(\d+\.?\d*)', raw)
+        if match:
+            score = float(match.group(1))
+            return max(1.0, min(5.0, score))  # 限制在 1-5 范围
+    except Exception as e:
+        if ENABLE_DEBUG_LOG:
+            print(f"⚠️ 评分失败: {e}")
+
+    return None
+
+
 def evaluate_answer_depth(question: str, answer: str, dimension: str,
                           options: list = None, is_follow_up: bool = False) -> dict:
     """
@@ -2480,8 +2558,153 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     return prompt, truncated_docs
 
 
+def build_assessment_report_prompt(session: dict) -> str:
+    """构建面试评估报告 prompt"""
+    topic = session.get("topic", "候选人评估")
+    description = session.get("description", "")
+    interview_log = session.get("interview_log", [])
+    dimensions = session.get("dimensions", {})
+    scenario_config = session.get("scenario_config", {})
+    assessment_config = scenario_config.get("assessment", {})
+
+    # 获取维度配置
+    dim_configs = {d["id"]: d for d in scenario_config.get("dimensions", [])}
+
+    # 计算综合评分
+    total_score = 0.0
+    total_weight = 0.0
+    dim_scores_info = []
+    for dim_id, dim_data in dimensions.items():
+        dim_config = dim_configs.get(dim_id, {})
+        weight = dim_config.get("weight", 0.25)
+        score = dim_data.get("score")
+        if score is not None:
+            total_score += score * weight
+            total_weight += weight
+            dim_scores_info.append({
+                "id": dim_id,
+                "name": dim_config.get("name", dim_id),
+                "score": score,
+                "weight": weight,
+                "criteria": dim_config.get("scoring_criteria", {})
+            })
+
+    final_score = round(total_score / total_weight, 2) if total_weight > 0 else 0
+
+    # 确定推荐等级
+    recommendation_levels = assessment_config.get("recommendation_levels", [])
+    recommendation = {"level": "D", "name": "不推荐", "color": "#ef4444"}
+    for level in sorted(recommendation_levels, key=lambda x: x.get("threshold", 0), reverse=True):
+        if final_score >= level.get("threshold", 0):
+            recommendation = level
+            break
+
+    # 构建评分表格文本
+    score_table = "| 维度 | 得分 | 权重 | 加权得分 |\n|:---|:---:|:---:|:---:|\n"
+    for info in dim_scores_info:
+        weighted = round(info["score"] * info["weight"], 2)
+        score_table += f"| {info['name']} | {info['score']:.1f} | {info['weight']*100:.0f}% | {weighted:.2f} |\n"
+    score_table += f"| **综合得分** | **{final_score:.2f}** | 100% | **{final_score:.2f}** |"
+
+    # 按维度整理问答和评分
+    qa_sections = ""
+    for dim_info in dim_scores_info:
+        dim_id = dim_info["id"]
+        qa_list = [log for log in interview_log if log.get("dimension") == dim_id]
+        qa_sections += f"\n### {dim_info['name']}（得分: {dim_info['score']:.1f}/5.0）\n"
+        for qa in qa_list:
+            qa_sections += f"**Q**: {qa['question']}\n"
+            qa_sections += f"**A**: {qa['answer']}\n"
+            if qa.get("score"):
+                qa_sections += f"*单题评分: {qa['score']:.1f}*\n"
+            qa_sections += "\n"
+
+    prompt = f"""你是一位资深的面试官和人才评估专家，需要基于以下访谈记录生成一份专业的面试评估报告。
+
+## 评估主题
+{topic}
+"""
+
+    if description:
+        prompt += f"""
+## 背景说明
+{description}
+"""
+
+    prompt += f"""
+## 各维度得分
+
+{score_table}
+
+## 访谈记录与评分
+{qa_sections}
+
+## 报告要求
+
+请生成一份专业的面试评估报告，包含以下章节：
+
+### 1. 候选人概览
+- 评估主题
+- 评估时间
+- 综合得分：**{final_score:.2f}/5.0**
+- 推荐等级：**{recommendation.get('name', '待定')}** ({recommendation.get('level', 'C')})
+
+### 2. 能力雷达图
+使用 Mermaid 雷达图展示各维度得分（如果 Mermaid 不支持雷达图，可用其他可视化方式替代）：
+
+**注意**：由于 Mermaid 不原生支持雷达图，请使用以下替代方案：
+
+```mermaid
+xychart-beta
+    title "能力评估雷达"
+    x-axis [{', '.join([f'"{d["name"]}"' for d in dim_scores_info])}]
+    y-axis "得分" 0 --> 5
+    bar [{', '.join([str(d["score"]) for d in dim_scores_info])}]
+```
+
+### 3. 各维度详细分析
+对每个评估维度进行详细分析：
+- 该维度的得分和表现
+- 具体的优势体现
+- 存在的不足或待提升点
+- 关键证据（引用访谈内容）
+
+### 4. 核心优势
+总结候选人的 2-3 个核心优势，用具体事例支撑
+
+### 5. 待提升领域
+指出 1-2 个需要提升的方面，给出具体建议
+
+### 6. 推荐意见
+基于综合评分 **{final_score:.2f}** 给出：
+- 推荐等级：**{recommendation.get('name', '待定')}**
+- 等级说明：{recommendation.get('description', '')}
+- 录用建议（详细说明录用/不录用的理由，以及如果录用的注意事项）
+
+### 7. 后续建议
+- 如需进一步评估的问题
+- 入职后的培养建议（如果推荐录用）
+
+## 重要提醒
+- 所有分析必须严格基于访谈记录中的实际内容
+- 评分已由 AI 在访谈过程中逐题打分，请基于这些评分进行分析
+- 客观公正，既要指出优势也要指出不足
+- 报告要专业、结构清晰、有理有据
+- 使用 Markdown 格式
+- 报告末尾使用署名：*此报告由 Deep Vision 深瞳-智能访谈助手生成*
+
+请生成完整的评估报告："""
+
+    return prompt
+
+
 def build_report_prompt(session: dict) -> str:
     """构建报告生成 prompt"""
+    # 检查是否为评估类型报告
+    report_type = session.get("scenario_config", {}).get("report", {}).get("type", "standard")
+    if report_type == "assessment":
+        return build_assessment_report_prompt(session)
+
     topic = session.get("topic", "未知项目")
     description = session.get("description")  # 获取主题描述
     interview_log = session.get("interview_log", [])
@@ -3746,6 +3969,23 @@ def submit_answer(session_id):
     # 计算覆盖度（只统计正式问题，追问不计入）
     if dimension and dimension in session["dimensions"]:
         session["dimensions"][dimension]["coverage"] = calculate_dimension_coverage(session, dimension)
+
+    # 评估场景：为每次回答进行 AI 评分
+    is_assessment = session.get("scenario_config", {}).get("report", {}).get("type") == "assessment"
+    if is_assessment and dimension and dimension in session["dimensions"]:
+        score = score_assessment_answer(session, dimension, question, answer)
+        if score is not None:
+            # 记录本次回答的评分
+            log_entry["score"] = score
+            # 更新维度的综合评分（取该维度所有评分的平均值）
+            dim_scores = [
+                log.get("score") for log in session["interview_log"]
+                if log.get("dimension") == dimension and log.get("score") is not None
+            ]
+            if dim_scores:
+                session["dimensions"][dimension]["score"] = round(sum(dim_scores) / len(dim_scores), 2)
+            if ENABLE_DEBUG_LOG:
+                print(f"📊 评估评分: {dimension} = {score}分，维度均分 = {session['dimensions'][dimension].get('score')}")
 
     session["updated_at"] = get_utc_now()
     session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
