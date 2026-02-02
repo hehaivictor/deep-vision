@@ -3200,6 +3200,127 @@ def get_scenario(scenario_id):
     return jsonify(scenario)
 
 
+@app.route('/api/scenarios/generate', methods=['POST'])
+def generate_scenario_with_ai():
+    """AI 自动生成场景配置"""
+    if not claude_client:
+        return jsonify({"error": "AI 服务不可用"}), 503
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "无效的请求数据"}), 400
+
+    user_description = data.get("user_description", "").strip()
+    if not user_description:
+        return jsonify({"error": "请输入场景描述"}), 400
+
+    if len(user_description) < 10:
+        return jsonify({"error": "描述太短，请至少输入10个字"}), 400
+
+    if len(user_description) > 500:
+        return jsonify({"error": "描述不能超过500字"}), 400
+
+    # 构建 Prompt
+    prompt = f'''你是一个专业的访谈场景设计师。用户将描述他们想要进行的访谈或调研目标，你需要设计一个完整的访谈场景配置。
+
+## 用户描述
+{user_description}
+
+## 设计要求
+1. 场景名称：简洁明了，4-10个字
+2. 场景描述：说明场景适用范围，20-50字
+3. 关键词：5-10个用于自动匹配的关键词
+4. 维度设计：3-5个维度（根据访谈复杂度调整）
+   - 每个维度需要有清晰的名称（2-6字）
+   - 维度描述说明该维度关注的内容（10-30字）
+   - 每个维度包含3-5个关键点（key_aspects）
+   - min_questions 固定为 2，max_questions 固定为 4
+
+## 设计原则
+- 维度之间应该互补，共同覆盖用户关心的所有方面
+- 维度顺序应该符合认知逻辑（如从具体到抽象，从核心到外围）
+- 关键点应该具体可问，便于AI生成访谈问题
+- 如果用户描述涉及评估/评分类场景，可考虑在维度中加入评分相关的关键点
+
+## 参考：现有场景示例
+- 产品需求：客户需求、业务流程、技术约束、项目约束
+- 用户研究：用户背景、使用场景、痛点期望、行为模式
+- 竞品分析：市场定位、功能对比、用户评价、差异化机会
+
+## 输出格式
+请严格按照以下JSON格式输出，不要包含其他文字：
+```json
+{{
+  "name": "场景名称",
+  "description": "场景描述",
+  "keywords": ["关键词1", "关键词2"],
+  "dimensions": [
+    {{
+      "id": "dim_1",
+      "name": "维度名称",
+      "description": "维度描述",
+      "key_aspects": ["关键点1", "关键点2", "关键点3", "关键点4"],
+      "min_questions": 2,
+      "max_questions": 4
+    }}
+  ],
+  "explanation": "设计思路说明（1-2句话，解释为什么这样设计维度）"
+}}
+```'''
+
+    try:
+        response = claude_client.messages.create(
+            model=MODEL_NAME,
+            max_tokens=1500,
+            timeout=30.0,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        raw_text = response.content[0].text.strip()
+
+        # 提取 JSON（兼容模型返回 markdown 代码块）
+        if "```json" in raw_text:
+            raw_text = raw_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in raw_text:
+            raw_text = raw_text.split("```")[1].split("```")[0].strip()
+
+        generated = json.loads(raw_text)
+
+        # 验证必要字段
+        if not generated.get("name"):
+            return jsonify({"error": "生成的场景缺少名称"}), 500
+
+        if not generated.get("dimensions") or len(generated["dimensions"]) < 1:
+            return jsonify({"error": "生成的场景缺少维度"}), 500
+
+        # 提取 explanation 并移除（不存入场景配置）
+        ai_explanation = generated.pop("explanation", "")
+
+        # 确保维度格式正确
+        for i, dim in enumerate(generated["dimensions"]):
+            dim["id"] = f"dim_{i + 1}"
+            dim.setdefault("min_questions", 2)
+            dim.setdefault("max_questions", 4)
+            if not isinstance(dim.get("key_aspects"), list):
+                dim["key_aspects"] = []
+
+        # 添加默认的 report 配置
+        generated["report"] = {"type": "standard"}
+
+        return jsonify({
+            "success": True,
+            "generated_scenario": generated,
+            "ai_explanation": ai_explanation
+        })
+
+    except json.JSONDecodeError as e:
+        print(f"⚠️ AI 生成场景 JSON 解析失败: {e}")
+        return jsonify({"error": "AI 返回格式异常，请重试"}), 500
+    except Exception as e:
+        print(f"⚠️ AI 生成场景失败: {e}")
+        return jsonify({"error": f"生成失败: {str(e)[:100]}"}), 500
+
+
 @app.route('/api/scenarios/custom', methods=['POST'])
 def create_custom_scenario():
     """创建自定义场景"""

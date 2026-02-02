@@ -1,7 +1,21 @@
 {
-  "version": "1.16.1",
+  "version": "1.17.0",
   "releaseDate": "2026-02-02",
   "changelog": [
+    {
+      "version": "1.17.0",
+      "date": "2026-02-02",
+      "type": "minor",
+      "title": "AI 智能创建自定义场景",
+      "changes": [
+        "新增 /api/scenarios/generate 端点，AI 自动生成场景配置",
+        "用户只需描述想做什么，AI 自动生成场景名称、描述、关键词和维度",
+        "新增 AI 输入弹窗和预览编辑弹窗",
+        "支持预览编辑、重新生成、切换手动编辑",
+        "创建按钮改为「AI 智能创建」闪电图标",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.16.1",
       "date": "2026-02-02",
