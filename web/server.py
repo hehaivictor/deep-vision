@@ -3176,6 +3176,7 @@ def list_scenarios():
             "icon": s.get("icon"),
             "keywords": s.get("keywords", []),
             "builtin": s.get("builtin", True),
+            "custom": s.get("custom", False),
             "dimensions": [
                 {
                     "id": d.get("id"),
