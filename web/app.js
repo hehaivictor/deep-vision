@@ -2072,6 +2072,47 @@ function deepVision() {
             return this.dimensionNames[key] || key;
         },
 
+        // 判断当前会话是否为评估场景
+        isAssessmentSession() {
+            return this.currentSession?.scenario_config?.report?.type === 'assessment';
+        },
+
+        // 获取维度评分（评估场景）
+        getDimensionScore(dimKey) {
+            const score = this.currentSession?.dimensions?.[dimKey]?.score;
+            return score !== null && score !== undefined ? score.toFixed(1) : '-';
+        },
+
+        // 获取综合评分（评估场景）
+        getTotalScore() {
+            if (!this.isAssessmentSession()) return 0;
+            const dims = this.currentSession?.scenario_config?.dimensions || [];
+            const sessionDims = this.currentSession?.dimensions || {};
+            let totalScore = 0;
+            let totalWeight = 0;
+            for (const dim of dims) {
+                const score = sessionDims[dim.id]?.score;
+                if (score !== null && score !== undefined) {
+                    totalScore += score * (dim.weight || 0.25);
+                    totalWeight += (dim.weight || 0.25);
+                }
+            }
+            return totalWeight > 0 ? (totalScore / totalWeight).toFixed(2) : '0.00';
+        },
+
+        // 获取推荐等级（评估场景）
+        getRecommendationLevel() {
+            if (!this.isAssessmentSession()) return null;
+            const score = parseFloat(this.getTotalScore());
+            const levels = this.currentSession?.scenario_config?.assessment?.recommendation_levels || [];
+            for (const level of [...levels].sort((a, b) => (b.threshold || 0) - (a.threshold || 0))) {
+                if (score >= (level.threshold || 0)) {
+                    return level;
+                }
+            }
+            return levels[levels.length - 1] || null;
+        },
+
         // 从会话配置更新维度信息
         updateDimensionsFromSession(session) {
             if (session?.scenario_config?.dimensions) {

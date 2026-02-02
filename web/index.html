@@ -667,34 +667,84 @@
                                                 </template>
                                                 <span class="text-sm font-medium" :class="currentDimension === dimKey ? 'text-primary' : ''" x-text="getDimensionName(dimKey)"></span>
                                             </div>
-                                            <span class="text-sm font-medium" :class="currentSession.dimensions[dimKey].coverage >= 100 ? 'text-primary' : 'text-muted'" x-text="currentSession.dimensions[dimKey].coverage + '%'"></span>
+                                            <!-- 评估场景显示评分，普通场景显示覆盖度 -->
+                                            <template x-if="isAssessmentSession()">
+                                                <span class="text-sm font-medium" :class="currentSession.dimensions[dimKey].score ? 'text-primary' : 'text-muted'">
+                                                    <span x-text="getDimensionScore(dimKey)"></span><span class="text-xs">/5</span>
+                                                </span>
+                                            </template>
+                                            <template x-if="!isAssessmentSession()">
+                                                <span class="text-sm font-medium" :class="currentSession.dimensions[dimKey].coverage >= 100 ? 'text-primary' : 'text-muted'" x-text="currentSession.dimensions[dimKey].coverage + '%'"></span>
+                                            </template>
                                         </div>
                                         <div class="h-2 bg-gray-100 rounded-full overflow-hidden">
-                                            <div class="h-full rounded-full progress-bar"
-                                                 :style="getProgressBarStyle(currentSession.dimensions[dimKey].coverage)"></div>
+                                            <!-- 评估场景按评分显示进度条(5分制转百分比)，普通场景按覆盖度 -->
+                                            <template x-if="isAssessmentSession()">
+                                                <div class="h-full rounded-full progress-bar"
+                                                     :style="getProgressBarStyle((currentSession.dimensions[dimKey].score || 0) * 20)"></div>
+                                            </template>
+                                            <template x-if="!isAssessmentSession()">
+                                                <div class="h-full rounded-full progress-bar"
+                                                     :style="getProgressBarStyle(currentSession.dimensions[dimKey].coverage)"></div>
+                                            </template>
                                         </div>
                                     </div>
                                 </template>
                             </div>
 
-                            <!-- 总进度 -->
+                            <!-- 总进度/综合评分 -->
                             <div class="mt-6 pt-4 border-t border-gray-100">
-                                <div class="flex justify-between text-sm mb-2">
-                                    <span class="text-muted">总体进度</span>
-                                    <span class="font-bold text-primary" x-text="getTotalProgress() + '%'"></span>
-                                </div>
-                                <div class="h-3 bg-gray-100 rounded-full overflow-hidden">
-                                    <div class="h-full rounded-full progress-bar"
-                                         :style="getProgressBarStyle(getTotalProgress())"></div>
-                                </div>
-                                <div class="mt-2 text-xs text-center text-muted">
-                                    <template x-if="getTotalProgress() < 100">
-                                        <span>预计还需 <span x-text="getEstimatedRemainingQuestions()"></span> 题左右</span>
-                                    </template>
-                                    <template x-if="getTotalProgress() >= 100">
-                                        <span class="text-green-600 font-medium">所有维度已完成</span>
-                                    </template>
-                                </div>
+                                <!-- 评估场景：显示综合评分和推荐等级 -->
+                                <template x-if="isAssessmentSession()">
+                                    <div>
+                                        <div class="flex justify-between text-sm mb-2">
+                                            <span class="text-muted">综合评分</span>
+                                            <span class="font-bold text-primary"><span x-text="getTotalScore()"></span>/5.0</span>
+                                        </div>
+                                        <div class="h-3 bg-gray-100 rounded-full overflow-hidden">
+                                            <div class="h-full rounded-full progress-bar"
+                                                 :style="getProgressBarStyle(parseFloat(getTotalScore()) * 20)"></div>
+                                        </div>
+                                        <!-- 推荐等级徽章 -->
+                                        <template x-if="getRecommendationLevel()">
+                                            <div class="mt-3 flex items-center justify-center gap-2">
+                                                <span class="text-xs text-muted">推荐等级:</span>
+                                                <span class="px-3 py-1 text-sm font-medium rounded-full text-white"
+                                                      :style="'background-color:' + getRecommendationLevel().color"
+                                                      x-text="getRecommendationLevel().name"></span>
+                                            </div>
+                                        </template>
+                                        <div class="mt-2 text-xs text-center text-muted">
+                                            <template x-if="getTotalProgress() < 100">
+                                                <span>预计还需 <span x-text="getEstimatedRemainingQuestions()"></span> 题左右</span>
+                                            </template>
+                                            <template x-if="getTotalProgress() >= 100">
+                                                <span class="text-green-600 font-medium">评估完成，可生成报告</span>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                                <!-- 普通场景：显示进度百分比 -->
+                                <template x-if="!isAssessmentSession()">
+                                    <div>
+                                        <div class="flex justify-between text-sm mb-2">
+                                            <span class="text-muted">总体进度</span>
+                                            <span class="font-bold text-primary" x-text="getTotalProgress() + '%'"></span>
+                                        </div>
+                                        <div class="h-3 bg-gray-100 rounded-full overflow-hidden">
+                                            <div class="h-full rounded-full progress-bar"
+                                                 :style="getProgressBarStyle(getTotalProgress())"></div>
+                                        </div>
+                                        <div class="mt-2 text-xs text-center text-muted">
+                                            <template x-if="getTotalProgress() < 100">
+                                                <span>预计还需 <span x-text="getEstimatedRemainingQuestions()"></span> 题左右</span>
+                                            </template>
+                                            <template x-if="getTotalProgress() >= 100">
+                                                <span class="text-green-600 font-medium">所有维度已完成</span>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
                             </div>
 
                             <!-- 操作按钮 -->
