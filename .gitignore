@@ -51,3 +51,5 @@ ENV/
 # 临时文件
 *.tmp
 *.temp
+# Local clipboard artifacts
+.gemini-clipboard/
