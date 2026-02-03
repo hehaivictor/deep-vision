@@ -64,3 +64,13 @@ ENABLE_VISION = True  # 是否启用图片描述功能
 # 图片大小限制
 MAX_IMAGE_SIZE_MB = 10  # 最大 10MB
 SUPPORTED_IMAGE_TYPES = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+
+# ============ Refly API 配置 ============
+
+# Refly Workflow API 配置
+# 请根据 Refly 文档填写正确的 API 地址与参数
+REFLY_API_URL = "https://api.refly.ai/v1/workflows/run"
+REFLY_API_KEY = "your-refly-api-key-here"
+REFLY_WORKFLOW_ID = "c-yydcpevbwl6wgwe6i0uk8omw"
+REFLY_INPUT_FIELD = "report"
+REFLY_TIMEOUT = 30  # 请求超时（秒）
