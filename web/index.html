@@ -1796,7 +1796,7 @@
 
                                 <!-- 内置场景 -->
                                 <div class="text-[10px] text-gray-500 font-medium mb-1 px-1">内置场景</div>
-                                <template x-for="scenario in scenarios.filter(s => !s.custom && (scenarioSearchQuery === '' || s.name.includes(scenarioSearchQuery) || s.keywords?.some(k => k.includes(scenarioSearchQuery))))" :key="scenario.id">
+                                <template x-for="scenario in scenarios.filter(s => !s.custom && (scenarioSearchQuery === '' || s.name.includes(scenarioSearchQuery) || s.description?.includes(scenarioSearchQuery)))" :key="scenario.id">
                                     <button type="button"
                                             @click="selectScenario(scenario); showScenarioSelector = false"
                                             :class="selectedScenario?.id === scenario.id ? 'bg-[#F0F8FF] border-[#357BE2]' : 'bg-white border-gray-100 hover:border-gray-200 hover:bg-gray-50'"
