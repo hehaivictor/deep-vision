@@ -1,7 +1,16 @@
 {
-  "version": "1.22.1",
+  "version": "1.22.2",
   "releaseDate": "2026-02-03",
   "changelog": [
+    {
+      "version": "1.22.2",
+      "date": "2026-02-03",
+      "type": "patch",
+      "title": "更新服务端配置",
+      "changes": [
+        "更新服务端配置"
+      ]
+    },
     {
       "version": "1.22.1",
       "date": "2026-02-03",
