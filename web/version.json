@@ -6,9 +6,9 @@
       "version": "1.22.3",
       "date": "2026-02-03",
       "type": "patch",
-      "title": "Improve session card layout and virtual scroll",
+      "title": "访谈卡片增加虚拟滚动",
       "changes": [
-        "Improve session card layout and virtual scroll"
+        "访谈卡片增加虚拟滚动"
       ]
     },
     {
