@@ -1,7 +1,16 @@
 {
-  "version": "1.22.0",
+  "version": "1.22.1",
   "releaseDate": "2026-02-03",
   "changelog": [
+    {
+      "version": "1.22.1",
+      "date": "2026-02-03",
+      "type": "patch",
+      "title": "优化访谈会话卡片布局",
+      "changes": [
+        "优化访谈会话卡片布局"
+      ]
+    },
     {
       "version": "1.22.0",
       "date": "2026-02-03",
