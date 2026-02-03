@@ -52,6 +52,11 @@ try:
         ENABLE_VISION,
         MAX_IMAGE_SIZE_MB,
         SUPPORTED_IMAGE_TYPES,
+        REFLY_API_URL,
+        REFLY_API_KEY,
+        REFLY_WORKFLOW_ID,
+        REFLY_INPUT_FIELD,
+        REFLY_TIMEOUT,
     )
     print("✅ 配置文件加载成功")
 except ImportError:
@@ -81,6 +86,16 @@ except ImportError:
     ENABLE_VISION = True
     MAX_IMAGE_SIZE_MB = 10
     SUPPORTED_IMAGE_TYPES = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+    REFLY_API_URL = os.environ.get("REFLY_API_URL", "")
+    REFLY_API_KEY = os.environ.get("REFLY_API_KEY", "")
+    REFLY_WORKFLOW_ID = os.environ.get("REFLY_WORKFLOW_ID", "")
+    REFLY_INPUT_FIELD = os.environ.get("REFLY_INPUT_FIELD", "report")
+    REFLY_TIMEOUT = int(os.environ.get("REFLY_TIMEOUT", "30"))
+
+try:
+    REFLY_TIMEOUT = int(REFLY_TIMEOUT)
+except Exception:
+    REFLY_TIMEOUT = 30
 
 try:
     import anthropic
@@ -4678,6 +4693,39 @@ def generate_simple_report(session: dict) -> str:
     return content
 
 
+# ============ Refly 集成 ============
+
+def is_refly_configured() -> bool:
+    return bool(REFLY_API_URL and REFLY_API_KEY and REFLY_WORKFLOW_ID and REFLY_INPUT_FIELD)
+
+
+def build_refly_payload(report_content: str) -> dict:
+    return {
+        "workflow_id": REFLY_WORKFLOW_ID,
+        "inputs": {
+            REFLY_INPUT_FIELD: report_content
+        }
+    }
+
+
+def call_refly_workflow(report_content: str) -> dict:
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {REFLY_API_KEY}"
+    }
+    payload = build_refly_payload(report_content)
+
+    if ENABLE_DEBUG_LOG:
+        print("📤 Refly 请求: workflow")
+
+    response = requests.post(REFLY_API_URL, json=payload, headers=headers, timeout=REFLY_TIMEOUT)
+    response.raise_for_status()
+    try:
+        return response.json()
+    except ValueError:
+        return {"raw": response.text}
+
+
 # ============ 报告 API ============
 
 @app.route('/api/reports', methods=['GET'])
@@ -4710,6 +4758,29 @@ def get_report(filename):
 
     content = report_file.read_text(encoding="utf-8")
     return jsonify({"name": filename, "content": content})
+
+
+@app.route('/api/reports/<path:filename>/refly', methods=['POST'])
+def send_report_to_refly(filename):
+    """将报告发送到 Refly 生成演示文稿"""
+    report_file = REPORTS_DIR / filename
+    if not report_file.exists():
+        return jsonify({"error": "报告不存在"}), 404
+
+    if not is_refly_configured():
+        return jsonify({"error": "Refly API 未配置"}), 400
+
+    try:
+        report_content = report_file.read_text(encoding="utf-8")
+        refly_response = call_refly_workflow(report_content)
+        return jsonify({
+            "message": "已提交到 Refly",
+            "refly_response": refly_response
+        })
+    except requests.RequestException as exc:
+        return jsonify({"error": f"Refly API 请求失败: {str(exc)}"}), 502
+    except Exception as exc:
+        return jsonify({"error": f"提交 Refly 失败: {str(exc)}"}), 500
 
 
 @app.route('/api/reports/<path:filename>', methods=['DELETE'])
