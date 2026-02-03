@@ -136,7 +136,7 @@ function deepVision() {
         // 场景自动识别
         recognizing: false,           // 识别中状态
         recognizeTimer: null,         // 防抖定时器
-        recognizedResult: null,       // 识别结果 {recommended, confidence, matched_keywords, alternatives}
+        recognizedResult: null,       // 识别结果 {recommended, confidence, alternatives}
         autoRecognizeEnabled: true,   // 是否启用自动识别
 
         // 当前问题（AI 生成）
@@ -2521,7 +2521,6 @@ function deepVision() {
         customScenario: {
             name: '',
             description: '',
-            keywords: '',
             dimensions: [
                 { id: 'dim_1', name: '', description: '', key_aspects: '' }
             ]
@@ -2543,7 +2542,6 @@ function deepVision() {
             this.customScenario = {
                 name: '',
                 description: '',
-                keywords: '',
                 dimensions: [
                     { id: 'dim_1', name: '', description: '', key_aspects: '' }
                 ]
@@ -2585,11 +2583,6 @@ function deepVision() {
 
             this.savingCustomScenario = true;
             try {
-                const keywords = this.customScenario.keywords
-                    .split(/[,，、\s]+/)
-                    .map(k => k.trim())
-                    .filter(k => k);
-
                 const dimensions = dims.map((d, i) => ({
                     id: `dim_${i + 1}`,
                     name: d.name.trim(),
@@ -2607,7 +2600,6 @@ function deepVision() {
                     body: JSON.stringify({
                         name,
                         description: this.customScenario.description.trim(),
-                        keywords,
                         dimensions
                     })
                 });
@@ -2766,11 +2758,6 @@ function deepVision() {
 
             this.savingCustomScenario = true;
             try {
-                let keywords = this.aiGeneratedPreview.keywords || [];
-                if (typeof keywords === 'string') {
-                    keywords = keywords.split(/[,，、\s]+/).map(k => k.trim()).filter(k => k);
-                }
-
                 const dimensions = validDims.map((d, i) => ({
                     id: `dim_${i + 1}`,
                     name: d.name.trim(),
@@ -2785,7 +2772,6 @@ function deepVision() {
                     body: JSON.stringify({
                         name,
                         description: this.aiGeneratedPreview.description?.trim() || '',
-                        keywords,
                         dimensions
                     })
                 });
