@@ -540,7 +540,7 @@
                     </div>
 
                     <!-- 搜索和筛选栏 -->
-                    <div class="bg-surface border border-border rounded-xl p-3 md:p-4">
+                    <div class="bg-surface border border-border rounded-xl p-3 md:p-4" x-show="!selectedReport">
                         <div class="flex flex-col sm:flex-row gap-3">
                             <!-- 搜索框 -->
                             <div class="relative flex-1">
@@ -1496,54 +1496,121 @@
                         </div>
                     </div>
 
+                    <!-- 搜索和筛选栏 -->
+                    <div class="bg-surface border border-border rounded-xl p-3 md:p-4" x-show="!selectedReport">
+                        <div class="flex flex-col sm:flex-row gap-3">
+                            <!-- 搜索框 -->
+                            <div class="relative flex-1">
+                                <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                                </svg>
+                                <input type="text"
+                                       x-model="reportSearchQuery"
+                                       @input="onReportSearchInput()"
+                                       placeholder="搜索报告名称..."
+                                       class="w-full pl-9 pr-8 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                <button x-show="reportSearchQuery"
+                                        @click="reportSearchQuery = ''; filterReports()"
+                                        class="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 cursor-pointer">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                    </svg>
+                                </button>
+                            </div>
+
+                            <!-- 排序 -->
+                            <select x-model="reportSortOrder"
+                                    @change="filterReports()"
+                                    class="px-3 pr-8 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer bg-white appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20fill%3D%22none%22%20viewBox%3D%220%200%2024%2024%22%20stroke%3D%22%236b7280%22%3E%3Cpath%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20stroke-width%3D%222%22%20d%3D%22M19%209l-7%207-7-7%22%2F%3E%3C%2Fsvg%3E')] bg-[length:16px] bg-[right_8px_center] bg-no-repeat">
+                                <option value="newest">最新优先</option>
+                                <option value="oldest">最早优先</option>
+                            </select>
+
+                            <!-- 日期分组 -->
+                            <button @click="reportGroupByDate = !reportGroupByDate; filterReports()"
+                                    :class="reportGroupByDate ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                    class="px-3 py-2 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap">
+                                按日期分组
+                            </button>
+                        </div>
+                    </div>
+
                     <template x-if="!selectedReport">
-                        <div class="grid gap-4">
-                            <template x-for="report in reports" :key="report.name">
-                                <div class="bg-surface border border-border rounded-xl hover:shadow-sm transition-all duration-200 p-5 hover:shadow-sm/20">
-                                    <div class="flex items-center justify-between">
-                                        <div class="flex items-center gap-4 flex-1 cursor-pointer" @click="viewReport(report.name)">
-                                            <div class="w-12 h-12 bg-primary/10 rounded-xl flex items-center justify-center">
-                                                <svg class="w-6 h-6 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                                                </svg>
-                                            </div>
-                                            <div>
-                                                <h3 class="font-semibold text-primary" x-text="report.name"></h3>
-                                                <p class="text-sm text-muted" x-text="formatDate(report.created_at)"></p>
+                        <template x-if="filteredReports.length > 0">
+                            <div x-ref="reportListScroller" class="grid gap-4">
+                                <div x-show="!useVirtualReportList || virtualReportPaddingTop > 0"
+                                     :style="useVirtualReportList ? `height: ${virtualReportPaddingTop}px;` : ''"></div>
+                                <template x-for="item in reportsToRender" :key="item.key">
+                                    <div class="contents">
+                                        <div x-show="item.type === 'group'" x-cloak class="flex items-center py-2 min-h-[40px]" :data-report-key="item.type === 'group' ? item.key : null">
+                                            <div class="flex items-center gap-3 w-full">
+                                                <span class="text-xs font-medium text-muted" x-text="item.label"></span>
+                                                <div class="flex-1 h-px bg-gray-200"></div>
                                             </div>
                                         </div>
-                                        <div class="flex items-center gap-2 shrink-0">
-                                            <button @click.stop="viewReport(report.name)"
-                                                    class="p-2 text-gray-500 hover:text-primary hover:bg-gray-50 rounded-lg transition-colors cursor-pointer"
-                                                    aria-label="查看报告">
-                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                                                </svg>
-                                            </button>
-                                            <button @click.stop="confirmDeleteReport(report.name)"
-                                                    class="p-2 text-gray-500 hover:text-danger hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-                                                    aria-label="删除报告">
-                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                                                </svg>
-                                            </button>
+                                        <div x-show="item.type === 'report'" x-cloak class="bg-surface border border-border rounded-xl hover:shadow-sm transition-all duration-200 p-5 hover:shadow-sm/20 min-h-[96px]" :data-report-key="item.type === 'report' ? item.key : null">
+                                            <div class="flex items-center justify-between">
+                                                <div class="flex items-center gap-4 flex-1 cursor-pointer" @click="viewReport(item.report.name)">
+                                                    <div class="w-12 h-12 bg-primary/10 rounded-xl flex items-center justify-center">
+                                                        <svg class="w-6 h-6 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                                  d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                                        </svg>
+                                                    </div>
+                                                    <div class="min-w-0">
+                                                        <h3 class="font-semibold text-primary whitespace-normal break-words leading-snug" :title="item.report.name" x-text="item.report.name"></h3>
+                                                        <p class="text-sm text-muted" x-text="formatDate(item.report.created_at)"></p>
+                                                    </div>
+                                                </div>
+                                                <div class="flex items-center gap-2 shrink-0">
+                                                    <button @click.stop="viewReport(item.report.name)"
+                                                            class="p-2 text-gray-500 hover:text-primary hover:bg-gray-50 rounded-lg transition-colors cursor-pointer"
+                                                            aria-label="查看报告">
+                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                                                        </svg>
+                                                    </button>
+                                                    <button @click.stop="confirmDeleteReport(item.report.name)"
+                                                            class="p-2 text-gray-500 hover:text-danger hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                                                            aria-label="删除报告">
+                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                        </svg>
+                                                    </button>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            </template>
-                            <template x-if="reports.length === 0">
-                                <div class="text-center py-16 bg-surface border border-border rounded-xl">
-                                    <svg class="w-20 h-20 mx-auto text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1"
-                                              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                                    </svg>
-                                    <h3 class="text-lg font-medium text-gray-600 mb-2">暂无访谈报告</h3>
-                                    <p class="text-muted">完成访谈后会在这里显示生成的报告</p>
-                                </div>
-                            </template>
-                        </div>
+                                </template>
+                                <div x-show="!useVirtualReportList || virtualReportPaddingBottom > 0"
+                                     :style="useVirtualReportList ? `height: ${virtualReportPaddingBottom}px;` : ''"></div>
+                            </div>
+                        </template>
+                        <template x-if="filteredReports.length === 0">
+                            <div class="text-center py-16 bg-surface border border-border rounded-xl">
+                                <svg class="w-20 h-20 mx-auto text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1"
+                                          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                </svg>
+                                <template x-if="reports.length === 0">
+                                    <div>
+                                        <h3 class="text-lg font-medium text-gray-600 mb-2">暂无访谈报告</h3>
+                                        <p class="text-muted">完成访谈后会在这里显示生成的报告</p>
+                                    </div>
+                                </template>
+                                <template x-if="reports.length > 0">
+                                    <div>
+                                        <h3 class="text-lg font-medium text-gray-600 mb-2">未找到匹配的报告</h3>
+                                        <p class="text-muted mb-4">尝试调整搜索关键词或筛选条件</p>
+                                        <button @click="reportSearchQuery = ''; reportSortOrder = 'newest'; reportGroupByDate = true; filterReports()"
+                                                class="text-primary hover:text-primary/80 text-sm font-medium cursor-pointer">
+                                            清除筛选条件
+                                        </button>
+                                    </div>
+                                </template>
+                            </div>
+                        </template>
                     </template>
 
                     <!-- 报告详情 -->
