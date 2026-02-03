@@ -2010,13 +2010,6 @@
                                   rows="2"
                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#357BE2]/20 focus:border-[#357BE2] resize-none"></textarea>
                     </div>
-                    <div>
-                        <label class="block text-sm font-medium text-secondary mb-1">关键词</label>
-                        <input type="text" x-model="customScenario.keywords"
-                               placeholder="用逗号分隔，例如：满意度,调研,反馈"
-                               class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#357BE2]/20 focus:border-[#357BE2]">
-                        <p class="text-xs text-muted mt-1">用于 AI 自动识别场景</p>
-                    </div>
                 </div>
 
                 <!-- 维度配置 -->
@@ -2214,27 +2207,6 @@
                                 <textarea x-model="aiGeneratedPreview.description"
                                           rows="2"
                                           class="flex-1 px-3 py-2 text-sm bg-white border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#357BE2]/20 focus:border-[#357BE2] resize-none"></textarea>
-                            </div>
-                            <div class="flex items-center gap-3">
-                                <label class="text-sm text-muted w-16 flex-shrink-0">关键词</label>
-                                <div class="flex-1 flex flex-wrap items-center gap-1.5 min-h-[38px] px-2 py-1.5 bg-white border border-gray-200 rounded-lg">
-                                    <template x-for="(kw, ki) in (Array.isArray(aiGeneratedPreview.keywords) ? aiGeneratedPreview.keywords : (aiGeneratedPreview.keywords || '').split(/[,，、\s]+/).filter(k => k))" :key="ki">
-                                        <span class="inline-flex items-center gap-1 px-2 py-0.5 bg-[#357BE2]/10 text-[#357BE2] text-xs rounded-full">
-                                            <span x-text="kw"></span>
-                                            <button type="button"
-                                                    @click="let arr = Array.isArray(aiGeneratedPreview.keywords) ? aiGeneratedPreview.keywords : (aiGeneratedPreview.keywords || '').split(/[,，、\s]+/).filter(k => k); arr.splice(ki, 1); aiGeneratedPreview.keywords = arr"
-                                                    class="w-3.5 h-3.5 flex items-center justify-center hover:bg-[#357BE2]/20 rounded-full cursor-pointer">
-                                                <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                                                </svg>
-                                            </button>
-                                        </span>
-                                    </template>
-                                    <input type="text"
-                                           placeholder="输入关键词后按回车"
-                                           class="flex-1 min-w-[100px] px-1 py-0.5 text-sm bg-transparent border-0 focus:outline-none focus:ring-0"
-                                           @keydown.enter.prevent="if ($event.target.value.trim()) { let arr = Array.isArray(aiGeneratedPreview.keywords) ? aiGeneratedPreview.keywords : []; arr.push($event.target.value.trim()); aiGeneratedPreview.keywords = arr; $event.target.value = ''; }">
-                                </div>
                             </div>
                         </div>
 
