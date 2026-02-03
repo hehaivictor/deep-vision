@@ -1,7 +1,21 @@
 {
-  "version": "1.21.0",
+  "version": "1.22.0",
   "releaseDate": "2026-02-03",
   "changelog": [
+    {
+      "version": "1.22.0",
+      "date": "2026-02-03",
+      "type": "minor",
+      "title": "优化AI场景预览弹窗 UI/UX，采用渐进式披露减少信息过载",
+      "changes": [
+        "AI设计说明改为可折叠区域，减少重复阅读干扰",
+        "基本信息采用紧凑水平布局，关键词改为Tag标签样式支持单个删除和回车添加",
+        "维度列表改为折叠式卡片，默认只显示名称和描述预览，点击展开编辑",
+        "新增全部展开/收起按钮和维度计数徽章",
+        "添加平滑的CSS grid折叠动画",
+        "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+      ]
+    },
     {
       "version": "1.21.0",
       "date": "2026-02-03",
