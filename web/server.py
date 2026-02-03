@@ -17,6 +17,7 @@ Deep Vision Web Server - AI 驱动版本
 import base64
 import json
 import os
+import re
 import secrets
 import threading
 import time as _time
@@ -24,6 +25,7 @@ import requests
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote, unquote, urlparse
 
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
@@ -56,6 +58,7 @@ try:
         REFLY_API_KEY,
         REFLY_WORKFLOW_ID,
         REFLY_INPUT_FIELD,
+        REFLY_FILES_FIELD,
         REFLY_TIMEOUT,
     )
     print("✅ 配置文件加载成功")
@@ -90,12 +93,25 @@ except ImportError:
     REFLY_API_KEY = os.environ.get("REFLY_API_KEY", "")
     REFLY_WORKFLOW_ID = os.environ.get("REFLY_WORKFLOW_ID", "")
     REFLY_INPUT_FIELD = os.environ.get("REFLY_INPUT_FIELD", "report")
+    REFLY_FILES_FIELD = os.environ.get("REFLY_FILES_FIELD", "files")
     REFLY_TIMEOUT = int(os.environ.get("REFLY_TIMEOUT", "30"))
 
 try:
     REFLY_TIMEOUT = int(REFLY_TIMEOUT)
 except Exception:
     REFLY_TIMEOUT = 30
+
+if "REFLY_FILES_FIELD" not in globals():
+    REFLY_FILES_FIELD = os.environ.get("REFLY_FILES_FIELD", "files")
+
+try:
+    REFLY_POLL_TIMEOUT = int(os.environ.get("REFLY_POLL_TIMEOUT", "120"))
+except Exception:
+    REFLY_POLL_TIMEOUT = 120
+try:
+    REFLY_POLL_INTERVAL = float(os.environ.get("REFLY_POLL_INTERVAL", "2"))
+except Exception:
+    REFLY_POLL_INTERVAL = 2.0
 
 try:
     import anthropic
@@ -116,10 +132,13 @@ CONVERTED_DIR = DATA_DIR / "converted"
 TEMP_DIR = DATA_DIR / "temp"
 METRICS_DIR = DATA_DIR / "metrics"
 SUMMARIES_DIR = DATA_DIR / "summaries"  # 文档摘要缓存目录
+PRESENTATIONS_DIR = DATA_DIR / "presentations"
+PRESENTATION_MAP_FILE = PRESENTATIONS_DIR / ".presentation_map.json"
+PRESENTATION_MAP_LOCK = threading.Lock()
 DELETED_REPORTS_FILE = REPORTS_DIR / ".deleted_reports.json"
 DELETED_DOCS_FILE = DATA_DIR / ".deleted_docs.json"  # 软删除记录文件
 
-for d in [SESSIONS_DIR, REPORTS_DIR, CONVERTED_DIR, TEMP_DIR, METRICS_DIR, SUMMARIES_DIR]:
+for d in [SESSIONS_DIR, REPORTS_DIR, CONVERTED_DIR, TEMP_DIR, METRICS_DIR, SUMMARIES_DIR, PRESENTATIONS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ============ 场景配置加载器 ============
@@ -157,6 +176,57 @@ def safe_load_session(session_file: Path) -> dict:
     except Exception as e:
         print(f"⚠️ 读取会话文件失败: {session_file}, 错误: {e}")
         return None
+
+
+def load_presentation_map() -> dict:
+    if not PRESENTATION_MAP_FILE.exists():
+        return {}
+    try:
+        payload = json.loads(PRESENTATION_MAP_FILE.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_presentation_map(data: dict) -> None:
+    try:
+        PRESENTATION_MAP_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def record_presentation_file(report_filename: str, download_info: dict) -> Optional[dict]:
+    if not download_info or not download_info.get("path"):
+        return None
+    record = {
+        "path": download_info.get("path"),
+        "filename": download_info.get("filename"),
+        "created_at": datetime.now().isoformat()
+    }
+    with PRESENTATION_MAP_LOCK:
+        data = load_presentation_map()
+        data[report_filename] = record
+        save_presentation_map(data)
+    return record
+
+
+def get_presentation_record(report_filename: str) -> Optional[dict]:
+    with PRESENTATION_MAP_LOCK:
+        data = load_presentation_map()
+    record = data.get(report_filename)
+    return record if isinstance(record, dict) else None
+
+
+def is_path_under(path: Path, directory: Path) -> bool:
+    try:
+        resolved_path = path.resolve()
+        resolved_dir = directory.resolve()
+        return resolved_path == resolved_dir or resolved_dir in resolved_path.parents
+    except Exception:
+        return False
 
 
 def update_thinking_status(session_id: str, stage: str, has_search: bool = True):
@@ -4699,31 +4769,405 @@ def is_refly_configured() -> bool:
     return bool(REFLY_API_URL and REFLY_API_KEY and REFLY_WORKFLOW_ID and REFLY_INPUT_FIELD)
 
 
-def build_refly_payload(report_content: str) -> dict:
-    return {
-        "workflow_id": REFLY_WORKFLOW_ID,
-        "inputs": {
-            REFLY_INPUT_FIELD: report_content
-        }
-    }
+def build_refly_payload(report_content: str, file_keys: Optional[list] = None) -> dict:
+    variables = {REFLY_INPUT_FIELD: report_content}
+    if file_keys:
+        variables[REFLY_FILES_FIELD] = file_keys
+    return {"variables": variables}
 
 
-def call_refly_workflow(report_content: str) -> dict:
+def get_refly_base_url() -> str:
+    return (REFLY_API_URL or "").rstrip("/")
+
+
+def get_refly_run_url() -> str:
+    base = get_refly_base_url()
+    if not base:
+        return base
+    return f"{base}/openapi/workflow/{REFLY_WORKFLOW_ID}/run"
+
+
+def get_refly_upload_url() -> str:
+    base = get_refly_base_url()
+    if not base:
+        return base
+    return f"{base}/openapi/files/upload"
+
+
+def get_refly_status_url(execution_id: str) -> str:
+    base = get_refly_base_url()
+    if not base:
+        return base
+    return f"{base}/openapi/workflow/{execution_id}/status"
+
+
+def get_refly_output_url(execution_id: str) -> str:
+    base = get_refly_base_url()
+    if not base:
+        return base
+    return f"{base}/openapi/workflow/{execution_id}/output"
+
+
+def upload_refly_file(file_path: Path) -> dict:
+    url = get_refly_upload_url()
     headers = {
-        "Content-Type": "application/json",
         "Authorization": f"Bearer {REFLY_API_KEY}"
     }
-    payload = build_refly_payload(report_content)
-
     if ENABLE_DEBUG_LOG:
-        print("📤 Refly 请求: workflow")
-
-    response = requests.post(REFLY_API_URL, json=payload, headers=headers, timeout=REFLY_TIMEOUT)
+        print(f"📤 Refly 上传文件: {url}")
+    with open(file_path, "rb") as file_handle:
+        files = {"files": (file_path.name, file_handle)}
+        response = requests.post(url, headers=headers, files=files, timeout=REFLY_TIMEOUT)
     response.raise_for_status()
     try:
         return response.json()
     except ValueError:
         return {"raw": response.text}
+
+
+def extract_refly_file_keys(upload_response: dict) -> list:
+    if not isinstance(upload_response, dict):
+        return []
+    files = (
+        upload_response.get("data", {}).get("files")
+        or upload_response.get("files")
+        or []
+    )
+    keys = []
+    if isinstance(files, list):
+        for item in files:
+            if isinstance(item, dict):
+                key = item.get("fileKey") or item.get("file_key") or item.get("key")
+                if key:
+                    keys.append(key)
+    return keys
+
+
+def run_refly_workflow(report_content: str, file_keys: Optional[list] = None) -> dict:
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {REFLY_API_KEY}"
+    }
+    url = get_refly_run_url()
+    payload = build_refly_payload(report_content, file_keys=file_keys)
+
+    if ENABLE_DEBUG_LOG:
+        print(f"📤 Refly 运行工作流: {url}")
+
+    response = requests.post(url, json=payload, headers=headers, timeout=REFLY_TIMEOUT)
+    response.raise_for_status()
+    try:
+        return response.json()
+    except ValueError:
+        return {"raw": response.text}
+
+
+def poll_refly_execution(execution_id: str) -> dict:
+    headers = {
+        "Authorization": f"Bearer {REFLY_API_KEY}"
+    }
+    status_url = get_refly_status_url(execution_id)
+    deadline = _time.time() + REFLY_POLL_TIMEOUT
+    last_payload = {}
+    status = "executing"
+
+    if ENABLE_DEBUG_LOG:
+        print(f"🔁 Refly 轮询状态: {status_url}")
+
+    while _time.time() < deadline and status == "executing":
+        _time.sleep(REFLY_POLL_INTERVAL)
+        response = requests.get(status_url, headers=headers, timeout=REFLY_TIMEOUT)
+        response.raise_for_status()
+        try:
+            last_payload = response.json()
+        except ValueError:
+            last_payload = {"raw": response.text}
+        status = (
+            last_payload.get("data", {}).get("status")
+            or last_payload.get("status")
+            or status
+        )
+
+    return {
+        "status": status,
+        "payload": last_payload
+    }
+
+
+def fetch_refly_output(execution_id: str) -> dict:
+    headers = {
+        "Authorization": f"Bearer {REFLY_API_KEY}"
+    }
+    output_url = get_refly_output_url(execution_id)
+
+    if ENABLE_DEBUG_LOG:
+        print(f"📥 Refly 获取结果: {output_url}")
+
+    response = requests.get(output_url, headers=headers, timeout=REFLY_TIMEOUT)
+    response.raise_for_status()
+    try:
+        return response.json()
+    except ValueError:
+        return {"raw": response.text}
+
+
+def extract_refly_url(payload) -> Optional[str]:
+    if isinstance(payload, dict):
+        for key in ("presentation_url", "url", "share_url", "shareUrl", "preview_url", "previewUrl"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.startswith("http"):
+                return value
+        for value in payload.values():
+            found = extract_refly_url(value)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for value in payload:
+            found = extract_refly_url(value)
+            if found:
+                return found
+    elif isinstance(payload, str) and payload.startswith("http"):
+        return payload
+    return None
+
+
+def collect_refly_urls(payload, urls: Optional[list] = None) -> list:
+    if urls is None:
+        urls = []
+    if not payload:
+        return urls
+    if isinstance(payload, str):
+        if payload.startswith("http"):
+            urls.append(payload)
+        return urls
+    if isinstance(payload, list):
+        for item in payload:
+            collect_refly_urls(item, urls)
+        return urls
+    if isinstance(payload, dict):
+        for value in payload.values():
+            collect_refly_urls(value, urls)
+    return urls
+
+
+def get_refly_file_candidates(output_response: dict) -> list:
+    files = []
+    if isinstance(output_response, dict):
+        files = (
+            output_response.get("data", {}).get("files")
+            or output_response.get("files")
+            or []
+        )
+    if not isinstance(files, list):
+        return []
+    candidates = []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url")
+        name = item.get("name") or item.get("fileName") or item.get("filename") or ""
+        if isinstance(url, str) and url.startswith("http"):
+            candidates.append({"url": url, "name": name})
+    return candidates
+
+
+def score_refly_url(url: str, name: str = "") -> int:
+    lower_url = (url or "").lower()
+    lower_name = (name or "").lower()
+    target = lower_name or lower_url
+    match = re.search(r"\.[a-z0-9]+(?=$|\?)", target)
+    ext = match.group(0) if match else ""
+    score = 0
+
+    if any(key in lower_url for key in ("share", "preview", "presentation")):
+        score += 80
+    if "slide" in lower_url:
+        score += 10
+
+    if ext == ".pptx":
+        score += 100
+    elif ext == ".pdf":
+        score += 90
+    elif ext in (".ppt", ".key"):
+        score += 80
+    elif ext in (".html", ".htm"):
+        score += 70
+    elif ext in (".png", ".jpg", ".jpeg"):
+        score += 50
+    elif ext == ".json":
+        score -= 10
+
+    return score
+
+
+def select_best_refly_candidate(output_response: dict, presentation_url: Optional[str]) -> Optional[dict]:
+    candidates = []
+
+    def add_candidate(url: Optional[str], name: str = ""):
+        if not isinstance(url, str) or not url.startswith("http"):
+            return
+        candidates.append({"url": url, "name": name or ""})
+
+    if isinstance(presentation_url, str) and presentation_url.startswith("http"):
+        if not presentation_url.lower().endswith(".json"):
+            return {"url": presentation_url, "name": "presentation_url"}
+        add_candidate(presentation_url, "presentation_url")
+
+    for item in get_refly_file_candidates(output_response):
+        add_candidate(item.get("url"), item.get("name", ""))
+
+    for url in collect_refly_urls(output_response, []):
+        add_candidate(url, "")
+
+    if not candidates:
+        return None
+
+    deduped = {}
+    for item in candidates:
+        deduped.setdefault(item["url"], item)
+
+    sorted_candidates = sorted(
+        deduped.values(),
+        key=lambda item: score_refly_url(item.get("url", ""), item.get("name", "")),
+        reverse=True,
+    )
+    return sorted_candidates[0] if sorted_candidates else None
+
+
+def get_downloads_dir() -> Path:
+    env_dir = os.environ.get("DOWNLOADS_DIR", "").strip()
+    if env_dir:
+        return Path(env_dir).expanduser().resolve()
+    home = Path.home()
+    candidates = [home / "Downloads", home / "下载"]
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_dir():
+            return candidate
+    return candidates[0]
+
+
+def sanitize_filename(name: str) -> str:
+    safe = Path(name).name if name else ""
+    safe = safe.strip().strip(".")
+    if not safe:
+        return "presentation"
+    for ch in ('/', '\\', ':', '*', '?', '"', '<', '>', '|'):
+        safe = safe.replace(ch, "_")
+    return safe
+
+
+def ensure_unique_path(directory: Path, filename: str) -> Path:
+    path = directory / filename
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    counter = 1
+    while True:
+        candidate = directory / f"{stem}-{counter}{suffix}"
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def infer_extension(content_type: str) -> str:
+    if not content_type:
+        return ""
+    lower = content_type.lower()
+    if "presentationml" in lower or "pptx" in lower:
+        return ".pptx"
+    if "ms-powerpoint" in lower:
+        return ".ppt"
+    if "pdf" in lower:
+        return ".pdf"
+    if "html" in lower:
+        return ".html"
+    if "json" in lower:
+        return ".json"
+    if "png" in lower:
+        return ".png"
+    if "jpeg" in lower or "jpg" in lower:
+        return ".jpg"
+    return ""
+
+
+def build_download_filename(url: str, name: str, content_type: str) -> str:
+    raw_name = name or ""
+    if raw_name:
+        raw_name = sanitize_filename(raw_name)
+    if not raw_name:
+        parsed = urlparse(url)
+        raw_name = sanitize_filename(unquote(Path(parsed.path).name))
+
+    ext = ""
+    if raw_name:
+        ext_match = re.search(r"\.[a-z0-9]+$", raw_name.lower())
+        ext = ext_match.group(0) if ext_match else ""
+    if not ext:
+        ext = infer_extension(content_type)
+    if not raw_name:
+        raw_name = "presentation"
+    if ext and not raw_name.lower().endswith(ext):
+        raw_name = f"{raw_name}{ext}"
+    return raw_name
+
+
+def download_presentation_file(url: str, name: str = "") -> Optional[dict]:
+    downloads_dir = get_downloads_dir()
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+
+    headers = {}
+    try:
+        base_host = urlparse(get_refly_base_url()).netloc
+        url_host = urlparse(url).netloc
+        if base_host and url_host.endswith(base_host):
+            headers["Authorization"] = f"Bearer {REFLY_API_KEY}"
+    except Exception:
+        headers = {}
+
+    response = requests.get(url, headers=headers, stream=True, timeout=REFLY_TIMEOUT)
+    response.raise_for_status()
+    content_type = response.headers.get("Content-Type", "")
+    filename = build_download_filename(url, name, content_type)
+    file_path = ensure_unique_path(downloads_dir, filename)
+
+    size = 0
+    with open(file_path, "wb") as file_handle:
+        for chunk in response.iter_content(chunk_size=1024 * 256):
+            if not chunk:
+                continue
+            file_handle.write(chunk)
+            size += len(chunk)
+    response.close()
+
+    return {
+        "url": url,
+        "path": str(file_path),
+        "filename": file_path.name,
+        "size": size
+    }
+
+
+@app.route('/api/reports/<path:filename>/presentation', methods=['GET'])
+def get_report_presentation(filename):
+    record = get_presentation_record(filename)
+    if not record:
+        return jsonify({"error": "演示文稿不存在"}), 404
+    path_str = record.get("path")
+    if not path_str:
+        return jsonify({"error": "演示文稿不存在"}), 404
+    file_path = Path(path_str)
+    if not file_path.exists():
+        return jsonify({"error": "演示文稿不存在"}), 404
+    downloads_dir = get_downloads_dir()
+    if not is_path_under(file_path, downloads_dir):
+        return jsonify({"error": "演示文稿位置无效"}), 403
+    return send_from_directory(
+        directory=file_path.parent,
+        path=file_path.name,
+        as_attachment=False,
+        download_name=record.get("filename") or file_path.name
+    )
 
 
 # ============ 报告 API ============
@@ -4762,25 +5206,75 @@ def get_report(filename):
 
 @app.route('/api/reports/<path:filename>/refly', methods=['POST'])
 def send_report_to_refly(filename):
-    """将报告发送到 Refly 生成演示文稿"""
+    """将报告发送到演示文稿服务生成演示文稿"""
     report_file = REPORTS_DIR / filename
     if not report_file.exists():
         return jsonify({"error": "报告不存在"}), 404
 
     if not is_refly_configured():
-        return jsonify({"error": "Refly API 未配置"}), 400
+        return jsonify({"error": "演示文稿服务未配置"}), 400
 
     try:
         report_content = report_file.read_text(encoding="utf-8")
-        refly_response = call_refly_workflow(report_content)
-        return jsonify({
-            "message": "已提交到 Refly",
-            "refly_response": refly_response
-        })
+        upload_response = upload_refly_file(report_file)
+        file_keys = extract_refly_file_keys(upload_response)
+        run_response = run_refly_workflow(report_content, file_keys=file_keys)
+        execution_id = (
+            run_response.get("data", {}).get("executionId")
+            or run_response.get("executionId")
+        )
+        if not execution_id:
+            return jsonify({
+                "error": "服务未返回 executionId",
+                "refly_upload": upload_response,
+                "refly_response": run_response
+            }), 502
+
+        status_response = poll_refly_execution(execution_id)
+        output_response = fetch_refly_output(execution_id)
+        presentation_url = extract_refly_url(output_response)
+        download_info = None
+        presentation_local_url = None
+        try:
+            candidate = select_best_refly_candidate(output_response, presentation_url)
+            if candidate:
+                download_info = download_presentation_file(candidate["url"], candidate.get("name", ""))
+        except Exception as download_exc:
+            if ENABLE_DEBUG_LOG:
+                print(f"⚠️ 下载演示文稿失败: {download_exc}")
+
+        if download_info:
+            record_presentation_file(filename, download_info)
+            presentation_local_url = f"/api/reports/{quote(filename)}/presentation"
+
+        response_payload = {
+            "message": "已提交生成任务",
+            "execution_id": execution_id,
+            "refly_upload": upload_response,
+            "refly_status": status_response,
+            "refly_response": output_response,
+            "presentation_url": presentation_url
+        }
+        if download_info:
+            response_payload.update({
+                "download_url": download_info.get("url"),
+                "download_path": download_info.get("path"),
+                "download_filename": download_info.get("filename"),
+                "download_size": download_info.get("size"),
+                "presentation_local_url": presentation_local_url
+            })
+
+        return jsonify(response_payload)
+    except requests.HTTPError as exc:
+        try:
+            detail = exc.response.text
+        except Exception:
+            detail = str(exc)
+        return jsonify({"error": f"演示文稿服务请求失败: {detail}"}), 502
     except requests.RequestException as exc:
-        return jsonify({"error": f"Refly API 请求失败: {str(exc)}"}), 502
+        return jsonify({"error": f"演示文稿服务请求失败: {str(exc)}"}), 502
     except Exception as exc:
-        return jsonify({"error": f"提交 Refly 失败: {str(exc)}"}), 500
+        return jsonify({"error": f"提交生成任务失败: {str(exc)}"}), 500
 
 
 @app.route('/api/reports/<path:filename>', methods=['DELETE'])

@@ -2612,6 +2612,12 @@
                     </svg>
                 </template>
                 <span x-text="toast.message"></span>
+                <template x-if="toast.actionUrl">
+                    <button @click="openUrl(toast.actionUrl); toast.show = false"
+                            class="px-2.5 py-1 text-xs font-medium bg-white/20 hover:bg-white/30 rounded-md transition-colors cursor-pointer">
+                        <span x-text="toast.actionLabel || '打开'"></span>
+                    </button>
+                </template>
             </div>
         </div>
 
