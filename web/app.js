@@ -69,6 +69,17 @@ function deepVision() {
         virtualScrollTop: 0,
         virtualViewportHeight: 0,
         virtualColumns: 2,
+        useVirtualReportList: true,
+        virtualReportCardHeight: 96,
+        virtualReportGroupHeight: 40,
+        virtualReportRowGap: 16,
+        virtualReportOverscan: 6,
+        virtualReportScrollTop: 0,
+        virtualReportViewportHeight: 0,
+        reportItemHeights: {},
+        reportItemOffsets: [0],
+        reportTotalHeight: 0,
+        reportMeasureRaf: null,
 
         // 确认重新访谈对话框
         showRestartModal: false,
@@ -84,10 +95,16 @@ function deepVision() {
 
         // 报告相关
         reports: [],
+        filteredReports: [],
+        reportItems: [],
         selectedReport: null,
         reportContent: '',
         showDeleteReportModal: false,
         reportToDelete: null,
+        reportSearchQuery: '',
+        reportSortOrder: 'newest',
+        reportGroupByDate: true,
+        reportSearchDebounceTimer: null,
 
         // 访谈相关
         interviewSteps: ['文档准备', '选择式访谈', '需求确认'],
@@ -218,6 +235,7 @@ function deepVision() {
             // 初始化虚拟列表
             this.$nextTick(() => {
                 this.setupVirtualList();
+                this.setupVirtualReportList();
             });
         },
 
@@ -601,6 +619,7 @@ function deepVision() {
             try {
                 await this.apiCall(`/reports/${encodeURIComponent(this.reportToDelete)}`, { method: 'DELETE' });
                 this.reports = this.reports.filter(r => r.name !== this.reportToDelete);
+                this.filterReports();
                 this.showDeleteReportModal = false;
                 this.reportToDelete = null;
                 this.showToast('报告已删除', 'success');
@@ -1337,6 +1356,7 @@ function deepVision() {
         async loadReports() {
             try {
                 this.reports = await this.apiCall('/reports');
+                this.filterReports();
             } catch (error) {
                 console.error('加载报告失败:', error);
             }
@@ -2281,6 +2301,154 @@ function deepVision() {
             }
         },
 
+        // 报告搜索输入防抖
+        onReportSearchInput() {
+            if (this.reportSearchDebounceTimer) {
+                clearTimeout(this.reportSearchDebounceTimer);
+            }
+            this.reportSearchDebounceTimer = setTimeout(() => {
+                this.filterReports();
+            }, 300);
+        },
+
+        // 筛选和排序报告
+        filterReports() {
+            let result = [...this.reports];
+
+            if (this.reportSearchQuery.trim()) {
+                const query = this.reportSearchQuery.toLowerCase();
+                result = result.filter(r => r.name?.toLowerCase().includes(query));
+            }
+
+            switch (this.reportSortOrder) {
+                case 'oldest':
+                    result.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+                    break;
+                case 'newest':
+                default:
+                    result.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+                    break;
+            }
+
+            this.filteredReports = result;
+            this.reportItems = this.buildReportItems(result);
+            this.initializeReportMeasurements();
+
+            if (this.useVirtualReportList) {
+                this.$nextTick(() => {
+                    this.resetVirtualReportScroll();
+                });
+            }
+        },
+
+        buildReportItems(reports) {
+            if (!this.reportGroupByDate) {
+                return reports.map(report => ({
+                    type: 'report',
+                    key: report.name,
+                    report
+                }));
+            }
+
+            const items = [];
+            let lastDateKey = null;
+            reports.forEach(report => {
+                const dateKey = this.getReportDateKey(report.created_at);
+                if (dateKey !== lastDateKey) {
+                    items.push({
+                        type: 'group',
+                        key: `group-${dateKey}`,
+                        label: this.formatReportDateLabel(dateKey)
+                    });
+                    lastDateKey = dateKey;
+                }
+                items.push({
+                    type: 'report',
+                    key: report.name,
+                    report
+                });
+            });
+
+            return items;
+        },
+
+        initializeReportMeasurements() {
+            const nextHeights = {};
+            this.reportItems.forEach(item => {
+                const key = item.key;
+                const fallback = item.type === 'group' ? this.virtualReportGroupHeight : this.virtualReportCardHeight;
+                nextHeights[key] = this.reportItemHeights[key] || fallback;
+            });
+            this.reportItemHeights = nextHeights;
+            this.recomputeReportOffsets();
+
+            if (this.useVirtualReportList) {
+                this.$nextTick(() => {
+                    this.measureReportItemHeights();
+                });
+            }
+        },
+
+        recomputeReportOffsets() {
+            const offsets = new Array(this.reportItems.length + 1);
+            let total = 0;
+            this.reportItems.forEach((item, index) => {
+                const fallback = item.type === 'group' ? this.virtualReportGroupHeight : this.virtualReportCardHeight;
+                const height = this.reportItemHeights[item.key] || fallback;
+                if (index > 0) {
+                    total += this.virtualReportRowGap;
+                }
+                offsets[index] = total;
+                total += height;
+            });
+            offsets[this.reportItems.length] = total;
+            this.reportItemOffsets = offsets;
+            this.reportTotalHeight = total;
+        },
+
+        scheduleReportMeasure() {
+            if (this.reportMeasureRaf) return;
+            this.reportMeasureRaf = requestAnimationFrame(() => {
+                this.reportMeasureRaf = null;
+                this.measureReportItemHeights();
+            });
+        },
+
+        measureReportItemHeights() {
+            if (!this.useVirtualReportList || !this.$refs?.reportListScroller) return;
+            const nodes = this.$refs.reportListScroller.querySelectorAll('[data-report-key]');
+            let changed = false;
+            nodes.forEach(node => {
+                if (!node || node.offsetParent === null) return;
+                const key = node.dataset.reportKey;
+                if (!key) return;
+                const height = Math.ceil(node.getBoundingClientRect().height);
+                if (height && this.reportItemHeights[key] !== height) {
+                    this.reportItemHeights[key] = height;
+                    changed = true;
+                }
+            });
+            if (changed) {
+                this.recomputeReportOffsets();
+                this.onReportListScroll();
+            }
+        },
+
+        findReportIndexByOffset(offset) {
+            const offsets = this.reportItemOffsets || [0];
+            let low = 0;
+            let high = offsets.length;
+            while (low < high) {
+                const mid = Math.floor((low + high) / 2);
+                if (offsets[mid] <= offset) {
+                    low = mid + 1;
+                } else {
+                    high = mid;
+                }
+            }
+            return Math.max(0, low - 1);
+        },
+
         // 分页相关计算属性
         get totalPages() {
             return Math.ceil(this.filteredSessions.length / this.pageSize);
@@ -2344,6 +2512,42 @@ function deepVision() {
             return Math.min(this.currentPage * this.pageSize, this.filteredSessions.length);
         },
 
+        get virtualReportStartRow() {
+            if (!this.useVirtualReportList) return 0;
+            const startIndex = this.findReportIndexByOffset(this.virtualReportScrollTop);
+            return Math.max(0, startIndex - this.virtualReportOverscan);
+        },
+
+        get virtualReportEndRow() {
+            if (!this.useVirtualReportList) return this.reportItems.length;
+            const bottomIndex = this.findReportIndexByOffset(this.virtualReportScrollTop + this.virtualReportViewportHeight);
+            const end = bottomIndex + this.virtualReportOverscan + 1;
+            return Math.min(this.reportItems.length, end);
+        },
+
+        get virtualReportPaddingTop() {
+            if (!this.useVirtualReportList) return 0;
+            const baseTop = this.reportItemOffsets[this.virtualReportStartRow] || 0;
+            const gapAdjust = this.reportItems.length > 0 ? this.virtualReportRowGap : 0;
+            return Math.max(0, baseTop - gapAdjust);
+        },
+
+        get virtualReportPaddingBottom() {
+            if (!this.useVirtualReportList) return 0;
+            const endOffset = this.reportItemOffsets[this.virtualReportEndRow] || 0;
+            const gapAdjust = this.reportItems.length > 0 ? this.virtualReportRowGap : 0;
+            return Math.max(0, this.reportTotalHeight - endOffset - gapAdjust);
+        },
+
+        get virtualVisibleReports() {
+            if (!this.useVirtualReportList) return [];
+            return this.reportItems.slice(this.virtualReportStartRow, this.virtualReportEndRow);
+        },
+
+        get reportsToRender() {
+            return this.useVirtualReportList ? this.virtualVisibleReports : this.reportItems;
+        },
+
         get visiblePages() {
             const pages = [];
             const total = this.totalPages;
@@ -2385,6 +2589,17 @@ function deepVision() {
             this._virtualScrollHandler = onScroll;
         },
 
+        setupVirtualReportList() {
+            if (!this.useVirtualReportList) return;
+            this.updateVirtualReportLayout();
+            const onResize = () => this.updateVirtualReportLayout();
+            const onScroll = () => this.onReportListScroll();
+            window.addEventListener('resize', onResize);
+            window.addEventListener('scroll', onScroll, { passive: true });
+            this._virtualReportResizeHandler = onResize;
+            this._virtualReportScrollHandler = onScroll;
+        },
+
         updateVirtualLayout() {
             if (!this.useVirtualList) return;
             this.virtualColumns = window.matchMedia('(min-width: 768px)').matches ? 2 : 1;
@@ -2392,10 +2607,22 @@ function deepVision() {
             this.onSessionListScroll();
         },
 
+        updateVirtualReportLayout() {
+            if (!this.useVirtualReportList) return;
+            this.virtualReportViewportHeight = window.innerHeight || 0;
+            this.onReportListScroll();
+        },
+
         resetVirtualScroll() {
             if (!this.useVirtualList) return;
             this.virtualViewportHeight = window.innerHeight || 0;
             this.onSessionListScroll();
+        },
+
+        resetVirtualReportScroll() {
+            if (!this.useVirtualReportList) return;
+            this.virtualReportViewportHeight = window.innerHeight || 0;
+            this.onReportListScroll();
         },
 
         onSessionListScroll() {
@@ -2406,6 +2633,18 @@ function deepVision() {
                 const rawScrollTop = Math.max(0, scrollY - listTop);
                 const maxScrollTop = Math.max(0, this.virtualTotalRows * this.virtualRowHeight - this.virtualViewportHeight);
                 this.virtualScrollTop = Math.min(rawScrollTop, maxScrollTop);
+            }
+        },
+
+        onReportListScroll() {
+            if (!this.useVirtualReportList) return;
+            if (this.$refs?.reportListScroller) {
+                const listTop = this.$refs.reportListScroller.getBoundingClientRect().top + window.scrollY;
+                const scrollY = window.scrollY || window.pageYOffset || 0;
+                const rawScrollTop = Math.max(0, scrollY - listTop);
+                const maxScrollTop = Math.max(0, this.reportTotalHeight - this.virtualReportViewportHeight);
+                this.virtualReportScrollTop = Math.min(rawScrollTop, maxScrollTop);
+                this.scheduleReportMeasure();
             }
         },
 
@@ -3001,6 +3240,25 @@ function deepVision() {
                 hour: '2-digit',
                 minute: '2-digit'
             });
+        },
+
+        getReportDateKey(dateStr) {
+            if (!dateStr) return '';
+            const date = new Date(dateStr);
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        },
+
+        formatReportDateLabel(dateKey) {
+            if (!dateKey) return '';
+            const parts = dateKey.split('-');
+            if (parts.length !== 3) return dateKey;
+            const year = Number(parts[0]);
+            const month = Number(parts[1]);
+            const day = Number(parts[2]);
+            return `${year}年${month}月${day}日`;
         },
 
         showToast(message, type = 'success') {
