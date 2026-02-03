@@ -750,10 +750,12 @@
             <template x-if="currentView === 'interview' && currentSession">
                 <div class="grid lg:grid-cols-12 gap-4 lg:gap-6 items-start content-start">
                     <!-- 左侧：进度面板 - 移动端显示为横向滚动卡片 -->
-                    <div class="lg:col-span-4 xl:col-span-3 space-y-4 order-2 lg:order-1 self-start sticky top-4">
+                    <div class="lg:col-span-4 xl:col-span-3 flex flex-col gap-4 order-2 lg:order-1 self-start sticky top-0">
                         <!-- 访谈主题 -->
                         <template x-if="currentSession && currentStep <= 2">
-                            <div class="bg-surface border border-border rounded-xl p-5 mt-6">
+                            <div class="bg-surface border border-border rounded-xl p-6"
+                                 x-ref="interviewTopicCard"
+                                 :style="interviewTopicMinHeight ? `min-height: ${interviewTopicMinHeight}px` : ''">
                                 <h3 class="font-semibold text-primary mb-3 flex items-center gap-2">
                                     <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
@@ -771,7 +773,7 @@
                         </template>
 
                         <!-- 访谈进度 -->
-                        <div class="bg-surface border border-border rounded-xl p-5">
+                        <div class="bg-surface border border-border rounded-xl p-6">
                             <div class="flex items-center justify-between mb-4">
                                 <h3 class="font-semibold text-primary flex items-center gap-2">
                                     <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -926,7 +928,10 @@
 
                         <!-- 参考资料（仅在访谈阶段显示） -->
                         <template x-if="currentStep === 1">
-                            <div class="bg-surface border border-border rounded-xl p-5">
+                            <div class="bg-surface border border-border rounded-xl p-6"
+                                 x-ref="interviewReferenceCard"
+                                 x-effect="syncInterviewHeaderHeight()"
+                                 @resize.window="syncInterviewHeaderHeight()">
                                 <h3 class="font-semibold text-primary mb-3 flex items-center gap-2">
                                     <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
@@ -980,7 +985,7 @@
                     </div>
 
                     <!-- 右侧：访谈区域 - 移动端显示在上方 -->
-                    <div class="lg:col-span-8 xl:col-span-9 space-y-4 lg:space-y-6 order-1 lg:order-2 self-start [&>*:first-child]:mt-0">
+                    <div class="lg:col-span-8 xl:col-span-9 flex flex-col gap-4 lg:gap-6 order-1 lg:order-2 self-start">
                         <!-- Step 0: 文档准备 -->
                         <template x-if="currentStep === 0">
                             <div class="bg-surface border border-border rounded-xl p-6">
