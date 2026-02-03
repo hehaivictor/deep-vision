@@ -105,6 +105,7 @@ function deepVision() {
         reportSortOrder: 'newest',
         reportGroupByDate: true,
         reportSearchDebounceTimer: null,
+        interviewTopicMinHeight: 0,
 
         // 访谈相关
         interviewSteps: ['文档准备', '选择式访谈', '需求确认'],
@@ -3259,6 +3260,23 @@ function deepVision() {
             const month = Number(parts[1]);
             const day = Number(parts[2]);
             return `${year}年${month}月${day}日`;
+        },
+
+        syncInterviewHeaderHeight() {
+            if (this.currentView !== 'interview' || this.currentStep !== 0) {
+                this.interviewTopicMinHeight = 0;
+                return;
+            }
+            if (!this.$refs?.interviewTopicCard || !this.$refs?.interviewReferenceCard) {
+                this.interviewTopicMinHeight = 0;
+                return;
+            }
+            this.$nextTick(() => {
+                const height = Math.ceil(this.$refs.interviewReferenceCard.getBoundingClientRect().height);
+                if (height > 0 && this.interviewTopicMinHeight !== height) {
+                    this.interviewTopicMinHeight = height;
+                }
+            });
         },
 
         showToast(message, type = 'success') {
