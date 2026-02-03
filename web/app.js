@@ -2501,6 +2501,8 @@ function deepVision() {
                 if (result.success && result.generated_scenario) {
                     this.aiGeneratedPreview = result.generated_scenario;
                     this.aiExplanation = result.ai_explanation || '';
+                    this.expandedDimensions = [];
+                    this.aiExplanationExpanded = true;
                     this.showAiPreviewModal = true;
                 } else {
                     this.showToast(result.error || '生成失败，请重试', 'error');
@@ -2533,6 +2535,8 @@ function deepVision() {
         aiGenerating: false,             // AI 生成中
         aiGeneratedPreview: null,        // AI 生成的预览数据
         aiExplanation: '',               // AI 设计说明
+        expandedDimensions: [],          // 展开的维度索引
+        aiExplanationExpanded: true,     // AI 说明是否展开
 
         // 打开自定义场景编辑器
         openCustomScenarioEditor() {
@@ -2671,6 +2675,8 @@ function deepVision() {
                 if (result.success && result.generated_scenario) {
                     this.aiGeneratedPreview = result.generated_scenario;
                     this.aiExplanation = result.ai_explanation || '';
+                    this.expandedDimensions = [];
+                    this.aiExplanationExpanded = true;
                     this.showAiGenerateModal = false;
                     this.showAiPreviewModal = true;
                 } else {
@@ -2723,6 +2729,23 @@ function deepVision() {
                 return;
             }
             this.aiGeneratedPreview.dimensions.splice(index, 1);
+            // 从展开列表中移除
+            const expandedIdx = this.expandedDimensions.indexOf(index);
+            if (expandedIdx > -1) {
+                this.expandedDimensions.splice(expandedIdx, 1);
+            }
+            // 调整索引大于当前索引的展开项
+            this.expandedDimensions = this.expandedDimensions.map(i => i > index ? i - 1 : i);
+        },
+
+        // 切换维度展开/折叠
+        toggleDimension(index) {
+            const idx = this.expandedDimensions.indexOf(index);
+            if (idx > -1) {
+                this.expandedDimensions.splice(idx, 1);
+            } else {
+                this.expandedDimensions.push(index);
+            }
         },
 
         // 确认保存 AI 生成的场景
