@@ -20,6 +20,7 @@ function deepVision() {
         isGoingPrev: false,
         submitting: false,  // 提交答案进行中，防止并发操作
         generatingReport: false,
+        generatingSlides: false,
         webSearching: false,  // Web Search API 调用状态
         webSearchPollInterval: null,  // Web Search 状态轮询定时器
         quoteRotationInterval: null,  // 诗句轮播定时器
@@ -1336,6 +1337,33 @@ function deepVision() {
                 this.selectedReport = filename;
             } catch (error) {
                 this.showToast('加载报告失败', 'error');
+            }
+        },
+
+        async generatePresentation() {
+            if (!this.selectedReport || this.generatingSlides) return;
+
+            this.generatingSlides = true;
+            try {
+                const result = await this.apiCall(
+                    `/reports/${encodeURIComponent(this.selectedReport)}/refly`,
+                    { method: 'POST' }
+                );
+                const reflyUrl = result?.presentation_url
+                    || result?.url
+                    || result?.refly_response?.url
+                    || result?.refly_response?.data?.url
+                    || result?.refly_response?.result?.url;
+                if (reflyUrl) {
+                    window.open(reflyUrl, '_blank', 'noopener');
+                    this.showToast('演示文稿已生成，已为你打开', 'success');
+                } else {
+                    this.showToast('已提交到 Refly，正在生成演示文稿', 'success');
+                }
+            } catch (error) {
+                this.showToast(`生成演示文稿失败：${error.message || '请求失败'}`, 'error');
+            } finally {
+                this.generatingSlides = false;
             }
         },
 
