@@ -106,6 +106,7 @@ function deepVision() {
         reportGroupByDate: true,
         reportSearchDebounceTimer: null,
         interviewTopicMinHeight: 0,
+        lastPresentationUrl: '',
 
         // 访谈相关
         interviewSteps: ['文档准备', '选择式访谈', '需求确认'],
@@ -181,7 +182,8 @@ function deepVision() {
         otherSelected: false,  // "其他"选项是否被选中
 
         // Toast 通知
-        toast: { show: false, message: '', type: 'success' },
+        toast: { show: false, message: '', type: 'success', actionLabel: '', actionUrl: '' },
+        toastTimer: null,
 
         // 里程碑弹窗
         showMilestoneModal: false,
@@ -1373,6 +1375,115 @@ function deepVision() {
             }
         },
 
+        openUrl(url) {
+            if (!url) return false;
+            const win = window.open(url, '_blank', 'noopener');
+            if (win) {
+                win.focus();
+                return true;
+            }
+            return false;
+        },
+
+        collectReflyUrls(payload, urls = []) {
+            if (!payload) return urls;
+            if (typeof payload === 'string') {
+                if (payload.startsWith('http')) urls.push(payload);
+                return urls;
+            }
+            if (Array.isArray(payload)) {
+                payload.forEach(item => this.collectReflyUrls(item, urls));
+                return urls;
+            }
+            if (typeof payload === 'object') {
+                Object.values(payload).forEach(value => this.collectReflyUrls(value, urls));
+            }
+            return urls;
+        },
+
+        getReflyFileCandidates(result) {
+            const files = result?.refly_response?.data?.files
+                || result?.refly_response?.files
+                || [];
+            if (!Array.isArray(files)) return [];
+            return files
+                .map(file => ({
+                    url: file?.url,
+                    name: file?.name || ''
+                }))
+                .filter(item => typeof item.url === 'string' && item.url.startsWith('http'));
+        },
+
+        scoreReflyUrl(url, name = '') {
+            const lowerUrl = (url || '').toLowerCase();
+            const lowerName = (name || '').toLowerCase();
+            const target = lowerName || lowerUrl;
+            const extMatch = target.match(/\.[a-z0-9]+(?=$|\?)/);
+            const ext = extMatch ? extMatch[0] : '';
+            let score = 0;
+
+            if (lowerUrl.includes('share') || lowerUrl.includes('preview') || lowerUrl.includes('presentation')) {
+                score += 80;
+            }
+            if (lowerUrl.includes('slide')) score += 10;
+
+            switch (ext) {
+                case '.pptx':
+                    score += 100;
+                    break;
+                case '.pdf':
+                    score += 90;
+                    break;
+                case '.ppt':
+                case '.key':
+                    score += 80;
+                    break;
+                case '.html':
+                case '.htm':
+                    score += 70;
+                    break;
+                case '.png':
+                case '.jpg':
+                case '.jpeg':
+                    score += 50;
+                    break;
+                case '.json':
+                    score -= 10;
+                    break;
+                default:
+                    break;
+            }
+
+            return score;
+        },
+
+        getBestReflyUrl(result) {
+            const candidates = [];
+            const addCandidate = (url, name = '') => {
+                if (!url || typeof url !== 'string' || !url.startsWith('http')) return;
+                candidates.push({ url, name });
+            };
+
+            const presentationUrl = result?.presentation_url;
+            if (presentationUrl && typeof presentationUrl === 'string' && presentationUrl.startsWith('http')) {
+                const lower = presentationUrl.toLowerCase();
+                if (!lower.endsWith('.json')) {
+                    return presentationUrl;
+                }
+                addCandidate(presentationUrl, 'presentation_url');
+            }
+            this.getReflyFileCandidates(result).forEach(item => addCandidate(item.url, item.name));
+
+            const extraUrls = this.collectReflyUrls(result?.refly_response, []);
+            extraUrls.forEach(url => addCandidate(url));
+
+            const deduped = Array.from(new Map(candidates.map(item => [item.url, item])).values());
+            if (deduped.length === 0) return presentationUrl || '';
+
+            deduped.sort((a, b) => this.scoreReflyUrl(b.url, b.name) - this.scoreReflyUrl(a.url, a.name));
+            return deduped[0].url;
+        },
+
         async generatePresentation() {
             if (!this.selectedReport || this.generatingSlides) return;
 
@@ -1382,16 +1493,25 @@ function deepVision() {
                     `/reports/${encodeURIComponent(this.selectedReport)}/refly`,
                     { method: 'POST' }
                 );
-                const reflyUrl = result?.presentation_url
-                    || result?.url
-                    || result?.refly_response?.url
-                    || result?.refly_response?.data?.url
-                    || result?.refly_response?.result?.url;
-                if (reflyUrl) {
-                    window.open(reflyUrl, '_blank', 'noopener');
-                    this.showToast('演示文稿已生成，已为你打开', 'success');
+                const downloadPath = result?.download_path || result?.downloaded_path;
+                const hasDownload = Boolean(downloadPath || result?.download_filename);
+                const localUrl = result?.presentation_local_url;
+                if (localUrl) {
+                    this.lastPresentationUrl = localUrl;
+                    const opened = this.openUrl(localUrl);
+                    const baseMessage = hasDownload
+                        ? '演示文稿已生成，已保存到下载文件夹'
+                        : '演示文稿已生成';
+                    const message = opened ? `${baseMessage}，点击可再次打开` : `${baseMessage}，点击打开`;
+                    this.showToast(message, 'success', {
+                        actionLabel: '打开',
+                        actionUrl: localUrl,
+                        duration: 7000
+                    });
+                } else if (hasDownload) {
+                    this.showToast('演示文稿已生成，已保存到下载文件夹', 'success');
                 } else {
-                    this.showToast('已提交到 Refly，正在生成演示文稿', 'success');
+                    this.showToast('已提交生成任务，正在生成演示文稿', 'success');
                 }
             } catch (error) {
                 this.showToast(`生成演示文稿失败：${error.message || '请求失败'}`, 'error');
@@ -3279,11 +3399,28 @@ function deepVision() {
             });
         },
 
-        showToast(message, type = 'success') {
-            this.toast = { show: true, message, type };
-            setTimeout(() => {
-                this.toast.show = false;
-            }, 4000);
+        showToast(message, type = 'success', options = {}) {
+            const actionLabel = options.actionLabel || '';
+            const actionUrl = options.actionUrl || '';
+            const duration = Number.isFinite(options.duration) ? options.duration : 4000;
+            const persist = options.persist === true;
+
+            this.toast = {
+                show: true,
+                message,
+                type,
+                actionLabel,
+                actionUrl
+            };
+
+            if (this.toastTimer) {
+                clearTimeout(this.toastTimer);
+            }
+            if (!persist) {
+                this.toastTimer = setTimeout(() => {
+                    this.toast.show = false;
+                }, duration);
+            }
         },
 
         // ============ 组合C：等待状态增强 ============
