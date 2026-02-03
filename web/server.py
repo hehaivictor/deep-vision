@@ -3192,7 +3192,6 @@ def list_scenarios():
             "name_en": s.get("name_en"),
             "description": s.get("description"),
             "icon": s.get("icon"),
-            "keywords": s.get("keywords", []),
             "builtin": s.get("builtin", True),
             "custom": s.get("custom", False),
             "dimensions": [
@@ -3271,7 +3270,6 @@ def generate_scenario_with_ai():
 {{
   "name": "场景名称",
   "description": "场景描述",
-  "keywords": ["关键词1", "关键词2"],
   "dimensions": [
     {{
       "id": "dim_1",
@@ -3373,7 +3371,6 @@ def create_custom_scenario():
         "name": name,
         "description": data.get("description", "").strip(),
         "icon": data.get("icon", "clipboard-list"),
-        "keywords": data.get("keywords", []),
         "dimensions": dimensions,
         "report": data.get("report", {"type": "standard"}),
     }
