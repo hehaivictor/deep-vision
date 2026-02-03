@@ -1,7 +1,16 @@
 {
-  "version": "1.22.2",
+  "version": "1.22.3",
   "releaseDate": "2026-02-03",
   "changelog": [
+    {
+      "version": "1.22.3",
+      "date": "2026-02-03",
+      "type": "patch",
+      "title": "Improve session card layout and virtual scroll",
+      "changes": [
+        "Improve session card layout and virtual scroll"
+      ]
+    },
     {
       "version": "1.22.2",
       "date": "2026-02-03",
