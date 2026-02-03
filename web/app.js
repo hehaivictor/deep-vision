@@ -62,6 +62,13 @@ function deepVision() {
         currentPage: 1,
         pageSize: 10,
         searchDebounceTimer: null,
+        useVirtualList: true,
+        virtualCardHeight: 128,
+        virtualRowGap: 12,
+        virtualOverscan: 3,
+        virtualScrollTop: 0,
+        virtualViewportHeight: 0,
+        virtualColumns: 2,
 
         // 确认重新访谈对话框
         showRestartModal: false,
@@ -207,6 +214,11 @@ function deepVision() {
 
             // 检查是否首次访问，跳转产品介绍页
             this.checkFirstVisit();
+
+            // 初始化虚拟列表
+            this.$nextTick(() => {
+                this.setupVirtualList();
+            });
         },
 
         // 检查首次访问
@@ -2262,6 +2274,11 @@ function deepVision() {
 
             this.filteredSessions = result;
             this.currentPage = 1;  // 重置到第一页
+            if (this.useVirtualList) {
+                this.$nextTick(() => {
+                    this.resetVirtualScroll();
+                });
+            }
         },
 
         // 分页相关计算属性
@@ -2273,6 +2290,49 @@ function deepVision() {
             const start = (this.currentPage - 1) * this.pageSize;
             const end = start + this.pageSize;
             return this.filteredSessions.slice(start, end);
+        },
+
+        get virtualRowHeight() {
+            return this.virtualCardHeight + this.virtualRowGap;
+        },
+
+        get virtualTotalRows() {
+            return Math.ceil(this.filteredSessions.length / this.virtualColumns);
+        },
+
+        get virtualStartRow() {
+            if (!this.useVirtualList) return 0;
+            const start = Math.floor(this.virtualScrollTop / this.virtualRowHeight) - this.virtualOverscan;
+            return Math.max(0, start);
+        },
+
+        get virtualEndRow() {
+            if (!this.useVirtualList) return this.virtualTotalRows;
+            const visibleRows = Math.ceil(this.virtualViewportHeight / this.virtualRowHeight);
+            const end = this.virtualStartRow + visibleRows + this.virtualOverscan * 2;
+            return Math.min(this.virtualTotalRows, end);
+        },
+
+        get virtualPaddingTop() {
+            if (!this.useVirtualList) return 0;
+            return this.virtualStartRow * this.virtualRowHeight;
+        },
+
+        get virtualPaddingBottom() {
+            if (!this.useVirtualList) return 0;
+            const remainingRows = this.virtualTotalRows - this.virtualEndRow;
+            return Math.max(0, remainingRows * this.virtualRowHeight);
+        },
+
+        get virtualVisibleSessions() {
+            if (!this.useVirtualList) return [];
+            const startIndex = this.virtualStartRow * this.virtualColumns;
+            const endIndex = this.virtualEndRow * this.virtualColumns;
+            return this.filteredSessions.slice(startIndex, endIndex);
+        },
+
+        get sessionsToRender() {
+            return this.useVirtualList ? this.virtualVisibleSessions : this.paginatedSessions;
         },
 
         get paginationStart() {
@@ -2311,6 +2371,41 @@ function deepVision() {
                 if (listEl) {
                     listEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
                 }
+            }
+        },
+
+        setupVirtualList() {
+            if (!this.useVirtualList) return;
+            this.updateVirtualLayout();
+            const onResize = () => this.updateVirtualLayout();
+            const onScroll = () => this.onSessionListScroll();
+            window.addEventListener('resize', onResize);
+            window.addEventListener('scroll', onScroll, { passive: true });
+            this._virtualResizeHandler = onResize;
+            this._virtualScrollHandler = onScroll;
+        },
+
+        updateVirtualLayout() {
+            if (!this.useVirtualList) return;
+            this.virtualColumns = window.matchMedia('(min-width: 768px)').matches ? 2 : 1;
+            this.virtualViewportHeight = window.innerHeight || 0;
+            this.onSessionListScroll();
+        },
+
+        resetVirtualScroll() {
+            if (!this.useVirtualList) return;
+            this.virtualViewportHeight = window.innerHeight || 0;
+            this.onSessionListScroll();
+        },
+
+        onSessionListScroll() {
+            if (!this.useVirtualList) return;
+            if (this.$refs?.sessionListScroller) {
+                const listTop = this.$refs.sessionListScroller.getBoundingClientRect().top + window.scrollY;
+                const scrollY = window.scrollY || window.pageYOffset || 0;
+                const rawScrollTop = Math.max(0, scrollY - listTop);
+                const maxScrollTop = Math.max(0, this.virtualTotalRows * this.virtualRowHeight - this.virtualViewportHeight);
+                this.virtualScrollTop = Math.min(rawScrollTop, maxScrollTop);
             }
         },
 
