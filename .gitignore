@@ -41,6 +41,10 @@ ENV/
 *.swo
 *~
 
+# 本地工具目录
+.claude/
+.codex/
+
 # macOS
 .DS_Store
 
