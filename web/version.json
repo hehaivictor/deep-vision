@@ -1,7 +1,16 @@
 {
-  "version": "1.22.3",
+  "version": "1.22.4",
   "releaseDate": "2026-02-03",
   "changelog": [
+    {
+      "version": "1.22.4",
+      "date": "2026-02-03",
+      "type": "patch",
+      "title": "实现报告列表可变高度虚拟滚动",
+      "changes": [
+        "实现报告列表可变高度虚拟滚动"
+      ]
+    },
     {
       "version": "1.22.3",
       "date": "2026-02-03",
