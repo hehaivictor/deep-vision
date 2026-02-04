@@ -1,7 +1,16 @@
 {
-  "version": "1.22.15",
+  "version": "1.22.16",
   "releaseDate": "2026-02-04",
   "changelog": [
+    {
+      "version": "1.22.16",
+      "date": "2026-02-04",
+      "type": "patch",
+      "title": "访谈问题加入AI推荐辅助决策",
+      "changes": [
+        "访谈问题加入AI推荐辅助决策"
+      ]
+    },
     {
       "version": "1.22.15",
       "date": "2026-02-04",
