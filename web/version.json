@@ -1,7 +1,16 @@
 {
-  "version": "1.22.12",
+  "version": "1.22.13",
   "releaseDate": "2026-02-04",
   "changelog": [
+    {
+      "version": "1.22.13",
+      "date": "2026-02-04",
+      "type": "patch",
+      "title": "优化场景标签视觉一致性",
+      "changes": [
+        "优化场景标签视觉一致性"
+      ]
+    },
     {
       "version": "1.22.12",
       "date": "2026-02-04",
