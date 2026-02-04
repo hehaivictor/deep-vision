@@ -932,29 +932,27 @@
 
                             <!-- 操作按钮 -->
                             <div class="mt-6 space-y-3">
-                                <button x-show="getTotalProgress() >= 100 || currentStep === 2"
-                                        @click="currentStep === 2 ? generateReport() : goToConfirmation()"
-                                        :disabled="currentStep === 2 && isGeneratingCurrentReport()"
-                                        :class="(currentStep === 2 && isGeneratingCurrentReport()) ? 'btn-sage-blue opacity-80 cursor-wait' : 'btn-sage-blue cursor-pointer'"
-                                        class="w-full text-white py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2">
-                                    <template x-if="currentStep === 2 && isGeneratingCurrentReport()">
-                                        <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                                        </svg>
-                                    </template>
-                                    <template x-if="currentStep === 2 && !isGeneratingCurrentReport()">
-                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                                        </svg>
-                                    </template>
-                                    <template x-if="currentStep !== 2">
+                                <template x-if="currentStep !== 2">
+                                    <button x-show="getTotalProgress() >= 100 || currentStep === 2"
+                                            @click="goToConfirmation()"
+                                            class="w-full text-white py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 btn-sage-blue cursor-pointer">
                                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                         </svg>
-                                    </template>
-                                    <span x-text="currentStep === 2 ? (isGeneratingCurrentReport() ? '生成中...' : '生成报告') : '确认需求'"></span>
-                                </button>
+                                        <span>确认需求</span>
+                                    </button>
+                                </template>
+                                <template x-if="currentStep === 2">
+                                    <button @click="confirmRestartResearch()"
+                                            :disabled="generatingReport"
+                                            :class="generatingReport ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'btn-sage-blue text-white cursor-pointer'"
+                                            class="w-full py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2">
+                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                                        </svg>
+                                        <span>重新访谈</span>
+                                    </button>
+                                </template>
                             </div>
                         </div>
 
@@ -1507,14 +1505,22 @@
                                         </svg>
                                         返回继续访谈
                                     </button>
-                                    <button @click="confirmRestartResearch()"
-                                            :disabled="generatingReport"
-                                            :class="generatingReport ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'btn-sage-blue text-white cursor-pointer'"
-                                            class="px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto">
-                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
-                                        </svg>
-                                        <span>重新访谈</span>
+                                    <button @click="generateReport()"
+                                            :disabled="isGeneratingCurrentReport()"
+                                            :class="isGeneratingCurrentReport() ? 'btn-sage-blue opacity-80 cursor-wait' : 'btn-sage-blue cursor-pointer'"
+                                            class="px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto text-white">
+                                        <template x-if="isGeneratingCurrentReport()">
+                                            <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                            </svg>
+                                        </template>
+                                        <template x-if="!isGeneratingCurrentReport()">
+                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                            </svg>
+                                        </template>
+                                        <span x-text="isGeneratingCurrentReport() ? '生成中...' : '生成报告'"></span>
                                     </button>
                                 </div>
                             </div>
