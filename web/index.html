@@ -626,7 +626,13 @@
                                     进行中
                                 </button>
                                 <button @click="sessionStatusFilter = 'pending_review'; filterSessions()"
-                                        :class="sessionStatusFilter === 'pending_review' ? 'bg-amber-500 text-white' : 'bg-amber-50 text-amber-700 hover:bg-amber-100'"
+                                        :class="getSessionStatusCount('pending_review') > 0
+                                            ? (sessionStatusFilter === 'pending_review'
+                                                ? 'bg-amber-500 text-white'
+                                                : 'bg-amber-50 text-amber-700 hover:bg-amber-100')
+                                            : (sessionStatusFilter === 'pending_review'
+                                                ? 'bg-primary text-white'
+                                                : 'bg-gray-100 text-secondary hover:bg-gray-200')"
                                         class="px-3 py-2 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5">
                                     待确认
                                     <span x-show="getSessionStatusCount('pending_review') > 0"
@@ -683,7 +689,7 @@
                                     <template x-for="session in sessionsToRender" :key="session.session_id">
                                         <div class="group bg-surface border border-border rounded-xl hover:shadow-sm transition-all duration-200 p-4 cursor-pointer h-32 overflow-hidden"
                                          @click="openSession(session.session_id)">
-                                        <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_230px] gap-x-3 gap-y-2 h-full items-start pt-1">
+                                        <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_230px] gap-x-3 gap-y-2 h-full items-center">
                                             <!-- 左侧：标题 + 摘要 + 元信息 -->
                                             <div class="min-w-0 flex flex-col justify-start">
                                                 <h3 class="text-lg font-semibold text-primary line-clamp-1"
@@ -715,7 +721,7 @@
                                             </div>
 
                                             <!-- 底部行：元信息 + 进度（同一水平线） -->
-                                            <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_230px] gap-2 sm:col-span-2 mt-2.5">
+                                            <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_230px] gap-2 sm:col-span-2 mt-1">
                                                 <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted">
                                                     <span>创建: <span x-text="formatDate(session.created_at)"></span></span>
                                                     <span class="hidden sm:inline">·</span>
