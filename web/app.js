@@ -1095,8 +1095,7 @@ function deepVision() {
                     if (nextDim) {
                         this.currentDimension = nextDim;
                     } else {
-                        // 所有维度都已完成，直接进入确认阶段
-                        this.currentStep = 2;
+                        // 所有维度都已完成，停留在访谈阶段并提示确认
                         this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false };
                         this.showToast('所有维度访谈完成！', 'success');
                         return;  // 不再调用 fetchNextQuestion
@@ -1286,8 +1285,7 @@ function deepVision() {
             this.showMilestoneModal = false;
 
             if (this.milestoneData && this.milestoneData.isLastDimension) {
-                // 所有维度都完成，自动进入确认阶段
-                this.currentStep = 2;
+                // 所有维度都完成，停留在访谈阶段等待确认
                 this.currentQuestion = {
                     text: '',
                     options: [],
