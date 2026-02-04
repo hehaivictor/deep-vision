@@ -1,7 +1,16 @@
 {
-  "version": "1.22.18",
+  "version": "1.22.19",
   "releaseDate": "2026-02-04",
   "changelog": [
+    {
+      "version": "1.22.19",
+      "date": "2026-02-04",
+      "type": "patch",
+      "title": "修复筛选样式并优化卡片布局",
+      "changes": [
+        "修复筛选样式并优化卡片布局"
+      ]
+    },
     {
       "version": "1.22.18",
       "date": "2026-02-04",
