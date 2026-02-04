@@ -2493,9 +2493,11 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
             recent_logs = interview_log
 
         # 添加完整的最近问答记录
-        for log in recent_logs:
+        base_index = len(interview_log) - len(recent_logs)
+        for offset, log in enumerate(recent_logs, 1):
             follow_up_mark = " [追问]" if log.get("is_follow_up") else ""
-            context_parts.append(f"- Q: {log['question']}{follow_up_mark}")
+            q_number = base_index + offset
+            context_parts.append(f"- Q{q_number}: {log['question']}{follow_up_mark}")
             context_parts.append(f"  A: {log['answer']}")
             dim_name = session_dim_info.get(log.get("dimension", ""), {}).get("name", "")
             if dim_name:
@@ -2629,19 +2631,30 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 {ai_eval_guidance}
 {follow_up_section}
 
+如果信息足够，请基于已收集的回答给出对当前选项的 AI 推荐，用于辅助用户决策。若无法推荐，请将 ai_recommendation 设为 null。
+
 ## 输出格式（必须严格遵守）
 
 你的回复必须是一个纯 JSON 对象，格式如下：
 
-{{
-    "question": "你的问题",
-    "options": ["选项1", "选项2", "选项3", "选项4"],
-    "multi_select": false,
-    "is_follow_up": {'true' if should_follow_up else 'false'},
-    "follow_up_reason": {json.dumps(follow_up_reason, ensure_ascii=False) if should_follow_up else 'null'},
-    "conflict_detected": false,
-    "conflict_description": null
-}}
+    {{
+        "question": "你的问题",
+        "options": ["选项1", "选项2", "选项3", "选项4"],
+        "multi_select": false,
+        "is_follow_up": {'true' if should_follow_up else 'false'},
+        "follow_up_reason": {json.dumps(follow_up_reason, ensure_ascii=False) if should_follow_up else 'null'},
+        "conflict_detected": false,
+        "conflict_description": null,
+        "ai_recommendation": {{
+            "recommended_options": ["选项1"],
+            "summary": "一句话推荐理由",
+            "reasons": [
+                {{"text": "理由1", "evidence": ["Q1", "Q3"]}},
+                {{"text": "理由2", "evidence": ["Q2"]}}
+            ],
+            "confidence": "high"
+        }}
+    }}
 
 字段说明：
 - question: 字符串，你要问的问题
@@ -2651,6 +2664,13 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 - follow_up_reason: 字符串或 null，追问时说明原因
 - conflict_detected: 布尔值
 - conflict_description: 字符串或 null
+- ai_recommendation: 推荐对象或 null
+  - recommended_options: 数组（单选时只放 1 个，多选时可放多个）
+  - summary: 一句话推荐理由（不超过 25 字）
+  - reasons: 2-3 条理由，需附证据编号（如 Q1、Q3）
+  - confidence: "high" | "medium" | "low"
+
+如果当前信息不足以做推荐，请将 ai_recommendation 设为 null。
 
 **关键提醒：**
 - 不要使用 ```json 代码块标记
@@ -4211,14 +4231,16 @@ def get_fallback_question(session: dict, dimension: str) -> dict:
             "multi_select": q.get("multi_select", False),
             "dimension": dimension,
             "ai_generated": False,
-            "is_follow_up": False
+            "is_follow_up": False,
+            "ai_recommendation": None
         }
 
     # 维度已完成
     return {
         "question": None,
         "dimension": dimension,
-        "completed": True
+        "completed": True,
+        "ai_recommendation": None
     }
 
 

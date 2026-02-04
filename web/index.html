@@ -1329,11 +1329,66 @@
                                         <p class="text-muted text-sm mt-1">请点击下方"确认需求"按钮进入下一阶段</p>
                                     </div>
 
+                                    <!-- AI 推荐选项 -->
+                                    <template x-if="currentQuestion.aiRecommendation && currentQuestion.aiRecommendation.recommendedOptions && currentQuestion.aiRecommendation.recommendedOptions.length > 0 && getTotalProgress() < 100">
+                                        <div class="border border-gray-200 bg-white rounded-xl p-4 mb-4">
+                                            <div class="flex items-center justify-between">
+                                                <div class="flex items-center gap-2">
+                                                    <span class="inline-flex items-center gap-1 text-[11px] bg-gray-100 text-gray-700 px-2 py-1 rounded-full">
+                                                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4"/>
+                                                        </svg>
+                                                        AI 推荐
+                                                    </span>
+                                                    <template x-if="currentQuestion.aiRecommendation.confidence">
+                                                        <span class="text-[11px] text-gray-500">
+                                                            推荐程度：<span x-text="formatAiConfidence(currentQuestion.aiRecommendation.confidence)"></span>
+                                                        </span>
+                                                    </template>
+                                                </div>
+                                                <button @click="aiRecommendationExpanded = !aiRecommendationExpanded"
+                                                        class="text-xs text-[#357BE2] hover:text-[#2c6bd1] transition-colors">
+                                                    <span x-text="aiRecommendationExpanded ? '收起理由' : '查看理由'"></span>
+                                                </button>
+                                            </div>
+                                            <div class="flex items-center justify-between gap-4 mt-3">
+                                                <div class="min-w-0">
+                                                    <div class="text-sm font-semibold text-primary" x-text="currentQuestion.aiRecommendation.recommendedOptions.join('、')"></div>
+                                                    <div class="text-xs text-muted mt-1"
+                                                         x-text="currentQuestion.aiRecommendation.summary || '基于已收集的回答，AI 倾向该选项'"></div>
+                                                </div>
+                                                <button @click="applyAiRecommendation()"
+                                                        class="px-3 py-1.5 text-xs font-medium rounded-lg bg-[#357BE2] text-white hover:bg-[#2c6bd1] transition-colors">
+                                                    一键采纳
+                                                </button>
+                                            </div>
+                                            <div class="mt-3 space-y-2 text-xs text-muted" x-show="aiRecommendationExpanded">
+                                                <template x-if="currentQuestion.aiRecommendation.reasons && currentQuestion.aiRecommendation.reasons.length > 0">
+                                                    <template x-for="(reason, idx) in currentQuestion.aiRecommendation.reasons" :key="idx">
+                                                        <div class="flex flex-wrap items-center gap-2">
+                                                            <span x-text="reason.text"></span>
+                                                            <template x-if="reason.evidence && reason.evidence.length > 0">
+                                                                <div class="flex flex-wrap gap-1">
+                                                                    <template x-for="(ev, eidx) in reason.evidence" :key="eidx">
+                                                                        <span class="px-1.5 py-0.5 bg-gray-100 rounded text-[10px]" x-text="ev"></span>
+                                                                    </template>
+                                                                </div>
+                                                            </template>
+                                                        </div>
+                                                    </template>
+                                                </template>
+                                                <template x-if="!currentQuestion.aiRecommendation.reasons || currentQuestion.aiRecommendation.reasons.length === 0">
+                                                    <p class="text-xs text-muted">建议基于已有回答生成，暂无更多细节。</p>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </template>
+
                                     <!-- 选项 - 未完成时显示 -->
                                     <div class="space-y-3" x-show="getTotalProgress() < 100">
                                         <template x-for="(option, index) in currentQuestion.options" :key="index">
                                             <div @click="toggleOption(option)"
-                                                 :class="isOptionSelected(option) ? 'border-[#EDF4FE] bg-cta/5 ring-2 ring-cta/20' : 'border-gray-200 hover:border-cta/50'"
+                                                 :class="[isOptionSelected(option) ? 'border-[#EDF4FE] bg-cta/5 ring-2 ring-cta/20' : 'border-gray-200 hover:border-cta/50', isOptionRecommended(option) && !isOptionSelected(option) ? 'border-[#D6E6FF] bg-[#F7FAFF]' : '']"
                                                  class="p-4 border-2 rounded-xl cursor-pointer transition-all duration-200">
                                                 <div class="flex items-center gap-3">
                                                     <!-- 单选：圆形 / 多选：方形 -->
@@ -1352,6 +1407,8 @@
                                                         </div>
                                                     </template>
                                                     <span class="font-medium" x-text="option"></span>
+                                                    <span x-show="isOptionRecommended(option)"
+                                                          class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-gray-100 text-gray-600">AI 推荐</span>
                                                 </div>
                                             </div>
                                         </template>
