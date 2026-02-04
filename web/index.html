@@ -39,6 +39,48 @@
         .logo-pulse {
             animation: pulse-ring 3s ease-in-out infinite;
         }
+        .binary-rail {
+            position: relative;
+            width: 6rem;
+            height: 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .binary-rail::before {
+            content: "0101 0101 0101";
+            font-family: "Fira Code", "SFMono-Regular", ui-monospace, monospace;
+            font-size: 0.55rem;
+            letter-spacing: 0.18rem;
+            color: rgba(53, 123, 226, 0.22);
+            text-transform: none;
+            white-space: nowrap;
+        }
+        .binary-rail::after {
+            content: "";
+            position: absolute;
+            left: -30%;
+            top: 0;
+            width: 40%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(53, 123, 226, 0.35), transparent);
+            animation: binary-scan 2.6s linear infinite;
+            opacity: 0;
+        }
+        .binary-rail.is-active::after {
+            opacity: 1;
+        }
+        @keyframes binary-scan {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(200%); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .binary-rail::after {
+                animation: none;
+                opacity: 0;
+            }
+        }
         .btn-sage-blue {
             background-color: #357BE2 !important;
         }
@@ -628,6 +670,10 @@
                                                 <h3 class="text-lg font-semibold text-primary line-clamp-1"
                                                     :title="session.topic"
                                                     x-text="session.topic"></h3>
+                                                <span x-show="session.scenario_config?.name"
+                                                      class="mt-2 inline-flex w-fit self-start items-center justify-center px-2 py-1 rounded-full text-[11px] font-medium bg-gray-100 text-gray-600 border border-gray-200 whitespace-nowrap shrink-0"
+                                                      :title="session.scenario_config?.name || ''"
+                                                      x-text="session.scenario_config?.name || ''"></span>
                                                 <template x-if="session.description">
                                                     <p class="text-sm text-secondary line-clamp-2 mt-1"
                                                        :title="session.description"
@@ -640,10 +686,6 @@
                                                     <span :class="getStatusBadgeClass(session.status)"
                                                           class="px-3 py-1.5 rounded-full text-[11px] font-medium whitespace-nowrap shrink-0"
                                                           x-text="getStatusText(session.status)"></span>
-                                                    <span x-show="session.scenario_config?.name"
-                                                          class="px-3 py-1.5 rounded-full text-[11px] font-medium bg-blue-50 text-blue-600 whitespace-nowrap shrink-0 max-w-[140px] truncate"
-                                                          :title="session.scenario_config?.name || ''"
-                                                          x-text="session.scenario_config?.name || ''"></span>
                                                     <button @click.stop="confirmDeleteSession(session.session_id)"
                                                             class="p-1.5 text-gray-300 hover:text-danger hover:bg-red-50 rounded-md transition-colors cursor-pointer sm:opacity-0 sm:pointer-events-none sm:group-hover:opacity-100 sm:group-hover:pointer-events-auto"
                                                             aria-label="删除会话">
@@ -1096,19 +1138,9 @@
                                                 <span class="text-sm mt-2 text-muted font-medium">分析</span>
                                             </div>
 
-                                            <!-- 点状连接 -->
-                                            <div class="flex items-center gap-3 mb-8">
-                                                <span class="w-1.5 h-1.5 rounded-full"
-                                                      :class="thinkingStage?.stage_index >= 1 ? 'bg-[#357BE2]/60' : 'bg-[#357BE2]/25'"></span>
-                                                <span class="w-1.5 h-1.5 rounded-full"
-                                                      :class="thinkingStage?.stage_index >= 1 ? 'bg-[#357BE2]/60' : 'bg-[#357BE2]/25'"></span>
-                                                <span class="w-1.5 h-1.5 rounded-full"
-                                                      :class="thinkingStage?.stage_index >= 1 ? 'bg-[#357BE2]/60' : 'bg-[#357BE2]/25'"></span>
-                                                <span class="w-1.5 h-1.5 rounded-full"
-                                                      :class="thinkingStage?.stage_index >= 1 ? 'bg-[#357BE2]/60' : 'bg-[#357BE2]/25'"></span>
-                                                <span class="w-1.5 h-1.5 rounded-full"
-                                                      :class="thinkingStage?.stage_index >= 1 ? 'bg-[#357BE2]/60' : 'bg-[#357BE2]/25'"></span>
-                                            </div>
+                                            <!-- 二进制连接 -->
+                                            <div class="binary-rail mb-8"
+                                                 :class="thinkingStage?.stage_index >= 1 ? 'is-active' : ''"></div>
 
                                             <!-- 阶段2: 检索资料 -->
                                             <div class="flex flex-col items-center">
@@ -1121,19 +1153,9 @@
                                                 <span class="text-sm mt-2 text-muted font-medium">检索</span>
                                             </div>
 
-                                            <!-- 点状连接 -->
-                                            <div class="flex items-center gap-3 mb-8">
-                                                <span class="w-1.5 h-1.5 rounded-full"
-                                                      :class="thinkingStage?.stage_index >= 2 ? 'bg-[#357BE2]/60' : 'bg-[#357BE2]/25'"></span>
-                                                <span class="w-1.5 h-1.5 rounded-full"
-                                                      :class="thinkingStage?.stage_index >= 2 ? 'bg-[#357BE2]/60' : 'bg-[#357BE2]/25'"></span>
-                                                <span class="w-1.5 h-1.5 rounded-full"
-                                                      :class="thinkingStage?.stage_index >= 2 ? 'bg-[#357BE2]/60' : 'bg-[#357BE2]/25'"></span>
-                                                <span class="w-1.5 h-1.5 rounded-full"
-                                                      :class="thinkingStage?.stage_index >= 2 ? 'bg-[#357BE2]/60' : 'bg-[#357BE2]/25'"></span>
-                                                <span class="w-1.5 h-1.5 rounded-full"
-                                                      :class="thinkingStage?.stage_index >= 2 ? 'bg-[#357BE2]/60' : 'bg-[#357BE2]/25'"></span>
-                                            </div>
+                                            <!-- 二进制连接 -->
+                                            <div class="binary-rail mb-8"
+                                                 :class="thinkingStage?.stage_index >= 2 ? 'is-active' : ''"></div>
 
                                             <!-- 阶段3: 生成问题 -->
                                             <div class="flex flex-col items-center">
