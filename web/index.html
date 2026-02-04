@@ -902,16 +902,16 @@
                             <div class="mt-6 space-y-3">
                                 <button x-show="getTotalProgress() >= 100 || currentStep === 2"
                                         @click="currentStep === 2 ? generateReport() : goToConfirmation()"
-                                        :disabled="currentStep === 2 && generatingReport"
-                                        :class="(currentStep === 2 && generatingReport) ? 'btn-sage-blue opacity-80 cursor-wait' : 'btn-sage-blue cursor-pointer'"
+                                        :disabled="currentStep === 2 && isGeneratingCurrentReport()"
+                                        :class="(currentStep === 2 && isGeneratingCurrentReport()) ? 'btn-sage-blue opacity-80 cursor-wait' : 'btn-sage-blue cursor-pointer'"
                                         class="w-full text-white py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2">
-                                    <template x-if="currentStep === 2 && generatingReport">
+                                    <template x-if="currentStep === 2 && isGeneratingCurrentReport()">
                                         <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
                                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
                                             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
                                         </svg>
                                     </template>
-                                    <template x-if="currentStep === 2 && !generatingReport">
+                                    <template x-if="currentStep === 2 && !isGeneratingCurrentReport()">
                                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
                                         </svg>
@@ -921,7 +921,7 @@
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                         </svg>
                                     </template>
-                                    <span x-text="currentStep === 2 ? (generatingReport ? '生成中...' : '生成报告') : '确认需求'"></span>
+                                    <span x-text="currentStep === 2 ? (isGeneratingCurrentReport() ? '生成中...' : '生成报告') : '确认需求'"></span>
                                 </button>
                             </div>
                         </div>
