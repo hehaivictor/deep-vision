@@ -4078,6 +4078,29 @@ def get_next_question(session_id):
         if result:
             result["dimension"] = dimension
             result["ai_generated"] = True
+            # 兜底：避免连续重复问题（最多自动重试一次）
+            last_log = all_dim_logs[-1] if all_dim_logs else None
+            if last_log and last_log.get("question") == result.get("question"):
+                if ENABLE_DEBUG_LOG:
+                    print("⚠️ 检测到重复问题，自动重试一次")
+                retry_response = call_claude(
+                    prompt,
+                    max_tokens=MAX_TOKENS_QUESTION,
+                    call_type="question",
+                    truncated_docs=truncated_docs
+                )
+                retry_result = parse_question_response(retry_response, debug=ENABLE_DEBUG_LOG) if retry_response else None
+                if retry_result and retry_result.get("question") != last_log.get("question"):
+                    retry_result["dimension"] = dimension
+                    retry_result["ai_generated"] = True
+                    result = retry_result
+                else:
+                    # 清除思考状态
+                    clear_thinking_status(session_id)
+                    return jsonify({
+                        "error": "生成重复问题",
+                        "detail": "检测到重复问题，请重试"
+                    }), 503
 
             # ========== 后端强制校验 is_follow_up ==========
             # 防止 AI 绕过追问预算控制，自行将问题标记为追问
