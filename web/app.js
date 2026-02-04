@@ -1586,6 +1586,23 @@ function deepVision() {
             }
         },
 
+        async viewLatestReportForSession() {
+            if (!this.currentSession) return;
+            if (!this.reports || this.reports.length === 0) {
+                await this.loadReports();
+            }
+            const topic = this.currentSession.topic || 'report';
+            const slug = topic.replace(/\s+/g, '-').slice(0, 30);
+            const candidates = (this.reports || []).filter(r => r.name?.includes(slug));
+            const target = candidates.length > 0 ? candidates[0] : null;
+            this.currentView = 'reports';
+            if (target) {
+                await this.viewReport(target.name);
+            } else {
+                this.showToast('未找到对应报告，请在报告列表中查看', 'warning');
+            }
+        },
+
         async viewReport(filename) {
             try {
                 this.stopPresentationPolling();
