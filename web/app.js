@@ -21,6 +21,9 @@ function deepVision() {
         submitting: false,  // 提交答案进行中，防止并发操作
         generatingReport: false,
         generatingSlides: false,
+        presentationPolling: false,
+        presentationPollInterval: null,
+        presentationExecutionId: '',
         webSearching: false,  // Web Search API 调用状态
         webSearchPollInterval: null,  // Web Search 状态轮询定时器
         quoteRotationInterval: null,  // 诗句轮播定时器
@@ -98,6 +101,8 @@ function deepVision() {
         filteredReports: [],
         reportItems: [],
         selectedReport: null,
+        presentationPdfUrl: '',
+        presentationLocalUrl: '',
         reportContent: '',
         showDeleteReportModal: false,
         reportToDelete: null,
@@ -1367,12 +1372,93 @@ function deepVision() {
 
         async viewReport(filename) {
             try {
+                this.stopPresentationPolling();
                 const data = await this.apiCall(`/reports/${encodeURIComponent(filename)}`);
                 this.reportContent = data.content;
                 this.selectedReport = filename;
+                await this.fetchPresentationStatus();
             } catch (error) {
                 this.showToast('加载报告失败', 'error');
             }
+        },
+
+        async fetchPresentationStatus() {
+            if (!this.selectedReport) {
+                this.presentationPdfUrl = '';
+                this.presentationLocalUrl = '';
+                return;
+            }
+            try {
+                const status = await this.apiCall(
+                    `/reports/${encodeURIComponent(this.selectedReport)}/presentation/status`
+                );
+                this.presentationPdfUrl = status?.pdf_url || '';
+                this.presentationLocalUrl = status?.presentation_local_url || '';
+                if (status?.processing && status?.execution_id) {
+                    this.startPresentationPolling(status.execution_id);
+                }
+            } catch (error) {
+                this.presentationPdfUrl = '';
+                this.presentationLocalUrl = '';
+            }
+        },
+
+        openPresentationPdf() {
+            if (!this.presentationPdfUrl) {
+                this.showToast('未找到可用的演示文稿链接', 'warning');
+                return;
+            }
+            const localLink = `/api/reports/${encodeURIComponent(this.selectedReport)}/presentation/link`;
+            const opened = this.openUrl(localLink);
+            if (!opened) {
+                this.showToast('已生成演示文稿，点击查看', 'success', {
+                    actionLabel: '查看',
+                    actionUrl: localLink,
+                    duration: 7000
+                });
+            }
+        },
+
+        startPresentationPolling(executionId) {
+            if (!executionId || this.presentationPolling) return;
+            this.presentationPolling = true;
+            this.presentationExecutionId = executionId;
+            let attempts = 0;
+            const maxAttempts = 200; // 约 20 分钟（每 6 秒）
+            this.presentationPollInterval = setInterval(async () => {
+                attempts += 1;
+                try {
+                    const result = await this.apiCall(
+                        `/reports/${encodeURIComponent(this.selectedReport)}/refly/status?execution_id=${encodeURIComponent(this.presentationExecutionId)}`
+                    );
+                    if (result?.pdf_url) {
+                        this.presentationPdfUrl = result.pdf_url;
+                        this.presentationPolling = false;
+                        this.presentationExecutionId = '';
+                        clearInterval(this.presentationPollInterval);
+                        this.presentationPollInterval = null;
+                        const localLink = `/api/reports/${encodeURIComponent(this.selectedReport)}/presentation/link`;
+                        this.showToast('演示文稿已生成，点击查看', 'success', {
+                            actionLabel: '查看',
+                            actionUrl: localLink,
+                            duration: 7000
+                        });
+                    } else if (attempts >= maxAttempts) {
+                        this.showToast('演示文稿仍在生成中，请稍后再试', 'warning');
+                    }
+                } catch (error) {
+                    // 忽略短暂错误，继续轮询
+                }
+            }, 6000);
+        },
+
+        stopPresentationPolling() {
+            if (this.presentationPollInterval) {
+                clearInterval(this.presentationPollInterval);
+                this.presentationPollInterval = null;
+            }
+            this.presentationPolling = false;
+            this.presentationExecutionId = '';
         },
 
         openUrl(url) {
@@ -1488,15 +1574,36 @@ function deepVision() {
             if (!this.selectedReport || this.generatingSlides) return;
 
             this.generatingSlides = true;
+            this.presentationPdfUrl = '';
             try {
                 const result = await this.apiCall(
                     `/reports/${encodeURIComponent(this.selectedReport)}/refly`,
                     { method: 'POST' }
                 );
+                if (result?.processing) {
+                    this.showToast('演示文稿生成中，将自动刷新', 'warning');
+                    if (result?.execution_id) {
+                        this.startPresentationPolling(result.execution_id);
+                    }
+                    return;
+                }
                 const downloadPath = result?.download_path || result?.downloaded_path;
                 const hasDownload = Boolean(downloadPath || result?.download_filename);
                 const localUrl = result?.presentation_local_url;
-                if (localUrl) {
+                const pdfUrl = result?.pdf_url || '';
+                if (pdfUrl) {
+                    this.presentationPdfUrl = pdfUrl;
+                    this.lastPresentationUrl = pdfUrl;
+                    const localLink = `/api/reports/${encodeURIComponent(this.selectedReport)}/presentation/link`;
+                    const opened = this.openUrl(localLink);
+                    const message = opened ? '演示文稿已生成，已在新窗口打开' : '演示文稿已生成，点击打开';
+                    this.showToast(message, 'success', {
+                        actionLabel: '打开',
+                        actionUrl: localLink,
+                        duration: 7000
+                    });
+                } else if (localUrl) {
+                    this.presentationLocalUrl = localUrl;
                     this.lastPresentationUrl = localUrl;
                     const opened = this.openUrl(localUrl);
                     const baseMessage = hasDownload
@@ -1514,7 +1621,13 @@ function deepVision() {
                     this.showToast('已提交生成任务，正在生成演示文稿', 'success');
                 }
             } catch (error) {
-                this.showToast(`生成演示文稿失败：${error.message || '请求失败'}`, 'error');
+                const rawMessage = error.message || '请求失败';
+                const lower = rawMessage.toLowerCase();
+                let message = `生成演示文稿失败：${rawMessage}`;
+                if (lower.includes('timeout') || lower.includes('timed out') || lower.includes('ssl') || lower.includes('httpsconnectionpool')) {
+                    message = '生成演示文稿超时，请稍后重试';
+                }
+                this.showToast(message, 'error');
             } finally {
                 this.generatingSlides = false;
             }
@@ -2218,6 +2331,9 @@ function deepVision() {
         switchView(view) {
             this.currentView = view;
             this.selectedReport = null;
+            this.presentationPdfUrl = '';
+            this.presentationLocalUrl = '';
+            this.stopPresentationPolling();
             if (view === 'sessions') {
                 this.loadSessions();
             } else if (view === 'reports') {
