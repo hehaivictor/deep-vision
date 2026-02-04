@@ -1,7 +1,16 @@
 {
-  "version": "1.22.21",
+  "version": "1.22.22",
   "releaseDate": "2026-02-05",
   "changelog": [
+    {
+      "version": "1.22.22",
+      "date": "2026-02-05",
+      "type": "patch",
+      "title": "修复访谈报告按钮逻辑问题」} wait need no quote",
+      "changes": [
+        "修复访谈报告按钮逻辑问题」} wait need no quote"
+      ]
+    },
     {
       "version": "1.22.21",
       "date": "2026-02-05",
