@@ -2815,7 +2815,7 @@ xychart-beta
 - 客观公正，既要指出优势也要指出不足
 - 报告要专业、结构清晰、有理有据
 - 使用 Markdown 格式
-- 报告末尾使用署名：*此报告由 Deep Vision 深瞳-智能访谈助手生成*
+- 报告末尾使用署名：*此报告由 Deep Vision 深瞳生成*
 
 请生成完整的评估报告："""
 
@@ -3052,7 +3052,7 @@ flowchart LR
 - 报告要专业、结构清晰、可操作
 - **Mermaid 语法要求严格，请仔细检查每个图表的语法正确性**
 - **flowchart 连接线带标签语法必须是 `A -->|标签| B`，禁止使用 `A --|标签|--> B`**
-- 报告末尾使用署名：*此报告由 Deep Vision 深瞳-智能访谈助手生成*
+- 报告末尾使用署名：*此报告由 Deep Vision 深瞳生成*
 
 请生成完整的报告："""
 
@@ -4826,7 +4826,7 @@ def generate_simple_report(session: dict) -> str:
     content += generate_interview_appendix(session)
 
     content += """
-*此报告由 Deep Vision 深瞳-智能访谈助手生成*
+*此报告由 Deep Vision 深瞳生成*
 """
 
     return content
