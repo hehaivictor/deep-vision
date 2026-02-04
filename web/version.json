@@ -1,7 +1,16 @@
 {
-  "version": "1.22.9",
+  "version": "1.22.10",
   "releaseDate": "2026-02-04",
   "changelog": [
+    {
+      "version": "1.22.10",
+      "date": "2026-02-04",
+      "type": "patch",
+      "title": "修复不同会话生成状态串联",
+      "changes": [
+        "修复不同会话生成状态串联"
+      ]
+    },
     {
       "version": "1.22.9",
       "date": "2026-02-04",
