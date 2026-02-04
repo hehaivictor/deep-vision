@@ -4748,17 +4748,22 @@ def generate_interview_appendix(session: dict) -> str:
         return ""
 
     appendix = "\n\n---\n\n## 附录：完整访谈记录\n\n"
-    appendix += f"> 本次访谈共收集了 {len(interview_log)} 个问题的回答\n\n"
+    appendix += "<details>\n"
+    appendix += f"<summary>本次访谈共收集了 {len(interview_log)} 个问题的回答（点击展开/收起）</summary>\n\n"
 
     appendix_dim_info = get_dimension_info_for_session(session)
     for i, log in enumerate(interview_log, 1):
         dim_name = appendix_dim_info.get(log.get('dimension', ''), {}).get('name', '未分类')
-        appendix += f"### Q{i}: {log['question']}\n\n"
-        appendix += f"**回答**: {log['answer']}\n\n"
+        question = log.get('question', '')
+        answer = log.get('answer', '')
+        appendix += "<details>\n"
+        appendix += f"<summary>Q{i}: {question}</summary>\n\n"
+        appendix += f"**回答**: {answer}\n\n"
         appendix += f"**维度**: {dim_name}\n\n"
         if log.get('timestamp'):
             appendix += f"*记录时间: {log['timestamp']}*\n\n"
-        appendix += "---\n\n"
+        appendix += "</details>\n\n"
+    appendix += "</details>\n\n"
 
     return appendix
 
