@@ -186,6 +186,8 @@ function deepVision() {
             aiRecommendation: null
         },
         aiRecommendationExpanded: false,
+        aiRecommendationApplied: false,
+        aiRecommendationPrevSelection: null,
         selectedAnswers: [],  // 改用数组支持多选
         otherAnswerText: '',
         otherSelected: false,  // "其他"选项是否被选中
@@ -418,6 +420,8 @@ function deepVision() {
                     aiRecommendation: null
                 };
                 this.aiRecommendationExpanded = false;
+                this.aiRecommendationApplied = false;
+                this.aiRecommendationPrevSelection = null;
                 this.interactionReady = true;
                 this.skeletonMode = false;
                 return;
@@ -443,6 +447,8 @@ function deepVision() {
                 aiRecommendation: aiRecommendation
             };
             this.aiRecommendationExpanded = false;
+            this.aiRecommendationApplied = false;
+            this.aiRecommendationPrevSelection = null;
 
             // 检查用户是否禁用了动效（可访问性支持）
             const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -585,6 +591,8 @@ function deepVision() {
                     this.currentDimension = this.dimensionOrder[this.dimensionOrder.length - 1];
                     this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false, aiRecommendation: null };
                     this.aiRecommendationExpanded = false;
+                    this.aiRecommendationApplied = false;
+                    this.aiRecommendationPrevSelection = null;
                 } else if (this.currentSession.interview_log.length > 0) {
                     // 有未完成的维度，继续访谈
                     this.currentStep = 1;
@@ -788,6 +796,8 @@ function deepVision() {
                 this.currentStep = 2;
                 this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false, aiRecommendation: null };
                 this.aiRecommendationExpanded = false;
+                this.aiRecommendationApplied = false;
+                this.aiRecommendationPrevSelection = null;
                 return;
             }
 
@@ -824,6 +834,8 @@ function deepVision() {
                 aiRecommendation: null
             };
             this.aiRecommendationExpanded = false;
+            this.aiRecommendationApplied = false;
+            this.aiRecommendationPrevSelection = null;
             this.startThinkingPolling();  // 方案B: 开始轮询思考进度
             this.startWebSearchPolling();  // 同时保留 Web Search 状态轮询
             this.selectedAnswers = [];
@@ -883,6 +895,8 @@ function deepVision() {
                         aiRecommendation: null
                     };
                     this.aiRecommendationExpanded = false;
+                    this.aiRecommendationApplied = false;
+                    this.aiRecommendationPrevSelection = null;
                     this.interactionReady = true;  // 错误状态下允许交互（重试）
                     return;
                 }
@@ -955,6 +969,8 @@ function deepVision() {
                     aiRecommendation: null
                 };
                 this.aiRecommendationExpanded = false;
+                this.aiRecommendationApplied = false;
+                this.aiRecommendationPrevSelection = null;
                 this.interactionReady = true;  // 错误状态下允许交互（重试）
             } finally {
                 if (requestId === this.questionRequestId) {
@@ -1018,6 +1034,12 @@ function deepVision() {
             return { recommendedOptions, summary, reasons, confidence };
         },
 
+        clearAiRecommendationApplied() {
+            if (!this.aiRecommendationApplied) return;
+            this.aiRecommendationApplied = false;
+            this.aiRecommendationPrevSelection = null;
+        },
+
         formatAiConfidence(confidence) {
             if (confidence === 'high') return '高';
             if (confidence === 'medium') return '中';
@@ -1025,25 +1047,124 @@ function deepVision() {
             return '';
         },
 
+        normalizeOptionText(text) {
+            return (text || '')
+                .toLowerCase()
+                .replace(/\s+/g, '')
+                .replace(/[（）()，,。．.]/g, '');
+        },
+
+        matchRecommendedOption(recommended, options) {
+            if (!recommended || !options || options.length === 0) return null;
+            const direct = options.find(opt => opt === recommended);
+            if (direct) return direct;
+
+            const lower = recommended.toLowerCase();
+            const lowerMatch = options.find(opt => opt.toLowerCase() === lower);
+            if (lowerMatch) return lowerMatch;
+
+            const containsMatch = options.find(opt => opt.includes(recommended) || recommended.includes(opt));
+            if (containsMatch) return containsMatch;
+
+            const normRec = this.normalizeOptionText(recommended);
+            const normMatch = options.find(opt => {
+                const normOpt = this.normalizeOptionText(opt);
+                return normOpt.includes(normRec) || normRec.includes(normOpt);
+            });
+            return normMatch || null;
+        },
+
+        getAiRecommendationMatches() {
+            const rec = this.currentQuestion?.aiRecommendation;
+            const options = this.currentQuestion?.options || [];
+            if (!rec || !Array.isArray(rec.recommendedOptions)) return [];
+            const matched = rec.recommendedOptions
+                .map(item => this.matchRecommendedOption(item, options))
+                .filter(Boolean);
+            return matched;
+        },
+
+        getAiRecommendationDisplayOptions() {
+            const matched = this.getAiRecommendationMatches();
+            if (matched.length > 0) return matched;
+            const rec = this.currentQuestion?.aiRecommendation;
+            return Array.isArray(rec?.recommendedOptions) ? rec.recommendedOptions : [];
+        },
+
         isOptionRecommended(option) {
-            return this.currentQuestion?.aiRecommendation?.recommendedOptions?.includes(option);
+            return this.getAiRecommendationMatches().includes(option);
         },
 
         applyAiRecommendation() {
             const rec = this.currentQuestion?.aiRecommendation;
             if (!rec || !rec.recommendedOptions || rec.recommendedOptions.length === 0) return;
 
+            this.aiRecommendationPrevSelection = {
+                selectedAnswers: [...this.selectedAnswers],
+                otherSelected: this.otherSelected,
+                otherAnswerText: this.otherAnswerText
+            };
+
+            const matchedOptions = this.getAiRecommendationMatches();
+            const targets = matchedOptions.length > 0 ? matchedOptions : rec.recommendedOptions;
             if (this.currentQuestion.multiSelect) {
-                this.selectedAnswers = [...rec.recommendedOptions];
+                const merged = new Set([...this.selectedAnswers, ...targets]);
+                this.selectedAnswers = Array.from(merged);
             } else {
-                this.selectedAnswers = [rec.recommendedOptions[0]];
+                this.selectedAnswers = [targets[0]];
             }
             this.otherSelected = false;
             this.otherAnswerText = '';
+            this.aiRecommendationApplied = true;
+        },
+
+        revertAiRecommendation() {
+            if (!this.aiRecommendationApplied || !this.aiRecommendationPrevSelection) return;
+            const prev = this.aiRecommendationPrevSelection;
+            this.selectedAnswers = [...(prev.selectedAnswers || [])];
+            this.otherSelected = !!prev.otherSelected;
+            this.otherAnswerText = prev.otherAnswerText || '';
+            this.aiRecommendationApplied = false;
+            this.aiRecommendationPrevSelection = null;
+        },
+
+        jumpToEvidence(evidenceId) {
+            if (!evidenceId) return;
+            const target = document.querySelector(`[data-qa-id="${evidenceId}"]`);
+            if (!target) return;
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            target.classList.add('evidence-highlight');
+            setTimeout(() => {
+                target.classList.remove('evidence-highlight');
+            }, 1800);
+        },
+
+        normalizeEvidenceId(evidence) {
+            if (!evidence) return null;
+            const raw = String(evidence).trim();
+            const match = raw.match(/Q\s*(\d+)/i);
+            if (match && match[1]) return `Q${match[1]}`;
+            const pure = raw.match(/^\(?Q(\d+)\)?$/i);
+            if (pure && pure[1]) return `Q${pure[1]}`;
+            return null;
+        },
+
+        formatEvidenceLabel(evidence) {
+            const id = this.normalizeEvidenceId(evidence);
+            if (id) {
+                const num = id.replace(/[^0-9]/g, '');
+                return `第${num}题`;
+            }
+            return '要点';
+        },
+
+        evidenceCanJump(evidence) {
+            return !!this.normalizeEvidenceId(evidence);
         },
 
         // 切换选项选择状态
         toggleOption(option) {
+            this.clearAiRecommendationApplied();
             if (this.currentQuestion.multiSelect) {
                 // 多选模式：切换选中状态
                 const index = this.selectedAnswers.indexOf(option);
@@ -1067,6 +1188,7 @@ function deepVision() {
 
         // 切换"其他"选项
         toggleOther() {
+            this.clearAiRecommendationApplied();
             if (this.currentQuestion.multiSelect) {
                 // 多选模式：切换"其他"选中状态
                 this.otherSelected = !this.otherSelected;
@@ -1159,6 +1281,8 @@ function deepVision() {
                         // 所有维度都已完成，停留在访谈阶段并提示确认
                         this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false, aiRecommendation: null };
                         this.aiRecommendationExpanded = false;
+                        this.aiRecommendationApplied = false;
+                        this.aiRecommendationPrevSelection = null;
                         this.showToast('所有维度访谈完成！', 'success');
                         return;  // 不再调用 fetchNextQuestion
                     }
@@ -1236,6 +1360,8 @@ function deepVision() {
                 // 直接恢复上一题的问题，而不是调用 AI 重新生成
                 this.currentQuestion = savedQuestion;
                 this.aiRecommendationExpanded = false;
+                this.aiRecommendationApplied = false;
+                this.aiRecommendationPrevSelection = null;
                 this.selectedAnswers = [];
                 this.otherAnswerText = '';
                 this.otherSelected = false;
@@ -1319,8 +1445,12 @@ function deepVision() {
                     this.currentDimension = nextDim;
                     await this.fetchNextQuestion();
                 } else {
-                    // 所有维度完成，进入确认阶段
-                    this.currentStep = 2;
+                    // 所有维度完成，停留在访谈阶段显示完成提示
+                    this.currentStep = 1;
+                    this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false, aiRecommendation: null };
+                    this.aiRecommendationExpanded = false;
+                    this.aiRecommendationApplied = false;
+                    this.aiRecommendationPrevSelection = null;
                 }
             } catch (error) {
                 const errorMsg = error.detail || error.message || '完成维度失败';
@@ -1358,6 +1488,8 @@ function deepVision() {
                     aiRecommendation: null
                 };
                 this.aiRecommendationExpanded = false;
+                this.aiRecommendationApplied = false;
+                this.aiRecommendationPrevSelection = null;
             } else if (this.milestoneData && this.milestoneData.nextDimension) {
                 // 切换到下一个维度
                 this.currentDimension = this.milestoneData.nextDimension;
@@ -1720,6 +1852,84 @@ function deepVision() {
         // 当报告内容渲染完成后调用（由 x-effect 触发）
         onReportRendered() {
             this.renderMermaidCharts();
+            this.injectReportSummaryAndToc();
+        },
+
+        injectReportSummaryAndToc() {
+            const reportElement = document.querySelector('.markdown-body');
+            if (!reportElement) return;
+
+            const existingSummary = reportElement.querySelector('#report-summary-block');
+            if (existingSummary) existingSummary.remove();
+            const existingToc = reportElement.querySelector('#report-toc-block');
+            if (existingToc) existingToc.remove();
+
+            const headings = Array.from(reportElement.querySelectorAll('h2, h3'));
+            if (headings.length === 0) return;
+
+            headings.forEach((heading, index) => {
+                if (!heading.id) {
+                    heading.id = `report-section-${index + 1}`;
+                }
+            });
+
+            const firstHeading = headings[0];
+            let summaryItems = [];
+            let node = firstHeading.nextElementSibling;
+            while (node && !/^H[23]$/i.test(node.tagName) && summaryItems.length < 3) {
+                if (node.tagName === 'P') {
+                    const text = node.textContent.trim();
+                    if (text) summaryItems.push(text);
+                }
+                node = node.nextElementSibling;
+            }
+
+            if (summaryItems.length > 0) {
+                const summaryDetails = document.createElement('details');
+                summaryDetails.id = 'report-summary-block';
+                summaryDetails.className = 'border border-gray-200 rounded-xl p-4 mb-4';
+                summaryDetails.innerHTML = `
+                    <summary class="cursor-pointer text-sm font-semibold text-primary">摘要与关键发现</summary>
+                    <ul class="mt-3 space-y-2 text-sm text-secondary"></ul>
+                `;
+                const list = summaryDetails.querySelector('ul');
+                summaryItems.forEach(item => {
+                    const li = document.createElement('li');
+                    li.textContent = item;
+                    list.appendChild(li);
+                });
+                reportElement.prepend(summaryDetails);
+            }
+
+            const tocItems = headings.filter(h => h.tagName === 'H2');
+            if (tocItems.length > 0) {
+                const toc = document.createElement('div');
+                toc.id = 'report-toc-block';
+                toc.className = 'border border-gray-200 rounded-xl p-4 mb-4 bg-white';
+                const title = document.createElement('div');
+                title.className = 'text-sm font-semibold text-primary mb-2';
+                title.textContent = '目录';
+                toc.appendChild(title);
+                const list = document.createElement('div');
+                list.className = 'flex flex-wrap gap-2';
+                tocItems.forEach(item => {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'tag-pill tag-pill--xs hover:bg-gray-200 transition-colors';
+                    btn.textContent = item.textContent.trim();
+                    btn.addEventListener('click', () => {
+                        item.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    });
+                    list.appendChild(btn);
+                });
+                toc.appendChild(list);
+                const summaryBlock = reportElement.querySelector('#report-summary-block');
+                if (summaryBlock && summaryBlock.nextSibling) {
+                    summaryBlock.after(toc);
+                } else {
+                    reportElement.prepend(toc);
+                }
+            }
         },
 
         downloadReport(format = 'md') {
@@ -2597,7 +2807,7 @@ function deepVision() {
 
             // 按状态筛选
             if (this.sessionStatusFilter !== 'all') {
-                result = result.filter(s => s.status === this.sessionStatusFilter);
+                result = result.filter(s => this.getEffectiveSessionStatus(s) === this.sessionStatusFilter);
             }
 
             // 排序
@@ -3524,13 +3734,29 @@ function deepVision() {
             return classes[status] || 'bg-gray-100 text-gray-700';
         },
 
+        getEffectiveSessionStatus(session) {
+            if (!session) return 'in_progress';
+            const raw = session.status || 'in_progress';
+            const progress = this.getSessionTotalProgress(session);
+            if (raw === 'in_progress' && progress >= 100) {
+                return 'pending_review';
+            }
+            return raw;
+        },
+
         getStatusText(status) {
             const texts = {
                 'in_progress': '进行中',
                 'completed': '已完成',
+                'pending_review': '待确认',
                 'paused': '已暂停'
             };
             return texts[status] || status;
+        },
+
+        getSessionStatusCount(status) {
+            if (!Array.isArray(this.sessions)) return 0;
+            return this.sessions.filter(s => this.getEffectiveSessionStatus(s) === status).length;
         },
 
         // 根据百分比计算进度条颜色
