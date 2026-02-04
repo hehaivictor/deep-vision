@@ -39,6 +39,27 @@
         .logo-pulse {
             animation: pulse-ring 3s ease-in-out infinite;
         }
+        .tag-pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.25rem 0.625rem;
+            font-size: 11px;
+            font-weight: 500;
+            border-radius: 9999px;
+            background: #f3f4f6;
+            color: #4b5563;
+            white-space: nowrap;
+        }
+        .tag-pill--xs {
+            padding: 0.125rem 0.5rem;
+            font-size: 10px;
+        }
+        .evidence-highlight {
+            background: #fff7e6;
+            box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.6);
+            transition: background 0.2s ease;
+        }
         .binary-rail {
             position: relative;
             width: 6rem;
@@ -604,6 +625,14 @@
                                         class="px-3 py-2 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap">
                                     进行中
                                 </button>
+                                <button @click="sessionStatusFilter = 'pending_review'; filterSessions()"
+                                        :class="sessionStatusFilter === 'pending_review' ? 'bg-amber-500 text-white' : 'bg-amber-50 text-amber-700 hover:bg-amber-100'"
+                                        class="px-3 py-2 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5">
+                                    待确认
+                                    <span x-show="getSessionStatusCount('pending_review') > 0"
+                                          class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold bg-white/80 text-amber-700"
+                                          x-text="getSessionStatusCount('pending_review')"></span>
+                                </button>
                                 <button @click="sessionStatusFilter = 'completed'; filterSessions()"
                                         :class="sessionStatusFilter === 'completed' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
                                         class="px-3 py-2 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap">
@@ -661,7 +690,7 @@
                                                     :title="session.topic"
                                                     x-text="session.topic"></h3>
                                                 <span x-show="session.scenario_config?.name"
-                                                      class="mt-2 inline-flex w-fit self-start items-center justify-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-gray-100 text-gray-600 whitespace-nowrap shrink-0"
+                                                      class="mt-2 tag-pill w-fit self-start shrink-0"
                                                       :title="session.scenario_config?.name || ''"
                                                       x-text="session.scenario_config?.name || ''"></span>
                                                 <template x-if="session.description">
@@ -673,9 +702,8 @@
 
                                             <!-- 右侧：标签 -->
                                             <div class="flex flex-wrap items-center justify-start gap-1 w-full sm:justify-end">
-                                                    <span :class="getStatusBadgeClass(session.status)"
-                                                          class="px-3 py-1.5 rounded-full text-[11px] font-medium whitespace-nowrap shrink-0"
-                                                          x-text="getStatusText(session.status)"></span>
+                                                    <span class="tag-pill shrink-0"
+                                                          x-text="getStatusText(getEffectiveSessionStatus(session))"></span>
                                                     <button @click.stop="confirmDeleteSession(session.session_id)"
                                                             class="p-1.5 text-gray-300 hover:text-danger hover:bg-red-50 rounded-md transition-colors cursor-pointer sm:opacity-0 sm:pointer-events-none sm:group-hover:opacity-100 sm:group-hover:pointer-events-auto"
                                                             aria-label="删除会话">
@@ -794,7 +822,7 @@
                                     </svg>
                                     访谈主题
                                     <span x-show="currentSession.scenario_config?.name"
-                                          class="inline-flex w-fit items-center justify-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-gray-100 text-gray-600 whitespace-nowrap shrink-0"
+                                          class="tag-pill w-fit shrink-0"
                                           x-text="currentSession.scenario_config?.name || ''"></span>
                                 </h3>
                                 <p class="text-sm text-secondary break-words" x-text="currentSession.topic"></p>
@@ -1209,9 +1237,9 @@
                                     <div class="bg-surface border border-border rounded-xl p-6">
                                         <!-- 维度标签和问题编号（立即显示） -->
                                         <div class="flex items-center gap-3 mb-4">
-                                            <span class="px-3 py-1 bg-cta/10 text-primary rounded-lg text-sm font-medium" x-text="getDimensionName(currentDimension)"></span>
+                                            <span class="tag-pill" x-text="getDimensionName(currentDimension)"></span>
                                             <span class="text-muted text-sm">问题 <span x-text="getQuestionNumber()"></span></span>
-                                            <span class="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
+                                            <span class="tag-pill tag-pill--xs">
                                                 <span x-text="currentQuestion.multiSelect ? '可多选' : '单选'"></span>
                                             </span>
                                         </div>
@@ -1307,10 +1335,10 @@
                                     <!-- 问题头部 - 未完成时显示 -->
                                     <div x-show="getTotalProgress() < 100">
                                         <div class="flex items-center gap-3 mb-4">
-                                            <span class="px-3 py-1 bg-cta/10 text-primary rounded-lg text-sm font-medium" x-text="getDimensionName(currentDimension)"></span>
+                                            <span class="tag-pill" x-text="getDimensionName(currentDimension)"></span>
                                             <span class="text-muted text-sm">问题 <span x-text="getQuestionNumber()"></span></span>
                                             <!-- 单选/多选提示 -->
-                                            <span class="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
+                                            <span class="tag-pill tag-pill--xs">
                                                 <span x-text="currentQuestion.multiSelect ? '可多选' : '单选'"></span>
                                             </span>
                                         </div>
@@ -1353,13 +1381,16 @@
                                             </div>
                                             <div class="flex items-center justify-between gap-4 mt-3">
                                                 <div class="min-w-0">
-                                                    <div class="text-sm font-semibold text-primary" x-text="currentQuestion.aiRecommendation.recommendedOptions.join('、')"></div>
+                                                    <div class="text-sm font-semibold text-primary" x-text="getAiRecommendationDisplayOptions().join('、')"></div>
                                                     <div class="text-xs text-muted mt-1"
                                                          x-text="currentQuestion.aiRecommendation.summary || '基于已收集的回答，AI 倾向该选项'"></div>
+                                                    <template x-if="aiRecommendationApplied">
+                                                        <div class="text-[11px] text-gray-500 mt-1.5">已采纳 AI 推荐</div>
+                                                    </template>
                                                 </div>
-                                                <button @click="applyAiRecommendation()"
+                                                <button @click="aiRecommendationApplied ? revertAiRecommendation() : applyAiRecommendation()"
                                                         class="px-3 py-1.5 text-xs font-medium rounded-lg bg-[#357BE2] text-white hover:bg-[#2c6bd1] transition-colors">
-                                                    一键采纳
+                                                    <span x-text="aiRecommendationApplied ? '撤回推荐' : '一键采纳'"></span>
                                                 </button>
                                             </div>
                                             <div class="mt-3 space-y-2 text-xs text-muted" x-show="aiRecommendationExpanded">
@@ -1370,7 +1401,10 @@
                                                             <template x-if="reason.evidence && reason.evidence.length > 0">
                                                                 <div class="flex flex-wrap gap-1">
                                                                     <template x-for="(ev, eidx) in reason.evidence" :key="eidx">
-                                                                        <span class="px-1.5 py-0.5 bg-gray-100 rounded text-[10px]" x-text="ev"></span>
+                                                                        <button type="button"
+                                                                                :class="evidenceCanJump(ev) ? 'tag-pill tag-pill--xs hover:bg-gray-200 transition-colors cursor-pointer' : 'tag-pill tag-pill--xs cursor-default'"
+                                                                                @click="evidenceCanJump(ev) && jumpToEvidence(normalizeEvidenceId(ev))"
+                                                                                x-text="formatEvidenceLabel(ev)"></button>
                                                                     </template>
                                                                 </div>
                                                             </template>
@@ -1389,7 +1423,7 @@
                                         <template x-for="(option, index) in currentQuestion.options" :key="index">
                                             <div @click="toggleOption(option)"
                                                  :class="[isOptionSelected(option) ? 'border-[#EDF4FE] bg-cta/5 ring-2 ring-cta/20' : 'border-gray-200 hover:border-cta/50', isOptionRecommended(option) && !isOptionSelected(option) ? 'border-[#D6E6FF] bg-[#F7FAFF]' : '']"
-                                                 class="p-4 border-2 rounded-xl cursor-pointer transition-all duration-200">
+                                                 class="p-4 border-2 rounded-xl cursor-pointer transition-all duration-200 min-h-[48px]">
                                                 <div class="flex items-center gap-3">
                                                     <!-- 单选：圆形 / 多选：方形 -->
                                                     <template x-if="!currentQuestion.multiSelect">
@@ -1408,15 +1442,15 @@
                                                     </template>
                                                     <span class="font-medium" x-text="option"></span>
                                                     <span x-show="isOptionRecommended(option)"
-                                                          class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-gray-100 text-gray-600">AI 推荐</span>
+                                                          class="ml-1 tag-pill tag-pill--xs">AI 推荐</span>
                                                 </div>
                                             </div>
                                         </template>
 
                                         <!-- 其他选项 - 只在有选项时显示 -->
-                                        <div x-show="currentQuestion.options && currentQuestion.options.length > 0"
-                                             :class="otherSelected ? 'border-[#EDF4FE] bg-cta/5 ring-2 ring-cta/20' : 'border-gray-200 hover:border-cta/50'"
-                                             class="p-4 border-2 rounded-xl transition-all duration-200">
+                                             <div x-show="currentQuestion.options && currentQuestion.options.length > 0"
+                                                  :class="otherSelected ? 'border-[#EDF4FE] bg-cta/5 ring-2 ring-cta/20' : 'border-gray-200 hover:border-cta/50'"
+                                             class="p-4 border-2 rounded-xl transition-all duration-200 min-h-[48px]">
                                             <div :class="otherSelected ? 'mb-3' : ''" class="flex items-center gap-3 cursor-pointer" @click="toggleOther()">
                                                 <!-- 单选：圆形 / 多选：方形 -->
                                                 <template x-if="!currentQuestion.multiSelect">
@@ -1438,7 +1472,7 @@
                                             <textarea x-ref="otherInput"
                                                    x-show="otherSelected"
                                                    x-model="otherAnswerText"
-                                                   @focus="otherSelected = true; if (!currentQuestion.multiSelect) { selectedAnswers = []; }"
+                                                   @focus="clearAiRecommendationApplied(); otherSelected = true; if (!currentQuestion.multiSelect) { selectedAnswers = []; }"
                                                    placeholder="你的想法对访谈至关重要"
                                                    rows="3"
                                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cta/50 focus:border-cta resize-y min-h-[80px]"></textarea>
@@ -1508,9 +1542,10 @@
                                     </h3>
                                     <div class="space-y-3 max-h-96 overflow-y-auto">
                                         <template x-for="(log, index) in currentSession.interview_log.slice().reverse()" :key="index">
-                                            <div class="p-4 bg-gray-50 rounded-lg">
+                                            <div class="p-4 bg-gray-50 rounded-lg"
+                                                 :data-qa-id="'Q' + (currentSession.interview_log.length - index)">
                                                 <div class="flex items-center gap-2 mb-1">
-                                                    <span class="px-2 py-0.5 bg-cta/10 text-primary rounded text-xs font-medium" x-text="getDimensionName(log.dimension)"></span>
+                                                    <span class="tag-pill tag-pill--xs" x-text="getDimensionName(log.dimension)"></span>
                                                 </div>
                                                 <p class="text-sm text-muted mb-1" x-text="'Q: ' + log.question"></p>
                                                 <p class="font-medium text-primary" x-text="'A: ' + log.answer"></p>
@@ -1903,7 +1938,7 @@
                                         <!-- 维度标签 -->
                                         <div class="flex flex-wrap gap-1 mt-2">
                                             <template x-for="dim in selectedScenario?.dimensions || []" :key="dim.id">
-                                                <span class="text-[10px] bg-white/80 border border-gray-200 text-gray-600 px-1.5 py-0.5 rounded" x-text="dim.name"></span>
+                                                <span class="tag-pill tag-pill--xs" x-text="dim.name"></span>
                                             </template>
                                         </div>
                                         <!-- AI 推荐理由 -->
