@@ -1596,30 +1596,60 @@
                                 </div>
 
                                 <div class="flex flex-col-reverse sm:flex-row justify-between items-stretch sm:items-center gap-3 mt-8 pt-4 border-t border-gray-100">
-                                    <button @click="currentStep = 1"
-                                            class="text-muted hover:text-secondary flex items-center justify-center gap-1 cursor-pointer py-2.5 sm:py-0">
-                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
-                                        </svg>
-                                        返回继续访谈
-                                    </button>
-                                    <button @click="generateReport()"
-                                            :disabled="isGeneratingCurrentReport()"
-                                            :class="isGeneratingCurrentReport() ? 'btn-sage-blue opacity-80 cursor-wait' : 'btn-sage-blue cursor-pointer'"
-                                            class="px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto text-white">
-                                        <template x-if="isGeneratingCurrentReport()">
-                                            <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                                            </svg>
-                                        </template>
-                                        <template x-if="!isGeneratingCurrentReport()">
+                                    <template x-if="currentSession.status === 'completed'">
+                                        <button @click="switchView('sessions')"
+                                                class="text-muted hover:text-secondary flex items-center justify-center gap-1 cursor-pointer py-2.5 sm:py-0">
                                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                                             </svg>
-                                        </template>
-                                        <span x-text="isGeneratingCurrentReport() ? '生成中...' : '生成报告'"></span>
-                                    </button>
+                                            返回会话列表
+                                        </button>
+                                    </template>
+                                    <template x-if="currentSession.status !== 'completed'">
+                                        <button @click="currentStep = 1"
+                                                class="text-muted hover:text-secondary flex items-center justify-center gap-1 cursor-pointer py-2.5 sm:py-0">
+                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+                                            </svg>
+                                            返回继续访谈
+                                        </button>
+                                    </template>
+                                    <template x-if="currentSession.status === 'completed'">
+                                        <div class="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+                                            <button @click="viewLatestReportForSession()"
+                                                    class="px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto text-white btn-sage-blue cursor-pointer">
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                                </svg>
+                                                查看报告
+                                            </button>
+                                            <button @click="generateReport()"
+                                                    :disabled="isGeneratingCurrentReport()"
+                                                    :class="isGeneratingCurrentReport() ? 'bg-gray-200 text-gray-500 cursor-wait' : 'border border-gray-200 text-gray-700 hover:bg-gray-50 cursor-pointer'"
+                                                    class="px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto">
+                                                重新生成报告
+                                            </button>
+                                        </div>
+                                    </template>
+                                    <template x-if="currentSession.status !== 'completed'">
+                                        <button @click="generateReport()"
+                                                :disabled="isGeneratingCurrentReport()"
+                                                :class="isGeneratingCurrentReport() ? 'btn-sage-blue opacity-80 cursor-wait' : 'btn-sage-blue cursor-pointer'"
+                                                class="px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto text-white">
+                                            <template x-if="isGeneratingCurrentReport()">
+                                                <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                                </svg>
+                                            </template>
+                                            <template x-if="!isGeneratingCurrentReport()">
+                                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                                </svg>
+                                            </template>
+                                            <span x-text="isGeneratingCurrentReport() ? '生成中...' : '生成报告'"></span>
+                                        </button>
+                                    </template>
                                 </div>
                             </div>
                         </template>
@@ -1762,7 +1792,7 @@
                                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                                     </svg>
-                                    返回列表
+                                    返回报告列表
                                 </button>
                                 <div class="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                                     <button @click="generatePresentation"
