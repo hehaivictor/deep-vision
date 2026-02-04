@@ -2545,6 +2545,23 @@ function deepVision() {
                 case 'progress':
                     result.sort((a, b) => this.getSessionTotalProgress(b) - this.getSessionTotalProgress(a));
                     break;
+                case 'scenario': {
+                    result.sort((a, b) => {
+                        const nameA = (a.scenario_config?.name || '').toLowerCase();
+                        const nameB = (b.scenario_config?.name || '').toLowerCase();
+                        if (!nameA && !nameB) {
+                            return 0;
+                        }
+                        if (!nameA) {
+                            return 1;
+                        }
+                        if (!nameB) {
+                            return -1;
+                        }
+                        return nameA.localeCompare(nameB, 'zh-Hans');
+                    });
+                    break;
+                }
             }
 
             this.filteredSessions = result;
