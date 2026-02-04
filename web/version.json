@@ -1,7 +1,16 @@
 {
-  "version": "1.22.11",
+  "version": "1.22.12",
   "releaseDate": "2026-02-04",
   "changelog": [
+    {
+      "version": "1.22.12",
+      "date": "2026-02-04",
+      "type": "patch",
+      "title": "访谈会话场景标签自适应宽度",
+      "changes": [
+        "访谈会话场景标签自适应宽度"
+      ]
+    },
     {
       "version": "1.22.11",
       "date": "2026-02-04",
