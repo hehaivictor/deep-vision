@@ -1969,9 +1969,20 @@ function deepVision() {
             }
         },
 
+        getReportExportContent() {
+            if (!this.reportContent) return '';
+            let content = this.reportContent;
+            const appendixIndex = content.indexOf('## 附录：完整访谈记录');
+            if (appendixIndex !== -1) {
+                content = content.slice(0, appendixIndex).trimEnd();
+            }
+            return content.trim();
+        },
+
         // 下载 Markdown 格式
         downloadMarkdown(filename) {
-            const blob = new Blob([this.reportContent], { type: 'text/markdown;charset=utf-8' });
+            const exportContent = this.getReportExportContent();
+            const blob = new Blob([exportContent], { type: 'text/markdown;charset=utf-8' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
@@ -2002,6 +2013,22 @@ function deepVision() {
                 const tempContainer = document.createElement('div');
                 tempContainer.innerHTML = reportElement.innerHTML;
                 tempContainer.style.cssText = 'padding: 40px; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; line-height: 1.8; color: #1a1a1a;';
+
+                // 移除摘要、目录、附录（完整访谈记录）
+                const summaryBlock = tempContainer.querySelector('#report-summary-block');
+                if (summaryBlock) summaryBlock.remove();
+                const tocBlock = tempContainer.querySelector('#report-toc-block');
+                if (tocBlock) tocBlock.remove();
+                const appendixHeading = Array.from(tempContainer.querySelectorAll('h2'))
+                    .find(h => h.textContent?.trim() === '附录：完整访谈记录');
+                if (appendixHeading) {
+                    let node = appendixHeading;
+                    while (node) {
+                        const next = node.nextSibling;
+                        node.remove();
+                        node = next;
+                    }
+                }
 
                 // 添加PDF专用样式
                 const style = document.createElement('style');
@@ -2073,8 +2100,9 @@ function deepVision() {
                 // 先收集所有 Mermaid 图表的图片数据
                 const mermaidImages = await this.collectMermaidImages();
 
-                // 解析 Markdown 内容为文档段落
-                const lines = this.reportContent.split('\n');
+                // 解析 Markdown 内容为文档段落（导出精简版）
+                const exportContent = this.getReportExportContent();
+                const lines = exportContent.split('\n');
                 const children = [];
                 let inMermaidBlock = false;
                 let mermaidIndex = 0;
