@@ -182,8 +182,10 @@ function deepVision() {
             followUpReason: null,
             conflictDetected: false,
             conflictDescription: null,
-            aiGenerated: false
+            aiGenerated: false,
+            aiRecommendation: null
         },
+        aiRecommendationExpanded: false,
         selectedAnswers: [],  // 改用数组支持多选
         otherAnswerText: '',
         otherSelected: false,  // "其他"选项是否被选中
@@ -404,6 +406,7 @@ function deepVision() {
         async startSkeletonFill(result) {
             const questionText = result.question || '';
             const options = result.options || [];
+            const aiRecommendation = this.normalizeAiRecommendation(result);
 
             // 验证必要数据
             if (!questionText || options.length === 0) {
@@ -411,8 +414,10 @@ function deepVision() {
                     text: '', options: [], multiSelect: false,
                     aiGenerated: false, serviceError: true,
                     errorTitle: '数据异常',
-                    errorDetail: '问题或选项缺失，请重试'
+                    errorDetail: '问题或选项缺失，请重试',
+                    aiRecommendation: null
                 };
+                this.aiRecommendationExpanded = false;
                 this.interactionReady = true;
                 this.skeletonMode = false;
                 return;
@@ -434,8 +439,10 @@ function deepVision() {
                 followUpReason: result.follow_up_reason,
                 conflictDetected: result.conflict_detected || false,
                 conflictDescription: result.conflict_description,
-                aiGenerated: result.ai_generated || false
+                aiGenerated: result.ai_generated || false,
+                aiRecommendation: aiRecommendation
             };
+            this.aiRecommendationExpanded = false;
 
             // 检查用户是否禁用了动效（可访问性支持）
             const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -576,7 +583,8 @@ function deepVision() {
                     // 所有维度已完成，直接进入确认阶段
                     this.currentStep = 2;
                     this.currentDimension = this.dimensionOrder[this.dimensionOrder.length - 1];
-                    this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false };
+                    this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false, aiRecommendation: null };
+                    this.aiRecommendationExpanded = false;
                 } else if (this.currentSession.interview_log.length > 0) {
                     // 有未完成的维度，继续访谈
                     this.currentStep = 1;
@@ -778,7 +786,8 @@ function deepVision() {
             if (!nextDim) {
                 // 所有维度都已完成，直接进入确认阶段
                 this.currentStep = 2;
-                this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false };
+                this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false, aiRecommendation: null };
+                this.aiRecommendationExpanded = false;
                 return;
             }
 
@@ -811,8 +820,10 @@ function deepVision() {
             // 重置问题状态，清除上一次可能的错误
             this.currentQuestion = {
                 text: '', options: [], multiSelect: false,
-                aiGenerated: false, serviceError: false
+                aiGenerated: false, serviceError: false,
+                aiRecommendation: null
             };
+            this.aiRecommendationExpanded = false;
             this.startThinkingPolling();  // 方案B: 开始轮询思考进度
             this.startWebSearchPolling();  // 同时保留 Web Search 状态轮询
             this.selectedAnswers = [];
@@ -868,8 +879,10 @@ function deepVision() {
                         aiGenerated: false,
                         serviceError: true,
                         errorTitle: errorTitle,
-                        errorDetail: errorDetail
+                        errorDetail: errorDetail,
+                        aiRecommendation: null
                     };
+                    this.aiRecommendationExpanded = false;
                     this.interactionReady = true;  // 错误状态下允许交互（重试）
                     return;
                 }
@@ -938,8 +951,10 @@ function deepVision() {
                     aiGenerated: false,
                     serviceError: true,
                     errorTitle: errorTitle,
-                    errorDetail: errorDetail
+                    errorDetail: errorDetail,
+                    aiRecommendation: null
                 };
+                this.aiRecommendationExpanded = false;
                 this.interactionReady = true;  // 错误状态下允许交互（重试）
             } finally {
                 if (requestId === this.questionRequestId) {
@@ -979,6 +994,52 @@ function deepVision() {
                 }
                 return this.selectedAnswers.length > 0;
             }
+        },
+
+        normalizeAiRecommendation(result) {
+            const rec = result?.ai_recommendation;
+            if (!rec || typeof rec !== 'object') return null;
+
+            let recommendedOptions = [];
+            if (Array.isArray(rec.recommended_options)) {
+                recommendedOptions = rec.recommended_options.filter(Boolean);
+            } else if (typeof rec.recommended_option === 'string') {
+                recommendedOptions = [rec.recommended_option];
+            }
+
+            const summary = rec.summary || '';
+            const reasons = Array.isArray(rec.reasons) ? rec.reasons.filter(r => r && r.text) : [];
+            const confidence = rec.confidence || '';
+
+            if (recommendedOptions.length === 0 && !summary && reasons.length === 0) {
+                return null;
+            }
+
+            return { recommendedOptions, summary, reasons, confidence };
+        },
+
+        formatAiConfidence(confidence) {
+            if (confidence === 'high') return '高';
+            if (confidence === 'medium') return '中';
+            if (confidence === 'low') return '低';
+            return '';
+        },
+
+        isOptionRecommended(option) {
+            return this.currentQuestion?.aiRecommendation?.recommendedOptions?.includes(option);
+        },
+
+        applyAiRecommendation() {
+            const rec = this.currentQuestion?.aiRecommendation;
+            if (!rec || !rec.recommendedOptions || rec.recommendedOptions.length === 0) return;
+
+            if (this.currentQuestion.multiSelect) {
+                this.selectedAnswers = [...rec.recommendedOptions];
+            } else {
+                this.selectedAnswers = [rec.recommendedOptions[0]];
+            }
+            this.otherSelected = false;
+            this.otherAnswerText = '';
         },
 
         // 切换选项选择状态
@@ -1096,7 +1157,8 @@ function deepVision() {
                         this.currentDimension = nextDim;
                     } else {
                         // 所有维度都已完成，停留在访谈阶段并提示确认
-                        this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false };
+                        this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false, aiRecommendation: null };
+                        this.aiRecommendationExpanded = false;
                         this.showToast('所有维度访谈完成！', 'success');
                         return;  // 不再调用 fetchNextQuestion
                     }
@@ -1153,7 +1215,8 @@ function deepVision() {
                     followUpReason: null,
                     conflictDetected: false,
                     conflictDescription: null,
-                    aiGenerated: true  // 标记为之前 AI 生成的问题
+                    aiGenerated: true,  // 标记为之前 AI 生成的问题
+                    aiRecommendation: null
                 };
 
                 // 调用后端 API 撤销最后一个回答
@@ -1172,6 +1235,7 @@ function deepVision() {
 
                 // 直接恢复上一题的问题，而不是调用 AI 重新生成
                 this.currentQuestion = savedQuestion;
+                this.aiRecommendationExpanded = false;
                 this.selectedAnswers = [];
                 this.otherAnswerText = '';
                 this.otherSelected = false;
@@ -1290,8 +1354,10 @@ function deepVision() {
                     text: '',
                     options: [],
                     multiSelect: false,
-                    aiGenerated: false
+                    aiGenerated: false,
+                    aiRecommendation: null
                 };
+                this.aiRecommendationExpanded = false;
             } else if (this.milestoneData && this.milestoneData.nextDimension) {
                 // 切换到下一个维度
                 this.currentDimension = this.milestoneData.nextDimension;
