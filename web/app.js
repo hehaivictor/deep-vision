@@ -21,6 +21,7 @@ function deepVision() {
         isGoingPrev: false,
         submitting: false,  // 提交答案进行中，防止并发操作
         generatingReport: false,
+        generatingReportSessionId: '',
         generatingSlides: false,
         presentationPolling: false,
         presentationPollInterval: null,
@@ -1344,6 +1345,7 @@ function deepVision() {
         // ============ 报告生成（AI 驱动）============
         async generateReport() {
             this.generatingReport = true;
+            this.generatingReportSessionId = this.currentSession?.session_id || '';
             this.startWebSearchPolling();  // 开始轮询 Web Search 状态
 
             try {
@@ -1367,8 +1369,15 @@ function deepVision() {
                 this.showToast('报告生成失败', 'error');
             } finally {
                 this.generatingReport = false;
+                this.generatingReportSessionId = '';
                 this.stopWebSearchPolling();  // 停止轮询 Web Search 状态
             }
+        },
+
+        isGeneratingCurrentReport() {
+            if (!this.generatingReport) return false;
+            const currentId = this.currentSession?.session_id || '';
+            return Boolean(currentId && currentId === this.generatingReportSessionId);
         },
 
         // ============ 报告查看 ============
