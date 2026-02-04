@@ -1630,18 +1630,27 @@
                                 </button>
                                 <div class="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                                     <button @click="generatePresentation"
-                                            :disabled="generatingSlides"
-                                            :class="generatingSlides ? 'opacity-70 cursor-not-allowed' : 'hover:bg-amber-600'"
+                                            x-show="!presentationPdfUrl"
+                                            :disabled="generatingSlides || presentationPolling"
+                                            :class="(generatingSlides || presentationPolling) ? 'opacity-70 cursor-not-allowed' : 'hover:bg-amber-600'"
                                             class="bg-amber-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto"
-                                            :aria-busy="generatingSlides ? 'true' : 'false'">
+                                            :aria-busy="(generatingSlides || presentationPolling) ? 'true' : 'false'">
                                         <svg x-show="!generatingSlides" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h18v12H3V3zm0 12l4 6h10l4-6M9 9h6M9 12h6"/>
                                         </svg>
-                                        <svg x-show="generatingSlides" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                        <svg x-show="generatingSlides || presentationPolling" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
                                             <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                             <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
                                         </svg>
-                                        <span x-text="generatingSlides ? '生成中...' : '一键生成演示文稿'"></span>
+                                        <span x-text="(generatingSlides || presentationPolling) ? '演示文稿生成中...' : '一键生成演示文稿'"></span>
+                                    </button>
+                                    <button x-show="presentationPdfUrl && !generatingSlides"
+                                            @click="openPresentationPdf()"
+                                            class="border border-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer hover:bg-slate-50 flex items-center justify-center gap-2 w-full sm:w-auto">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m7-7H5"/>
+                                        </svg>
+                                        查看演示文稿
                                     </button>
                                     <!-- 下载报告下拉菜单 -->
                                     <div class="relative" x-data="{ downloadMenuOpen: false }">
