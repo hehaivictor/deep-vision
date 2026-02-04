@@ -1,7 +1,16 @@
 {
-  "version": "1.22.19",
-  "releaseDate": "2026-02-04",
+  "version": "1.22.20",
+  "releaseDate": "2026-02-05",
   "changelog": [
+    {
+      "version": "1.22.20",
+      "date": "2026-02-05",
+      "type": "patch",
+      "title": "修复访谈报告导航逻辑」}Didn't follow rules? hmm",
+      "changes": [
+        "修复访谈报告导航逻辑」}Didn't follow rules? hmm"
+      ]
+    },
     {
       "version": "1.22.19",
       "date": "2026-02-04",
