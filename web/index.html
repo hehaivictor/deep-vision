@@ -42,43 +42,32 @@
         .binary-rail {
             position: relative;
             width: 6rem;
-            height: 0.5rem;
+            height: 0.75rem;
             display: flex;
             align-items: center;
             justify-content: center;
             overflow: hidden;
         }
         .binary-rail::before {
-            content: "0101 0101 0101";
-            font-family: "Fira Code", "SFMono-Regular", ui-monospace, monospace;
-            font-size: 0.55rem;
-            letter-spacing: 0.18rem;
-            color: rgba(53, 123, 226, 0.22);
-            text-transform: none;
-            white-space: nowrap;
-        }
-        .binary-rail::after {
             content: "";
             position: absolute;
-            left: -30%;
-            top: 0;
-            width: 40%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(53, 123, 226, 0.35), transparent);
-            animation: binary-scan 2.6s linear infinite;
-            opacity: 0;
+            inset: 0;
+            background-image: url("data:image/svg+xml;charset=UTF-8,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20width%3D%2750%27%20height%3D%2714%27%20viewBox%3D%270%200%2050%2014%27%3E%3Ctext%20x%3D%270%27%20y%3D%2710%27%20font-family%3D%27Fira%20Code%2C%20SFMono-Regular%2C%20ui-monospace%2C%20monospace%27%20font-size%3D%279%27%20fill%3D%27rgba(53%2C123%2C226%2C0.22)%27%20letter-spacing%3D%272%27%3E010101%3C/text%3E%3C/svg%3E");
+            background-repeat: repeat-x;
+            background-size: 50px 14px;
+            animation: binary-flow-wave 4.6s linear infinite;
+            mask-image: linear-gradient(90deg, transparent, #000 18%, #000 82%, transparent);
         }
-        .binary-rail.is-active::after {
-            opacity: 1;
+        .binary-rail::after {
+            display: none;
         }
-        @keyframes binary-scan {
-            0% { transform: translateX(0); }
-            100% { transform: translateX(200%); }
+        @keyframes binary-flow-wave {
+            0% { transform: translateX(-40%); }
+            100% { transform: translateX(0); }
         }
         @media (prefers-reduced-motion: reduce) {
-            .binary-rail::after {
+            .binary-rail::before {
                 animation: none;
-                opacity: 0;
             }
         }
         .btn-sage-blue {
@@ -629,6 +618,7 @@
                                 <option value="newest">最新优先</option>
                                 <option value="oldest">最早优先</option>
                                 <option value="progress">进度排序</option>
+                                <option value="scenario">场景排序</option>
                             </select>
                         </div>
                     </div>
@@ -664,14 +654,14 @@
                                     <template x-for="session in sessionsToRender" :key="session.session_id">
                                         <div class="group bg-surface border border-border rounded-xl hover:shadow-sm transition-all duration-200 p-4 cursor-pointer h-32 overflow-hidden"
                                          @click="openSession(session.session_id)">
-                                        <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_190px] gap-x-3 gap-y-2 h-full items-start pt-1">
+                                        <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_230px] gap-x-3 gap-y-2 h-full items-start pt-1">
                                             <!-- 左侧：标题 + 摘要 + 元信息 -->
                                             <div class="min-w-0 flex flex-col justify-start">
                                                 <h3 class="text-lg font-semibold text-primary line-clamp-1"
                                                     :title="session.topic"
                                                     x-text="session.topic"></h3>
                                                 <span x-show="session.scenario_config?.name"
-                                                      class="mt-2 inline-flex w-fit self-start items-center justify-center px-2 py-1 rounded-full text-[11px] font-medium bg-gray-100 text-gray-600 border border-gray-200 whitespace-nowrap shrink-0"
+                                                      class="mt-2 inline-flex w-fit self-start items-center justify-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-gray-100 text-gray-600 whitespace-nowrap shrink-0"
                                                       :title="session.scenario_config?.name || ''"
                                                       x-text="session.scenario_config?.name || ''"></span>
                                                 <template x-if="session.description">
@@ -697,7 +687,7 @@
                                             </div>
 
                                             <!-- 底部行：元信息 + 进度（同一水平线） -->
-                                            <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_190px] gap-2 sm:col-span-2 mt-2.5">
+                                            <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_230px] gap-2 sm:col-span-2 mt-2.5">
                                                 <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted">
                                                     <span>创建: <span x-text="formatDate(session.created_at)"></span></span>
                                                     <span class="hidden sm:inline">·</span>
@@ -804,7 +794,7 @@
                                     </svg>
                                     访谈主题
                                     <span x-show="currentSession.scenario_config?.name"
-                                          class="px-2 py-0.5 rounded-full text-[10px] font-medium bg-blue-50 text-blue-600 whitespace-nowrap"
+                                          class="inline-flex w-fit items-center justify-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-gray-100 text-gray-600 whitespace-nowrap shrink-0"
                                           x-text="currentSession.scenario_config?.name || ''"></span>
                                 </h3>
                                 <p class="text-sm text-secondary break-words" x-text="currentSession.topic"></p>
