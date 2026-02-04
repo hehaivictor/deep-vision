@@ -17,6 +17,7 @@ function deepVision() {
         currentView: 'sessions',
         loading: false,
         loadingQuestion: false,
+        questionRequestId: 0,
         isGoingPrev: false,
         submitting: false,  // 提交答案进行中，防止并发操作
         generatingReport: false,
@@ -800,6 +801,8 @@ function deepVision() {
         },
 
         async fetchNextQuestion() {
+            if (this.loadingQuestion) return;
+            const requestId = ++this.questionRequestId;
             this.loadingQuestion = true;
             this.skeletonMode = false;
             this.interactionReady = false;
@@ -823,6 +826,9 @@ function deepVision() {
                 });
 
                 const result = await response.json();
+                if (requestId !== this.questionRequestId) {
+                    return;
+                }
 
                 // 先停止轮询，手动设置完成状态让所有步骤显示为已完成
                 this.stopThinkingPolling();
@@ -913,6 +919,9 @@ function deepVision() {
                     await this.startSkeletonFill(result);
                 }
             } catch (error) {
+                if (requestId !== this.questionRequestId) {
+                    return;
+                }
                 console.error('获取问题失败:', error);
                 console.error('错误详情:', error.message, error.stack);
 
@@ -932,11 +941,13 @@ function deepVision() {
                 };
                 this.interactionReady = true;  // 错误状态下允许交互（重试）
             } finally {
-                // 确保停止轮询
-                this.stopThinkingPolling();
-                this.stopWebSearchPolling();
-                this.loadingQuestion = false;
-                this.isGoingPrev = false;
+                if (requestId === this.questionRequestId) {
+                    // 确保停止轮询
+                    this.stopThinkingPolling();
+                    this.stopWebSearchPolling();
+                    this.loadingQuestion = false;
+                    this.isGoingPrev = false;
+                }
             }
         },
 
