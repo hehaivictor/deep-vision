@@ -1963,14 +1963,16 @@ function deepVision() {
             const confirmed = window.confirm('确定停止本次演示文稿生成？可稍后重新生成');
             if (!confirmed) return;
             try {
-                if (this.presentationExecutionId) {
-                    await this.apiCall(
-                        `/reports/${encodeURIComponent(this.selectedReport)}/presentation/abort?execution_id=${encodeURIComponent(this.presentationExecutionId)}`,
-                        { method: 'POST' }
-                    );
-                }
+                const execParam = this.presentationExecutionId
+                    ? `?execution_id=${encodeURIComponent(this.presentationExecutionId)}`
+                    : '';
+                await this.apiCall(
+                    `/reports/${encodeURIComponent(this.selectedReport)}/presentation/abort${execParam}`,
+                    { method: 'POST' }
+                );
                 this.stopPresentationPolling();
                 this.generatingSlides = false;
+                this.presentationExecutionId = '';
                 this.showToast('已停止生成', 'success');
             } catch (error) {
                 this.showToast('停止失败，请稍后重试', 'error');
