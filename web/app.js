@@ -59,7 +59,7 @@ function deepVision() {
             {
                 id: 'topic',
                 selector: '[data-guide="guide-topic"]',
-                title: '一句话目标',
+                title: '第二步：一句话目标',
                 body: '只需一句话说明目标即可开始。',
                 cta: '下一步',
                 onEnter: function () {
@@ -85,7 +85,7 @@ function deepVision() {
             {
                 id: 'scenario',
                 selector: '[data-guide="guide-scenario"]',
-                title: '选择场景',
+                title: '第三步：选择场景',
                 body: '选一个场景，问题会自动贴合行业语境。',
                 cta: '下一步',
                 onEnter: function () {
@@ -98,8 +98,8 @@ function deepVision() {
             {
                 id: 'start',
                 selector: '[data-guide="guide-start"]',
-                title: '开始访谈',
-                body: '点击开始进入首次访谈。',
+                title: '最终确认',
+                body: '确认无误后，点击开始进入访谈。',
                 cta: '开始访谈',
                 onEnter: function () {
                     if (!this.showNewSessionModal) {
@@ -116,21 +116,9 @@ function deepVision() {
                     this.completeGuide();
                     return false;
                 }
-            },
-            {
-                id: 'first-question',
-                selector: '[data-guide="guide-first-question"]',
-                title: '第一个问题',
-                body: '系统会自动追问，你只需选择或补充。',
-                cta: '完成指引',
-                onEnter: function () {
-                    this.currentView = 'interview';
-                },
-                onNext: function () {
-                    this.completeGuide();
-                }
             }
         ],
+        guideStepTotal: 3,
 
         // ========== 方案B+D 新增状态变量 ==========
         thinkingStage: null,           // 思考阶段数据
@@ -462,7 +450,7 @@ function deepVision() {
             this.setGuideHighlight(el);
             this.startGuideObserver(el);
             const rect = el.getBoundingClientRect();
-            const padding = 6;
+            const padding = 10;
             const top = Math.max(rect.top - padding, 6);
             const left = Math.max(rect.left - padding, 6);
             const width = Math.min(rect.width + padding * 2, window.innerWidth - 12);

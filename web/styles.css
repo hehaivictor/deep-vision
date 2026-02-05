@@ -162,7 +162,7 @@ textarea {
 .guide-highlight-target {
     position: relative;
     z-index: 72;
-    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.9), 0 0 16px rgba(99, 102, 241, 0.35);
+    box-shadow: 0 0 16px rgba(99, 102, 241, 0.35);
     border-radius: 10px;
 }
 .guide-header {
@@ -201,6 +201,9 @@ textarea {
     justify-content: flex-end;
     gap: 8px;
     margin-top: 12px;
+}
+.guide-actions--final {
+    justify-content: flex-end;
 }
 .guide-btn {
     border-radius: 10px;

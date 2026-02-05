@@ -835,13 +835,13 @@
                     <div class="guide-spotlight" :style="guideSpotlightStyle"></div>
                     <div class="guide-card" :style="guideCardStyle">
                         <div class="guide-header">
-                            <div class="guide-step">步骤 <span x-text="guideStepIndex + 1"></span>/<span x-text="guideSteps.length"></span></div>
-                            <button class="guide-exit" @click="exitGuide()">跳过</button>
+                            <div class="guide-step" x-show="guideStepIndex < guideStepTotal">步骤 <span x-text="guideStepIndex + 1"></span>/<span x-text="guideStepTotal"></span></div>
+                            <button class="guide-exit" @click="exitGuide()" x-show="guideStepIndex < guideStepTotal">跳过</button>
                         </div>
                         <h3 class="guide-title" x-text="guideSteps[guideStepIndex].title"></h3>
                         <p class="guide-body" x-text="guideSteps[guideStepIndex].body"></p>
-                        <div class="guide-actions">
-                            <button class="guide-btn ghost" @click="prevGuideStep()" :disabled="guideStepIndex === 0">上一步</button>
+                        <div class="guide-actions" :class="guideStepIndex >= guideStepTotal ? 'guide-actions--final' : ''">
+                            <button class="guide-btn ghost" @click="prevGuideStep()" :disabled="guideStepIndex === 0" x-show="guideStepIndex < guideStepTotal">上一步</button>
                             <button class="guide-btn primary" @click="nextGuideStep()" x-text="guideSteps[guideStepIndex].cta"></button>
                         </div>
                     </div>
@@ -1323,7 +1323,7 @@
 
                                 <!-- 当前问题 -->
                                 <template x-if="currentStep === 1 && !loadingQuestion && !skeletonMode">
-                                <div data-guide="guide-first-question" class="bg-surface border border-border rounded-xl p-6">
+                                <div class="bg-surface border border-border rounded-xl p-6">
                                     <!-- 服务错误提示 -->
                                     <template x-if="currentQuestion.serviceError">
                                         <div class="text-center py-12">
@@ -1598,7 +1598,7 @@
 
                         <!-- Step 2: 需求确认 -->
                         <template x-if="currentStep === 2">
-                                <div data-guide="guide-first-question" class="bg-surface border border-border rounded-xl p-6">
+                                <div class="bg-surface border border-border rounded-xl p-6">
                                 <h3 class="text-xl font-semibold text-primary mb-2">需求摘要确认</h3>
                                 <p class="text-muted mb-6">请确认以下收集的需求信息是否准确</p>
 
@@ -1938,8 +1938,8 @@
              x-transition:leave-start="opacity-100"
              x-transition:leave-end="opacity-0"
              class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-3 sm:p-4"
-             @click.self="showNewSessionModal = false"
-             @keydown.escape.window="showNewSessionModal = false">
+             @click.self="if (!showGuide) showNewSessionModal = false"
+             @keydown.escape.window="if (!showGuide) showNewSessionModal = false">
             <div data-guide="guide-modal" class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95"
