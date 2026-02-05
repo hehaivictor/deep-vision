@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Deep Vision 深瞳</title>
     <!-- 本地化资源 - 支持内网部署 -->
+    <script>
+        (function () {
+            const warn = console.warn;
+            console.warn = function (...args) {
+                if (typeof args[0] === "string" && args[0].includes("cdn.tailwindcss.com should not be used in production")) {
+                    return;
+                }
+                return warn.apply(console, args);
+            };
+        })();
+    </script>
     <script src="vendor/css/tailwind-full.js"></script>
     <link rel="stylesheet" href="vendor/css/fonts.css">
     <style>
@@ -1744,7 +1755,8 @@
                                                 <div class="flex-1 h-px bg-gray-200"></div>
                                             </div>
                                         </div>
-                                        <div x-show="item.type === 'report'" x-cloak class="bg-surface border border-border rounded-xl hover:shadow-sm transition-all duration-200 p-5 hover:shadow-sm/20 min-h-[96px]" :data-report-key="item.type === 'report' ? item.key : null">
+                                        <template x-if="item.type === 'report'">
+                                            <div x-cloak class="bg-surface border border-border rounded-xl hover:shadow-sm transition-all duration-200 p-5 hover:shadow-sm/20 min-h-[96px]" :data-report-key="item.key">
                                             <div class="flex items-center justify-between">
                                                 <div class="flex items-center gap-4 flex-1 cursor-pointer" @click="viewReport(item.report.name)">
                                                     <div class="w-12 h-12 bg-primary/10 rounded-xl flex items-center justify-center">
@@ -1776,7 +1788,8 @@
                                                     </button>
                                                 </div>
                                             </div>
-                                        </div>
+                                            </div>
+                                        </template>
                                     </div>
                                 </template>
                                 <div x-show="!useVirtualReportList || virtualReportPaddingBottom > 0"
@@ -2893,13 +2906,18 @@
 
                                     <!-- 更新内容列表 -->
                                     <ul class="space-y-1.5 text-sm text-muted">
-                                        <template x-for="change in release.changes" :key="change">
+                                        <template x-if="release && release.changes && release.changes.length > 0">
+                                            <template x-for="(change, cidx) in release.changes" :key="change + '-' + cidx">
                                             <li class="flex items-start gap-2">
                                                 <svg class="w-4 h-4 text-green-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                                                 </svg>
                                                 <span x-text="change"></span>
                                             </li>
+                                            </template>
+                                        </template>
+                                        <template x-if="!release || !release.changes || release.changes.length === 0">
+                                            <li class="text-xs text-muted">暂无更新细节</li>
                                         </template>
                                     </ul>
 

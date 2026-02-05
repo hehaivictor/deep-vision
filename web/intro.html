@@ -4,6 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Deep Vision 深瞳 - 洞察深处，方见真章</title>
+    <script>
+        (function () {
+            const warn = console.warn;
+            console.warn = function (...args) {
+                if (typeof args[0] === "string" && args[0].includes("cdn.tailwindcss.com should not be used in production")) {
+                    return;
+                }
+                return warn.apply(console, args);
+            };
+        })();
+    </script>
     <script src="vendor/css/tailwind-full.js"></script>
     <link rel="stylesheet" href="vendor/css/fonts.css">
     <style>
