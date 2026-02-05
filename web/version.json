@@ -1,7 +1,16 @@
 {
-  "version": "1.22.25",
+  "version": "1.22.26",
   "releaseDate": "2026-02-05",
   "changelog": [
+    {
+      "version": "1.22.26",
+      "date": "2026-02-05",
+      "type": "patch",
+      "title": "调整页眉标签与诗词字号」}UCCESS(completion) (tr截",
+      "changes": [
+        "调整页眉标签与诗词字号」}UCCESS(completion) (tr截"
+      ]
+    },
     {
       "version": "1.22.25",
       "date": "2026-02-05",
