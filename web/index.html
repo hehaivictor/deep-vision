@@ -1389,7 +1389,7 @@
                                     </div>
 
                                     <!-- AI 推荐选项 -->
-                                    <template x-if="currentQuestion.aiRecommendation && currentQuestion.aiRecommendation.recommendedOptions && currentQuestion.aiRecommendation.recommendedOptions.length > 0 && getTotalProgress() < 100">
+                                    <template x-if="!isAssessmentSession() && currentQuestion.aiRecommendation && currentQuestion.aiRecommendation.recommendedOptions && currentQuestion.aiRecommendation.recommendedOptions.length > 0 && getTotalProgress() < 100">
                                         <div class="border border-gray-200 bg-white rounded-xl p-4 mb-4">
                                             <div class="flex items-center justify-between">
                                                 <div class="flex items-center gap-2">
