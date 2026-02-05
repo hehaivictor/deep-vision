@@ -1,7 +1,16 @@
 {
-  "version": "1.22.33",
-  "releaseDate": "2026-02-05",
+  "version": "1.22.34",
+  "releaseDate": "2026-02-06",
   "changelog": [
+    {
+      "version": "1.22.34",
+      "date": "2026-02-06",
+      "type": "patch",
+      "title": "优化新建访谈指引体验",
+      "changes": [
+        "优化新建访谈指引体验"
+      ]
+    },
     {
       "version": "1.22.33",
       "date": "2026-02-05",
