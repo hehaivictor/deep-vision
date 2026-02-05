@@ -1820,7 +1820,7 @@
                                     返回报告列表
                                 </button>
                                 <div class="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-                                    <div class="flex flex-col gap-1 w-full sm:w-auto">
+                                    <div class="flex flex-col gap-1 w-full sm:w-auto" x-show="isPresentationEnabled()">
                                         <button @click="(generatingSlides || presentationPolling) ? stopPresentationGeneration() : generatePresentation()"
                                                 x-show="!presentationPdfUrl"
                                                 :class="(generatingSlides || presentationPolling) ? 'bg-rose-100 border border-rose-400 text-rose-700 hover:bg-rose-200' : 'bg-amber-500 text-white hover:bg-amber-600'"

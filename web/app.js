@@ -3531,6 +3531,11 @@ function deepVision() {
             return this.currentSession?.scenario_config?.report?.type === 'assessment';
         },
 
+        isPresentationEnabled() {
+            if (typeof SITE_CONFIG === 'undefined') return false;
+            return SITE_CONFIG?.presentation?.enabled === true;
+        },
+
         // 获取维度评分（评估场景）
         getDimensionScore(dimKey) {
             const score = this.currentSession?.dimensions?.[dimKey]?.score;
