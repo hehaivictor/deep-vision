@@ -6,9 +6,9 @@
       "version": "1.22.25",
       "date": "2026-02-05",
       "type": "patch",
-      "title": "Fix Refly 文件上传 SSL 错误",
+      "title": "Fix 文件上传 SSL 错误",
       "changes": [
-        "Fix Refly 文件上传 SSL 错误"
+        "Fix 文件上传 SSL 错误"
       ]
     },
     {
