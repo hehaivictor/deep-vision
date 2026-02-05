@@ -369,8 +369,62 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            font-weight: 700;
-            font-size: 1.25rem;
+            color: #ffffff;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            box-shadow:
+                0 0 14px rgba(53, 123, 226, 0.45),
+                inset 0 0 10px rgba(255, 255, 255, 0.18);
+            position: relative;
+            overflow: hidden;
+        }
+        .user-avatar::after {
+            content: "";
+            position: absolute;
+            inset: 6px;
+            border-radius: 50%;
+            background:
+                radial-gradient(circle at 30% 30%, rgba(255,255,255,0.35) 0 1px, transparent 2px),
+                radial-gradient(circle at 70% 40%, rgba(255,255,255,0.3) 0 1px, transparent 2px),
+                radial-gradient(circle at 55% 70%, rgba(255,255,255,0.25) 0 1px, transparent 2px),
+                radial-gradient(circle at 35% 65%, rgba(255,255,255,0.2) 0 1px, transparent 2px);
+            opacity: 0.6;
+            pointer-events: none;
+        }
+        .user-avatar::before {
+            content: "";
+            position: absolute;
+            inset: 8px;
+            border-radius: 50%;
+            background:
+                radial-gradient(circle at 50% 50%, rgba(54, 167, 255, 0.35) 0 2px, transparent 3px),
+                repeating-linear-gradient(0deg, rgba(88, 167, 255, 0.12) 0 1px, transparent 1px 6px),
+                repeating-linear-gradient(90deg, rgba(88, 167, 255, 0.12) 0 1px, transparent 1px 6px);
+            opacity: 0.6;
+            filter: blur(0.2px);
+            animation: avatarPulse 3.8s ease-in-out infinite;
+            pointer-events: none;
+        }
+        .user-avatar svg {
+            width: 24px;
+            height: 24px;
+            opacity: 0.96;
+            position: relative;
+            z-index: 1;
+        }
+        .user-card:hover .user-avatar {
+            box-shadow:
+                0 0 18px rgba(53, 123, 226, 0.6),
+                inset 0 0 12px rgba(255, 255, 255, 0.22);
+        }
+        @keyframes avatarPulse {
+            0% { opacity: 0.45; transform: scale(0.98); }
+            50% { opacity: 0.85; transform: scale(1.02); }
+            100% { opacity: 0.45; transform: scale(0.98); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .user-avatar::before {
+                animation: none;
+            }
         }
 
         /* ========== CTA 区域 ========== */
@@ -953,7 +1007,18 @@
 
             <div class="grid md:grid-cols-2 gap-4">
                 <div class="user-card reveal reveal-delay-1">
-                    <div class="user-avatar">PM</div>
+                    <div class="user-avatar" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="4" y="4" width="6" height="6" rx="1.5"></rect>
+                            <rect x="14" y="4" width="6" height="6" rx="1.5"></rect>
+                            <rect x="9" y="14" width="6" height="6" rx="1.5"></rect>
+                            <path d="M10 7h4"></path>
+                            <path d="M12 10v4"></path>
+                            <circle cx="7" cy="7" r="0.6"></circle>
+                            <circle cx="17" cy="7" r="0.6"></circle>
+                            <circle cx="12" cy="17" r="0.6"></circle>
+                        </svg>
+                    </div>
                     <div>
                         <h3 class="font-semibold">产品经理</h3>
                         <p class="text-gray-500 text-sm">用户访谈、需求梳理、版本规划</p>
@@ -961,7 +1026,16 @@
                 </div>
 
                 <div class="user-card reveal reveal-delay-2">
-                    <div class="user-avatar">售前</div>
+                    <div class="user-avatar" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="4" y="5" width="16" height="10" rx="2"></rect>
+                            <path d="M8 9h8"></path>
+                            <path d="M10 13h4"></path>
+                            <path d="M12 15v4"></path>
+                            <circle cx="6.5" cy="8.5" r="0.6"></circle>
+                            <circle cx="17.5" cy="8.5" r="0.6"></circle>
+                        </svg>
+                    </div>
                     <div>
                         <h3 class="font-semibold">售前顾问</h3>
                         <p class="text-gray-500 text-sm">客户需求理解、方案准备</p>
@@ -969,7 +1043,16 @@
                 </div>
 
                 <div class="user-card reveal reveal-delay-3">
-                    <div class="user-avatar">项目</div>
+                    <div class="user-avatar" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="4" y="5" width="16" height="14" rx="2"></rect>
+                            <path d="M8 9h8"></path>
+                            <path d="M8 13h5"></path>
+                            <path d="M15 13l2 2 3-3"></path>
+                            <circle cx="6.5" cy="17" r="0.6"></circle>
+                            <circle cx="17.5" cy="17" r="0.6"></circle>
+                        </svg>
+                    </div>
                     <div>
                         <h3 class="font-semibold">项目经理</h3>
                         <p class="text-gray-500 text-sm">干系人访谈、风险评估</p>
@@ -977,7 +1060,19 @@
                 </div>
 
                 <div class="user-card reveal reveal-delay-4">
-                    <div class="user-avatar">BA</div>
+                    <div class="user-avatar" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M5 18h14"></path>
+                            <path d="M7 15v-4"></path>
+                            <path d="M12 18v-8"></path>
+                            <path d="M17 18v-6"></path>
+                            <circle cx="7" cy="10" r="1"></circle>
+                            <circle cx="12" cy="9" r="1"></circle>
+                            <circle cx="17" cy="11" r="1"></circle>
+                            <path d="M7 10h5"></path>
+                            <path d="M12 9h5"></path>
+                        </svg>
+                    </div>
                     <div>
                         <h3 class="font-semibold">业务分析师</h3>
                         <p class="text-gray-500 text-sm">业务流程梳理、系统分析</p>
@@ -985,7 +1080,18 @@
                 </div>
 
                 <div class="user-card reveal reveal-delay-5">
-                    <div class="user-avatar">咨询</div>
+                    <div class="user-avatar" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="7"></circle>
+                            <path d="M12 5v4"></path>
+                            <path d="M12 15v4"></path>
+                            <path d="M5 12h4"></path>
+                            <path d="M15 12h4"></path>
+                            <circle cx="12" cy="12" r="1.6"></circle>
+                            <circle cx="8" cy="8" r="0.6"></circle>
+                            <circle cx="16" cy="16" r="0.6"></circle>
+                        </svg>
+                    </div>
                     <div>
                         <h3 class="font-semibold">咨询顾问</h3>
                         <p class="text-gray-500 text-sm">战略访谈、企业诊断</p>
@@ -993,7 +1099,14 @@
                 </div>
 
                 <div class="user-card reveal reveal-delay-6">
-                    <div class="user-avatar">创业</div>
+                    <div class="user-avatar" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 4l2.5 5 5 .7-3.6 3.4.9 5.4L12 16l-4.8 2.5.9-5.4L4.5 9.7l5-.7L12 4z"></path>
+                            <path d="M12 10v3"></path>
+                            <circle cx="12" cy="7.2" r="0.6"></circle>
+                            <circle cx="16.2" cy="11.2" r="0.6"></circle>
+                        </svg>
+                    </div>
                     <div>
                         <h3 class="font-semibold">创业者</h3>
                         <p class="text-gray-500 text-sm">市场验证、用户洞察</p>
