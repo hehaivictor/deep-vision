@@ -1,7 +1,16 @@
 {
-  "version": "1.22.22",
+  "version": "1.22.23",
   "releaseDate": "2026-02-05",
   "changelog": [
+    {
+      "version": "1.22.23",
+      "date": "2026-02-05",
+      "type": "patch",
+      "title": "修复生成过程停止按钮功能缺陷} Invalid JSON due to",
+      "changes": [
+        "修复生成过程停止按钮功能缺陷} Invalid JSON due to"
+      ]
+    },
     {
       "version": "1.22.22",
       "date": "2026-02-05",
