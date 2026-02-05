@@ -1,7 +1,16 @@
 {
-  "version": "1.22.29",
+  "version": "1.22.30",
   "releaseDate": "2026-02-05",
   "changelog": [
+    {
+      "version": "1.22.30",
+      "date": "2026-02-05",
+      "type": "patch",
+      "title": "更新页面按钮配置显示规则」}INVALID but need no 。",
+      "changes": [
+        "更新页面按钮配置显示规则」}INVALID but need no 。"
+      ]
+    },
     {
       "version": "1.22.29",
       "date": "2026-02-05",
