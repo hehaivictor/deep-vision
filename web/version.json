@@ -1,7 +1,16 @@
 {
-  "version": "1.22.35",
+  "version": "1.22.36",
   "releaseDate": "2026-02-06",
   "changelog": [
+    {
+      "version": "1.22.36",
+      "date": "2026-02-06",
+      "type": "patch",
+      "title": "提交首页更新",
+      "changes": [
+        "提交首页更新"
+      ]
+    },
     {
       "version": "1.22.35",
       "date": "2026-02-06",
