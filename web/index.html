@@ -531,6 +531,11 @@
                         <span class="hidden sm:inline">访谈报告</span>
                         <span class="sm:hidden">报告</span>
                     </button>
+                    <button @click="openGuide()"
+                            class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium text-primary hover:bg-surface-secondary">
+                        <span class="hidden sm:inline">快速指引</span>
+                        <span class="sm:hidden">指引</span>
+                    </button>
                 </nav>
             </div>
         </header>
@@ -582,7 +587,8 @@
                             <h2 class="text-xl md:text-2xl font-semibold text-primary">访谈会话</h2>
                             <p class="text-muted text-sm mt-1">管理您的访谈会话</p>
                         </div>
-                        <button @click="resetScenarioSelection(); showNewSessionModal = true"
+                        <button data-guide="guide-new-session"
+                                @click="resetScenarioSelection(); showNewSessionModal = true"
                                 class="btn-sage-blue text-white px-5 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
@@ -809,6 +815,25 @@
 
                         </div>
                     </template>
+                </div>
+            </template>
+
+            <!-- ========== 快速指引（真实页面引导） ========== -->
+            <template x-if="showGuide">
+                <div class="guide-backdrop" @click.self="exitGuide()" @resize.window="updateGuideTarget()" @scroll.window="updateGuideTarget()">
+                    <div class="guide-spotlight" :style="guideSpotlightStyle"></div>
+                    <div class="guide-card" :style="guideCardStyle">
+                        <div class="guide-header">
+                            <div class="guide-step">步骤 <span x-text="guideStepIndex + 1"></span>/<span x-text="guideSteps.length"></span></div>
+                            <button class="guide-exit" @click="exitGuide()">跳过</button>
+                        </div>
+                        <h3 class="guide-title" x-text="guideSteps[guideStepIndex].title"></h3>
+                        <p class="guide-body" x-text="guideSteps[guideStepIndex].body"></p>
+                        <div class="guide-actions">
+                            <button class="guide-btn ghost" @click="prevGuideStep()" :disabled="guideStepIndex === 0">上一步</button>
+                            <button class="guide-btn primary" @click="nextGuideStep()" x-text="guideSteps[guideStepIndex].cta"></button>
+                        </div>
+                    </div>
                 </div>
             </template>
 
@@ -1287,7 +1312,7 @@
 
                                 <!-- 当前问题 -->
                                 <template x-if="currentStep === 1 && !loadingQuestion && !skeletonMode">
-                                <div class="bg-surface border border-border rounded-xl p-6">
+                                <div data-guide="guide-first-question" class="bg-surface border border-border rounded-xl p-6">
                                     <!-- 服务错误提示 -->
                                     <template x-if="currentQuestion.serviceError">
                                         <div class="text-center py-12">
@@ -1562,7 +1587,7 @@
 
                         <!-- Step 2: 需求确认 -->
                         <template x-if="currentStep === 2">
-                            <div class="bg-surface border border-border rounded-xl p-6">
+                                <div data-guide="guide-first-question" class="bg-surface border border-border rounded-xl p-6">
                                 <h3 class="text-xl font-semibold text-primary mb-2">需求摘要确认</h3>
                                 <p class="text-muted mb-6">请确认以下收集的需求信息是否准确</p>
 
@@ -1795,21 +1820,23 @@
                                     返回报告列表
                                 </button>
                                 <div class="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-                                    <button @click="generatePresentation"
-                                            x-show="!presentationPdfUrl"
-                                            :disabled="generatingSlides || presentationPolling"
-                                            :class="(generatingSlides || presentationPolling) ? 'opacity-70 cursor-not-allowed' : 'hover:bg-amber-600'"
-                                            class="bg-amber-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto"
-                                            :aria-busy="(generatingSlides || presentationPolling) ? 'true' : 'false'">
-                                        <svg x-show="!generatingSlides" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h18v12H3V3zm0 12l4 6h10l4-6M9 9h6M9 12h6"/>
-                                        </svg>
-                                        <svg x-show="generatingSlides || presentationPolling" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
-                                        </svg>
-                                        <span x-text="(generatingSlides || presentationPolling) ? '演示文稿生成中...' : '一键生成演示文稿'"></span>
-                                    </button>
+                                    <div class="flex flex-col gap-1 w-full sm:w-auto">
+                                        <button @click="(generatingSlides || presentationPolling) ? stopPresentationGeneration() : generatePresentation()"
+                                                x-show="!presentationPdfUrl"
+                                                :class="(generatingSlides || presentationPolling) ? 'bg-rose-100 border border-rose-400 text-rose-700 hover:bg-rose-200' : 'bg-amber-500 text-white hover:bg-amber-600'"
+                                                class="px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto"
+                                                :aria-busy="(generatingSlides || presentationPolling) ? 'true' : 'false'">
+                                            <svg x-show="!generatingSlides" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h18v12H3V3zm0 12l4 6h10l4-6M9 9h6M9 12h6"/>
+                                            </svg>
+                                            <svg x-show="generatingSlides || presentationPolling" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                                            </svg>
+                                            <span x-text="(generatingSlides || presentationPolling) ? '演示文稿生成中… 点击停止' : '一键生成演示文稿'"></span>
+                                        </button>
+                                        <span x-show="generatingSlides || presentationPolling" class="text-xs text-slate-500">预计 8-10 分钟，可随时停止</span>
+                                    </div>
                                     <button x-show="presentationPdfUrl && !generatingSlides"
                                             @click="openPresentationPdf()"
                                             class="border border-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer hover:bg-slate-50 flex items-center justify-center gap-2 w-full sm:w-auto">
@@ -1900,7 +1927,7 @@
              class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-3 sm:p-4"
              @click.self="showNewSessionModal = false"
              @keydown.escape.window="showNewSessionModal = false">
-            <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
+            <div data-guide="guide-modal" class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95"
                  x-transition:enter-end="opacity-100 scale-100">
@@ -1915,7 +1942,7 @@
                 <form @submit.prevent="createNewSession()">
                     <div class="mb-4">
                         <label for="newTopic" class="block text-sm font-medium text-secondary mb-2">访谈主题 <span class="text-danger">*</span></label>
-                        <input type="text" id="newTopic" x-model="newSessionTopic"
+                        <input data-guide="guide-topic" type="text" id="newTopic" x-model="newSessionTopic"
                                @input="onTopicInput()"
                                :placeholder="getTopicPlaceholder()"
                                class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#F0F8FF] focus:border-[#F0F8FF]"
@@ -1933,7 +1960,7 @@
                     </div>
 
                     <!-- 场景选择 - 智能推荐优先 -->
-                    <div class="mb-5">
+                    <div class="mb-5" data-guide="guide-scenario">
                         <div class="flex items-center justify-between mb-2">
                             <label class="block text-sm font-medium text-secondary">访谈场景</label>
                             <!-- 识别中指示器 -->
@@ -2217,7 +2244,7 @@
                                 class="px-5 py-2.5 border border-gray-300 rounded-lg font-medium hover:bg-gray-50 transition-colors duration-200 cursor-pointer">
                             取消
                         </button>
-                        <button type="submit"
+                        <button data-guide="guide-start" type="submit"
                                 :disabled="!newSessionTopic.trim()"
                                 :class="newSessionTopic.trim() ? 'btn-sage-blue cursor-pointer' : 'bg-gray-300 cursor-not-allowed'"
                                 class="px-5 py-2.5 text-white rounded-lg font-medium transition-colors duration-200">

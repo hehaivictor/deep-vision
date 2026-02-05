@@ -32,6 +32,105 @@ function deepVision() {
         currentTipIndex: 0,  // 访谈小技巧当前索引
         currentTip: '',  // 当前显示的小技巧文本
         tipRotationInterval: null,  // 小技巧轮播定时器
+        showGuide: false,
+        guideStepIndex: 0,
+        hasSeenGuide: false,
+        guideSpotlightStyle: '',
+        guideCardStyle: '',
+        guideHighlightedEl: null,
+        guideResizeObserver: null,
+        guideObservedEl: null,
+        guideObservedModal: null,
+        guideSteps: [
+            {
+                id: 'new-session',
+                selector: '[data-guide="guide-new-session"]',
+                title: '第一步：创建一次访谈',
+                body: '点击新建访谈，开始第一次调研。',
+                cta: '开始',
+                onEnter: function () {
+                    this.currentView = 'sessions';
+                },
+                onNext: function () {
+                    this.resetScenarioSelection();
+                    this.showNewSessionModal = true;
+                }
+            },
+            {
+                id: 'topic',
+                selector: '[data-guide="guide-topic"]',
+                title: '一句话目标',
+                body: '只需一句话说明目标即可开始。',
+                cta: '下一步',
+                onEnter: function () {
+                    if (!this.showNewSessionModal) {
+                        this.resetScenarioSelection();
+                        this.showNewSessionModal = true;
+                    }
+                    this.$nextTick(() => {
+                        const el = document.querySelector('[data-guide="guide-topic"]');
+                        if (el) el.focus();
+                    });
+                },
+                onNext: function () {
+                    if (!this.newSessionTopic.trim()) {
+                        this.showToast('请先输入一句话目标', 'warning');
+                        const el = document.querySelector('[data-guide="guide-topic"]');
+                        if (el) el.focus();
+                        return false;
+                    }
+                    return true;
+                }
+            },
+            {
+                id: 'scenario',
+                selector: '[data-guide="guide-scenario"]',
+                title: '选择场景',
+                body: '选一个场景，问题会自动贴合行业语境。',
+                cta: '下一步',
+                onEnter: function () {
+                    if (!this.showNewSessionModal) {
+                        this.resetScenarioSelection();
+                        this.showNewSessionModal = true;
+                    }
+                }
+            },
+            {
+                id: 'start',
+                selector: '[data-guide="guide-start"]',
+                title: '开始访谈',
+                body: '点击开始进入首次访谈。',
+                cta: '开始访谈',
+                onEnter: function () {
+                    if (!this.showNewSessionModal) {
+                        this.resetScenarioSelection();
+                        this.showNewSessionModal = true;
+                    }
+                },
+                onNext: async function () {
+                    if (!this.newSessionTopic.trim()) {
+                        this.showToast('请先输入一句话目标', 'warning');
+                        return false;
+                    }
+                    await this.createNewSession();
+                    this.completeGuide();
+                    return false;
+                }
+            },
+            {
+                id: 'first-question',
+                selector: '[data-guide="guide-first-question"]',
+                title: '第一个问题',
+                body: '系统会自动追问，你只需选择或补充。',
+                cta: '完成指引',
+                onEnter: function () {
+                    this.currentView = 'interview';
+                },
+                onNext: function () {
+                    this.completeGuide();
+                }
+            }
+        ],
 
         // ========== 方案B+D 新增状态变量 ==========
         thinkingStage: null,           // 思考阶段数据
@@ -245,6 +344,7 @@ function deepVision() {
 
             // 检查是否首次访问，跳转产品介绍页
             this.checkFirstVisit();
+            this.initGuide();
 
             // 初始化虚拟列表
             this.$nextTick(() => {
@@ -260,6 +360,170 @@ function deepVision() {
                 localStorage.setItem('deepvision_intro_seen', 'true');
                 window.location.href = 'intro.html';
             }
+        },
+        initGuide() {
+            const params = new URLSearchParams(window.location.search);
+            const forced = params.get('guide') === '1';
+            this.hasSeenGuide = localStorage.getItem('deepvision_guide_seen') === 'true';
+            if (forced || !this.hasSeenGuide) {
+                this.openGuide();
+            }
+            if (forced) {
+                params.delete('guide');
+                const newUrl = `${window.location.pathname}${params.toString() ? '?' + params.toString() : ''}`;
+                window.history.replaceState({}, '', newUrl);
+            }
+        },
+        openGuide() {
+            this.showGuide = true;
+            this.guideStepIndex = 0;
+            this.runGuideStep();
+        },
+        exitGuide() {
+            this.clearGuideHighlight();
+            this.stopGuideObserver();
+            this.showGuide = false;
+            this.guideSpotlightStyle = '';
+            this.guideCardStyle = '';
+            this.hasSeenGuide = true;
+            localStorage.setItem('deepvision_guide_seen', 'true');
+        },
+        completeGuide() {
+            this.clearGuideHighlight();
+            this.stopGuideObserver();
+            this.showGuide = false;
+            this.guideSpotlightStyle = '';
+            this.guideCardStyle = '';
+            this.hasSeenGuide = true;
+            localStorage.setItem('deepvision_guide_seen', 'true');
+        },
+        async nextGuideStep() {
+            const step = this.guideSteps[this.guideStepIndex];
+            if (step?.onNext) {
+                const result = await step.onNext.call(this);
+                if (result === false) return;
+            }
+            if (this.guideStepIndex < this.guideSteps.length - 1) {
+                this.guideStepIndex += 1;
+                this.runGuideStep();
+            } else {
+                this.completeGuide();
+            }
+        },
+        prevGuideStep() {
+            if (this.guideStepIndex > 0) {
+                this.guideStepIndex -= 1;
+                this.runGuideStep();
+            }
+        },
+        runGuideStep() {
+            if (!this.showGuide) return;
+            const step = this.guideSteps[this.guideStepIndex];
+            if (!step) return;
+            if (step.onEnter) {
+                step.onEnter.call(this);
+            }
+            this.$nextTick(() => {
+                this.scrollGuideTarget();
+                this.waitForGuideTarget();
+            });
+        },
+        scrollGuideTarget() {
+            const step = this.guideSteps[this.guideStepIndex];
+            const el = step ? document.querySelector(step.selector) : null;
+            if (el && typeof el.scrollIntoView === 'function') {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+            }
+        },
+        waitForGuideTarget(attempt = 0) {
+            if (!this.showGuide) return;
+            const step = this.guideSteps[this.guideStepIndex];
+            const el = step ? document.querySelector(step.selector) : null;
+            if (!el && attempt < 20) {
+                setTimeout(() => this.waitForGuideTarget(attempt + 1), 200);
+                return;
+            }
+            if (!el) {
+                this.exitGuide();
+                return;
+            }
+            this.updateGuideTarget();
+        },
+        updateGuideTarget() {
+            if (!this.showGuide) return;
+            const step = this.guideSteps[this.guideStepIndex];
+            const el = step ? document.querySelector(step.selector) : null;
+            if (!el) {
+                this.clearGuideHighlight();
+                this.guideSpotlightStyle = 'display:none;';
+                this.guideCardStyle = 'opacity:0;';
+                return;
+            }
+            this.setGuideHighlight(el);
+            this.startGuideObserver(el);
+            const rect = el.getBoundingClientRect();
+            const padding = 6;
+            const top = Math.max(rect.top - padding, 6);
+            const left = Math.max(rect.left - padding, 6);
+            const width = Math.min(rect.width + padding * 2, window.innerWidth - 12);
+            const height = Math.min(rect.height + padding * 2, window.innerHeight - 12);
+            this.guideSpotlightStyle = `top:${top}px;left:${left}px;width:${width}px;height:${height}px;`;
+
+            const cardWidth = 320;
+            const cardHeight = 160;
+            let cardTop = rect.bottom + 14;
+            if (cardTop + cardHeight > window.innerHeight) {
+                cardTop = rect.top - cardHeight - 14;
+            }
+            if (cardTop < 12) cardTop = 12;
+            let cardLeft = rect.left;
+            if (cardLeft + cardWidth > window.innerWidth - 12) {
+                cardLeft = window.innerWidth - cardWidth - 12;
+            }
+            if (cardLeft < 12) cardLeft = 12;
+            this.guideCardStyle = `top:${cardTop}px;left:${cardLeft}px;width:${cardWidth}px;`;
+        },
+        setGuideHighlight(el) {
+            if (this.guideHighlightedEl === el) return;
+            this.clearGuideHighlight();
+            this.guideHighlightedEl = el;
+            el.classList.add('guide-highlight-target');
+        },
+        clearGuideHighlight() {
+            if (this.guideHighlightedEl) {
+                this.guideHighlightedEl.classList.remove('guide-highlight-target');
+                this.guideHighlightedEl = null;
+            }
+        },
+        startGuideObserver(el) {
+            const modalEl = document.querySelector('[data-guide="guide-modal"]');
+            if (!this.guideResizeObserver) {
+                this.guideResizeObserver = new ResizeObserver(() => {
+                    this.updateGuideTarget();
+                });
+            }
+            if (this.guideObservedEl !== el) {
+                if (this.guideObservedEl) {
+                    this.guideResizeObserver.unobserve(this.guideObservedEl);
+                }
+                this.guideResizeObserver.observe(el);
+                this.guideObservedEl = el;
+            }
+            if (modalEl && this.guideObservedModal !== modalEl) {
+                if (this.guideObservedModal) {
+                    this.guideResizeObserver.unobserve(this.guideObservedModal);
+                }
+                this.guideResizeObserver.observe(modalEl);
+                this.guideObservedModal = modalEl;
+            }
+        },
+        stopGuideObserver() {
+            if (this.guideResizeObserver) {
+                this.guideResizeObserver.disconnect();
+                this.guideResizeObserver = null;
+            }
+            this.guideObservedEl = null;
+            this.guideObservedModal = null;
         },
 
         // 加载版本信息
@@ -1692,6 +1956,25 @@ function deepVision() {
             }
             this.presentationPolling = false;
             this.presentationExecutionId = '';
+        },
+
+        async stopPresentationGeneration() {
+            if (!this.selectedReport) return;
+            const confirmed = window.confirm('确定停止本次演示文稿生成？可稍后重新生成');
+            if (!confirmed) return;
+            try {
+                if (this.presentationExecutionId) {
+                    await this.apiCall(
+                        `/reports/${encodeURIComponent(this.selectedReport)}/presentation/abort?execution_id=${encodeURIComponent(this.presentationExecutionId)}`,
+                        { method: 'POST' }
+                    );
+                }
+                this.stopPresentationPolling();
+                this.generatingSlides = false;
+                this.showToast('已停止生成', 'success');
+            } catch (error) {
+                this.showToast('停止失败，请稍后重试', 'error');
+            }
         },
 
         openUrl(url) {
