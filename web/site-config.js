@@ -64,11 +64,11 @@ const SITE_CONFIG = {
         source: "——《史记·李将军列传》",
       },
       {
-        text: "Singularity is coming. AI is Faith",
+        text: "Singularity is coming, AI is faith.",
         source: "——奇点将至，AI 即信仰",
       },
       {
-        text: "People don't know what they want until you show it to them",
+        text: "People don't know what they want until you show it to them.",
         source: "——乔布斯",
       },
       {

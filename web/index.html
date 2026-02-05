@@ -1837,7 +1837,7 @@
                                         </button>
                                         <span x-show="generatingSlides || presentationPolling" class="text-xs text-slate-500">预计 8-10 分钟，可随时停止</span>
                                     </div>
-                                    <button x-show="presentationPdfUrl && !generatingSlides"
+                                    <button x-show="isPresentationEnabled() && presentationPdfUrl && !generatingSlides"
                                             @click="openPresentationPdf()"
                                             class="border border-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer hover:bg-slate-50 flex items-center justify-center gap-2 w-full sm:w-auto">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
