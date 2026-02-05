@@ -397,6 +397,17 @@
             transform: translateY(-4px) scale(1.02);
             box-shadow: 0 16px 48px rgba(53, 123, 226, 0.4);
         }
+        .cta-button.secondary {
+            background: transparent;
+            color: #cbd5f5;
+            border: 1px solid rgba(99, 102, 241, 0.4);
+            box-shadow: none;
+        }
+        .cta-button.secondary:hover {
+            transform: translateY(-2px);
+            background: rgba(99, 102, 241, 0.08);
+            box-shadow: none;
+        }
 
         /* ========== 导航栏 ========== */
         .nav-bar {
@@ -518,23 +529,25 @@
             </h1>
 
             <!-- 副标题 -->
-            <p class="hero-subtitle text-xl md:text-2xl lg:text-3xl text-gray-400 mt-6 font-light">
-                洞察深处，方见真章
+            <p class="hero-subtitle text-xl md:text-2xl lg:text-3xl text-gray-200 mt-6 font-medium">
+                DeepVision 深瞳，让需求变清晰
             </p>
 
             <!-- Tagline -->
-            <p class="hero-tagline text-lg md:text-xl text-gray-500 mt-4 max-w-2xl mx-auto">
-                AI 驱动的沉浸式智能访谈<br class="md:hidden">
-                让每一次对话都直抵本质
+            <p class="hero-tagline text-lg md:text-xl text-gray-400 mt-4 max-w-2xl mx-auto">
+                通过智能访谈与自动报告，把模糊想法变成可执行方案
             </p>
 
             <!-- CTA -->
-            <div class="hero-cta mt-12">
-                <a href="index.html" class="cta-button">
-                    开始体验
+            <div class="hero-cta mt-12 flex flex-col sm:flex-row items-center justify-center gap-4">
+                <a href="index.html?guide=1" class="cta-button">
+                    快速指引
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/>
                     </svg>
+                </a>
+                <a href="index.html" class="cta-button secondary">
+                    直接进入产品
                 </a>
             </div>
         </div>
@@ -659,48 +672,72 @@
         <div class="max-w-6xl mx-auto">
             <div class="text-center mb-16">
                 <h2 class="reveal text-3xl md:text-4xl font-bold mb-4">
-                    六大核心能力
+                    六大升级能力
                 </h2>
                 <p class="reveal reveal-delay-1 text-gray-400 text-lg">
-                    每一项功能，都为深度洞察而生
+                    让第一次访谈更轻松，让结果更可用
                 </p>
             </div>
 
             <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
                 <div class="feature-card reveal reveal-delay-1">
-                    <div class="text-3xl mb-4">🎯</div>
-                    <h3 class="text-lg font-semibold mb-2">选择式交互</h3>
-                    <p class="text-gray-400 text-sm">每个问题 2-4 个精心设计的选项，外加"补充你的想法"——既有引导，又保留开放性。</p>
+                    <div class="text-3xl mb-4">
+                        <svg class="w-8 h-8 text-[#6366f1]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h6m-6 4h8M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H7l-4 4V7a2 2 0 012-2z"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-semibold mb-2">智能访谈引擎</h3>
+                    <p class="text-gray-400 text-sm">自动追问，层层深入，像专家一样拆解需求。</p>
                 </div>
 
                 <div class="feature-card reveal reveal-delay-2">
-                    <div class="text-3xl mb-4">🔍</div>
-                    <h3 class="text-lg font-semibold mb-2">智能追问</h3>
-                    <p class="text-gray-400 text-sm">不满足于表面答案。当检测到模糊或浅层回答时，自动发起追问，直达本质。</p>
+                    <div class="text-3xl mb-4">
+                        <svg class="w-8 h-8 text-[#6366f1]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17h6m-6-4h6m-6-4h6M7 21h10a2 2 0 002-2V7l-6-4H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-semibold mb-2">结构化报告</h3>
+                    <p class="text-gray-400 text-sm">摘要 + 重点 + 建议，结论清晰可复用。</p>
                 </div>
 
                 <div class="feature-card reveal reveal-delay-3">
-                    <div class="text-3xl mb-4">⚡</div>
-                    <h3 class="text-lg font-semibold mb-2">冲突检测</h3>
-                    <p class="text-gray-400 text-sm">发现回答与已有信息矛盾？立即提醒，当场澄清，确保信息一致。</p>
+                    <div class="text-3xl mb-4">
+                        <svg class="w-8 h-8 text-[#6366f1]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17v-6m6 6V7m-9 4h12M5 21h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2z"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-semibold mb-2">可视化增强</h3>
+                    <p class="text-gray-400 text-sm">图表与重点信息更清晰，阅读效率更高。</p>
                 </div>
 
                 <div class="feature-card reveal reveal-delay-4">
-                    <div class="text-3xl mb-4">🌐</div>
-                    <h3 class="text-lg font-semibold mb-2">实时知识增强</h3>
-                    <p class="text-gray-400 text-sm">联网搜索行业知识，无感融入问题选项，让每个问题都更专业。</p>
+                    <div class="text-3xl mb-4">
+                        <svg class="w-8 h-8 text-[#6366f1]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L7 21h10l-2.75-4M12 3v10m0 0l3.5-3.5M12 13L8.5 9.5"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-semibold mb-2">演示文稿一键生成</h3>
+                    <p class="text-gray-400 text-sm">把报告直接转成可汇报演示稿。</p>
                 </div>
 
                 <div class="feature-card reveal reveal-delay-5">
-                    <div class="text-3xl mb-4">📊</div>
-                    <h3 class="text-lg font-semibold mb-2">可视化报告</h3>
-                    <p class="text-gray-400 text-sm">自动生成流程图、关联图、用户旅程图，让复杂信息一目了然。</p>
+                    <div class="text-3xl mb-4">
+                        <svg class="w-8 h-8 text-[#6366f1]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h10M4 18h7"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-semibold mb-2">流程体验优化</h3>
+                    <p class="text-gray-400 text-sm">阶段导航更清晰，状态更明确，不再迷路。</p>
                 </div>
 
                 <div class="feature-card reveal reveal-delay-6">
-                    <div class="text-3xl mb-4">💾</div>
-                    <h3 class="text-lg font-semibold mb-2">断点续访</h3>
-                    <p class="text-gray-400 text-sm">随时暂停，随时继续。访谈进度自动保存，不怕中断。</p>
+                    <div class="text-3xl mb-4">
+                        <svg class="w-8 h-8 text-[#6366f1]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10M7 11h10M7 15h6M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H8l-3 3V7a2 2 0 012-2z"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-semibold mb-2">会话与报告管理</h3>
+                    <p class="text-gray-400 text-sm">筛选、排序、状态管理更高效。</p>
                 </div>
             </div>
         </div>
@@ -967,14 +1004,14 @@
         <div class="cta-glow"></div>
         <div class="text-center relative z-10 max-w-3xl mx-auto">
             <h2 class="reveal text-3xl md:text-5xl font-bold mb-6">
-                让每一次对话<br>都直抵本质
+                只需 3 步，完成第一次访谈
             </h2>
             <p class="reveal reveal-delay-1 text-gray-400 text-lg mb-10 max-w-xl mx-auto">
-                无论是需求访谈、产品规划、售前沟通还是项目决策，深瞳都能帮你更快、更深、更准地获取关键信息。
+                一句话描述目标，DeepVision 会帮你完成结构化访谈与报告生成。
             </p>
             <div class="reveal reveal-delay-2">
-                <a href="index.html" class="cta-button">
-                    开始体验
+                <a href="index.html?guide=1" class="cta-button">
+                    立即开始
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/>
                     </svg>

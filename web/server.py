@@ -4877,6 +4877,13 @@ def get_refly_output_url(execution_id: str) -> str:
     return f"{base}/openapi/workflow/{execution_id}/output"
 
 
+def get_refly_abort_url(execution_id: str) -> str:
+    base = get_refly_base_url()
+    if not base:
+        return base
+    return f"{base}/openapi/workflow/{execution_id}/abort"
+
+
 def upload_refly_file(file_path: Path) -> dict:
     url = get_refly_upload_url()
     headers = {
@@ -5647,6 +5654,26 @@ def check_refly_status(filename):
         })
     except Exception as exc:
         return jsonify({"error": f"查询生成状态失败: {str(exc)}"}), 500
+
+
+@app.route('/api/reports/<path:filename>/presentation/abort', methods=['POST'])
+def abort_report_presentation(filename):
+    execution_id = request.args.get("execution_id", "").strip()
+    if not execution_id:
+        record = get_presentation_record(filename) or {}
+        execution_id = record.get("execution_id", "")
+    if not execution_id:
+        return jsonify({"error": "execution_id 缺失"}), 400
+    try:
+        url = get_refly_abort_url(execution_id)
+        headers = {"Authorization": f"Bearer {REFLY_API_KEY}"}
+        response = requests.post(url, headers=headers, timeout=REFLY_TIMEOUT)
+        response.raise_for_status()
+        return jsonify({"success": True, "execution_id": execution_id})
+    except requests.RequestException as exc:
+        if ENABLE_DEBUG_LOG:
+            print(f"⚠️ 演示文稿中止失败: {exc}")
+        return jsonify({"error": "中止生成失败"}), 502
 
 
 @app.route('/api/reports/<path:filename>', methods=['DELETE'])
