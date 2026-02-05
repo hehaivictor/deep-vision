@@ -1,7 +1,16 @@
 {
-  "version": "1.22.36",
+  "version": "1.22.37",
   "releaseDate": "2026-02-06",
   "changelog": [
+    {
+      "version": "1.22.37",
+      "date": "2026-02-06",
+      "type": "patch",
+      "title": "保留AGENTS改动",
+      "changes": [
+        "保留AGENTS改动"
+      ]
+    },
     {
       "version": "1.22.36",
       "date": "2026-02-06",
