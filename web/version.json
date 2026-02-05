@@ -1,7 +1,16 @@
 {
-  "version": "1.22.27",
+  "version": "1.22.28",
   "releaseDate": "2026-02-05",
   "changelog": [
+    {
+      "version": "1.22.28",
+      "date": "2026-02-05",
+      "type": "patch",
+      "title": "Update presentation button utility",
+      "changes": [
+        "Update presentation button utility"
+      ]
+    },
     {
       "version": "1.22.27",
       "date": "2026-02-05",
