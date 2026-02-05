@@ -146,6 +146,12 @@ const SITE_CONFIG = {
     // 版本信息文件路径
     configFile: "version.json",
   },
+
+  // ============ 演示文稿配置 ============
+  presentation: {
+    // 是否展示“一键生成演示文稿”按钮
+    enabled: false,
+  },
 };
 
 // 如果在 Node.js 环境中，导出配置
