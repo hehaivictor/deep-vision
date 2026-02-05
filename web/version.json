@@ -1,7 +1,16 @@
 {
-  "version": "1.22.23",
+  "version": "1.22.24",
   "releaseDate": "2026-02-05",
   "changelog": [
+    {
+      "version": "1.22.24",
+      "date": "2026-02-05",
+      "type": "patch",
+      "title": "禁用评估场景 AI 推荐」} essays #Oops need no",
+      "changes": [
+        "禁用评估场景 AI 推荐」} essays #Oops need no"
+      ]
+    },
     {
       "version": "1.22.23",
       "date": "2026-02-05",
