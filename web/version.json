@@ -1,7 +1,16 @@
 {
-  "version": "1.22.28",
+  "version": "1.22.29",
   "releaseDate": "2026-02-05",
   "changelog": [
+    {
+      "version": "1.22.29",
+      "date": "2026-02-05",
+      "type": "patch",
+      "title": "Update page button visibility config",
+      "changes": [
+        "Update page button visibility config"
+      ]
+    },
     {
       "version": "1.22.28",
       "date": "2026-02-05",
