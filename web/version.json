@@ -1,32 +1,41 @@
 {
-  "version": "1.22.30",
+  "version": "1.22.31",
   "releaseDate": "2026-02-05",
   "changelog": [
+    {
+      "version": "1.22.31",
+      "date": "2026-02-05",
+      "type": "patch",
+      "title": "调整页面按钮配置要求",
+      "changes": [
+        "调整页面按钮配置要求"
+      ]
+    },
     {
       "version": "1.22.30",
       "date": "2026-02-05",
       "type": "patch",
-      "title": "更新页面按钮配置显示规则」}INVALID but need no 。",
+      "title": "更新页面按钮配置",
       "changes": [
-        "更新页面按钮配置显示规则」}INVALID but need no 。"
+        "更新页面按钮配置"
       ]
     },
     {
       "version": "1.22.29",
       "date": "2026-02-05",
       "type": "patch",
-      "title": "Update page button visibility config",
+      "title": "修复了一些问题",
       "changes": [
-        "Update page button visibility config"
+        "修复了一些问题"
       ]
     },
     {
       "version": "1.22.28",
       "date": "2026-02-05",
       "type": "patch",
-      "title": "Update presentation button utility",
+      "title": "修复了一些问题",
       "changes": [
-        "Update presentation button utility"
+        "修复了一些问题"
       ]
     },
     {
