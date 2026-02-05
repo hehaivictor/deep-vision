@@ -508,7 +508,7 @@
                 </div>
                 <!-- 居中诗句 - 仅在 lg 及以上屏幕显示 -->
                 <div class="hidden lg:flex flex-1 flex-col justify-center items-center overflow-hidden h-14">
-                    <p class="fangsong-quote text-xl xl:text-2xl 2xl:text-3xl text-primary transition-all duration-500 text-center px-4"
+                    <p class="fangsong-quote text-lg xl:text-xl 2xl:text-2xl text-primary transition-all duration-500 text-center px-4"
                        x-text="currentQuote"
                        :key="currentQuoteIndex">
                     </p>
@@ -522,18 +522,18 @@
                     <button @click="switchView('sessions')"
                             :class="currentView === 'sessions' ? 'bg-gray-900 text-white' : 'text-primary hover:bg-surface-secondary'"
                             class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium">
-                        <span class="hidden sm:inline">会话管理</span>
+                        <span class="hidden sm:inline">会话</span>
                         <span class="sm:hidden">会话</span>
                     </button>
                     <button @click="switchView('reports')"
                             :class="currentView === 'reports' ? 'bg-gray-900 text-white' : 'text-primary hover:bg-surface-secondary'"
                             class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium">
-                        <span class="hidden sm:inline">访谈报告</span>
+                        <span class="hidden sm:inline">报告</span>
                         <span class="sm:hidden">报告</span>
                     </button>
                     <button @click="openGuide()"
                             class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium text-primary hover:bg-surface-secondary">
-                        <span class="hidden sm:inline">快速指引</span>
+                        <span class="hidden sm:inline">指引</span>
                         <span class="sm:hidden">指引</span>
                     </button>
                 </nav>

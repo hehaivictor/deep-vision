@@ -138,13 +138,13 @@ textarea {
     position: fixed;
     inset: 0;
     z-index: 70;
-    background: rgba(15, 23, 42, 0.32);
+    background: rgba(15, 23, 42, 0.18);
     pointer-events: none;
 }
 .guide-spotlight {
     position: fixed;
     border-radius: 14px;
-    box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.45);
+    box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.18), 0 0 24px rgba(99, 102, 241, 0.35), 0 0 48px rgba(99, 102, 241, 0.18);
     border: 1px solid rgba(255, 255, 255, 0.6);
     pointer-events: none;
     transition: all 0.2s ease;
