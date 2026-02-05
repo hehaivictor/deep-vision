@@ -150,7 +150,7 @@ const SITE_CONFIG = {
   // ============ 演示文稿配置 ============
   presentation: {
     // 是否展示“一键生成演示文稿”按钮
-    enabled: true,
+    enabled: false,
   },
 };
 
