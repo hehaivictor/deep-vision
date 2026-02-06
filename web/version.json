@@ -1,7 +1,18 @@
 {
-  "version": "1.23.11",
+  "version": "1.23.12",
   "releaseDate": "2026-02-06",
   "changelog": [
+    {
+      "version": "1.23.12",
+      "date": "2026-02-06",
+      "type": "patch",
+      "title": "完善排序下拉键盘焦点与无障碍交互",
+      "changes": [
+        "交互：为会话与报告排序下拉补齐方向键、Home/End、Enter/Space 选择与 Esc 收起回焦。",
+        "焦点：新增 Tab/Shift+Tab 菜单内循环与触发器到菜单项的焦点转移，避免焦点跳出。",
+        "可访问性：补充 aria-activedescendant、选项高亮同步与焦点可视样式，深色主题下保持清晰对比。"
+      ]
+    },
     {
       "version": "1.23.11",
       "date": "2026-02-06",
