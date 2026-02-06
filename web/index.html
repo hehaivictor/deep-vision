@@ -768,14 +768,59 @@
                             </div>
 
                             <!-- 排序 -->
-                            <select x-model="sessionSortOrder"
-                                    @change="filterSessions()"
-                                    class="sort-select px-3 pr-8 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer bg-white appearance-none">
-                                <option value="newest">最新优先</option>
-                                <option value="oldest">最早优先</option>
-                                <option value="progress">进度排序</option>
-                                <option value="scenario">场景排序</option>
-                            </select>
+                            <div class="relative shrink-0"
+                                 x-data="{ open: false, options: [
+                                     { value: 'newest', label: '最新优先' },
+                                     { value: 'oldest', label: '最早优先' },
+                                     { value: 'progress', label: '进度排序' },
+                                     { value: 'scenario', label: '场景排序' }
+                                 ] }"
+                                 @click.outside="open = false"
+                                 @keydown.escape.window="open = false">
+                                <button type="button"
+                                        @click="open = !open"
+                                        :aria-expanded="open.toString()"
+                                        aria-haspopup="listbox"
+                                        aria-label="会话排序方式"
+                                        class="sort-dropdown-trigger px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer bg-white inline-flex items-center justify-between gap-2 min-w-[104px]">
+                                    <span x-text="(options.find(option => option.value === sessionSortOrder) || options[0]).label"></span>
+                                    <svg class="sort-dropdown-chevron w-3.5 h-3.5"
+                                         :class="open ? 'rotate-180' : ''"
+                                         fill="none"
+                                         stroke="currentColor"
+                                         viewBox="0 0 24 24"
+                                         aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6 9l6 6 6-6"/>
+                                    </svg>
+                                </button>
+
+                                <div x-show="open"
+                                     x-cloak
+                                     x-transition.origin.top.right
+                                     class="sort-dropdown-menu absolute right-0 top-[calc(100%+6px)] z-30 min-w-[132px] rounded-lg border border-gray-200 bg-white shadow-lg p-1.5"
+                                     role="listbox"
+                                     aria-label="会话排序选项">
+                                    <template x-for="option in options" :key="option.value">
+                                        <button type="button"
+                                                @click="sessionSortOrder = option.value; filterSessions(); open = false"
+                                                :aria-selected="(sessionSortOrder === option.value).toString()"
+                                                role="option"
+                                                class="sort-dropdown-option w-full px-2.5 py-1.5 rounded-md text-xs text-left inline-flex items-center justify-between gap-2 cursor-pointer"
+                                                :class="sessionSortOrder === option.value ? 'sort-dropdown-option--active' : ''">
+                                            <span x-text="option.label"></span>
+                                            <svg x-show="sessionSortOrder === option.value"
+                                                 x-cloak
+                                                 class="w-3.5 h-3.5"
+                                                 fill="none"
+                                                 stroke="currentColor"
+                                                 viewBox="0 0 24 24"
+                                                 aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                            </svg>
+                                        </button>
+                                    </template>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -818,17 +863,17 @@
                                     <div x-show="sessionBatchMode" class="flex items-center gap-2">
                                         <span class="text-xs text-secondary">已选 <span class="font-semibold text-primary" x-text="selectedSessionIds.length"></span> 条</span>
                                         <button @click="toggleSelectAllSessions()"
-                                                class="px-2.5 py-1.5 rounded-md border border-gray-200 text-secondary hover:bg-gray-50 transition-colors text-xs font-medium cursor-pointer">
+                                                class="batch-select-toggle-btn px-2.5 py-1.5 rounded-md border border-gray-200 text-secondary hover:bg-gray-50 transition-colors text-xs font-medium cursor-pointer">
                                             <span x-text="areAllFilteredSessionsSelected() ? '取消全选' : '全选当前筛选'"></span>
                                         </button>
                                         <button @click="openBatchDeleteModal('sessions')"
                                                 :disabled="selectedSessionIds.length === 0"
                                                 :class="selectedSessionIds.length === 0 ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-red-700'"
-                                                class="px-2.5 py-1.5 bg-danger text-white rounded-md text-xs font-medium transition-colors">
+                                                class="batch-delete-btn px-2.5 py-1.5 bg-danger text-white rounded-md text-xs font-medium transition-colors">
                                             批量删除
                                         </button>
                                         <button @click="exitSessionBatchMode()"
-                                                class="px-2.5 py-1.5 rounded-md border border-gray-200 text-secondary hover:bg-gray-50 transition-colors text-xs font-medium cursor-pointer">
+                                                class="batch-cancel-btn px-2.5 py-1.5 rounded-md border border-gray-200 text-secondary hover:bg-gray-50 transition-colors text-xs font-medium cursor-pointer">
                                             取消
                                         </button>
                                     </div>
@@ -847,7 +892,7 @@
                                             <input type="checkbox"
                                                    :checked="isSessionSelected(session.session_id)"
                                                    @click.stop="toggleSessionSelection(session.session_id)"
-                                                   class="w-4 h-4 text-primary border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
+                                                   class="batch-checkbox w-4 h-4 border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
                                         </div>
                                         <div class="absolute top-3 right-3 z-10">
                                             <span class="session-status-badge"
@@ -1877,12 +1922,57 @@
                             </div>
 
                             <!-- 排序 -->
-                            <select x-model="reportSortOrder"
-                                    @change="filterReports()"
-                                    class="sort-select px-3 pr-8 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer bg-white appearance-none">
-                                <option value="newest">最新优先</option>
-                                <option value="oldest">最早优先</option>
-                            </select>
+                            <div class="relative shrink-0"
+                                 x-data="{ open: false, options: [
+                                     { value: 'newest', label: '最新优先' },
+                                     { value: 'oldest', label: '最早优先' }
+                                 ] }"
+                                 @click.outside="open = false"
+                                 @keydown.escape.window="open = false">
+                                <button type="button"
+                                        @click="open = !open"
+                                        :aria-expanded="open.toString()"
+                                        aria-haspopup="listbox"
+                                        aria-label="报告排序方式"
+                                        class="sort-dropdown-trigger px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer bg-white inline-flex items-center justify-between gap-2 min-w-[104px]">
+                                    <span x-text="(options.find(option => option.value === reportSortOrder) || options[0]).label"></span>
+                                    <svg class="sort-dropdown-chevron w-3.5 h-3.5"
+                                         :class="open ? 'rotate-180' : ''"
+                                         fill="none"
+                                         stroke="currentColor"
+                                         viewBox="0 0 24 24"
+                                         aria-hidden="true">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6 9l6 6 6-6"/>
+                                    </svg>
+                                </button>
+
+                                <div x-show="open"
+                                     x-cloak
+                                     x-transition.origin.top.right
+                                     class="sort-dropdown-menu absolute right-0 top-[calc(100%+6px)] z-30 min-w-[132px] rounded-lg border border-gray-200 bg-white shadow-lg p-1.5"
+                                     role="listbox"
+                                     aria-label="报告排序选项">
+                                    <template x-for="option in options" :key="option.value">
+                                        <button type="button"
+                                                @click="reportSortOrder = option.value; filterReports(); open = false"
+                                                :aria-selected="(reportSortOrder === option.value).toString()"
+                                                role="option"
+                                                class="sort-dropdown-option w-full px-2.5 py-1.5 rounded-md text-xs text-left inline-flex items-center justify-between gap-2 cursor-pointer"
+                                                :class="reportSortOrder === option.value ? 'sort-dropdown-option--active' : ''">
+                                            <span x-text="option.label"></span>
+                                            <svg x-show="reportSortOrder === option.value"
+                                                 x-cloak
+                                                 class="w-3.5 h-3.5"
+                                                 fill="none"
+                                                 stroke="currentColor"
+                                                 viewBox="0 0 24 24"
+                                                 aria-hidden="true">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                            </svg>
+                                        </button>
+                                    </template>
+                                </div>
+                            </div>
 
                             <!-- 日期分组 -->
                             <button @click="reportGroupByDate = !reportGroupByDate; filterReports()"
@@ -1912,17 +2002,17 @@
                                     <div x-show="reportBatchMode" class="flex items-center gap-2">
                                         <span class="text-xs text-secondary">已选 <span class="font-semibold text-primary" x-text="selectedReportNames.length"></span> 条</span>
                                         <button @click="toggleSelectAllReports()"
-                                                class="px-2.5 py-1.5 rounded-md border border-gray-200 text-secondary hover:bg-gray-50 transition-colors text-xs font-medium cursor-pointer">
+                                                class="batch-select-toggle-btn px-2.5 py-1.5 rounded-md border border-gray-200 text-secondary hover:bg-gray-50 transition-colors text-xs font-medium cursor-pointer">
                                             <span x-text="areAllFilteredReportsSelected() ? '取消全选' : '全选当前筛选'"></span>
                                         </button>
                                         <button @click="openBatchDeleteModal('reports')"
                                                 :disabled="selectedReportNames.length === 0"
                                                 :class="selectedReportNames.length === 0 ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-red-700'"
-                                                class="px-2.5 py-1.5 bg-danger text-white rounded-md text-xs font-medium transition-colors">
+                                                class="batch-delete-btn px-2.5 py-1.5 bg-danger text-white rounded-md text-xs font-medium transition-colors">
                                             批量删除
                                         </button>
                                         <button @click="exitReportBatchMode()"
-                                                class="px-2.5 py-1.5 rounded-md border border-gray-200 text-secondary hover:bg-gray-50 transition-colors text-xs font-medium cursor-pointer">
+                                                class="batch-cancel-btn px-2.5 py-1.5 rounded-md border border-gray-200 text-secondary hover:bg-gray-50 transition-colors text-xs font-medium cursor-pointer">
                                             取消
                                         </button>
                                     </div>
@@ -1952,7 +2042,7 @@
                                                         <input type="checkbox"
                                                                :checked="isReportSelected(item.report.name)"
                                                                @click.stop="toggleReportSelection(item.report.name)"
-                                                               class="w-4 h-4 text-primary border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
+                                                               class="batch-checkbox w-4 h-4 border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
                                                     </div>
                                                     <div class="w-12 h-12 bg-primary/10 rounded-xl flex items-center justify-center">
                                                         <svg class="w-6 h-6 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3026,7 +3116,7 @@
                         <input type="checkbox"
                                x-model="batchDeleteAlsoReports"
                                @change="updateSessionBatchSummary()"
-                               class="w-4 h-4 text-primary border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
+                               class="batch-checkbox w-4 h-4 border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
                         同时删除关联报告
                     </label>
 
@@ -3038,7 +3128,7 @@
                         </button>
                         <button @click="confirmBatchDelete()"
                                 :disabled="batchDeleteLoading"
-                                class="px-5 py-2 bg-danger hover:bg-red-700 text-white rounded-lg font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                class="batch-confirm-delete-btn px-5 py-2 bg-danger hover:bg-red-700 text-white rounded-lg font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
                             <span x-text="batchDeleteLoading ? '删除中...' : '确认删除'"></span>
                         </button>
                     </div>
