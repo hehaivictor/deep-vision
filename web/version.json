@@ -1,7 +1,20 @@
 {
-  "version": "1.23.17",
+  "version": "1.23.18",
   "releaseDate": "2026-02-07",
   "changelog": [
+    {
+      "version": "1.23.18",
+      "date": "2026-02-07",
+      "type": "patch",
+      "title": "强化弹窗信息层级与操作权重",
+      "changes": [
+        "层级：建立 dv-modal-title/dv-modal-body 语义样式，区分成功、警告、危险文案权重，提升关键信息可读性。",
+        "操作：统一 dv-modal-btn-secondary/primary/danger 与 dv-modal-actions，明确取消与危险操作主次关系。",
+        "移动端：为弹窗遮罩与底部操作区补齐安全区间距，优化刘海屏与底部手势区可点击性。",
+        "主题：补齐深色模式下弹窗标题、正文与按钮的对比层级，保持视觉一致与风险提示清晰。",
+        "无障碍：将新增弹窗按钮交互接入现有 focus 与 reduced-motion 体系。"
+      ]
+    },
     {
       "version": "1.23.17",
       "date": "2026-02-07",

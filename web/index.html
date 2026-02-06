@@ -3231,7 +3231,7 @@
                     </div>
 
                     <!-- 标题 -->
-                    <h3 class="text-xl font-semibold text-primary mb-2">
+                    <h3 class="dv-modal-title dv-modal-title--success mb-2">
                         <span x-text="milestoneData?.dimName || ''"></span> 收集完成
                     </h3>
 
@@ -3254,22 +3254,22 @@
                     <!-- 下一步提示 -->
                     <template x-if="milestoneData && !milestoneData.isLastDimension">
                         <div class="mb-6">
-                            <p class="text-muted text-sm">接下来将进入</p>
-                            <p class="text-primary font-medium mt-1" x-text="milestoneData.nextDimName"></p>
+                            <p class="dv-modal-body dv-modal-body--subtle">接下来将进入</p>
+                            <p class="dv-modal-body font-semibold mt-1" x-text="milestoneData.nextDimName"></p>
                         </div>
                     </template>
 
                     <template x-if="milestoneData && milestoneData.isLastDimension">
                         <div class="mb-6">
-                            <p class="text-green-600 font-medium">所有维度已完成！</p>
-                            <p class="text-muted text-sm mt-1">您可以确认需求摘要并生成访谈报告</p>
+                            <p class="dv-modal-body dv-modal-body--success font-semibold">所有维度已完成！</p>
+                            <p class="dv-modal-body dv-modal-body--subtle mt-1">您可以确认需求摘要并生成访谈报告</p>
                         </div>
                     </template>
 
                     <!-- 继续按钮 -->
                     <button @click="continueMilestone()"
                             data-dialog-autofocus
-                            class="w-full btn-sage-blue text-white px-6 py-3 rounded-lg font-medium transition-colors cursor-pointer">
+                            class="w-full dv-modal-btn-primary px-6 py-3 rounded-lg font-medium transition-colors cursor-pointer">
                         <span x-text="milestoneData?.isLastDimension ? '完成并确认需求摘要' : '继续访谈流程'"></span>
                     </button>
                 </div>
@@ -3301,16 +3301,16 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                         </svg>
                     </div>
-                    <h3 class="text-lg font-semibold text-primary mb-2">确认删除</h3>
-                    <p class="text-muted mb-6">确定要删除这个会话吗？此操作无法撤销。</p>
-                    <div class="flex gap-3 justify-center">
+                    <h3 class="dv-modal-title dv-modal-title--danger mb-2">确认删除</h3>
+                    <p class="dv-modal-body dv-modal-body--danger mb-6">确定要删除这个会话吗？此操作无法撤销。</p>
+                    <div class="dv-modal-actions">
                         <button @click="showDeleteModal = false"
                                 data-dialog-autofocus
-                                class="px-5 py-2 border border-gray-300 rounded-lg font-medium hover:bg-gray-50 transition-colors cursor-pointer">
+                                class="dv-modal-btn-secondary px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer">
                             取消
                         </button>
                         <button @click="deleteSession()"
-                                class="px-5 py-2 bg-danger hover:bg-red-700 text-white rounded-lg font-medium transition-colors cursor-pointer">
+                                class="dv-modal-btn-danger px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer">
                             删除
                         </button>
                     </div>
@@ -3343,16 +3343,16 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                         </svg>
                     </div>
-                    <h3 class="text-lg font-semibold text-primary mb-2">确认重新开始访谈</h3>
-                    <p class="text-muted mb-6">当前访谈内容将被保存为参考资料，并开始新一轮访谈。确定继续吗？</p>
-                    <div class="flex gap-3 justify-center">
+                    <h3 class="dv-modal-title dv-modal-title--warning mb-2">确认重新开始访谈</h3>
+                    <p class="dv-modal-body mb-6">当前访谈内容将被保存为参考资料，并开始新一轮访谈。确定继续吗？</p>
+                    <div class="dv-modal-actions">
                         <button @click="showRestartModal = false"
                                 data-dialog-autofocus
-                                class="px-5 py-2 border border-gray-300 rounded-lg font-medium hover:bg-gray-50 transition-colors cursor-pointer">
+                                class="dv-modal-btn-secondary px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer">
                             取消
                         </button>
                         <button @click="restartResearch()"
-                                class="px-5 py-2 btn-sage-blue text-white rounded-lg font-medium transition-colors cursor-pointer">
+                                class="dv-modal-btn-primary px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer">
                             重新开始访谈
                         </button>
                     </div>
@@ -3385,17 +3385,17 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                         </svg>
                     </div>
-                    <h3 class="text-lg font-semibold text-primary mb-2">确认删除文档</h3>
-                    <p class="text-muted mb-2">确定要删除以下文档吗？</p>
-                    <p class="text-sm font-medium text-gray-800 mb-6" x-text="docToDelete ? docToDelete.name : ''"></p>
-                    <div class="flex gap-3 justify-center">
+                    <h3 class="dv-modal-title dv-modal-title--danger mb-2">确认删除文档</h3>
+                    <p class="dv-modal-body dv-modal-body--danger mb-2">确定要删除以下文档吗？</p>
+                    <p class="dv-modal-body font-semibold mb-6" x-text="docToDelete ? docToDelete.name : ''"></p>
+                    <div class="dv-modal-actions">
                         <button @click="cancelDeleteDoc()"
                                 data-dialog-autofocus
-                                class="px-5 py-2 border border-gray-300 rounded-lg font-medium hover:bg-gray-50 transition-colors cursor-pointer">
+                                class="dv-modal-btn-secondary px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer">
                             取消
                         </button>
                         <button @click="confirmDeleteDoc()"
-                                class="px-5 py-2 bg-danger hover:bg-red-700 text-white rounded-lg font-medium transition-colors cursor-pointer">
+                                class="dv-modal-btn-danger px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer">
                             删除
                         </button>
                     </div>
@@ -3428,16 +3428,16 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                         </svg>
                     </div>
-                    <h3 class="text-lg font-semibold text-primary mb-2">确认删除报告</h3>
-                    <p class="text-muted mb-6">确定要删除这个报告吗？此操作无法撤销。</p>
-                    <div class="flex gap-3 justify-center">
+                    <h3 class="dv-modal-title dv-modal-title--danger mb-2">确认删除报告</h3>
+                    <p class="dv-modal-body dv-modal-body--danger mb-6">确定要删除这个报告吗？此操作无法撤销。</p>
+                    <div class="dv-modal-actions">
                         <button @click="showDeleteReportModal = false"
                                 data-dialog-autofocus
-                                class="px-5 py-2 border border-gray-300 rounded-lg font-medium hover:bg-gray-50 transition-colors cursor-pointer">
+                                class="dv-modal-btn-secondary px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer">
                             取消
                         </button>
                         <button @click="deleteReport()"
-                                class="px-5 py-2 bg-danger hover:bg-red-700 text-white rounded-lg font-medium transition-colors cursor-pointer">
+                                class="dv-modal-btn-danger px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer">
                             删除
                         </button>
                     </div>
@@ -3470,15 +3470,15 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                         </svg>
                     </div>
-                    <h3 class="text-lg font-semibold text-primary mb-2">确认批量删除</h3>
-                    <p class="text-muted mb-2">
+                    <h3 class="dv-modal-title dv-modal-title--danger mb-2">确认批量删除</h3>
+                    <p class="dv-modal-body dv-modal-body--danger mb-2">
                         确定要删除这 <span class="font-semibold text-primary" x-text="batchDeleteSummary.items"></span> 条记录吗？
                     </p>
-                    <p class="text-xs text-gray-500 mb-4" x-show="batchDeleteTarget === 'sessions'">
+                    <p class="dv-modal-body dv-modal-body--subtle mb-4" x-show="batchDeleteTarget === 'sessions'">
                         将删除选中的会话；如需保留进行中会话，请先取消勾选。
                     </p>
 
-                    <div class="bg-gray-50 rounded-lg px-4 py-3 text-left text-sm mb-4 space-y-1">
+                    <div class="bg-gray-50 rounded-lg px-4 py-3 text-left text-sm mb-4 space-y-1 dv-modal-body">
                         <p>会话数量：<span class="font-medium" x-text="batchDeleteSummary.sessions"></span></p>
                         <p>报告数量：<span class="font-medium" x-text="batchDeleteSummary.reports"></span></p>
                     </div>
@@ -3491,16 +3491,16 @@
                         同时删除关联报告
                     </label>
 
-                    <div class="flex gap-3 justify-center">
+                    <div class="dv-modal-actions">
                         <button @click="closeBatchDeleteModal()"
                                 data-dialog-autofocus
                                 :disabled="batchDeleteLoading"
-                                class="px-5 py-2 border border-gray-300 rounded-lg font-medium hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                class="dv-modal-btn-secondary px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
                             取消
                         </button>
                         <button @click="confirmBatchDelete()"
                                 :disabled="batchDeleteLoading"
-                                class="batch-confirm-delete-btn px-5 py-2 bg-danger hover:bg-red-700 text-white rounded-lg font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                class="dv-modal-btn-danger batch-confirm-delete-btn px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
                             <span x-text="batchDeleteLoading ? '删除中...' : '确认删除'"></span>
                         </button>
                     </div>
@@ -3654,10 +3654,10 @@
                 </div>
 
                 <!-- 弹窗底部 -->
-                <div class="p-4 border-t border-gray-200 bg-gray-50 rounded-b-2xl">
+                <div class="p-4 border-t border-gray-200 bg-gray-50 rounded-b-2xl dv-modal-safe-footer">
                     <button @click="showChangelogModal = false"
                             data-dialog-autofocus
-                            class="w-full py-2.5 btn-sage-blue text-white rounded-lg font-medium transition-colors cursor-pointer">
+                            class="w-full py-2.5 dv-modal-btn-primary rounded-lg font-medium transition-colors cursor-pointer">
                         我知道了
                     </button>
                 </div>
