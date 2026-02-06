@@ -772,6 +772,7 @@
                                  x-data="{
                                      open: false,
                                      highlightedIndex: 0,
+                                     menuStyle: 'right: 0px; left: auto; top: calc(100% + 6px); bottom: auto;',
                                      options: [
                                          { value: 'newest', label: '最新优先' },
                                          { value: 'oldest', label: '最早优先' },
@@ -785,10 +786,48 @@
                                      openMenu() {
                                          this.open = true;
                                          this.highlightedIndex = this.getCurrentIndex();
-                                         this.$nextTick(() => this.focusHighlightedOption());
+                                         this.$nextTick(() => {
+                                             this.updateMenuPlacement();
+                                             this.focusHighlightedOption();
+                                         });
                                      },
                                      closeMenu() {
                                          this.open = false;
+                                     },
+                                     updateMenuPlacement() {
+                                         const triggerElement = this.$refs.trigger;
+                                         const menuElement = this.$refs.menu;
+                                         if (!triggerElement || !menuElement) return;
+
+                                         const viewportPadding = 8;
+                                         const menuGap = 6;
+                                         const triggerRect = triggerElement.getBoundingClientRect();
+                                         const menuRect = menuElement.getBoundingClientRect();
+
+                                         let horizontal = 'right: 0px; left: auto;';
+                                         let vertical = `top: calc(100% + ${menuGap}px); bottom: auto;`;
+
+                                         const rightAlignedLeft = triggerRect.right - menuRect.width;
+                                         if (rightAlignedLeft < viewportPadding) {
+                                             const leftAlignedRight = triggerRect.left + menuRect.width;
+                                             if (leftAlignedRight <= window.innerWidth - viewportPadding) {
+                                                 horizontal = 'left: 0px; right: auto;';
+                                             } else {
+                                                 const safeLeft = Math.max(
+                                                     viewportPadding,
+                                                     Math.min(triggerRect.left, window.innerWidth - viewportPadding - menuRect.width)
+                                                 );
+                                                 horizontal = `left: ${Math.round(safeLeft - triggerRect.left)}px; right: auto;`;
+                                             }
+                                         }
+
+                                         const spaceBelow = window.innerHeight - triggerRect.bottom;
+                                         const spaceAbove = triggerRect.top;
+                                         if (spaceBelow < menuRect.height + viewportPadding && spaceAbove > menuRect.height + viewportPadding) {
+                                             vertical = `bottom: calc(100% + ${menuGap}px); top: auto;`;
+                                         }
+
+                                         this.menuStyle = `${horizontal} ${vertical}`;
                                      },
                                      focusHighlightedOption() {
                                          const optionId = `session-sort-option-${this.highlightedIndex}`;
@@ -835,6 +874,8 @@
                                      }
                                  }"
                                  @click.outside="closeMenu()"
+                                 @resize.window="if (open) updateMenuPlacement()"
+                                 @scroll.window.passive="if (open) updateMenuPlacement()"
                                  @keydown.escape.window="if (open) { closeMenu(); $nextTick(() => $refs.trigger?.focus()); }">
                                 <button type="button"
                                         x-ref="trigger"
@@ -861,10 +902,12 @@
                                 </button>
 
                                 <div x-show="open"
+                                     x-ref="menu"
                                      x-cloak
                                      x-transition.origin.top.right
                                      @keydown.tab.prevent="cycleTab($event.shiftKey ? -1 : 1)"
-                                     class="sort-dropdown-menu absolute right-0 top-[calc(100%+6px)] z-30 min-w-[132px] rounded-lg border border-gray-200 bg-white shadow-lg p-1.5"
+                                     :style="menuStyle"
+                                     class="sort-dropdown-menu absolute z-30 min-w-[132px] rounded-lg border border-gray-200 bg-white shadow-lg p-1.5"
                                      role="listbox"
                                      :aria-activedescendant="`session-sort-option-${highlightedIndex}`"
                                      aria-label="会话排序选项">
@@ -2007,6 +2050,7 @@
                                  x-data="{
                                      open: false,
                                      highlightedIndex: 0,
+                                     menuStyle: 'right: 0px; left: auto; top: calc(100% + 6px); bottom: auto;',
                                      options: [
                                          { value: 'newest', label: '最新优先' },
                                          { value: 'oldest', label: '最早优先' }
@@ -2018,10 +2062,48 @@
                                      openMenu() {
                                          this.open = true;
                                          this.highlightedIndex = this.getCurrentIndex();
-                                         this.$nextTick(() => this.focusHighlightedOption());
+                                         this.$nextTick(() => {
+                                             this.updateMenuPlacement();
+                                             this.focusHighlightedOption();
+                                         });
                                      },
                                      closeMenu() {
                                          this.open = false;
+                                     },
+                                     updateMenuPlacement() {
+                                         const triggerElement = this.$refs.trigger;
+                                         const menuElement = this.$refs.menu;
+                                         if (!triggerElement || !menuElement) return;
+
+                                         const viewportPadding = 8;
+                                         const menuGap = 6;
+                                         const triggerRect = triggerElement.getBoundingClientRect();
+                                         const menuRect = menuElement.getBoundingClientRect();
+
+                                         let horizontal = 'right: 0px; left: auto;';
+                                         let vertical = `top: calc(100% + ${menuGap}px); bottom: auto;`;
+
+                                         const rightAlignedLeft = triggerRect.right - menuRect.width;
+                                         if (rightAlignedLeft < viewportPadding) {
+                                             const leftAlignedRight = triggerRect.left + menuRect.width;
+                                             if (leftAlignedRight <= window.innerWidth - viewportPadding) {
+                                                 horizontal = 'left: 0px; right: auto;';
+                                             } else {
+                                                 const safeLeft = Math.max(
+                                                     viewportPadding,
+                                                     Math.min(triggerRect.left, window.innerWidth - viewportPadding - menuRect.width)
+                                                 );
+                                                 horizontal = `left: ${Math.round(safeLeft - triggerRect.left)}px; right: auto;`;
+                                             }
+                                         }
+
+                                         const spaceBelow = window.innerHeight - triggerRect.bottom;
+                                         const spaceAbove = triggerRect.top;
+                                         if (spaceBelow < menuRect.height + viewportPadding && spaceAbove > menuRect.height + viewportPadding) {
+                                             vertical = `bottom: calc(100% + ${menuGap}px); top: auto;`;
+                                         }
+
+                                         this.menuStyle = `${horizontal} ${vertical}`;
                                      },
                                      focusHighlightedOption() {
                                          const optionId = `report-sort-option-${this.highlightedIndex}`;
@@ -2068,6 +2150,8 @@
                                      }
                                  }"
                                  @click.outside="closeMenu()"
+                                 @resize.window="if (open) updateMenuPlacement()"
+                                 @scroll.window.passive="if (open) updateMenuPlacement()"
                                  @keydown.escape.window="if (open) { closeMenu(); $nextTick(() => $refs.trigger?.focus()); }">
                                 <button type="button"
                                         x-ref="trigger"
@@ -2094,10 +2178,12 @@
                                 </button>
 
                                 <div x-show="open"
+                                     x-ref="menu"
                                      x-cloak
                                      x-transition.origin.top.right
                                      @keydown.tab.prevent="cycleTab($event.shiftKey ? -1 : 1)"
-                                     class="sort-dropdown-menu absolute right-0 top-[calc(100%+6px)] z-30 min-w-[132px] rounded-lg border border-gray-200 bg-white shadow-lg p-1.5"
+                                     :style="menuStyle"
+                                     class="sort-dropdown-menu absolute z-30 min-w-[132px] rounded-lg border border-gray-200 bg-white shadow-lg p-1.5"
                                      role="listbox"
                                      :aria-activedescendant="`report-sort-option-${highlightedIndex}`"
                                      aria-label="报告排序选项">
