@@ -1,7 +1,17 @@
 {
-  "version": "1.23.6",
+  "version": "1.23.7",
   "releaseDate": "2026-02-06",
   "changelog": [
+    {
+      "version": "1.23.7",
+      "date": "2026-02-06",
+      "type": "patch",
+      "title": "配置默认主题模式为跟随系统",
+      "changes": [
+        "配置调整：新增 theme.defaultMode 配置项，支持 light/dark/system。",
+        "默认策略：主题默认值设为 system，保持与系统外观一致。"
+      ]
+    },
     {
       "version": "1.23.6",
       "date": "2026-02-06",
