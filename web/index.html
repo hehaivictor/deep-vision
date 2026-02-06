@@ -599,6 +599,7 @@
                             <p class="text-muted text-sm mt-1">管理您的访谈会话</p>
                         </div>
                         <button data-guide="guide-new-session"
+                                x-show="!sessionBatchMode"
                                 @click="resetScenarioSelection(); showNewSessionModal = true"
                                 class="btn-sage-blue text-white px-5 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -690,13 +691,45 @@
                     <template x-if="!loading">
                         <div class="space-y-4">
                             <!-- 结果统计 -->
-                            <div class="flex items-center justify-between text-sm text-muted" x-show="filteredSessions.length > 0">
-                                <template x-if="useVirtualList">
-                                    <span>共 <span x-text="filteredSessions.length"></span> 条</span>
-                                </template>
-                                <template x-if="!useVirtualList">
-                                    <span>显示 <span x-text="paginationStart"></span>-<span x-text="paginationEnd"></span> / 共 <span x-text="filteredSessions.length"></span> 条</span>
-                                </template>
+                            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm text-muted" x-show="filteredSessions.length > 0 || sessionBatchMode">
+                                <div>
+                                    <template x-if="useVirtualList">
+                                        <span>共 <span x-text="filteredSessions.length"></span> 条</span>
+                                    </template>
+                                    <template x-if="!useVirtualList">
+                                        <span>显示 <span x-text="paginationStart"></span>-<span x-text="paginationEnd"></span> / 共 <span x-text="filteredSessions.length"></span> 条</span>
+                                    </template>
+                                </div>
+                                <div class="flex items-center gap-2 self-end sm:self-auto">
+                                    <button x-show="!sessionBatchMode"
+                                            @click="enterSessionBatchMode()"
+                                            class="px-3 py-1.5 rounded-md border border-gray-200 text-secondary hover:bg-gray-50 transition-colors duration-200 text-xs font-medium cursor-pointer inline-flex items-center gap-1.5">
+                                        <svg class="w-3.5 h-3.5 text-gray-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h11M8 12h11M8 17h11"/>
+                                            <circle cx="4" cy="7" r="1.3" fill="currentColor" stroke="none"/>
+                                            <circle cx="4" cy="12" r="1.3" fill="currentColor" stroke="none"/>
+                                            <circle cx="4" cy="17" r="1.3" fill="currentColor" stroke="none"/>
+                                        </svg>
+                                        <span>批量管理</span>
+                                    </button>
+                                    <div x-show="sessionBatchMode" class="flex items-center gap-2">
+                                        <span class="text-xs text-secondary">已选 <span class="font-semibold text-primary" x-text="selectedSessionIds.length"></span> 条</span>
+                                        <button @click="toggleSelectAllSessions()"
+                                                class="px-2.5 py-1.5 rounded-md border border-gray-200 text-secondary hover:bg-gray-50 transition-colors text-xs font-medium cursor-pointer">
+                                            <span x-text="areAllFilteredSessionsSelected() ? '取消全选' : '全选当前筛选'"></span>
+                                        </button>
+                                        <button @click="openBatchDeleteModal('sessions')"
+                                                :disabled="selectedSessionIds.length === 0"
+                                                :class="selectedSessionIds.length === 0 ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-red-700'"
+                                                class="px-2.5 py-1.5 bg-danger text-white rounded-md text-xs font-medium transition-colors">
+                                            批量删除
+                                        </button>
+                                        <button @click="exitSessionBatchMode()"
+                                                class="px-2.5 py-1.5 rounded-md border border-gray-200 text-secondary hover:bg-gray-50 transition-colors text-xs font-medium cursor-pointer">
+                                            取消
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
 
                             <!-- 会话卡片列表 -->
@@ -704,12 +737,28 @@
                                 <div :style="useVirtualList ? `height: ${virtualPaddingTop}px;` : ''"></div>
                                 <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                                     <template x-for="session in sessionsToRender" :key="session.session_id">
-                                        <div class="group bg-surface border border-border rounded-xl hover:shadow-sm transition-all duration-200 p-4 cursor-pointer h-32 overflow-hidden"
-                                         @click="openSession(session.session_id)">
+                                        <div class="group session-card-glow bg-surface border border-border rounded-xl transition-all duration-200 p-4 cursor-pointer h-32 overflow-hidden relative"
+                                             :class="sessionBatchMode && isSessionSelected(session.session_id) ? 'ring-2 ring-primary/50 border-primary/50' : ''"
+                                             @click="sessionBatchMode ? toggleSessionSelection(session.session_id) : openSession(session.session_id)">
+                                        <div x-show="sessionBatchMode" class="absolute top-3 left-3 z-10">
+                                            <input type="checkbox"
+                                                   :checked="isSessionSelected(session.session_id)"
+                                                   @click.stop="toggleSessionSelection(session.session_id)"
+                                                   class="w-4 h-4 text-primary border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
+                                        </div>
+                                        <div class="absolute top-3 right-3 z-10">
+                                            <span class="session-status-badge"
+                                                  :class="[getSessionStatusBadgeClass(getEffectiveSessionStatus(session)), sessionBatchMode ? 'session-status-badge--batch' : '']">
+                                                <span class="session-status-dot"
+                                                      :class="getSessionStatusDotClass(getEffectiveSessionStatus(session))"
+                                                      aria-hidden="true"></span>
+                                                <span x-text="getStatusText(getEffectiveSessionStatus(session))"></span>
+                                            </span>
+                                        </div>
                                         <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_230px] gap-x-3 gap-y-2 h-full items-center">
                                             <!-- 左侧：标题 + 摘要 + 元信息 -->
-                                            <div class="min-w-0 flex flex-col justify-start">
-                                                <h3 class="text-lg font-semibold text-primary line-clamp-1"
+                                            <div class="min-w-0 flex flex-col justify-start pr-24 sm:pr-0" :class="sessionBatchMode ? 'pl-7' : ''">
+                                                <h3 class="text-lg font-semibold text-primary line-clamp-1 transition-colors duration-200 group-hover:text-primary-hover"
                                                     :title="session.topic"
                                                     x-text="session.topic"></h3>
                                                 <span x-show="session.scenario_config?.name"
@@ -723,11 +772,10 @@
                                                 </template>
                                             </div>
 
-                                            <!-- 右侧：标签 -->
-                                            <div class="flex flex-wrap items-center justify-start gap-1 w-full sm:justify-end">
-                                                    <span class="tag-pill shrink-0"
-                                                          x-text="getStatusText(getEffectiveSessionStatus(session))"></span>
+                                            <!-- 右侧：操作 -->
+                                            <div class="flex items-start justify-end w-full pt-7">
                                                     <button @click.stop="confirmDeleteSession(session.session_id)"
+                                                            x-show="!sessionBatchMode"
                                                             class="p-1.5 text-gray-300 hover:text-danger hover:bg-red-50 rounded-md transition-colors cursor-pointer sm:opacity-0 sm:pointer-events-none sm:group-hover:opacity-100 sm:group-hover:pointer-events-auto"
                                                             aria-label="删除会话">
                                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -739,10 +787,10 @@
 
                                             <!-- 底部行：元信息 + 进度（同一水平线） -->
                                             <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_230px] gap-2 sm:col-span-2 mt-1">
-                                                <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-muted">
-                                                    <span>创建: <span x-text="formatDate(session.created_at)"></span></span>
-                                                    <span class="hidden sm:inline">·</span>
-                                                    <span>问答: <span x-text="session.interview_count || 0"></span> 条</span>
+                                                <div class="flex items-center gap-x-2 text-[12px] text-muted min-w-0 whitespace-nowrap overflow-hidden transition-colors duration-200 group-hover:text-secondary">
+                                                    <span class="truncate">创建: <span x-text="formatDate(session.created_at)"></span></span>
+                                                    <span class="hidden sm:inline shrink-0">·</span>
+                                                    <span class="shrink-0">问答: <span x-text="session.interview_count || 0"></span> 条</span>
                                                 </div>
                                                 <div class="grid grid-cols-[32px_minmax(0,1fr)_36px] items-center gap-2 w-full">
                                                     <span class="text-[12px] text-muted">进度</span>
@@ -1743,7 +1791,42 @@
                     </div>
 
                     <template x-if="!selectedReport">
-                        <template x-if="filteredReports.length > 0">
+                        <div class="space-y-4">
+                            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm text-muted" x-show="filteredReports.length > 0 || reportBatchMode">
+                                <span>共 <span x-text="filteredReports.length"></span> 条</span>
+                                <div class="flex items-center gap-2 self-end sm:self-auto">
+                                    <button x-show="!reportBatchMode"
+                                            @click="enterReportBatchMode()"
+                                            class="px-3 py-1.5 rounded-md border border-gray-200 text-secondary hover:bg-gray-50 transition-colors duration-200 text-xs font-medium cursor-pointer inline-flex items-center gap-1.5">
+                                        <svg class="w-3.5 h-3.5 text-gray-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h11M8 12h11M8 17h11"/>
+                                            <circle cx="4" cy="7" r="1.3" fill="currentColor" stroke="none"/>
+                                            <circle cx="4" cy="12" r="1.3" fill="currentColor" stroke="none"/>
+                                            <circle cx="4" cy="17" r="1.3" fill="currentColor" stroke="none"/>
+                                        </svg>
+                                        <span>批量管理</span>
+                                    </button>
+                                    <div x-show="reportBatchMode" class="flex items-center gap-2">
+                                        <span class="text-xs text-secondary">已选 <span class="font-semibold text-primary" x-text="selectedReportNames.length"></span> 条</span>
+                                        <button @click="toggleSelectAllReports()"
+                                                class="px-2.5 py-1.5 rounded-md border border-gray-200 text-secondary hover:bg-gray-50 transition-colors text-xs font-medium cursor-pointer">
+                                            <span x-text="areAllFilteredReportsSelected() ? '取消全选' : '全选当前筛选'"></span>
+                                        </button>
+                                        <button @click="openBatchDeleteModal('reports')"
+                                                :disabled="selectedReportNames.length === 0"
+                                                :class="selectedReportNames.length === 0 ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-red-700'"
+                                                class="px-2.5 py-1.5 bg-danger text-white rounded-md text-xs font-medium transition-colors">
+                                            批量删除
+                                        </button>
+                                        <button @click="exitReportBatchMode()"
+                                                class="px-2.5 py-1.5 rounded-md border border-gray-200 text-secondary hover:bg-gray-50 transition-colors text-xs font-medium cursor-pointer">
+                                            取消
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <template x-if="filteredReports.length > 0">
                             <div x-ref="reportListScroller" class="grid gap-4">
                                 <div x-show="!useVirtualReportList || virtualReportPaddingTop > 0"
                                      :style="useVirtualReportList ? `height: ${virtualReportPaddingTop}px;` : ''"></div>
@@ -1756,9 +1839,18 @@
                                             </div>
                                         </div>
                                         <template x-if="item.type === 'report'">
-                                            <div x-cloak class="bg-surface border border-border rounded-xl hover:shadow-sm transition-all duration-200 p-5 hover:shadow-sm/20 min-h-[96px]" :data-report-key="item.key">
+                                            <div x-cloak class="group report-card-glow bg-surface border border-border rounded-xl transition-all duration-200 p-5 min-h-[96px] cursor-pointer"
+                                                 :class="reportBatchMode && isReportSelected(item.report.name) ? 'ring-2 ring-primary/50 border-primary/50' : ''"
+                                                 :data-report-key="item.key"
+                                                 @click="reportBatchMode ? toggleReportSelection(item.report.name) : viewReport(item.report.name)">
                                             <div class="flex items-center justify-between">
-                                                <div class="flex items-center gap-4 flex-1 cursor-pointer" @click="viewReport(item.report.name)">
+                                                <div class="flex items-center gap-4 flex-1 min-w-0">
+                                                    <div x-show="reportBatchMode" class="shrink-0">
+                                                        <input type="checkbox"
+                                                               :checked="isReportSelected(item.report.name)"
+                                                               @click.stop="toggleReportSelection(item.report.name)"
+                                                               class="w-4 h-4 text-primary border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
+                                                    </div>
                                                     <div class="w-12 h-12 bg-primary/10 rounded-xl flex items-center justify-center">
                                                         <svg class="w-6 h-6 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -1766,20 +1858,13 @@
                                                         </svg>
                                                     </div>
                                                     <div class="min-w-0">
-                                                        <h3 class="font-semibold text-primary whitespace-normal break-words leading-snug" :title="item.report.name" x-text="item.report.name"></h3>
-                                                        <p class="text-sm text-muted" x-text="formatDate(item.report.created_at)"></p>
+                                                        <h3 class="font-semibold text-primary whitespace-normal break-words leading-snug transition-colors duration-200 group-hover:text-primary-hover" :title="item.report.name" x-text="item.report.name"></h3>
+                                                        <p class="text-sm text-muted transition-colors duration-200 group-hover:text-secondary" x-text="formatDate(item.report.created_at)"></p>
                                                     </div>
                                                 </div>
-                                                <div class="flex items-center gap-2 shrink-0">
-                                                    <button @click.stop="viewReport(item.report.name)"
-                                                            class="p-2 text-gray-500 hover:text-primary hover:bg-gray-50 rounded-lg transition-colors cursor-pointer"
-                                                            aria-label="查看报告">
-                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
-                                                        </svg>
-                                                    </button>
+                                                <div class="flex items-center gap-2 shrink-0" x-show="!reportBatchMode">
                                                     <button @click.stop="confirmDeleteReport(item.report.name)"
-                                                            class="p-2 text-gray-500 hover:text-danger hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                                                            class="p-2 text-gray-500 hover:text-danger hover:bg-red-50 rounded-lg transition-colors cursor-pointer sm:opacity-0 sm:pointer-events-none sm:group-hover:opacity-100 sm:group-hover:pointer-events-auto sm:group-focus-within:opacity-100 sm:group-focus-within:pointer-events-auto"
                                                             aria-label="删除报告">
                                                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -1795,8 +1880,8 @@
                                 <div x-show="!useVirtualReportList || virtualReportPaddingBottom > 0"
                                      :style="useVirtualReportList ? `height: ${virtualReportPaddingBottom}px;` : ''"></div>
                             </div>
-                        </template>
-                        <template x-if="filteredReports.length === 0">
+                            </template>
+                            <template x-if="filteredReports.length === 0">
                             <div class="text-center py-16 bg-surface border border-border rounded-xl">
                                 <svg class="w-20 h-20 mx-auto text-gray-200 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1"
@@ -1819,7 +1904,8 @@
                                     </div>
                                 </template>
                             </div>
-                        </template>
+                            </template>
+                        </div>
                     </template>
 
                     <!-- 报告详情 -->
@@ -2799,6 +2885,57 @@
                         <button @click="deleteReport()"
                                 class="px-5 py-2 bg-danger hover:bg-red-700 text-white rounded-lg font-medium transition-colors cursor-pointer">
                             删除
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== 批量删除确认弹窗 ========== -->
+        <div x-show="showBatchDeleteModal"
+             x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0"
+             x-transition:enter-end="opacity-100"
+             class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+             @click.self="closeBatchDeleteModal()">
+            <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6">
+                <div class="text-center">
+                    <div class="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <svg class="w-6 h-6 text-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                    </div>
+                    <h3 class="text-lg font-semibold text-primary mb-2">确认批量删除</h3>
+                    <p class="text-muted mb-2">
+                        确定要删除这 <span class="font-semibold text-primary" x-text="batchDeleteSummary.items"></span> 条记录吗？
+                    </p>
+                    <p class="text-xs text-gray-500 mb-4" x-show="batchDeleteTarget === 'sessions'">
+                        将删除选中的会话；如需保留进行中会话，请先取消勾选。
+                    </p>
+
+                    <div class="bg-gray-50 rounded-lg px-4 py-3 text-left text-sm mb-4 space-y-1">
+                        <p>会话数量：<span class="font-medium" x-text="batchDeleteSummary.sessions"></span></p>
+                        <p>报告数量：<span class="font-medium" x-text="batchDeleteSummary.reports"></span></p>
+                    </div>
+
+                    <label x-show="batchDeleteTarget === 'sessions'" class="flex items-center gap-2 text-sm text-secondary mb-5 cursor-pointer select-none">
+                        <input type="checkbox"
+                               x-model="batchDeleteAlsoReports"
+                               @change="updateSessionBatchSummary()"
+                               class="w-4 h-4 text-primary border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
+                        同时删除关联报告
+                    </label>
+
+                    <div class="flex gap-3 justify-center">
+                        <button @click="closeBatchDeleteModal()"
+                                :disabled="batchDeleteLoading"
+                                class="px-5 py-2 border border-gray-300 rounded-lg font-medium hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                            取消
+                        </button>
+                        <button @click="confirmBatchDelete()"
+                                :disabled="batchDeleteLoading"
+                                class="px-5 py-2 bg-danger hover:bg-red-700 text-white rounded-lg font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                            <span x-text="batchDeleteLoading ? '删除中...' : '确认删除'"></span>
                         </button>
                     </div>
                 </div>
