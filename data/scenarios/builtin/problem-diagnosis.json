@@ -1,0 +1,47 @@
+{
+  "id": "problem-diagnosis",
+  "name": "问题诊断",
+  "name_en": "Problem Diagnosis",
+  "description": "适用于故障排查、根因分析、问题定位",
+  "icon": "search",
+  "keywords": ["故障", "问题", "排查", "根因", "分析", "诊断", "bug", "为什么"],
+  "dimensions": [
+    {
+      "id": "phenomenon_description",
+      "name": "现象描述",
+      "description": "问题表现、发生时间、频率规律、触发条件",
+      "key_aspects": ["问题表现", "发生时间", "频率规律", "触发条件"],
+      "min_questions": 2,
+      "max_questions": 4
+    },
+    {
+      "id": "impact_scope",
+      "name": "影响范围",
+      "description": "受影响用户、业务损失、关联系统、紧急程度",
+      "key_aspects": ["受影响用户", "业务损失", "关联系统", "紧急程度"],
+      "min_questions": 2,
+      "max_questions": 4
+    },
+    {
+      "id": "root_cause_hypothesis",
+      "name": "原因假设",
+      "description": "可能原因、排除因素、历史类似问题、变更记录",
+      "key_aspects": ["可能原因", "排除因素", "历史类似", "变更记录"],
+      "min_questions": 2,
+      "max_questions": 4
+    },
+    {
+      "id": "verification_plan",
+      "name": "验证方案",
+      "description": "验证步骤、测试方法、数据收集、修复策略",
+      "key_aspects": ["验证步骤", "测试方法", "数据收集", "修复策略"],
+      "min_questions": 2,
+      "max_questions": 4
+    }
+  ],
+  "report": {
+    "type": "standard",
+    "template": "default",
+    "sections": ["overview", "phenomenon_analysis", "impact_assessment", "root_cause_analysis", "verification_results", "fix_recommendations", "prevention_measures", "appendix"]
+  }
+}
