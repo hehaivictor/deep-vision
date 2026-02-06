@@ -772,6 +772,79 @@ def mark_report_as_deleted(filename: str):
     )
 
 
+def normalize_topic_slug(topic: str) -> str:
+    """按报告命名规则生成主题 slug。"""
+    if not isinstance(topic, str):
+        return ""
+    topic = topic.strip()
+    if not topic:
+        return ""
+    return re.sub(r"\s+", "-", topic)[:30]
+
+
+def get_session_total_progress(session: dict) -> int:
+    """计算会话总进度（各维度覆盖率平均值）。"""
+    dimensions = session.get("dimensions")
+    if not isinstance(dimensions, dict) or not dimensions:
+        return 0
+
+    values = []
+    for value in dimensions.values():
+        if not isinstance(value, dict):
+            continue
+        coverage = value.get("coverage", 0)
+        try:
+            coverage_value = int(coverage)
+        except Exception:
+            coverage_value = 0
+        values.append(max(0, min(100, coverage_value)))
+
+    if not values:
+        return 0
+    return round(sum(values) / len(values))
+
+
+def get_effective_session_status(session: dict) -> str:
+    """统一会话状态口径（与前端保持一致）。"""
+    raw = session.get("status") or "in_progress"
+    progress = get_session_total_progress(session)
+    if raw == "in_progress" and progress >= 100:
+        return "pending_review"
+    return raw
+
+
+def find_reports_by_session_topic(session: dict) -> list:
+    """根据会话主题匹配关联报告文件。"""
+    topic_slug = normalize_topic_slug(session.get("topic", ""))
+    if not topic_slug:
+        return []
+
+    suffix = f"-{topic_slug}.md"
+    matched = []
+    for report_file in REPORTS_DIR.glob("deep-vision-*.md"):
+        if report_file.name.endswith(suffix):
+            matched.append(report_file.name)
+    return matched
+
+
+def unique_non_empty_strings(items) -> list:
+    """去重并过滤空字符串。"""
+    if not isinstance(items, list):
+        return []
+
+    result = []
+    seen = set()
+    for item in items:
+        if not isinstance(item, str):
+            continue
+        value = item.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
 def get_deleted_docs() -> dict:
     """获取已删除文档的记录"""
     if not DELETED_DOCS_FILE.exists():
@@ -3784,6 +3857,65 @@ def delete_session(session_id):
     return jsonify({"success": True})
 
 
+@app.route('/api/sessions/batch-delete', methods=['POST'])
+def batch_delete_sessions():
+    """批量删除会话（默认允许删除进行中的会话）。"""
+    data = request.get_json(silent=True) or {}
+    session_ids = unique_non_empty_strings(data.get("session_ids", []))
+    delete_reports = bool(data.get("delete_reports", False))
+    skip_in_progress = bool(data.get("skip_in_progress", False))
+
+    if not session_ids:
+        return jsonify({"error": "session_ids 不能为空"}), 400
+
+    deleted_sessions = []
+    skipped_sessions = []
+    missing_sessions = []
+    deleted_reports = set()
+
+    for session_id in session_ids:
+        session_file = SESSIONS_DIR / f"{session_id}.json"
+        if not session_file.exists():
+            missing_sessions.append(session_id)
+            continue
+
+        session = safe_load_session(session_file)
+        if session is None:
+            skipped_sessions.append({"session_id": session_id, "reason": "会话数据损坏"})
+            continue
+
+        if skip_in_progress:
+            effective_status = get_effective_session_status(session)
+            if effective_status == "in_progress":
+                skipped_sessions.append({"session_id": session_id, "reason": "会话进行中，已按设置跳过"})
+                continue
+
+        if delete_reports:
+            linked_reports = find_reports_by_session_topic(session)
+            for report_name in linked_reports:
+                report_file = REPORTS_DIR / report_name
+                if report_file.exists():
+                    mark_report_as_deleted(report_name)
+                    deleted_reports.add(report_name)
+
+        try:
+            session_file.unlink()
+            invalidate_prefetch(session_id)
+            clear_thinking_status(session_id)
+            deleted_sessions.append(session_id)
+        except Exception as exc:
+            skipped_sessions.append({"session_id": session_id, "reason": f"删除失败: {str(exc)}"})
+
+    return jsonify({
+        "success": True,
+        "requested": len(session_ids),
+        "deleted_sessions": deleted_sessions,
+        "deleted_reports": sorted(deleted_reports),
+        "skipped_sessions": skipped_sessions,
+        "missing_sessions": missing_sessions
+    })
+
+
 # ============ AI 驱动的访谈 API ============
 
 def parse_question_response(response: str, debug: bool = False) -> Optional[dict]:
@@ -5761,6 +5893,40 @@ def delete_report(filename):
         })
     except Exception as e:
         return jsonify({"error": f"标记删除失败: {str(e)}"}), 500
+
+
+@app.route('/api/reports/batch-delete', methods=['POST'])
+def batch_delete_reports():
+    """批量删除报告（软删除）。"""
+    data = request.get_json(silent=True) or {}
+    report_names = unique_non_empty_strings(data.get("report_names", []))
+
+    if not report_names:
+        return jsonify({"error": "report_names 不能为空"}), 400
+
+    deleted_reports = []
+    skipped_reports = []
+    missing_reports = []
+
+    for report_name in report_names:
+        report_file = REPORTS_DIR / report_name
+        if not report_file.exists():
+            missing_reports.append(report_name)
+            continue
+
+        try:
+            mark_report_as_deleted(report_name)
+            deleted_reports.append(report_name)
+        except Exception as exc:
+            skipped_reports.append({"name": report_name, "reason": f"标记删除失败: {str(exc)}"})
+
+    return jsonify({
+        "success": True,
+        "requested": len(report_names),
+        "deleted_reports": deleted_reports,
+        "skipped_reports": skipped_reports,
+        "missing_reports": missing_reports
+    })
 
 
 # ============ 状态 API ============

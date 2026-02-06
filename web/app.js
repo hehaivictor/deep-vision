@@ -145,6 +145,8 @@ function deepVision() {
         showNewSessionModal: false,
         showDeleteModal: false,
         sessionToDelete: null,
+        sessionBatchMode: false,
+        selectedSessionIds: [],
 
         // 会话列表筛选和分页
         sessionSearchQuery: '',
@@ -195,12 +197,25 @@ function deepVision() {
         reportContent: '',
         showDeleteReportModal: false,
         reportToDelete: null,
+        reportBatchMode: false,
+        selectedReportNames: [],
         reportSearchQuery: '',
         reportSortOrder: 'newest',
         reportGroupByDate: true,
         reportSearchDebounceTimer: null,
         interviewTopicMinHeight: 0,
         lastPresentationUrl: '',
+
+        // 批量删除
+        showBatchDeleteModal: false,
+        batchDeleteTarget: 'sessions',
+        batchDeleteLoading: false,
+        batchDeleteAlsoReports: false,
+        batchDeleteSummary: {
+            items: 0,
+            sessions: 0,
+            reports: 0
+        },
 
         // 访谈相关
         interviewSteps: ['文档准备', '选择式访谈', '需求确认'],
@@ -903,6 +918,261 @@ function deepVision() {
                 this.showToast('报告已删除', 'success');
             } catch (error) {
                 this.showToast('删除报告失败', 'error');
+            }
+        },
+
+        enterSessionBatchMode() {
+            this.exitReportBatchMode();
+            this.sessionBatchMode = true;
+            this.selectedSessionIds = [];
+        },
+
+        exitSessionBatchMode() {
+            this.sessionBatchMode = false;
+            this.selectedSessionIds = [];
+            if (this.batchDeleteTarget === 'sessions') {
+                this.showBatchDeleteModal = false;
+            }
+        },
+
+        isSessionSelected(sessionId) {
+            return this.selectedSessionIds.includes(sessionId);
+        },
+
+        toggleSessionSelection(sessionId) {
+            if (!this.sessionBatchMode) return;
+            if (this.isSessionSelected(sessionId)) {
+                this.selectedSessionIds = this.selectedSessionIds.filter(id => id !== sessionId);
+            } else {
+                this.selectedSessionIds = [...this.selectedSessionIds, sessionId];
+            }
+        },
+
+        getFilteredSessionIds() {
+            return this.filteredSessions.map(session => session.session_id).filter(Boolean);
+        },
+
+        areAllFilteredSessionsSelected() {
+            const filteredIds = this.getFilteredSessionIds();
+            if (filteredIds.length === 0) return false;
+            return filteredIds.every(id => this.selectedSessionIds.includes(id));
+        },
+
+        toggleSelectAllSessions() {
+            if (!this.sessionBatchMode) return;
+            const filteredIds = this.getFilteredSessionIds();
+            if (filteredIds.length === 0) return;
+            if (this.areAllFilteredSessionsSelected()) {
+                this.selectedSessionIds = this.selectedSessionIds.filter(id => !filteredIds.includes(id));
+            } else {
+                const merged = new Set([...this.selectedSessionIds, ...filteredIds]);
+                this.selectedSessionIds = Array.from(merged);
+            }
+        },
+
+        pruneSelectedSessions() {
+            const valid = new Set(this.sessions.map(session => session.session_id));
+            this.selectedSessionIds = this.selectedSessionIds.filter(id => valid.has(id));
+        },
+
+        enterReportBatchMode() {
+            this.exitSessionBatchMode();
+            this.reportBatchMode = true;
+            this.selectedReportNames = [];
+        },
+
+        exitReportBatchMode() {
+            this.reportBatchMode = false;
+            this.selectedReportNames = [];
+            if (this.batchDeleteTarget === 'reports') {
+                this.showBatchDeleteModal = false;
+            }
+        },
+
+        isReportSelected(reportName) {
+            return this.selectedReportNames.includes(reportName);
+        },
+
+        toggleReportSelection(reportName) {
+            if (!this.reportBatchMode) return;
+            if (this.isReportSelected(reportName)) {
+                this.selectedReportNames = this.selectedReportNames.filter(name => name !== reportName);
+            } else {
+                this.selectedReportNames = [...this.selectedReportNames, reportName];
+            }
+        },
+
+        getFilteredReportNames() {
+            return this.filteredReports.map(report => report.name).filter(Boolean);
+        },
+
+        areAllFilteredReportsSelected() {
+            const filteredNames = this.getFilteredReportNames();
+            if (filteredNames.length === 0) return false;
+            return filteredNames.every(name => this.selectedReportNames.includes(name));
+        },
+
+        toggleSelectAllReports() {
+            if (!this.reportBatchMode) return;
+            const filteredNames = this.getFilteredReportNames();
+            if (filteredNames.length === 0) return;
+            if (this.areAllFilteredReportsSelected()) {
+                this.selectedReportNames = this.selectedReportNames.filter(name => !filteredNames.includes(name));
+            } else {
+                const merged = new Set([...this.selectedReportNames, ...filteredNames]);
+                this.selectedReportNames = Array.from(merged);
+            }
+        },
+
+        pruneSelectedReports() {
+            const valid = new Set(this.reports.map(report => report.name));
+            this.selectedReportNames = this.selectedReportNames.filter(name => valid.has(name));
+        },
+
+        openBatchDeleteModal(target) {
+            this.batchDeleteTarget = target;
+            this.batchDeleteAlsoReports = false;
+
+            if (target === 'sessions') {
+                this.batchDeleteSummary = {
+                    items: this.selectedSessionIds.length,
+                    sessions: this.selectedSessionIds.length,
+                    reports: this.estimateLinkedReportCount(this.selectedSessionIds)
+                };
+            } else {
+                this.batchDeleteSummary = {
+                    items: this.selectedReportNames.length,
+                    sessions: 0,
+                    reports: this.selectedReportNames.length
+                };
+            }
+            this.showBatchDeleteModal = true;
+        },
+
+        updateSessionBatchSummary() {
+            if (this.batchDeleteTarget !== 'sessions') return;
+            this.batchDeleteSummary = {
+                items: this.selectedSessionIds.length,
+                sessions: this.selectedSessionIds.length,
+                reports: this.batchDeleteAlsoReports
+                    ? this.estimateLinkedReportCount(this.selectedSessionIds)
+                    : 0
+            };
+        },
+
+        buildSessionTopicSlug(topic) {
+            if (!topic || typeof topic !== 'string') return '';
+            return topic.trim().replace(/\s+/g, '-').slice(0, 30);
+        },
+
+        estimateLinkedReportCount(sessionIds) {
+            if (!Array.isArray(sessionIds) || sessionIds.length === 0) return 0;
+            const reportNames = new Set();
+            const reports = Array.isArray(this.reports) ? this.reports : [];
+
+            sessionIds.forEach(sessionId => {
+                const session = this.sessions.find(item => item.session_id === sessionId);
+                const slug = this.buildSessionTopicSlug(session?.topic || '');
+                if (!slug) return;
+
+                const suffix = `-${slug}.md`;
+                reports.forEach(report => {
+                    if (report?.name && report.name.endsWith(suffix)) {
+                        reportNames.add(report.name);
+                    }
+                });
+            });
+            return reportNames.size;
+        },
+
+        closeBatchDeleteModal() {
+            this.showBatchDeleteModal = false;
+            this.batchDeleteLoading = false;
+            this.batchDeleteAlsoReports = false;
+        },
+
+        async confirmBatchDelete() {
+            if (this.batchDeleteLoading) return;
+
+            if (this.batchDeleteTarget === 'sessions' && this.selectedSessionIds.length === 0) return;
+            if (this.batchDeleteTarget === 'reports' && this.selectedReportNames.length === 0) return;
+
+            this.batchDeleteLoading = true;
+            try {
+                if (this.batchDeleteTarget === 'sessions') {
+                    const result = await this.apiCall('/sessions/batch-delete', {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            session_ids: this.selectedSessionIds,
+                            delete_reports: this.batchDeleteAlsoReports,
+                            skip_in_progress: false
+                        })
+                    });
+
+                    const deletedSessions = result.deleted_sessions?.length || 0;
+                    const deletedReports = result.deleted_reports?.length || 0;
+                    const skippedSessions = result.skipped_sessions?.length || 0;
+                    const missingSessions = result.missing_sessions?.length || 0;
+
+                    await this.loadSessions();
+                    if (this.batchDeleteAlsoReports || deletedReports > 0) {
+                        await this.loadReports();
+                    }
+
+                    this.closeBatchDeleteModal();
+                    this.exitSessionBatchMode();
+
+                    if (deletedSessions > 0) {
+                        let message = `已删除 ${deletedSessions} 个会话`;
+                        if (deletedReports > 0) {
+                            message += `，并移除 ${deletedReports} 个关联报告`;
+                        }
+                        if (skippedSessions > 0 || missingSessions > 0) {
+                            message += `（跳过 ${skippedSessions + missingSessions} 个）`;
+                        }
+                        this.showToast(message, 'success');
+                    } else {
+                        this.showToast('没有可删除的会话', 'warning');
+                    }
+                    return;
+                }
+
+                const result = await this.apiCall('/reports/batch-delete', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        report_names: this.selectedReportNames
+                    })
+                });
+
+                const deletedReports = result.deleted_reports?.length || 0;
+                const skippedReports = result.skipped_reports?.length || 0;
+                const missingReports = result.missing_reports?.length || 0;
+
+                const selectedReportName = this.selectedReport;
+                await this.loadReports();
+                if (selectedReportName && !this.reports.find(report => report.name === selectedReportName)) {
+                    this.selectedReport = null;
+                    this.reportContent = '';
+                    this.presentationPdfUrl = '';
+                    this.presentationLocalUrl = '';
+                }
+
+                this.closeBatchDeleteModal();
+                this.exitReportBatchMode();
+
+                if (deletedReports > 0) {
+                    let message = `已删除 ${deletedReports} 个报告`;
+                    if (skippedReports > 0 || missingReports > 0) {
+                        message += `（跳过 ${skippedReports + missingReports} 个）`;
+                    }
+                    this.showToast(message, 'success');
+                } else {
+                    this.showToast('没有可删除的报告', 'warning');
+                }
+            } catch (error) {
+                this.showToast('批量删除失败', 'error');
+            } finally {
+                this.batchDeleteLoading = false;
             }
         },
 
@@ -2946,6 +3216,8 @@ function deepVision() {
             this.presentationPdfUrl = '';
             this.presentationLocalUrl = '';
             this.stopPresentationPolling();
+            this.exitSessionBatchMode();
+            this.exitReportBatchMode();
             if (view === 'sessions') {
                 this.loadSessions();
             } else if (view === 'reports') {
@@ -3159,6 +3431,7 @@ function deepVision() {
             }
 
             this.filteredSessions = result;
+            this.pruneSelectedSessions();
             this.currentPage = 1;  // 重置到第一页
             if (this.useVirtualList) {
                 this.$nextTick(() => {
@@ -3197,6 +3470,7 @@ function deepVision() {
             }
 
             this.filteredReports = result;
+            this.pruneSelectedReports();
             this.reportItems = this.buildReportItems(result);
             this.initializeReportMeasurements();
 
@@ -4048,13 +4322,29 @@ function deepVision() {
             return '产品需求';
         },
 
-        getStatusBadgeClass(status) {
+        getSessionStatusBadgeClass(status) {
             const classes = {
-                'in_progress': 'status-in-progress',
-                'completed': 'status-completed',
-                'paused': 'bg-yellow-100 text-yellow-700'
+                'in_progress': 'session-status-badge--in-progress',
+                'pending_review': 'session-status-badge--pending-review',
+                'completed': 'session-status-badge--completed',
+                'paused': 'session-status-badge--paused'
             };
-            return classes[status] || 'bg-gray-100 text-gray-700';
+            return classes[status] || 'session-status-badge--neutral';
+        },
+
+        getSessionStatusDotClass(status) {
+            const classes = {
+                'in_progress': 'session-status-dot--in-progress',
+                'pending_review': 'session-status-dot--pending-review',
+                'completed': 'session-status-dot--completed',
+                'paused': 'session-status-dot--paused'
+            };
+            return classes[status] || 'session-status-dot--neutral';
+        },
+
+        // 兼容旧调用
+        getStatusBadgeClass(status) {
+            return this.getSessionStatusBadgeClass(status);
         },
 
         getEffectiveSessionStatus(session) {
