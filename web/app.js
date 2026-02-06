@@ -32,6 +32,12 @@ function deepVision() {
         currentTipIndex: 0,  // 访谈小技巧当前索引
         currentTip: '',  // 当前显示的小技巧文本
         tipRotationInterval: null,  // 小技巧轮播定时器
+        themeStorageKey: 'deepvision_theme_mode',
+        themeMode: 'system',
+        effectiveTheme: 'light',
+        showThemeMenu: false,
+        systemThemeMedia: null,
+        systemThemeListener: null,
         showGuide: false,
         guideStepIndex: 0,
         hasSeenGuide: false,
@@ -175,7 +181,7 @@ function deepVision() {
         reportTotalHeight: 0,
         reportMeasureRaf: null,
 
-        // 确认重新访谈对话框
+        // 确认重新开始访谈对话框
         showRestartModal: false,
 
         // 确认删除文档对话框
@@ -338,6 +344,7 @@ function deepVision() {
                 this.currentQuoteSource = this.quotes[0].source;
             }
 
+            this.initTheme();
             await this.loadVersionInfo();
             await this.checkServerStatus();
             await this.loadScenarios();
@@ -354,6 +361,139 @@ function deepVision() {
                 this.setupVirtualList();
                 this.setupVirtualReportList();
             });
+        },
+
+        initTheme() {
+            const validModes = ['light', 'dark', 'system'];
+            const configuredMode = (typeof SITE_CONFIG !== 'undefined' ? SITE_CONFIG?.theme?.defaultMode : null) || 'system';
+            let mode = validModes.includes(configuredMode) ? configuredMode : 'system';
+
+            const bootstrap = window.__DV_THEME_BOOTSTRAP__;
+            if (bootstrap && validModes.includes(bootstrap.mode)) {
+                mode = bootstrap.mode;
+            } else {
+                try {
+                    const savedMode = localStorage.getItem(this.themeStorageKey);
+                    if (validModes.includes(savedMode)) {
+                        mode = savedMode;
+                    }
+                } catch (error) {
+                    console.warn('读取主题配置失败，使用默认模式');
+                }
+            }
+
+            this.applyThemeMode(mode, { persist: false, rerenderCharts: false });
+
+            if (!window.matchMedia) return;
+            this.systemThemeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+            this.systemThemeListener = (event) => {
+                if (this.themeMode !== 'system') return;
+                this.applyThemeMode('system', {
+                    persist: false,
+                    rerenderCharts: true,
+                    preferredDark: event.matches
+                });
+            };
+
+            if (typeof this.systemThemeMedia.addEventListener === 'function') {
+                this.systemThemeMedia.addEventListener('change', this.systemThemeListener);
+            } else if (typeof this.systemThemeMedia.addListener === 'function') {
+                this.systemThemeMedia.addListener(this.systemThemeListener);
+            }
+        },
+
+        resolveEffectiveTheme(mode, preferredDark = null) {
+            if (mode === 'light' || mode === 'dark') return mode;
+            const matchesDark = preferredDark !== null
+                ? preferredDark
+                : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+            return matchesDark ? 'dark' : 'light';
+        },
+
+        applyThemeMode(mode, options = {}) {
+            const validModes = ['light', 'dark', 'system'];
+            if (!validModes.includes(mode)) mode = 'system';
+
+            const persist = options.persist !== false;
+            const rerenderCharts = options.rerenderCharts !== false;
+            const effective = this.resolveEffectiveTheme(mode, options.preferredDark ?? null);
+
+            this.themeMode = mode;
+            this.effectiveTheme = effective;
+            this.showThemeMenu = false;
+
+            const root = document.documentElement;
+            root.setAttribute('data-theme-mode', mode);
+            root.setAttribute('data-theme', effective);
+            root.style.colorScheme = effective;
+
+            if (persist) {
+                try {
+                    localStorage.setItem(this.themeStorageKey, mode);
+                } catch (error) {
+                    console.warn('保存主题配置失败');
+                }
+            }
+
+            this.applyMermaidTheme(effective);
+
+            if (rerenderCharts) {
+                this.$nextTick(() => this.rerenderMermaidChartsForTheme());
+            }
+        },
+
+        setThemeMode(mode) {
+            this.applyThemeMode(mode);
+        },
+
+        themeModeLabel(mode = this.themeMode) {
+            if (mode === 'light') return '浅色';
+            if (mode === 'dark') return '深色';
+            return '跟随系统';
+        },
+
+        getThemeOptionClass(mode) {
+            const active = this.themeMode === mode;
+            if (this.effectiveTheme === 'dark') {
+                return active ? 'dv-dark-theme-option-active' : 'dv-dark-theme-option';
+            }
+            return active
+                ? 'bg-gray-900 text-white border-gray-900'
+                : 'text-gray-600 border-transparent hover:bg-gray-100 hover:text-gray-900';
+        },
+
+        getHeaderNavClass(isActive = false) {
+            if (this.effectiveTheme === 'dark') {
+                return isActive ? 'dv-dark-nav-active' : 'dv-dark-nav';
+            }
+            return isActive
+                ? 'bg-gray-900 text-white'
+                : 'text-primary hover:bg-surface-secondary';
+        },
+
+        applyMermaidTheme(theme) {
+            if (typeof mermaid === 'undefined') return;
+            try {
+                if (typeof window.getDeepVisionMermaidConfig === 'function') {
+                    mermaid.initialize(window.getDeepVisionMermaidConfig(theme));
+                }
+            } catch (error) {
+                console.warn('切换图表主题失败:', error);
+            }
+        },
+
+        rerenderMermaidChartsForTheme() {
+            const renderedCharts = document.querySelectorAll('.mermaid.mermaid-rendered');
+            if (renderedCharts.length === 0) return;
+
+            renderedCharts.forEach((element) => {
+                const definition = element.dataset.mermaidDefinition;
+                if (!definition) return;
+                element.classList.remove('mermaid-rendered', 'mermaid-failed');
+                element.textContent = definition;
+            });
+
+            this.renderMermaidCharts();
         },
 
         // 检查首次访问
@@ -861,7 +1001,7 @@ function deepVision() {
                     this.aiRecommendationApplied = false;
                     this.aiRecommendationPrevSelection = null;
                 } else if (this.currentSession.interview_log.length > 0) {
-                    // 有未完成的维度，继续访谈
+                    // 有未完成的维度，继续访谈流程
                     this.currentStep = 1;
                     this.currentDimension = nextDim;
                     await this.fetchNextQuestion();
@@ -1996,7 +2136,7 @@ function deepVision() {
             return coverage >= 50 && coverage < 100;
         },
 
-        // 关闭里程碑弹窗并继续访谈
+        // 关闭里程碑弹窗并继续访谈流程
         async continueMilestone() {
             this.showMilestoneModal = false;
 
@@ -2025,7 +2165,7 @@ function deepVision() {
             this.currentStep = 2;
         },
 
-        // ============ 重新访谈 ============
+        // ============ 重新开始访谈 ============
         confirmRestartResearch() {
             this.showRestartModal = true;
         },
@@ -2050,17 +2190,17 @@ function deepVision() {
                     this.currentDimension = this.dimensionOrder[0] || 'customer_needs';
                     this.currentQuestion = null;
 
-                    this.showToast('已保存当前访谈内容，开始新一轮访谈', 'success');
+                    this.showToast('已保存当前访谈内容，已重新开始访谈流程', 'success');
                 } else {
-                    this.showToast('重新访谈失败', 'error');
+                    this.showToast('重新开始访谈失败', 'error');
                 }
             } catch (error) {
-                console.error('重新访谈错误:', error);
-                this.showToast('重新访谈失败', 'error');
+                console.error('重新开始访谈错误:', error);
+                this.showToast('重新开始访谈失败', 'error');
             }
         },
 
-        // ============ 报告生成（AI 驱动）============
+        // ============ 访谈报告生成（AI 驱动）============
         async generateReport() {
             this.generatingReport = true;
             this.generatingReportSessionId = this.currentSession?.session_id || '';
@@ -2074,17 +2214,17 @@ function deepVision() {
 
                 if (result.success) {
                     const aiMsg = result.ai_generated ? '（AI 生成）' : '（模板生成）';
-                    this.showToast(`报告生成成功 ${aiMsg}`, 'success');
+                    this.showToast(`访谈报告生成成功 ${aiMsg}`, 'success');
                     this.currentSession.status = 'completed';
                     await this.loadReports();
                     this.currentView = 'reports';
                     // 自动打开新生成的报告
                     await this.viewReport(result.report_name);
                 } else {
-                    throw new Error('报告生成失败');
+                    throw new Error('访谈报告生成失败');
                 }
             } catch (error) {
-                this.showToast('报告生成失败', 'error');
+                this.showToast('访谈报告生成失败', 'error');
             } finally {
                 this.generatingReport = false;
                 this.generatingReportSessionId = '';
@@ -2121,7 +2261,7 @@ function deepVision() {
             if (target) {
                 await this.viewReport(target.name);
             } else {
-                this.showToast('未找到对应报告，请在报告列表中查看', 'warning');
+                this.showToast('未找到对应访谈报告，请在报告列表中查看', 'warning');
             }
         },
 
@@ -3023,6 +3163,9 @@ function deepVision() {
                     return;
                 }
 
+                const isDarkTheme = this.effectiveTheme === 'dark';
+                const chartBackground = isDarkTheme ? '#1f252d' : '#ffffff';
+
                 // 逐个渲染图表
                 let successCount = 0;
                 for (let i = 0; i < mermaidElements.length; i++) {
@@ -3034,7 +3177,9 @@ function deepVision() {
                     }
 
                     try {
-                        const graphDefinition = element.textContent.trim();
+                        const graphDefinition = (element.dataset.mermaidDefinition || element.textContent || '').trim();
+                        if (!graphDefinition) continue;
+                        element.dataset.mermaidDefinition = graphDefinition;
                         const id = `mermaid-${Date.now()}-${i}`;
 
                         // 预处理：修复常见的语法问题
@@ -3127,51 +3272,37 @@ function deepVision() {
                         element.innerHTML = svg;
                         element.classList.add('mermaid-rendered');
 
-                        // 后处理：修复黑色背景问题
+                        // 后处理：统一图表画布底色，避免在深浅主题切换时出现黑块
                         const svgEl = element.querySelector('svg');
                         if (svgEl) {
-                            // 设置 SVG 背景为白色
-                            svgEl.style.backgroundColor = '#ffffff';
-                            svgEl.style.background = '#ffffff';
+                            svgEl.style.backgroundColor = chartBackground;
+                            svgEl.style.background = chartBackground;
 
-                            // 获取 SVG 的 viewBox 并确保背景完全覆盖
-                            const viewBox = svgEl.getAttribute('viewBox');
-                            if (viewBox) {
-                                const [x, y, width, height] = viewBox.split(' ').map(Number);
-                                // 检查是否已有背景 rect
-                                const firstRect = svgEl.querySelector('rect');
-                                if (firstRect) {
-                                    // 确保第一个 rect 是白色背景
-                                    const fill = firstRect.getAttribute('fill');
-                                    if (!fill || fill === '#000000' || fill === 'black' || fill === 'rgb(0, 0, 0)' || fill === 'none') {
-                                        firstRect.setAttribute('fill', '#ffffff');
-                                        firstRect.style.fill = '#ffffff';
-                                    }
+                            const firstRect = svgEl.querySelector('rect');
+                            if (firstRect) {
+                                const fill = (firstRect.getAttribute('fill') || '').toLowerCase();
+                                if (!fill || fill === 'none' || fill === '#000000' || fill === 'black' || fill === 'rgb(0, 0, 0)') {
+                                    firstRect.setAttribute('fill', chartBackground);
+                                    firstRect.style.fill = chartBackground;
                                 }
                             }
 
-                            // 查找并修复所有黑色背景的 rect 元素
-                            const rects = svgEl.querySelectorAll('rect');
-                            rects.forEach((rect, idx) => {
-                                const fill = rect.getAttribute('fill') || rect.style.fill;
-                                // 第一个 rect 通常是背景
-                                if (idx === 0) {
-                                    rect.setAttribute('fill', '#ffffff');
-                                    rect.style.fill = '#ffffff';
-                                }
-                                // 其他黑色填充的 rect 也改为白色
-                                if (fill === '#000000' || fill === 'black' || fill === 'rgb(0, 0, 0)') {
-                                    rect.setAttribute('fill', '#ffffff');
-                                    rect.style.fill = '#ffffff';
-                                }
-                            });
+                            if (!isDarkTheme) {
+                                const rects = svgEl.querySelectorAll('rect');
+                                rects.forEach((rect, idx) => {
+                                    const fill = (rect.getAttribute('fill') || rect.style.fill || '').toLowerCase();
+                                    if (idx === 0 || fill === '#000000' || fill === 'black' || fill === 'rgb(0, 0, 0)') {
+                                        rect.setAttribute('fill', '#ffffff');
+                                        rect.style.fill = '#ffffff';
+                                    }
+                                });
 
-                            // 移除可能的 style 标签中的黑色背景
-                            const styles = svgEl.querySelectorAll('style');
-                            styles.forEach(style => {
-                                style.textContent = style.textContent.replace(/background:\s*#000000/g, 'background: #ffffff');
-                                style.textContent = style.textContent.replace(/background-color:\s*#000000/g, 'background-color: #ffffff');
-                            });
+                                const styles = svgEl.querySelectorAll('style');
+                                styles.forEach(style => {
+                                    style.textContent = style.textContent.replace(/background:\s*#000000/g, 'background: #ffffff');
+                                    style.textContent = style.textContent.replace(/background-color:\s*#000000/g, 'background-color: #ffffff');
+                                });
+                            }
                         }
 
                         successCount++;
