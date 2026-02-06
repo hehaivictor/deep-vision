@@ -6,6 +6,28 @@
     <title>Deep Vision 深瞳</title>
     <!-- 本地化资源 - 支持内网部署 -->
     <script>
+        // 主题预加载：避免刷新时闪烁
+        (function () {
+            const storageKey = 'deepvision_theme_mode';
+            const validModes = ['light', 'dark', 'system'];
+            let mode = 'system';
+            try {
+                const saved = localStorage.getItem(storageKey);
+                if (validModes.includes(saved)) mode = saved;
+            } catch (error) {
+                mode = 'system';
+            }
+
+            const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const effective = mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode;
+            const root = document.documentElement;
+            root.setAttribute('data-theme-mode', mode);
+            root.setAttribute('data-theme', effective);
+            root.style.colorScheme = effective;
+            window.__DV_THEME_BOOTSTRAP__ = { mode, effective, storageKey };
+        })();
+    </script>
+    <script>
         (function () {
             const warn = console.warn;
             console.warn = function (...args) {
@@ -184,50 +206,96 @@
     <script src="vendor/js/docx.min.js"></script>
     <script src="vendor/js/FileSaver.min.js"></script>
     <script>
-        // 初始化 Mermaid 配置
-        mermaid.initialize({
-            startOnLoad: false,
-            theme: 'neutral',
-            securityLevel: 'loose',
-            fontFamily: 'Inter, system-ui, sans-serif',
-            themeVariables: {
-                background: '#ffffff',
-                primaryColor: '#e5e7eb',
-                primaryTextColor: '#1f2937',
-                primaryBorderColor: '#9ca3af',
-                lineColor: '#6b7280',
-                secondaryColor: '#f3f4f6',
-                tertiaryColor: '#f9fafb',
-                noteTextColor: '#1f2937',
-                noteBkgColor: '#f3f4f6',
-                noteBorderColor: '#d1d5db',
-                actorTextColor: '#1f2937',
-                actorBkg: '#f3f4f6',
-                actorBorder: '#9ca3af',
-                pie1: '#6366f1',
-                pie2: '#8b5cf6',
-                pie3: '#a855f7',
-                pie4: '#d946ef',
-                pie5: '#ec4899',
-                pie6: '#f43f5e',
-                pie7: '#f97316',
-                pie8: '#eab308'
-            },
-            quadrantChart: {
-                chartWidth: 500,
-                chartHeight: 500,
-                titleFontSize: 16,
-                titlePadding: 10,
-                quadrantPadding: 5,
-                xAxisLabelFontSize: 12,
-                yAxisLabelFontSize: 12,
-                pointLabelFontSize: 10
-            },
-            flowchart: {
-                htmlLabels: true,
-                curve: 'basis'
+        // 初始化 Mermaid 配置（深浅主题共享）
+        window.getDeepVisionMermaidConfig = function (theme) {
+            const isDark = theme === 'dark';
+            const commonConfig = {
+                startOnLoad: false,
+                theme: 'base',
+                securityLevel: 'loose',
+                fontFamily: 'Inter, system-ui, sans-serif',
+                quadrantChart: {
+                    chartWidth: 500,
+                    chartHeight: 500,
+                    titleFontSize: 16,
+                    titlePadding: 10,
+                    quadrantPadding: 5,
+                    xAxisLabelFontSize: 12,
+                    yAxisLabelFontSize: 12,
+                    pointLabelFontSize: 10
+                },
+                flowchart: {
+                    htmlLabels: true,
+                    curve: 'basis'
+                }
+            };
+
+            if (isDark) {
+                return {
+                    ...commonConfig,
+                    themeVariables: {
+                        background: '#1f252d',
+                        primaryColor: '#26303b',
+                        primaryTextColor: '#e6edf5',
+                        primaryBorderColor: '#3b4654',
+                        lineColor: '#5f6d7d',
+                        secondaryColor: '#212933',
+                        tertiaryColor: '#252e38',
+                        noteTextColor: '#d8e0ea',
+                        noteBkgColor: '#24303c',
+                        noteBorderColor: '#3d4b5a',
+                        actorTextColor: '#dce5ef',
+                        actorBkg: '#24303c',
+                        actorBorder: '#4a5868',
+                        clusterBkg: '#232c36',
+                        clusterBorder: '#3d4a59',
+                        edgeLabelBackground: '#1f252d',
+                        cScale0: '#4c8dff',
+                        cScale1: '#5ba4ff',
+                        cScale2: '#6aa7ff',
+                        cScale3: '#7bb2ff',
+                        cScale4: '#8abaff',
+                        cScale5: '#9ac3ff',
+                        cScale6: '#aacdff',
+                        cScale7: '#bad7ff'
+                    }
+                };
             }
-        });
+
+            return {
+                ...commonConfig,
+                themeVariables: {
+                    background: '#ffffff',
+                    primaryColor: '#e5e7eb',
+                    primaryTextColor: '#1f2937',
+                    primaryBorderColor: '#9ca3af',
+                    lineColor: '#6b7280',
+                    secondaryColor: '#f3f4f6',
+                    tertiaryColor: '#f9fafb',
+                    noteTextColor: '#1f2937',
+                    noteBkgColor: '#f3f4f6',
+                    noteBorderColor: '#d1d5db',
+                    actorTextColor: '#1f2937',
+                    actorBkg: '#f3f4f6',
+                    actorBorder: '#9ca3af',
+                    clusterBkg: '#f8fafc',
+                    clusterBorder: '#cbd5e1',
+                    edgeLabelBackground: '#ffffff',
+                    cScale0: '#357be2',
+                    cScale1: '#4f8eef',
+                    cScale2: '#5f9cf4',
+                    cScale3: '#78adf8',
+                    cScale4: '#8bb9fb',
+                    cScale5: '#9dc5fd',
+                    cScale6: '#afcffd',
+                    cScale7: '#c2dafd'
+                }
+            };
+        };
+
+        mermaid.initialize(window.getDeepVisionMermaidConfig(
+            document.documentElement.getAttribute('data-theme') || 'light'
+        ));
     </script>
     <script>
         tailwind.config = {
@@ -531,22 +599,57 @@
                 </div>
                 <nav class="flex items-center gap-2 md:gap-3">
                     <button @click="switchView('sessions')"
-                            :class="currentView === 'sessions' ? 'bg-gray-900 text-white' : 'text-primary hover:bg-surface-secondary'"
+                            :class="getHeaderNavClass(currentView === 'sessions')"
                             class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium">
                         <span class="hidden sm:inline">会话</span>
                         <span class="sm:hidden">会话</span>
                     </button>
                     <button @click="switchView('reports')"
-                            :class="currentView === 'reports' ? 'bg-gray-900 text-white' : 'text-primary hover:bg-surface-secondary'"
+                            :class="getHeaderNavClass(currentView === 'reports')"
                             class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium">
                         <span class="hidden sm:inline">报告</span>
                         <span class="sm:hidden">报告</span>
                     </button>
                     <button @click="window.location.href='help.html'"
-                            class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium text-primary hover:bg-surface-secondary">
+                            :class="getHeaderNavClass(false)"
+                            class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium">
                         <span class="hidden sm:inline">帮助</span>
                         <span class="sm:hidden">帮助</span>
                     </button>
+                    <div class="relative" @keydown.escape.window="showThemeMenu = false">
+                        <button @click="showThemeMenu = !showThemeMenu"
+                                :class="getHeaderNavClass(false)"
+                                class="theme-toggle-trigger w-10 h-10 rounded-lg transition-all duration-200 cursor-pointer inline-flex items-center justify-center"
+                                title="主题设置"
+                                aria-label="主题设置"
+                                aria-haspopup="menu"
+                                :aria-expanded="showThemeMenu.toString()">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M12 3v2m0 14v2m9-9h-2M5 12H3m14.95 6.364-1.414-1.414M7.464 7.464 6.05 6.05m11.314 0-1.414 1.414M7.464 16.536 6.05 17.95M12 8a4 4 0 100 8 4 4 0 000-8z"/>
+                            </svg>
+                        </button>
+                        <div x-cloak
+                             x-show="showThemeMenu"
+                             x-transition.opacity.scale.90
+                             @click.outside="showThemeMenu = false"
+                             class="theme-menu absolute right-0 mt-2 w-36 rounded-xl border border-gray-200 bg-white p-1.5 shadow-lg z-50">
+                            <button @click="setThemeMode('light')"
+                                    :class="getThemeOptionClass('light')"
+                                    class="theme-menu-item w-full text-left px-2.5 py-2 text-sm rounded-lg border transition-colors duration-150">
+                                浅色
+                            </button>
+                            <button @click="setThemeMode('dark')"
+                                    :class="getThemeOptionClass('dark')"
+                                    class="theme-menu-item w-full text-left px-2.5 py-2 text-sm rounded-lg border transition-colors duration-150 mt-1">
+                                深色
+                            </button>
+                            <button @click="setThemeMode('system')"
+                                    :class="getThemeOptionClass('system')"
+                                    class="theme-menu-item w-full text-left px-2.5 py-2 text-sm rounded-lg border transition-colors duration-150 mt-1">
+                                跟随系统
+                            </button>
+                        </div>
+                    </div>
                 </nav>
             </div>
         </header>
@@ -667,7 +770,7 @@
                             <!-- 排序 -->
                             <select x-model="sessionSortOrder"
                                     @change="filterSessions()"
-                                    class="px-3 pr-8 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer bg-white appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20fill%3D%22none%22%20viewBox%3D%220%200%2024%2024%22%20stroke%3D%22%236b7280%22%3E%3Cpath%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20stroke-width%3D%222%22%20d%3D%22M19%209l-7%207-7-7%22%2F%3E%3C%2Fsvg%3E')] bg-[length:16px] bg-[right_8px_center] bg-no-repeat">
+                                    class="sort-select px-3 pr-8 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer bg-white appearance-none">
                                 <option value="newest">最新优先</option>
                                 <option value="oldest">最早优先</option>
                                 <option value="progress">进度排序</option>
@@ -1020,7 +1123,7 @@
                                                 <span>预计还需 <span x-text="getEstimatedRemainingQuestions()"></span> 题左右</span>
                                             </template>
                                             <template x-if="getTotalProgress() >= 100">
-                                                <span class="text-green-600 font-medium">评估完成，可生成报告</span>
+                                                <span class="text-green-600 font-medium">评估完成，可生成访谈报告</span>
                                             </template>
                                         </div>
                                     </div>
@@ -1053,22 +1156,22 @@
                                 <template x-if="currentStep !== 2">
                                     <button x-show="getTotalProgress() >= 100 || currentStep === 2"
                                             @click="goToConfirmation()"
-                                            class="w-full text-white py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 btn-sage-blue cursor-pointer">
+                                            class="w-full py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 report-action-primary cursor-pointer">
                                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                         </svg>
-                                        <span>确认需求</span>
+                                        <span>确认需求摘要</span>
                                     </button>
                                 </template>
                                 <template x-if="currentStep === 2">
                                     <button @click="confirmRestartResearch()"
                                             :disabled="isGeneratingCurrentReport()"
-                                            :class="isGeneratingCurrentReport() ? 'bg-gray-300 text-gray-500 cursor-not-allowed' : 'btn-sage-blue text-white cursor-pointer'"
+                                            :class="isGeneratingCurrentReport() ? 'report-action-disabled cursor-not-allowed' : 'report-action-secondary cursor-pointer'"
                                             class="w-full py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2">
                                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
                                         </svg>
-                                        <span>重新访谈</span>
+                                        <span>重新开始访谈</span>
                                     </button>
                                 </template>
                             </div>
@@ -1212,7 +1315,7 @@
 
                                 <div class="flex justify-end mt-6">
                                     <button @click="startInterview()"
-                                            class="btn-sage-blue text-white px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer flex items-center gap-2">
+                                            class="report-action-primary px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer flex items-center gap-2">
                                         开始访谈
                                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/>
@@ -1383,7 +1486,7 @@
                                             <h3 class="text-lg font-semibold text-primary mb-2" x-text="currentQuestion.errorTitle || '服务错误'"></h3>
                                             <p class="text-muted mb-6" x-text="currentQuestion.errorDetail || '请稍后重试'"></p>
                                             <button @click="fetchNextQuestion()"
-                                                    class="bg-primary hover:bg-cta-hover text-white px-6 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer">
+                                                    class="report-action-primary px-6 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer">
                                                 重试
                                             </button>
                                         </div>
@@ -1444,7 +1547,7 @@
                                         </div>
                                         <h3 class="text-xl font-semibold text-primary mb-2">所有问题已完成</h3>
                                         <p class="text-muted text-sm">您已经完成了全部 4 个维度的访谈</p>
-                                        <p class="text-muted text-sm mt-1">请点击下方"确认需求"按钮进入下一阶段</p>
+                                            <p class="text-muted text-sm mt-1">请点击下方“确认需求摘要”按钮进入下一阶段</p>
                                     </div>
 
                                     <!-- AI 推荐选项 -->
@@ -1576,15 +1679,15 @@
                                                 <span class="text-xs text-blue-700 font-medium">快速操作：</span>
                                                 <button x-show="canShowSkipFollowUp()"
                                                         @click="skipFollowUp()"
-                                                        class="px-3 py-1.5 bg-white border border-blue-300 text-blue-700 rounded-lg text-xs font-medium hover:bg-blue-50 transition-colors cursor-pointer flex items-center gap-1">
+                                                        class="report-action-secondary px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center gap-1">
                                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                                                     </svg>
-                                                    这个话题说清楚了
+                                                    结束当前话题
                                                 </button>
                                                 <button x-show="canShowCompleteDimension()"
                                                         @click="completeDimension()"
-                                                        class="px-3 py-1.5 bg-white border border-blue-300 text-blue-700 rounded-lg text-xs font-medium hover:bg-blue-50 transition-colors cursor-pointer flex items-center gap-1">
+                                                        class="report-action-secondary px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center gap-1">
                                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 9l3 3m0 0l-3 3m3-3H8m13 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                                     </svg>
@@ -1598,7 +1701,7 @@
                                     <div x-show="getTotalProgress() < 100" class="flex flex-col-reverse sm:flex-row justify-between items-stretch sm:items-center gap-3 mt-6 pt-4 border-t border-gray-100">
                                         <button x-show="canGoPrevQuestion()"
                                                 @click="goPrevQuestion()"
-                                                class="text-muted hover:text-secondary flex items-center justify-center gap-1 cursor-pointer py-2.5 sm:py-0">
+                                                class="report-action-tertiary px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer w-full sm:w-auto">
                                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                                             </svg>
@@ -1608,8 +1711,8 @@
                                         <button x-show="currentQuestion.options && currentQuestion.options.length > 0"
                                                 @click="submitAnswer()"
                                                 :disabled="!canSubmitAnswer()"
-                                                :class="canSubmitAnswer() ? 'btn-sage-blue cursor-pointer' : 'bg-gray-300 cursor-not-allowed'"
-                                                class="text-white px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto">
+                                                :class="canSubmitAnswer() ? 'report-action-primary cursor-pointer' : 'report-action-disabled cursor-not-allowed'"
+                                                class="px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto">
                                             下一题
                                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
@@ -1682,7 +1785,7 @@
                                 <div class="flex flex-col-reverse sm:flex-row justify-between items-stretch sm:items-center gap-3 mt-8 pt-4 border-t border-gray-100">
                                     <template x-if="currentSession.status === 'completed'">
                                         <button @click="switchView('sessions')"
-                                                class="text-muted hover:text-secondary flex items-center justify-center gap-1 cursor-pointer py-2.5 sm:py-0">
+                                                class="report-action-tertiary px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer w-full sm:w-auto">
                                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                                             </svg>
@@ -1691,35 +1794,35 @@
                                     </template>
                                     <template x-if="currentSession.status !== 'completed'">
                                         <button @click="currentStep = 1"
-                                                class="text-muted hover:text-secondary flex items-center justify-center gap-1 cursor-pointer py-2.5 sm:py-0">
+                                                class="report-action-tertiary px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-1 cursor-pointer w-full sm:w-auto">
                                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                                             </svg>
-                                            返回继续访谈
+                                            返回访谈流程
                                         </button>
                                     </template>
                                     <template x-if="currentSession.status === 'completed'">
                                         <div class="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
                                             <button @click="viewLatestReportForSession()"
-                                                    class="px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto text-white btn-sage-blue cursor-pointer">
+                                                    class="report-action-primary px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto cursor-pointer">
                                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                                 </svg>
-                                                查看报告
+                                                查看最新报告
                                             </button>
                                             <button @click="generateReport()"
                                                     :disabled="isGeneratingCurrentReport()"
-                                                    :class="isGeneratingCurrentReport() ? 'bg-gray-200 text-gray-500 cursor-wait' : 'border border-gray-200 text-gray-700 hover:bg-gray-50 cursor-pointer'"
+                                                    :class="isGeneratingCurrentReport() ? 'report-action-disabled cursor-wait' : 'report-action-secondary cursor-pointer'"
                                                     class="px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto">
-                                                重新生成报告
+                                                重新生成访谈报告
                                             </button>
                                         </div>
                                     </template>
                                     <template x-if="currentSession.status !== 'completed'">
                                         <button @click="generateReport()"
                                                 :disabled="isGeneratingCurrentReport()"
-                                                :class="isGeneratingCurrentReport() ? 'btn-sage-blue opacity-80 cursor-wait' : 'btn-sage-blue cursor-pointer'"
-                                                class="px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto text-white">
+                                                :class="isGeneratingCurrentReport() ? 'report-action-generate-running cursor-wait' : 'report-action-generate cursor-pointer'"
+                                                class="px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto">
                                             <template x-if="isGeneratingCurrentReport()">
                                                 <svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
                                                     <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
@@ -1731,7 +1834,7 @@
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
                                                 </svg>
                                             </template>
-                                            <span x-text="isGeneratingCurrentReport() ? '生成中...' : '生成报告'"></span>
+                                            <span x-text="isGeneratingCurrentReport() ? '正在生成访谈报告...' : '生成访谈报告'"></span>
                                         </button>
                                     </template>
                                 </div>
@@ -1776,7 +1879,7 @@
                             <!-- 排序 -->
                             <select x-model="reportSortOrder"
                                     @change="filterReports()"
-                                    class="px-3 pr-8 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer bg-white appearance-none bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20fill%3D%22none%22%20viewBox%3D%220%200%2024%2024%22%20stroke%3D%22%236b7280%22%3E%3Cpath%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22%20stroke-width%3D%222%22%20d%3D%22M19%209l-7%207-7-7%22%2F%3E%3C%2Fsvg%3E')] bg-[length:16px] bg-[right_8px_center] bg-no-repeat">
+                                    class="sort-select px-3 pr-8 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer bg-white appearance-none">
                                 <option value="newest">最新优先</option>
                                 <option value="oldest">最早优先</option>
                             </select>
@@ -1912,7 +2015,7 @@
                     <template x-if="selectedReport">
                         <div class="space-y-4">
                             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                                <button @click="selectedReport = null" class="text-primary hover:text-primary-hover flex items-center gap-1 cursor-pointer">
+                                <button @click="selectedReport = null" class="report-action-tertiary px-3 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1 cursor-pointer w-fit">
                                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
                                     </svg>
@@ -1922,7 +2025,7 @@
                                     <div class="flex flex-col gap-1 w-full sm:w-auto" x-show="isPresentationEnabled()">
                                         <button @click="(generatingSlides || presentationPolling) ? stopPresentationGeneration() : generatePresentation()"
                                                 x-show="!presentationPdfUrl"
-                                                :class="(generatingSlides || presentationPolling) ? 'bg-rose-100 border border-rose-400 text-rose-700 hover:bg-rose-200' : 'bg-amber-500 text-white hover:bg-amber-600'"
+                                                :class="(generatingSlides || presentationPolling) ? 'report-action-generate-running' : 'report-action-generate'"
                                                 class="px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto"
                                                 :aria-busy="(generatingSlides || presentationPolling) ? 'true' : 'false'">
                                             <svg x-show="!generatingSlides" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -1932,27 +2035,28 @@
                                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
                                             </svg>
-                                            <span x-text="(generatingSlides || presentationPolling) ? '演示文稿生成中… 点击停止' : '一键生成演示文稿'"></span>
+                                            <span x-text="(generatingSlides || presentationPolling) ? '正在生成演示文稿（点击停止）' : '生成演示文稿'"></span>
                                         </button>
-                                        <span x-show="generatingSlides || presentationPolling" class="text-xs text-slate-500">预计 8-10 分钟，可随时停止</span>
+                                        <span x-show="generatingSlides || presentationPolling" class="text-xs text-muted">预计 8-10 分钟，可随时停止</span>
                                     </div>
                                     <button x-show="isPresentationEnabled() && presentationPdfUrl && !generatingSlides"
                                             @click="openPresentationPdf()"
-                                            class="border border-slate-300 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer hover:bg-slate-50 flex items-center justify-center gap-2 w-full sm:w-auto">
+                                            class="report-action-secondary px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v14m7-7H5"/>
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
                                         </svg>
                                         查看演示文稿
                                     </button>
-                                    <!-- 下载报告下拉菜单 -->
+                                    <!-- 下载访谈报告下拉菜单 -->
                                     <div class="relative" x-data="{ downloadMenuOpen: false }">
                                         <button @click="downloadMenuOpen = !downloadMenuOpen"
                                                 @click.outside="downloadMenuOpen = false"
-                                                class="btn-sage-blue text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto">
+                                                class="report-action-primary px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto">
                                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                                             </svg>
-                                            下载报告
+                                            下载访谈报告
                                             <svg class="w-4 h-4 transition-transform duration-200" :class="{ 'rotate-180': downloadMenuOpen }" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
                                             </svg>
@@ -2040,7 +2144,7 @@
                 </div>
                 <form @submit.prevent="createNewSession()">
                     <div class="mb-4">
-                        <label for="newTopic" class="block text-sm font-medium text-secondary mb-2">访谈主题 <span class="text-danger">*</span></label>
+                        <label for="newTopic" class="block text-sm font-medium text-secondary mb-2">访谈主题 <span class="required-asterisk">*</span></label>
                         <input data-guide="guide-topic" type="text" id="newTopic" x-model="newSessionTopic"
                                @input="onTopicInput()"
                                :placeholder="getTopicPlaceholder()"
@@ -2381,7 +2485,7 @@
                 <!-- 场景基本信息 -->
                 <div class="space-y-4">
                     <div>
-                        <label class="block text-sm font-medium text-secondary mb-1">场景名称 <span class="text-danger">*</span></label>
+                        <label class="block text-sm font-medium text-secondary mb-1">场景名称 <span class="required-asterisk">*</span></label>
                         <input type="text" x-model="customScenario.name"
                                placeholder="例如：客户满意度调研"
                                class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#357BE2]/20 focus:border-[#357BE2]">
@@ -2398,7 +2502,7 @@
                 <!-- 维度配置 -->
                 <div class="mt-6">
                     <div class="flex items-center justify-between mb-3">
-                        <label class="text-sm font-medium text-secondary">访谈维度 <span class="text-danger">*</span></label>
+                        <label class="text-sm font-medium text-secondary">访谈维度 <span class="required-asterisk">*</span></label>
                         <button type="button"
                                 @click="addDimension()"
                                 :disabled="customScenario.dimensions.length >= 8"
@@ -2757,14 +2861,14 @@
                     <template x-if="milestoneData && milestoneData.isLastDimension">
                         <div class="mb-6">
                             <p class="text-green-600 font-medium">所有维度已完成！</p>
-                            <p class="text-muted text-sm mt-1">您可以确认需求并生成访谈报告</p>
+                            <p class="text-muted text-sm mt-1">您可以确认需求摘要并生成访谈报告</p>
                         </div>
                     </template>
 
                     <!-- 继续按钮 -->
                     <button @click="continueMilestone()"
                             class="w-full btn-sage-blue text-white px-6 py-3 rounded-lg font-medium transition-colors cursor-pointer">
-                        <span x-text="milestoneData?.isLastDimension ? '完成并确认' : '继续访谈'"></span>
+                        <span x-text="milestoneData?.isLastDimension ? '完成并确认需求摘要' : '继续访谈流程'"></span>
                     </button>
                 </div>
             </div>
@@ -2800,7 +2904,7 @@
             </div>
         </div>
 
-        <!-- ========== 重新访谈确认弹窗 ========== -->
+        <!-- ========== 重新开始访谈确认弹窗 ========== -->
         <div x-show="showRestartModal"
              x-transition:enter="transition ease-out duration-200"
              x-transition:enter-start="opacity-0"
@@ -2814,7 +2918,7 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                         </svg>
                     </div>
-                    <h3 class="text-lg font-semibold text-primary mb-2">确认重新访谈</h3>
+                    <h3 class="text-lg font-semibold text-primary mb-2">确认重新开始访谈</h3>
                     <p class="text-muted mb-6">当前访谈内容将被保存为参考资料，并开始新一轮访谈。确定继续吗？</p>
                     <div class="flex gap-3 justify-center">
                         <button @click="showRestartModal = false"
@@ -2823,7 +2927,7 @@
                         </button>
                         <button @click="restartResearch()"
                                 class="px-5 py-2 btn-sage-blue text-white rounded-lg font-medium transition-colors cursor-pointer">
-                            确认重新访谈
+                            重新开始访谈
                         </button>
                     </div>
                 </div>
