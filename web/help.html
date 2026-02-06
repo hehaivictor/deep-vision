@@ -87,13 +87,14 @@
             letter-spacing: -0.03em;
         }
         .brand-title-cn {
-            color: #000000;
+            color: #0f172a;
             font-family: 'ZCOOL XiaoWei', serif;
             font-weight: 600;
             text-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+            margin-left: 10px;
         }
         .brand-title-help {
-            color: #000000;
+            color: #334155;
             font-family: 'ZCOOL XiaoWei', serif;
             font-weight: 600;
             margin-left: 6px;
@@ -1016,7 +1017,7 @@
                 <div class="brand-text">
                     <h1>
                         <span class="brand-title">Deep</span><span class="brand-title">Vision</span>
-                        <span class="brand-title-cn ml-1.5"> 深瞳</span><span class="brand-title-help">帮助文档</span>
+                        <span class="brand-title-cn">深瞳</span><span class="brand-title-help">帮助文档</span>
                     </h1>
                 </div>
             </div>
@@ -1750,12 +1751,6 @@
                 </div>
                 <p>如果你的问题未解决，可以联系支持团队<a class="inline-link" href="https://ncn0qgc0e3lv.feishu.cn/share/base/form/shrcnlnObpoyYMbFW1YMasLbZad" target="_blank" rel="noopener">进行反馈</a>。</p>
                 <div class="callout">建议提供：访谈主题、场景选择、出现问题的步骤与截图。</div>
-                <div class="feedback">
-                    <span class="feedback-note">这页是否有帮助？</span>
-                    <button type="button" data-feedback="yes">有用</button>
-                    <button type="button" data-feedback="no">无用</button>
-                </div>
-                <div class="feedback-note" id="feedbackResult"></div>
             </section>
         </section>
     </main>
@@ -1790,7 +1785,6 @@
         const searchSuggestions = document.getElementById('searchSuggestions');
         const searchEmpty = document.getElementById('searchEmpty');
         const searchClear = document.getElementById('searchClear');
-        const feedbackResult = document.getElementById('feedbackResult');
 
         const revealObserver = new IntersectionObserver(entries => {
             entries.forEach(entry => {
@@ -2045,13 +2039,6 @@
             }
         });
 
-        document.querySelectorAll('[data-feedback]').forEach(btn => {
-            btn.addEventListener('click', () => {
-                if (feedbackResult) {
-                    feedbackResult.textContent = '感谢反馈，我们会持续优化内容质量。';
-                }
-            });
-        });
     </script>
 </body>
 </html>
