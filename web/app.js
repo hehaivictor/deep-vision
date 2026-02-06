@@ -58,6 +58,7 @@ function deepVision() {
         hasSeenGuide: false,
         guideSpotlightStyle: '',
         guideCardStyle: '',
+        guideCloseHintLastAt: 0,
         guideHighlightedEl: null,
         guideResizeObserver: null,
         guideObservedEl: null,
@@ -584,6 +585,7 @@ function deepVision() {
         openGuide() {
             this.showGuide = true;
             this.guideStepIndex = 0;
+            this.guideCloseHintLastAt = 0;
             this.runGuideStep();
         },
         exitGuide() {
@@ -1046,6 +1048,18 @@ function deepVision() {
             } finally {
                 this.loading = false;
             }
+        },
+
+        attemptCloseNewSessionModal() {
+            if (this.showGuide) {
+                const now = Date.now();
+                if (now - this.guideCloseHintLastAt >= 2000) {
+                    this.guideCloseHintLastAt = now;
+                    this.showToast('操作指引进行中，请先完成步骤或点击“跳过”', 'info');
+                }
+                return;
+            }
+            this.showNewSessionModal = false;
         },
 
         async openSession(sessionId) {

@@ -2508,15 +2508,15 @@
              x-transition:leave-start="opacity-100"
              x-transition:leave-end="opacity-0"
              class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-3 sm:p-4"
-             @click.self="if (!showGuide) showNewSessionModal = false"
-             @keydown.escape.window="if (!showGuide) showNewSessionModal = false">
+             @click.self="attemptCloseNewSessionModal()"
+             @keydown.escape.window="attemptCloseNewSessionModal()">
             <div data-guide="guide-modal" class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95"
                  x-transition:enter-end="opacity-100 scale-100">
                 <div class="flex items-center justify-between mb-4">
                     <h3 class="text-xl font-semibold text-primary">新建访谈会话</h3>
-                    <button @click="showNewSessionModal = false" class="text-gray-500 hover:text-gray-700 cursor-pointer" aria-label="关闭">
+                    <button @click="attemptCloseNewSessionModal()" class="text-gray-500 hover:text-gray-700 cursor-pointer" aria-label="关闭">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                         </svg>
@@ -2823,7 +2823,7 @@
                     </div>
 
                     <div class="flex gap-3 justify-end pt-2">
-                        <button type="button" @click="showNewSessionModal = false"
+                        <button type="button" @click="attemptCloseNewSessionModal()"
                                 class="px-5 py-2.5 border border-gray-300 rounded-lg font-medium hover:bg-gray-50 transition-colors duration-200 cursor-pointer">
                             取消
                         </button>
