@@ -27,22 +27,41 @@
     font-weight: 600;
 }
 
-.sort-select {
-    /* 纯 CSS 双线箭头，避免 data URI 在不同内核偶发丢失 */
-    -webkit-appearance: none !important;
-    appearance: none !important;
-    background-image:
-        linear-gradient(45deg, transparent 50%, #6b7280 50%),
-        linear-gradient(135deg, #6b7280 50%, transparent 50%) !important;
-    background-repeat: no-repeat !important;
-    background-size: 6px 6px, 6px 6px !important;
-    background-position:
-        calc(100% - 15px) calc(50% - 1px),
-        calc(100% - 10px) calc(50% - 1px) !important;
+.sort-dropdown-trigger {
+    min-height: 2rem;
+    transition: color 180ms ease, border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
 }
 
-.sort-select::-ms-expand {
-    display: none;
+.sort-dropdown-chevron {
+    color: #93a4b8;
+    transition: transform 180ms ease, color 180ms ease;
+    transform-origin: center;
+}
+
+.sort-dropdown-trigger:hover .sort-dropdown-chevron,
+.sort-dropdown-trigger:focus-visible .sort-dropdown-chevron {
+    color: #475569;
+}
+
+.sort-dropdown-menu {
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+.sort-dropdown-option {
+    color: #475569;
+    transition: background-color 150ms ease, color 150ms ease;
+}
+
+.sort-dropdown-option:hover {
+    background: #f3f6fb;
+    color: #1f2937;
+}
+
+.sort-dropdown-option--active {
+    background: #eef4ff;
+    color: #2563eb;
+    font-weight: 600;
 }
 
 .report-action-primary {
@@ -808,15 +827,46 @@ html[data-theme="dark"] select {
     border-color: #3a4552;
 }
 
-html[data-theme="dark"] select.sort-select {
-    background-image:
-        linear-gradient(45deg, transparent 50%, #b5c0cf 50%),
-        linear-gradient(135deg, #b5c0cf 50%, transparent 50%) !important;
-    background-repeat: no-repeat !important;
-    background-size: 6px 6px, 6px 6px !important;
-    background-position:
-        calc(100% - 15px) calc(50% - 1px),
-        calc(100% - 10px) calc(50% - 1px) !important;
+html[data-theme="dark"] .sort-dropdown-trigger {
+    background: #20262e !important;
+    color: #e6edf5 !important;
+    border-color: #3a4552 !important;
+}
+
+html[data-theme="dark"] .sort-dropdown-trigger:hover,
+html[data-theme="dark"] .sort-dropdown-trigger:focus,
+html[data-theme="dark"] .sort-dropdown-trigger:focus-visible {
+    border-color: #4c8dff !important;
+    box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.14) !important;
+}
+
+html[data-theme="dark"] .sort-dropdown-chevron {
+    color: #93a4b8;
+}
+
+html[data-theme="dark"] .sort-dropdown-trigger:hover .sort-dropdown-chevron,
+html[data-theme="dark"] .sort-dropdown-trigger:focus-visible .sort-dropdown-chevron {
+    color: #e6f0ff;
+}
+
+html[data-theme="dark"] .sort-dropdown-menu {
+    background: #202730 !important;
+    border-color: #364250 !important;
+    box-shadow: 0 14px 36px rgba(2, 6, 12, 0.45);
+}
+
+html[data-theme="dark"] .sort-dropdown-option {
+    color: #aeb9c7;
+}
+
+html[data-theme="dark"] .sort-dropdown-option:hover {
+    background: #2a313a;
+    color: #e6edf5;
+}
+
+html[data-theme="dark"] .sort-dropdown-option--active {
+    background: #2f3a48;
+    color: #dce9ff;
 }
 
 html[data-theme="dark"] .report-action-primary {
@@ -1070,4 +1120,119 @@ html[data-theme="dark"] .mermaid-container svg rect[fill="black"],
 html[data-theme="dark"] .mermaid-container svg .background,
 html[data-theme="dark"] .mermaid-container .mermaid > svg > rect:first-of-type {
     fill: #1f252d !important;
+}
+
+.batch-checkbox {
+    color: #357be2;
+    accent-color: #357be2;
+}
+
+html[data-theme="dark"] .batch-checkbox {
+    color: #4c8dff !important;
+    accent-color: #4c8dff;
+    border-color: #64768b !important;
+    background-color: #1b232d;
+    box-shadow: inset 0 0 0 1px rgba(12, 18, 28, 0.38);
+}
+
+html[data-theme="dark"] .batch-checkbox:hover,
+html[data-theme="dark"] .batch-checkbox:checked {
+    border-color: #8db8ff !important;
+}
+
+html[data-theme="dark"] .batch-checkbox:checked {
+    box-shadow: 0 0 0 1px rgba(76, 141, 255, 0.24);
+}
+
+html[data-theme="dark"] .batch-select-toggle-btn {
+    color: #d9e4f3 !important;
+    border-color: #4a5868 !important;
+    background: rgba(76, 141, 255, 0.1) !important;
+    box-shadow: 0 1px 2px rgba(3, 10, 20, 0.35);
+}
+
+html[data-theme="dark"] .batch-select-toggle-btn:hover {
+    color: #f2f7ff !important;
+    border-color: rgba(141, 184, 255, 0.78) !important;
+    background: rgba(76, 141, 255, 0.2) !important;
+}
+
+html[data-theme="dark"] .batch-select-toggle-btn:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 2px rgba(21, 27, 36, 0.96),
+        0 0 0 4px rgba(92, 152, 255, 0.46);
+}
+
+html[data-theme="dark"] .batch-cancel-btn {
+    color: #ced8e6 !important;
+    border-color: #4a5868 !important;
+    background: rgba(49, 58, 69, 0.62) !important;
+    box-shadow: 0 1px 2px rgba(3, 10, 20, 0.34);
+}
+
+html[data-theme="dark"] .batch-cancel-btn:hover {
+    color: #eef4ff !important;
+    border-color: #6d7f94 !important;
+    background: rgba(76, 141, 255, 0.14) !important;
+}
+
+html[data-theme="dark"] .batch-cancel-btn:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 2px rgba(21, 27, 36, 0.96),
+        0 0 0 4px rgba(118, 141, 168, 0.42);
+}
+
+html[data-theme="dark"] .batch-delete-btn {
+    color: #fff2f4 !important;
+    background: #c23e58 !important;
+    border: 1px solid #d35e74;
+    box-shadow: 0 2px 8px rgba(60, 8, 16, 0.34);
+}
+
+html[data-theme="dark"] .batch-delete-btn:hover {
+    color: #ffffff !important;
+    background: #dc5671 !important;
+    border-color: #eb8296;
+}
+
+html[data-theme="dark"] .batch-delete-btn:disabled,
+html[data-theme="dark"] .batch-delete-btn:disabled:hover {
+    opacity: 1 !important;
+    color: #8f9cad !important;
+    background: #3a4552 !important;
+    border-color: #4a5665;
+    box-shadow: none;
+    cursor: not-allowed;
+}
+
+html[data-theme="dark"] .batch-confirm-delete-btn {
+    color: #fff3f5 !important;
+    background: #c74660 !important;
+    border: 1px solid #d8687f;
+    box-shadow: 0 4px 12px rgba(72, 10, 20, 0.36);
+}
+
+html[data-theme="dark"] .batch-confirm-delete-btn:hover {
+    color: #ffffff !important;
+    background: #de5f79 !important;
+    border-color: #ee8ea0;
+}
+
+html[data-theme="dark"] .batch-confirm-delete-btn:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 2px rgba(21, 27, 36, 0.96),
+        0 0 0 4px rgba(232, 124, 146, 0.45);
+}
+
+html[data-theme="dark"] .batch-confirm-delete-btn:disabled,
+html[data-theme="dark"] .batch-confirm-delete-btn:disabled:hover {
+    opacity: 1 !important;
+    color: #95a3b6 !important;
+    background: #394454 !important;
+    border-color: #4a5869;
+    box-shadow: none;
+    cursor: not-allowed;
 }
