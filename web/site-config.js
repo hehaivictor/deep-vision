@@ -94,6 +94,12 @@ const SITE_CONFIG = {
     progressComplete: "#357BE2",
   },
 
+  // ============ 主题配置 ============
+  theme: {
+    // 默认主题模式：light / dark / system
+    defaultMode: "system",
+  },
+
   // ============ API 配置 ============
   api: {
     // API 基础地址
