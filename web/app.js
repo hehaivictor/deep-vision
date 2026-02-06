@@ -36,6 +36,21 @@ function deepVision() {
         themeMode: 'system',
         effectiveTheme: 'light',
         showThemeMenu: false,
+        dialogFocusWatchRegistered: false,
+        dialogFocusReturnTargets: {},
+        managedDialogKeys: [
+            'showNewSessionModal',
+            'showCustomScenarioModal',
+            'showAiGenerateModal',
+            'showAiPreviewModal',
+            'showMilestoneModal',
+            'showDeleteModal',
+            'showRestartModal',
+            'showDeleteDocModal',
+            'showDeleteReportModal',
+            'showBatchDeleteModal',
+            'showChangelogModal'
+        ],
         systemThemeMedia: null,
         systemThemeListener: null,
         showGuide: false,
@@ -345,6 +360,7 @@ function deepVision() {
             }
 
             this.initTheme();
+            this.registerDialogFocusWatchers();
             await this.loadVersionInfo();
             await this.checkServerStatus();
             await this.loadScenarios();
@@ -361,6 +377,54 @@ function deepVision() {
                 this.setupVirtualList();
                 this.setupVirtualReportList();
             });
+        },
+
+        registerDialogFocusWatchers() {
+            if (this.dialogFocusWatchRegistered || typeof this.$watch !== 'function') return;
+            this.dialogFocusWatchRegistered = true;
+
+            this.managedDialogKeys.forEach((key) => {
+                this.$watch(key, (isVisible) => {
+                    if (isVisible) {
+                        this.captureDialogFocusTarget(key);
+                        this.$nextTick(() => this.focusDialogAutofocus(key));
+                        return;
+                    }
+                    this.$nextTick(() => this.restoreDialogFocusTarget(key));
+                });
+            });
+        },
+
+        captureDialogFocusTarget(key) {
+            const activeElement = document.activeElement;
+            if (!(activeElement instanceof HTMLElement)) return;
+            if (typeof activeElement.focus !== 'function') return;
+            this.dialogFocusReturnTargets[key] = activeElement;
+        },
+
+        focusDialogAutofocus(key) {
+            const dialog = document.querySelector(`[data-dialog-key="${key}"]`);
+            if (!(dialog instanceof HTMLElement)) return;
+
+            const target = dialog.querySelector('[data-dialog-autofocus]')
+                || dialog.querySelector('input, textarea, button, [href], [tabindex]:not([tabindex="-1"])');
+            if (!(target instanceof HTMLElement)) return;
+            if (target.hasAttribute('disabled')) return;
+            target.focus({ preventScroll: true });
+        },
+
+        isAnyDialogVisible(exceptKey = '') {
+            return this.managedDialogKeys.some((key) => key !== exceptKey && Boolean(this[key]));
+        },
+
+        restoreDialogFocusTarget(key) {
+            const target = this.dialogFocusReturnTargets[key];
+            delete this.dialogFocusReturnTargets[key];
+
+            if (this.isAnyDialogVisible(key)) return;
+            if (!(target instanceof HTMLElement)) return;
+            if (!target.isConnected || typeof target.focus !== 'function') return;
+            target.focus({ preventScroll: true });
         },
 
         initTheme() {
