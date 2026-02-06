@@ -609,8 +609,22 @@ html[data-theme="dark"] .bg-gray-100 {
     background: #2a313a !important;
 }
 
+html[data-theme="dark"] .bg-gray-200,
+html[data-theme="dark"] .bg-gray-200\/80,
+html[data-theme="dark"] .bg-gray-50\/50 {
+    background: #313a45 !important;
+}
+
+html[data-theme="dark"] .bg-gray-300 {
+    background: #3a4552 !important;
+}
+
 html[data-theme="dark"] .bg-gray-900 {
     background: #36404d !important;
+}
+
+html[data-theme="dark"] .bg-gray-800 {
+    background: #3a4552 !important;
 }
 
 html[data-theme="dark"] .text-primary,
@@ -629,6 +643,11 @@ html[data-theme="dark"] .text-gray-400 {
     color: #9ca8b7 !important;
 }
 
+html[data-theme="dark"] .text-gray-300,
+html[data-theme="dark"] .text-gray-200 {
+    color: #aeb9c7 !important;
+}
+
 html[data-theme="dark"] .border,
 html[data-theme="dark"] .border-border,
 html[data-theme="dark"] .border-gray-100,
@@ -643,6 +662,10 @@ html[data-theme="dark"] .bg-blue-50,
 html[data-theme="dark"] .bg-blue-50\/50,
 html[data-theme="dark"] .bg-blue-50\/30 {
     background: rgba(76, 141, 255, 0.12) !important;
+}
+
+html[data-theme="dark"] .bg-blue-100 {
+    background: rgba(76, 141, 255, 0.2) !important;
 }
 
 html[data-theme="dark"] [class*="from-[#F0F8FF]"],
@@ -662,8 +685,75 @@ html[data-theme="dark"] .border-blue-300 {
 html[data-theme="dark"] .text-blue-700,
 html[data-theme="dark"] .text-blue-600,
 html[data-theme="dark"] .text-blue-500,
+html[data-theme="dark"] .text-blue-400,
 html[data-theme="dark"] [class*="text-[#357BE2]"] {
     color: #8db8ff !important;
+}
+
+html[data-theme="dark"] .bg-amber-50 {
+    background: rgba(245, 158, 11, 0.14) !important;
+}
+
+html[data-theme="dark"] .bg-amber-100 {
+    background: rgba(245, 158, 11, 0.22) !important;
+}
+
+html[data-theme="dark"] .border-amber-200 {
+    border-color: rgba(245, 158, 11, 0.45) !important;
+}
+
+html[data-theme="dark"] .text-amber-700,
+html[data-theme="dark"] .text-amber-600,
+html[data-theme="dark"] .text-amber-500 {
+    color: #f7c97c !important;
+}
+
+html[data-theme="dark"] .hover\:bg-amber-100:hover {
+    background: rgba(245, 158, 11, 0.28) !important;
+}
+
+html[data-theme="dark"] .bg-red-50 {
+    background: rgba(239, 68, 68, 0.14) !important;
+}
+
+html[data-theme="dark"] .bg-red-100 {
+    background: rgba(239, 68, 68, 0.2) !important;
+}
+
+html[data-theme="dark"] .border-red-200 {
+    border-color: rgba(239, 68, 68, 0.42) !important;
+}
+
+html[data-theme="dark"] .text-red-700,
+html[data-theme="dark"] .text-red-600,
+html[data-theme="dark"] .text-red-500 {
+    color: #f7a6ad !important;
+}
+
+html[data-theme="dark"] .hover\:bg-red-50:hover {
+    background: rgba(239, 68, 68, 0.2) !important;
+}
+
+html[data-theme="dark"] .bg-green-50 {
+    background: rgba(16, 185, 129, 0.14) !important;
+}
+
+html[data-theme="dark"] .bg-green-100 {
+    background: rgba(16, 185, 129, 0.2) !important;
+}
+
+html[data-theme="dark"] .border-green-200 {
+    border-color: rgba(16, 185, 129, 0.42) !important;
+}
+
+html[data-theme="dark"] .text-green-700,
+html[data-theme="dark"] .text-green-600,
+html[data-theme="dark"] .text-green-500 {
+    color: #7ce3bd !important;
+}
+
+html[data-theme="dark"] .bg-white\/80 {
+    background: rgba(230, 237, 245, 0.14) !important;
 }
 
 html[data-theme="dark"] .hover\:bg-blue-50:hover,
@@ -674,6 +764,10 @@ html[data-theme="dark"] .hover\:bg-blue-100\/80:hover {
 html[data-theme="dark"] .bg-purple-50,
 html[data-theme="dark"] .bg-purple-50\/30 {
     background: rgba(139, 92, 246, 0.1) !important;
+}
+
+html[data-theme="dark"] .bg-purple-100 {
+    background: rgba(139, 92, 246, 0.16) !important;
 }
 
 html[data-theme="dark"] .border-purple-200,
@@ -687,6 +781,7 @@ html[data-theme="dark"] .text-purple-600 {
 }
 
 html[data-theme="dark"] .hover\:bg-surface-secondary:hover,
+html[data-theme="dark"] .hover\:bg-gray-50:hover,
 html[data-theme="dark"] .hover\:bg-gray-100:hover,
 html[data-theme="dark"] .hover\:bg-gray-200:hover {
     background: #2a313a !important;
@@ -694,6 +789,7 @@ html[data-theme="dark"] .hover\:bg-gray-200:hover {
 
 html[data-theme="dark"] .hover\:text-gray-600:hover,
 html[data-theme="dark"] .hover\:text-gray-700:hover,
+html[data-theme="dark"] .hover\:text-gray-900:hover,
 html[data-theme="dark"] .hover\:text-primary:hover {
     color: #e6edf5 !important;
 }
@@ -802,6 +898,10 @@ html[data-theme="dark"] textarea:focus,
 html[data-theme="dark"] select:focus {
     border-color: #4c8dff !important;
     box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.14) !important;
+}
+
+html[data-theme="dark"] .disabled\:bg-gray-100:disabled {
+    background: #2f3742 !important;
 }
 
 html[data-theme="dark"] .theme-menu {

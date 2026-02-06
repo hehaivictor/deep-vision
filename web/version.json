@@ -1,7 +1,18 @@
 {
-  "version": "1.23.7",
+  "version": "1.23.8",
   "releaseDate": "2026-02-06",
   "changelog": [
+    {
+      "version": "1.23.8",
+      "date": "2026-02-06",
+      "type": "patch",
+      "title": "修复深色模式下帮助页与主站可读性问题",
+      "changes": [
+        "样式修复：补齐深色主题对 gray/amber/red/green/purple 色阶与 hover 态覆盖，消除发白与突兀对比。",
+        "帮助页适配：新增 dark 主题变量与组件级暗色样式，保持目录、搜索、表格、FAQ 在深色下可读。",
+        "主题联动：帮助页读取 deepvision_theme_mode 并跟随系统主题变化，避免从工作台跳转后主题不一致。"
+      ]
+    },
     {
       "version": "1.23.7",
       "date": "2026-02-06",
