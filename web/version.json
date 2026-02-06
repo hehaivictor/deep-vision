@@ -1,7 +1,20 @@
 {
-  "version": "1.23.16",
+  "version": "1.23.17",
   "releaseDate": "2026-02-07",
   "changelog": [
+    {
+      "version": "1.23.17",
+      "date": "2026-02-07",
+      "type": "patch",
+      "title": "统一弹窗与抽屉的动效层级及焦点体验",
+      "changes": [
+        "体系：新增 dv-overlay/dv-modal-panel/dv-popover-panel，统一遮罩透明度、面板层级和深浅主题阴影表现。",
+        "动效：为场景、删除、批量删除、更新日志等弹窗补齐 enter/leave 过渡与面板位移动画，统一节奏与入场距离。",
+        "交互：重构下载菜单开合逻辑，支持焦点自动进入、Esc 关闭与关闭后焦点回退，提升键盘操作连续性。",
+        "可访问性：在 app.js 增加弹窗焦点监听与自动聚焦/回退机制，并为各弹窗标注 data-dialog-key 与 data-dialog-autofocus。",
+        "无障碍：将新增弹窗与抽屉动效纳入 prefers-reduced-motion 降级策略。"
+      ]
+    },
     {
       "version": "1.23.16",
       "date": "2026-02-07",
