@@ -1,7 +1,19 @@
 {
-  "version": "1.23.3",
+  "version": "1.23.4",
   "releaseDate": "2026-02-06",
   "changelog": [
+    {
+      "version": "1.23.4",
+      "date": "2026-02-06",
+      "type": "patch",
+      "title": "优化 Git Hook 安装与版本提交流程",
+      "changes": [
+        "版本判定：小版本升级（仅工程脚本与提交流程优化，不影响产品功能、页面交互与接口行为）。",
+        "工程：统一通过 core.hooksPath 使用仓库内 Hook，避免本地 .git/hooks 漂移。",
+        "流程：post-commit 改为 amend 当前提交，不再生成额外‘更新版本号’提交。",
+        "稳定性：在 rebase/cherry-pick/merge 场景自动跳过版本更新，降低历史改写冲突。"
+      ]
+    },
     {
       "version": "1.23.3",
       "date": "2026-02-06",

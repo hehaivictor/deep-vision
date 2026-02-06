@@ -27,24 +27,30 @@ fi
 # 创建 hooks 目录（如果不存在）
 mkdir -p "$GIT_HOOKS_DIR"
 
-# 安装 post-commit hook
-if [[ -f "$CUSTOM_HOOKS_DIR/post-commit" ]]; then
-    # 设置可执行权限
-    chmod +x "$CUSTOM_HOOKS_DIR/post-commit"
+# 设置 hooksPath，优先使用仓库内受版本控制的 hooks
+# 使用绝对路径，避免不同执行目录导致解析失败
+git config core.hooksPath "$CUSTOM_HOOKS_DIR"
+echo "✓ 已配置 core.hooksPath"
+echo "  - $CUSTOM_HOOKS_DIR"
 
-    # 创建软链接
-    ln -sf "$CUSTOM_HOOKS_DIR/post-commit" "$GIT_HOOKS_DIR/post-commit"
+# 设置可执行权限
+find "$CUSTOM_HOOKS_DIR" -maxdepth 1 -type f -exec chmod +x {} \;
 
-    echo "✓ post-commit hook 已安装"
-    echo "  - 自动根据 commit message 更新版本号"
-else
-    echo "✗ post-commit hook 文件不存在"
+# 兼容说明：如存在旧的 .git/hooks/post-commit 文件，给出提示
+if [[ -f "$GIT_HOOKS_DIR/post-commit" ]] && [[ ! -L "$GIT_HOOKS_DIR/post-commit" ]]; then
+    echo ""
+    echo "提示: 检测到旧的 .git/hooks/post-commit（已由 core.hooksPath 接管，可忽略）"
 fi
 
 echo ""
 echo "========================================"
 echo "  安装完成！"
 echo "========================================"
+echo ""
+echo "当前机制："
+echo "  - 使用 scripts/git-hooks 下的受控 Hook"
+echo "  - 版本号更新通过 post-commit amend 到当前提交，不再新增第二个提交"
+echo "  - rebase/cherry-pick/merge 场景自动跳过版本更新"
 echo ""
 echo "Commit Message 规范："
 echo "  feat: xxx     → minor 版本升级 (新功能)"
