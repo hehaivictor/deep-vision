@@ -769,19 +769,85 @@
 
                             <!-- 排序 -->
                             <div class="relative shrink-0"
-                                 x-data="{ open: false, options: [
-                                     { value: 'newest', label: '最新优先' },
-                                     { value: 'oldest', label: '最早优先' },
-                                     { value: 'progress', label: '进度排序' },
-                                     { value: 'scenario', label: '场景排序' }
-                                 ] }"
-                                 @click.outside="open = false"
-                                 @keydown.escape.window="open = false">
+                                 x-data="{
+                                     open: false,
+                                     highlightedIndex: 0,
+                                     options: [
+                                         { value: 'newest', label: '最新优先' },
+                                         { value: 'oldest', label: '最早优先' },
+                                         { value: 'progress', label: '进度排序' },
+                                         { value: 'scenario', label: '场景排序' }
+                                     ],
+                                     getCurrentIndex() {
+                                         const index = this.options.findIndex(option => option.value === sessionSortOrder);
+                                         return index >= 0 ? index : 0;
+                                     },
+                                     openMenu() {
+                                         this.open = true;
+                                         this.highlightedIndex = this.getCurrentIndex();
+                                         this.$nextTick(() => this.focusHighlightedOption());
+                                     },
+                                     closeMenu() {
+                                         this.open = false;
+                                     },
+                                     focusHighlightedOption() {
+                                         const optionId = `session-sort-option-${this.highlightedIndex}`;
+                                         const optionElement = document.getElementById(optionId);
+                                         if (!optionElement) return;
+                                         optionElement.focus({ preventScroll: true });
+                                         optionElement.scrollIntoView({ block: 'nearest' });
+                                     },
+                                     moveHighlight(step) {
+                                         if (!this.open) {
+                                             this.openMenu();
+                                             return;
+                                         }
+                                         const maxIndex = this.options.length - 1;
+                                         this.highlightedIndex = Math.min(maxIndex, Math.max(0, this.highlightedIndex + step));
+                                         this.$nextTick(() => this.focusHighlightedOption());
+                                     },
+                                     cycleTab(step) {
+                                         if (!this.open) return;
+                                         const maxIndex = this.options.length - 1;
+                                         if (maxIndex < 0) return;
+                                         let nextIndex = this.highlightedIndex + step;
+                                         if (nextIndex > maxIndex) nextIndex = 0;
+                                         if (nextIndex < 0) nextIndex = maxIndex;
+                                         this.highlightedIndex = nextIndex;
+                                         this.$nextTick(() => this.focusHighlightedOption());
+                                     },
+                                     handleTriggerTab(event) {
+                                         if (!this.open) return;
+                                         event.preventDefault();
+                                         this.highlightedIndex = event.shiftKey ? this.options.length - 1 : 0;
+                                         this.$nextTick(() => this.focusHighlightedOption());
+                                     },
+                                     selectValue(value) {
+                                         sessionSortOrder = value;
+                                         filterSessions();
+                                         this.closeMenu();
+                                         this.$nextTick(() => this.$refs.trigger?.focus());
+                                     },
+                                     selectHighlighted() {
+                                         const option = this.options[this.highlightedIndex];
+                                         if (!option) return;
+                                         this.selectValue(option.value);
+                                     }
+                                 }"
+                                 @click.outside="closeMenu()"
+                                 @keydown.escape.window="if (open) { closeMenu(); $nextTick(() => $refs.trigger?.focus()); }">
                                 <button type="button"
-                                        @click="open = !open"
+                                        x-ref="trigger"
+                                        @click="open ? closeMenu() : openMenu()"
+                                        @keydown.down.prevent="open ? moveHighlight(1) : openMenu()"
+                                        @keydown.up.prevent="open ? moveHighlight(-1) : openMenu()"
+                                        @keydown.enter.prevent="open ? selectHighlighted() : openMenu()"
+                                        @keydown.space.prevent="open ? selectHighlighted() : openMenu()"
+                                        @keydown.tab="handleTriggerTab($event)"
                                         :aria-expanded="open.toString()"
                                         aria-haspopup="listbox"
                                         aria-label="会话排序方式"
+                                        :class="open ? 'sort-dropdown-trigger--open' : ''"
                                         class="sort-dropdown-trigger px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer bg-white inline-flex items-center justify-between gap-2 min-w-[104px]">
                                     <span x-text="(options.find(option => option.value === sessionSortOrder) || options[0]).label"></span>
                                     <svg class="sort-dropdown-chevron w-3.5 h-3.5"
@@ -797,16 +863,31 @@
                                 <div x-show="open"
                                      x-cloak
                                      x-transition.origin.top.right
+                                     @keydown.tab.prevent="cycleTab($event.shiftKey ? -1 : 1)"
                                      class="sort-dropdown-menu absolute right-0 top-[calc(100%+6px)] z-30 min-w-[132px] rounded-lg border border-gray-200 bg-white shadow-lg p-1.5"
                                      role="listbox"
+                                     :aria-activedescendant="`session-sort-option-${highlightedIndex}`"
                                      aria-label="会话排序选项">
-                                    <template x-for="option in options" :key="option.value">
+                                    <template x-for="(option, index) in options" :key="option.value">
                                         <button type="button"
-                                                @click="sessionSortOrder = option.value; filterSessions(); open = false"
+                                                :id="`session-sort-option-${index}`"
+                                                @click="selectValue(option.value)"
+                                                @mouseenter="highlightedIndex = index"
+                                                @focus="highlightedIndex = index"
+                                                @keydown.down.prevent="moveHighlight(1)"
+                                                @keydown.up.prevent="moveHighlight(-1)"
+                                                @keydown.home.prevent="highlightedIndex = 0; $nextTick(() => focusHighlightedOption())"
+                                                @keydown.end.prevent="highlightedIndex = options.length - 1; $nextTick(() => focusHighlightedOption())"
+                                                @keydown.enter.prevent="selectValue(option.value)"
+                                                @keydown.space.prevent="selectValue(option.value)"
+                                                @keydown.escape.prevent="closeMenu(); $nextTick(() => $refs.trigger?.focus())"
                                                 :aria-selected="(sessionSortOrder === option.value).toString()"
                                                 role="option"
                                                 class="sort-dropdown-option w-full px-2.5 py-1.5 rounded-md text-xs text-left inline-flex items-center justify-between gap-2 cursor-pointer"
-                                                :class="sessionSortOrder === option.value ? 'sort-dropdown-option--active' : ''">
+                                                :class="[
+                                                    sessionSortOrder === option.value ? 'sort-dropdown-option--active' : '',
+                                                    highlightedIndex === index ? 'sort-dropdown-option--highlight' : ''
+                                                ]">
                                             <span x-text="option.label"></span>
                                             <svg x-show="sessionSortOrder === option.value"
                                                  x-cloak
@@ -1923,17 +2004,83 @@
 
                             <!-- 排序 -->
                             <div class="relative shrink-0"
-                                 x-data="{ open: false, options: [
-                                     { value: 'newest', label: '最新优先' },
-                                     { value: 'oldest', label: '最早优先' }
-                                 ] }"
-                                 @click.outside="open = false"
-                                 @keydown.escape.window="open = false">
+                                 x-data="{
+                                     open: false,
+                                     highlightedIndex: 0,
+                                     options: [
+                                         { value: 'newest', label: '最新优先' },
+                                         { value: 'oldest', label: '最早优先' }
+                                     ],
+                                     getCurrentIndex() {
+                                         const index = this.options.findIndex(option => option.value === reportSortOrder);
+                                         return index >= 0 ? index : 0;
+                                     },
+                                     openMenu() {
+                                         this.open = true;
+                                         this.highlightedIndex = this.getCurrentIndex();
+                                         this.$nextTick(() => this.focusHighlightedOption());
+                                     },
+                                     closeMenu() {
+                                         this.open = false;
+                                     },
+                                     focusHighlightedOption() {
+                                         const optionId = `report-sort-option-${this.highlightedIndex}`;
+                                         const optionElement = document.getElementById(optionId);
+                                         if (!optionElement) return;
+                                         optionElement.focus({ preventScroll: true });
+                                         optionElement.scrollIntoView({ block: 'nearest' });
+                                     },
+                                     moveHighlight(step) {
+                                         if (!this.open) {
+                                             this.openMenu();
+                                             return;
+                                         }
+                                         const maxIndex = this.options.length - 1;
+                                         this.highlightedIndex = Math.min(maxIndex, Math.max(0, this.highlightedIndex + step));
+                                         this.$nextTick(() => this.focusHighlightedOption());
+                                     },
+                                     cycleTab(step) {
+                                         if (!this.open) return;
+                                         const maxIndex = this.options.length - 1;
+                                         if (maxIndex < 0) return;
+                                         let nextIndex = this.highlightedIndex + step;
+                                         if (nextIndex > maxIndex) nextIndex = 0;
+                                         if (nextIndex < 0) nextIndex = maxIndex;
+                                         this.highlightedIndex = nextIndex;
+                                         this.$nextTick(() => this.focusHighlightedOption());
+                                     },
+                                     handleTriggerTab(event) {
+                                         if (!this.open) return;
+                                         event.preventDefault();
+                                         this.highlightedIndex = event.shiftKey ? this.options.length - 1 : 0;
+                                         this.$nextTick(() => this.focusHighlightedOption());
+                                     },
+                                     selectValue(value) {
+                                         reportSortOrder = value;
+                                         filterReports();
+                                         this.closeMenu();
+                                         this.$nextTick(() => this.$refs.trigger?.focus());
+                                     },
+                                     selectHighlighted() {
+                                         const option = this.options[this.highlightedIndex];
+                                         if (!option) return;
+                                         this.selectValue(option.value);
+                                     }
+                                 }"
+                                 @click.outside="closeMenu()"
+                                 @keydown.escape.window="if (open) { closeMenu(); $nextTick(() => $refs.trigger?.focus()); }">
                                 <button type="button"
-                                        @click="open = !open"
+                                        x-ref="trigger"
+                                        @click="open ? closeMenu() : openMenu()"
+                                        @keydown.down.prevent="open ? moveHighlight(1) : openMenu()"
+                                        @keydown.up.prevent="open ? moveHighlight(-1) : openMenu()"
+                                        @keydown.enter.prevent="open ? selectHighlighted() : openMenu()"
+                                        @keydown.space.prevent="open ? selectHighlighted() : openMenu()"
+                                        @keydown.tab="handleTriggerTab($event)"
                                         :aria-expanded="open.toString()"
                                         aria-haspopup="listbox"
                                         aria-label="报告排序方式"
+                                        :class="open ? 'sort-dropdown-trigger--open' : ''"
                                         class="sort-dropdown-trigger px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer bg-white inline-flex items-center justify-between gap-2 min-w-[104px]">
                                     <span x-text="(options.find(option => option.value === reportSortOrder) || options[0]).label"></span>
                                     <svg class="sort-dropdown-chevron w-3.5 h-3.5"
@@ -1949,16 +2096,31 @@
                                 <div x-show="open"
                                      x-cloak
                                      x-transition.origin.top.right
+                                     @keydown.tab.prevent="cycleTab($event.shiftKey ? -1 : 1)"
                                      class="sort-dropdown-menu absolute right-0 top-[calc(100%+6px)] z-30 min-w-[132px] rounded-lg border border-gray-200 bg-white shadow-lg p-1.5"
                                      role="listbox"
+                                     :aria-activedescendant="`report-sort-option-${highlightedIndex}`"
                                      aria-label="报告排序选项">
-                                    <template x-for="option in options" :key="option.value">
+                                    <template x-for="(option, index) in options" :key="option.value">
                                         <button type="button"
-                                                @click="reportSortOrder = option.value; filterReports(); open = false"
+                                                :id="`report-sort-option-${index}`"
+                                                @click="selectValue(option.value)"
+                                                @mouseenter="highlightedIndex = index"
+                                                @focus="highlightedIndex = index"
+                                                @keydown.down.prevent="moveHighlight(1)"
+                                                @keydown.up.prevent="moveHighlight(-1)"
+                                                @keydown.home.prevent="highlightedIndex = 0; $nextTick(() => focusHighlightedOption())"
+                                                @keydown.end.prevent="highlightedIndex = options.length - 1; $nextTick(() => focusHighlightedOption())"
+                                                @keydown.enter.prevent="selectValue(option.value)"
+                                                @keydown.space.prevent="selectValue(option.value)"
+                                                @keydown.escape.prevent="closeMenu(); $nextTick(() => $refs.trigger?.focus())"
                                                 :aria-selected="(reportSortOrder === option.value).toString()"
                                                 role="option"
                                                 class="sort-dropdown-option w-full px-2.5 py-1.5 rounded-md text-xs text-left inline-flex items-center justify-between gap-2 cursor-pointer"
-                                                :class="reportSortOrder === option.value ? 'sort-dropdown-option--active' : ''">
+                                                :class="[
+                                                    reportSortOrder === option.value ? 'sort-dropdown-option--active' : '',
+                                                    highlightedIndex === index ? 'sort-dropdown-option--highlight' : ''
+                                                ]">
                                             <span x-text="option.label"></span>
                                             <svg x-show="reportSortOrder === option.value"
                                                  x-cloak
