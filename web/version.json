@@ -1,7 +1,19 @@
 {
-  "version": "1.23.15",
+  "version": "1.23.16",
   "releaseDate": "2026-02-07",
   "changelog": [
+    {
+      "version": "1.23.16",
+      "date": "2026-02-07",
+      "type": "patch",
+      "title": "统一卡片与按钮的交互手感",
+      "changes": [
+        "统一：为主按钮、辅助按钮、批量按钮与主题触发器建立一致的 hover/active 位移反馈。",
+        "卡片：补充会话卡与报告卡按压态阴影，形成 hover 提起、active 回落的层级手感。",
+        "主题：同步优化 btn-sage-blue 在深浅模式下的边框与阴影层次，降低交互风格割裂。",
+        "无障碍：将新增交互纳入 prefers-reduced-motion，确保低动效用户体验。"
+      ]
+    },
     {
       "version": "1.23.15",
       "date": "2026-02-07",

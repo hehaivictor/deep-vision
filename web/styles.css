@@ -166,6 +166,7 @@
     .theme-toggle-trigger,
     .theme-menu-item,
     .sort-dropdown-trigger,
+    .btn-sage-blue,
     .report-action-primary,
     .report-action-secondary,
     .report-action-tertiary,
@@ -187,6 +188,7 @@
 .report-action-tertiary,
 .report-action-generate,
 .report-action-generate-running,
+.btn-sage-blue,
 .theme-toggle-trigger,
 .theme-menu-item,
 .batch-select-toggle-btn,
@@ -203,6 +205,19 @@
 
 .theme-toggle-trigger:active {
     transform: translateY(0.5px);
+}
+
+.theme-menu-item:active,
+.btn-sage-blue:active {
+    transform: translateY(0.5px);
+}
+
+.btn-sage-blue {
+    box-shadow: 0 1px 2px rgba(53, 123, 226, 0.28);
+}
+
+.btn-sage-blue:hover {
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.26);
 }
 
 .theme-menu-item.bg-gray-900:hover {
@@ -278,6 +293,37 @@
     color: #6b7280;
     border: 1px solid #d1d5db;
     box-shadow: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .report-action-primary:hover,
+    .report-action-secondary:hover,
+    .report-action-generate:hover,
+    .btn-sage-blue:hover,
+    .theme-toggle-trigger:hover,
+    .batch-select-toggle-btn:hover,
+    .batch-cancel-btn:hover,
+    .batch-delete-btn:hover,
+    .batch-confirm-delete-btn:hover {
+        transform: translateY(-1px);
+    }
+
+    .report-action-primary:active,
+    .report-action-secondary:active,
+    .report-action-generate:active,
+    .btn-sage-blue:active,
+    .batch-select-toggle-btn:active,
+    .batch-cancel-btn:active,
+    .batch-delete-btn:active,
+    .batch-confirm-delete-btn:active {
+        transform: translateY(0);
+    }
+
+    .report-action-disabled:hover,
+    .batch-delete-btn:disabled:hover,
+    .batch-confirm-delete-btn:disabled:hover {
+        transform: none;
+    }
 }
 
 /* 输入框样式 */
@@ -746,6 +792,15 @@ textarea {
             0 0 28px rgba(53, 123, 226, 0.26),
             0 0 56px rgba(53, 123, 226, 0.14);
     }
+
+    .report-card-glow:active,
+    .session-card-glow:active {
+        transform: translateY(0);
+        box-shadow:
+            0 4px 12px rgba(30, 64, 175, 0.12),
+            0 0 0 1px rgba(53, 123, 226, 0.22),
+            0 0 20px rgba(53, 123, 226, 0.16);
+    }
 }
 
 /* 深色主题覆盖：仅在 data-theme=dark 时生效，浅色保持现有视觉不变 */
@@ -1071,32 +1126,17 @@ html[data-theme="dark"] .sort-dropdown-option--active {
     .report-action-tertiary,
     .report-action-generate,
     .report-action-generate-running,
+    .btn-sage-blue,
     .theme-toggle-trigger,
     .theme-menu-item,
+    .report-card-glow,
+    .session-card-glow,
     .batch-select-toggle-btn,
     .batch-cancel-btn,
     .batch-delete-btn,
     .batch-confirm-delete-btn {
         transition: none !important;
         transform: none !important;
-    }
-}
-
-@media (hover: hover) and (pointer: fine) {
-    html[data-theme="dark"] .report-action-primary:hover,
-    html[data-theme="dark"] .report-action-secondary:hover,
-    html[data-theme="dark"] .report-action-generate:hover,
-    html[data-theme="dark"] .batch-select-toggle-btn:hover,
-    html[data-theme="dark"] .batch-cancel-btn:hover,
-    html[data-theme="dark"] .batch-delete-btn:hover,
-    html[data-theme="dark"] .batch-confirm-delete-btn:hover {
-        transform: translateY(-1px);
-    }
-
-    html[data-theme="dark"] .report-action-disabled:hover,
-    html[data-theme="dark"] .batch-delete-btn:disabled:hover,
-    html[data-theme="dark"] .batch-confirm-delete-btn:disabled:hover {
-        transform: none;
     }
 }
 
@@ -1171,6 +1211,18 @@ html[data-theme="dark"] .report-action-generate-running:hover {
     background: rgba(244, 63, 94, 0.28);
     color: #ffe4e6;
     border-color: rgba(251, 113, 133, 0.74);
+}
+
+html[data-theme="dark"] .btn-sage-blue {
+    box-shadow:
+        0 6px 14px rgba(8, 18, 34, 0.4),
+        0 0 0 1px rgba(99, 162, 255, 0.22) inset;
+}
+
+html[data-theme="dark"] .btn-sage-blue:hover {
+    box-shadow:
+        0 10px 20px rgba(10, 22, 42, 0.46),
+        0 0 18px rgba(88, 155, 255, 0.22);
 }
 
 html[data-theme="dark"] .report-action-disabled {
@@ -1364,6 +1416,15 @@ html[data-theme="dark"] .guide-btn.primary {
             0 10px 22px rgba(2, 8, 18, 0.38),
             0 0 0 1px rgba(92, 152, 255, 0.26),
             0 0 28px rgba(92, 152, 255, 0.24);
+    }
+
+    html[data-theme="dark"] .report-card-glow:active,
+    html[data-theme="dark"] .session-card-glow:active {
+        transform: translateY(0);
+        box-shadow:
+            0 6px 14px rgba(2, 8, 18, 0.3),
+            0 0 0 1px rgba(92, 152, 255, 0.2),
+            0 0 20px rgba(92, 152, 255, 0.18);
     }
 }
 
