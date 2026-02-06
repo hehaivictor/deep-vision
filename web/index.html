@@ -630,7 +630,12 @@
                         </button>
                         <div x-cloak
                              x-show="showThemeMenu"
-                             x-transition.opacity.scale.90
+                             x-transition:enter="transition ease-out duration-200"
+                             x-transition:enter-start="opacity-0 -translate-y-1 scale-95"
+                             x-transition:enter-end="opacity-100 translate-y-0 scale-100"
+                             x-transition:leave="transition ease-in duration-150"
+                             x-transition:leave-start="opacity-100 translate-y-0 scale-100"
+                             x-transition:leave-end="opacity-0 -translate-y-1 scale-95"
                              @click.outside="showThemeMenu = false"
                              class="theme-menu absolute right-0 mt-2 w-36 rounded-xl border border-gray-200 bg-white p-1.5 shadow-lg z-50">
                             <button @click="setThemeMode('light')"
@@ -941,9 +946,8 @@
                                                     highlightedIndex === index ? 'sort-dropdown-option--highlight' : ''
                                                 ]">
                                             <span x-text="option.label"></span>
-                                            <svg x-show="sessionSortOrder === option.value"
-                                                 x-cloak
-                                                 class="w-3.5 h-3.5"
+                                            <svg class="sort-dropdown-check w-3.5 h-3.5"
+                                                 :class="sessionSortOrder === option.value ? 'opacity-100 scale-100' : 'opacity-0 scale-90'"
                                                  fill="none"
                                                  stroke="currentColor"
                                                  viewBox="0 0 24 24"
@@ -2226,9 +2230,8 @@
                                                     highlightedIndex === index ? 'sort-dropdown-option--highlight' : ''
                                                 ]">
                                             <span x-text="option.label"></span>
-                                            <svg x-show="reportSortOrder === option.value"
-                                                 x-cloak
-                                                 class="w-3.5 h-3.5"
+                                            <svg class="sort-dropdown-check w-3.5 h-3.5"
+                                                 :class="reportSortOrder === option.value ? 'opacity-100 scale-100' : 'opacity-0 scale-90'"
                                                  fill="none"
                                                  stroke="currentColor"
                                                  viewBox="0 0 24 24"
