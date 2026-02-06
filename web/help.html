@@ -18,6 +18,16 @@
             --maxw: 1180px;
         }
 
+        html[data-theme="dark"] {
+            --bg: #1b1f24;
+            --panel: #21262d;
+            --text: #e6edf5;
+            --muted: #9ca8b7;
+            --line: #313a45;
+            --accent: #4c8dff;
+            --accent-weak: rgba(76, 141, 255, 0.16);
+        }
+
         * { box-sizing: border-box; }
         html { scroll-behavior: smooth; }
         body {
@@ -766,6 +776,174 @@
             padding: 0 2px;
             border-radius: 4px;
         }
+
+        html[data-theme="dark"] body {
+            color: var(--text);
+            background: var(--bg);
+        }
+
+        html[data-theme="dark"] .topbar {
+            background: rgba(27, 31, 36, 0.9);
+            border-bottom-color: var(--line);
+        }
+
+        html[data-theme="dark"] .brand-title {
+            background: linear-gradient(135deg, #f3f6fb 0%, #d6dee8 52%, #a6b3c5 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        html[data-theme="dark"] .brand-title-cn,
+        html[data-theme="dark"] .brand-title-help {
+            color: #d6deea;
+        }
+
+        html[data-theme="dark"] .btn {
+            background: #2a313a;
+            color: #dce5ef;
+            border-color: #3a4552;
+        }
+
+        html[data-theme="dark"] .btn:hover {
+            background: #313a45;
+        }
+
+        html[data-theme="dark"] .btn.primary {
+            background: #3f82f2;
+            border-color: #4c8dff;
+            color: #f6f9ff;
+        }
+
+        html[data-theme="dark"] .btn.primary:hover {
+            background: #4c8dff;
+        }
+
+        html[data-theme="dark"] .sidebar-card,
+        html[data-theme="dark"] .content,
+        html[data-theme="dark"] .search,
+        html[data-theme="dark"] .search-panel,
+        html[data-theme="dark"] .faq-item,
+        html[data-theme="dark"] .faq-group,
+        html[data-theme="dark"] .card,
+        html[data-theme="dark"] .purpose a,
+        html[data-theme="dark"] .doc-meta span {
+            background: #21262d;
+            border-color: var(--line);
+            color: var(--text);
+        }
+
+        html[data-theme="dark"] .hero {
+            border-bottom-color: #313a45;
+        }
+
+        html[data-theme="dark"] .search-clear {
+            background: #2a313a;
+            color: #aeb9c7;
+        }
+
+        html[data-theme="dark"] .search-list a,
+        html[data-theme="dark"] .sec-title,
+        html[data-theme="dark"] .faq-item h4,
+        html[data-theme="dark"] .compare-table th,
+        html[data-theme="dark"] .compare-table td,
+        html[data-theme="dark"] .feedback button,
+        html[data-theme="dark"] .spec-box strong {
+            color: var(--text);
+        }
+
+        html[data-theme="dark"] .search-list a:hover,
+        html[data-theme="dark"] .section-toc-links a,
+        html[data-theme="dark"] .section-related a,
+        html[data-theme="dark"] .inline-link {
+            color: #8db8ff;
+        }
+
+        html[data-theme="dark"] .compare-table,
+        html[data-theme="dark"] .compare-table th,
+        html[data-theme="dark"] .compare-table td,
+        html[data-theme="dark"] .decision-tree,
+        html[data-theme="dark"] .action-checklist,
+        html[data-theme="dark"] .spec-box,
+        html[data-theme="dark"] .section-toc,
+        html[data-theme="dark"] .feedback,
+        html[data-theme="dark"] .nav-group,
+        html[data-theme="dark"] .faq-group,
+        html[data-theme="dark"] .progress-bar {
+            border-color: var(--line);
+        }
+
+        html[data-theme="dark"] .compare-table th,
+        html[data-theme="dark"] .compare-table td,
+        html[data-theme="dark"] .action-checklist,
+        html[data-theme="dark"] .decision-tree,
+        html[data-theme="dark"] .spec-box,
+        html[data-theme="dark"] .section-toc,
+        html[data-theme="dark"] .feedback,
+        html[data-theme="dark"] .faq-group,
+        html[data-theme="dark"] .faq-item,
+        html[data-theme="dark"] .tagline,
+        html[data-theme="dark"] .mark {
+            background: #232a32;
+            color: var(--text);
+        }
+
+        html[data-theme="dark"] .progress-bar,
+        html[data-theme="dark"] .tagline {
+            background: #313a45;
+        }
+
+        html[data-theme="dark"] .nav-link,
+        html[data-theme="dark"] .progress-label,
+        html[data-theme="dark"] .progress-current,
+        html[data-theme="dark"] .doc-meta,
+        html[data-theme="dark"] .search-label,
+        html[data-theme="dark"] .search-empty,
+        html[data-theme="dark"] .summary,
+        html[data-theme="dark"] .list,
+        html[data-theme="dark"] .faq-body,
+        html[data-theme="dark"] .section-next,
+        html[data-theme="dark"] .section-related span,
+        html[data-theme="dark"] .feedback-note,
+        html[data-theme="dark"] section p {
+            color: var(--muted);
+        }
+
+        html[data-theme="dark"] .quick-links a,
+        html[data-theme="dark"] .purpose a:hover,
+        html[data-theme="dark"] .section-toc-links a:hover,
+        html[data-theme="dark"] .section-next a,
+        html[data-theme="dark"] .section-related a:hover,
+        html[data-theme="dark"] .inline-link:hover {
+            color: #aecdff;
+        }
+
+        html[data-theme="dark"] .quick-links a,
+        html[data-theme="dark"] .purpose a:hover {
+            border-color: rgba(124, 174, 255, 0.4);
+            background: rgba(76, 141, 255, 0.12);
+        }
+
+        html[data-theme="dark"] .nav-sub--scenario .nav-link::before,
+        html[data-theme="dark"] .nav-title::after,
+        html[data-theme="dark"] .faq-group h3::after {
+            color: #7f8a99;
+        }
+
+        html[data-theme="dark"] .search input {
+            color: var(--text);
+            background: transparent;
+        }
+
+        html[data-theme="dark"] .search input::placeholder {
+            color: #7f8a99;
+        }
+
+        html[data-theme="dark"] .search-focus {
+            outline-color: rgba(76, 141, 255, 0.35);
+            box-shadow: 0 8px 20px rgba(76, 141, 255, 0.18);
+        }
+
         .search-focus {
             outline: 2px solid rgba(37, 99, 235, 0.25);
             outline-offset: 4px;
@@ -786,6 +964,26 @@
             * { transition: none !important; scroll-behavior: auto !important; }
         }
     </style>
+    <script>
+        (function () {
+            const storageKey = 'deepvision_theme_mode';
+            const validModes = ['light', 'dark', 'system'];
+            let mode = 'system';
+            try {
+                const saved = localStorage.getItem(storageKey);
+                if (validModes.includes(saved)) mode = saved;
+            } catch (error) {
+                mode = 'system';
+            }
+
+            const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const effective = mode === 'system' ? (prefersDark ? 'dark' : 'light') : mode;
+            const root = document.documentElement;
+            root.setAttribute('data-theme-mode', mode);
+            root.setAttribute('data-theme', effective);
+            root.style.colorScheme = effective;
+        })();
+    </script>
 </head>
 <body>
     <header class="topbar">
@@ -1563,6 +1761,24 @@
     </main>
 
     <script>
+        (function () {
+            const root = document.documentElement;
+            const mode = root.getAttribute('data-theme-mode') || 'system';
+            if (mode !== 'system' || !window.matchMedia) return;
+            const media = window.matchMedia('(prefers-color-scheme: dark)');
+            const apply = (matches) => {
+                const effective = matches ? 'dark' : 'light';
+                root.setAttribute('data-theme', effective);
+                root.style.colorScheme = effective;
+            };
+            const handler = (event) => apply(event.matches);
+            if (typeof media.addEventListener === 'function') {
+                media.addEventListener('change', handler);
+            } else if (typeof media.addListener === 'function') {
+                media.addListener(handler);
+            }
+        })();
+
         const fades = Array.from(document.querySelectorAll('.fade'));
         const navLinks = Array.from(document.querySelectorAll('.nav-link'));
         const sections = Array.from(document.querySelectorAll('.content section, .hero'));
