@@ -94,23 +94,34 @@
             gap: 10px;
         }
         .btn {
-            padding: 9px 16px;
-            min-height: 36px;
+            height: 36px;
+            padding: 0 18px;
             line-height: 18px;
-            border-radius: 999px;
+            border-radius: 8px;
             border: 1px solid var(--line);
             background: #fff;
             font-size: 13px;
             font-weight: 600;
-            color: var(--muted);
+            color: #1e293b;
             display: inline-flex;
             align-items: center;
             justify-content: center;
+            transition: all 0.2s ease;
+        }
+        .top-actions .btn {
+            min-width: 112px;
+        }
+        .btn:hover {
+            background: #f1f5f9;
         }
         .btn.primary {
-            background: var(--accent);
+            background: #111827;
             color: #fff;
-            border-color: var(--accent);
+            border-color: #111827;
+        }
+        .btn.primary:hover {
+            background: #0f172a;
+            border-color: #0f172a;
         }
 
         .layout {
@@ -310,7 +321,9 @@
             margin: 0;
             color: var(--muted);
             line-height: 1.7;
-            white-space: nowrap;
+            max-width: 920px;
+            white-space: normal;
+            word-break: break-word;
         }
 
         .search {
