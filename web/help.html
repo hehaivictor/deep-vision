@@ -16,6 +16,10 @@
             --accent-weak: rgba(37, 99, 235, 0.08);
             --radius: 12px;
             --maxw: 1180px;
+            --dv-color-brand: #357be2;
+            --dv-color-brand-hover: #2563eb;
+            --dv-color-surface: #ffffff;
+            --dv-color-surface-secondary: #f8fafc;
         }
 
         html[data-theme="dark"] {
@@ -26,6 +30,10 @@
             --line: #313a45;
             --accent: #4c8dff;
             --accent-weak: rgba(76, 141, 255, 0.16);
+            --dv-color-brand: #5c98ff;
+            --dv-color-brand-hover: #78b1ff;
+            --dv-color-surface: #21262d;
+            --dv-color-surface-secondary: #1b1f24;
         }
 
         * { box-sizing: border-box; }
@@ -79,7 +87,7 @@
         }
 .brand-title {
             font-family: 'Outfit', 'Inter', system-ui, sans-serif;
-            background: linear-gradient(135deg, #171717 0%, #404040 50%, #525252 100%);
+            background: linear-gradient(135deg, var(--dv-color-brand) 0%, #404040 50%, #525252 100%);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
@@ -87,7 +95,7 @@
             letter-spacing: -0.03em;
         }
         .brand-title-cn {
-            color: #0f172a;
+            color: var(--text);
             font-family: 'ZCOOL XiaoWei', serif;
             font-weight: 600;
             text-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
