@@ -1210,6 +1210,20 @@ html[data-theme="dark"] .text-gray-200 {
     color: #aeb9c7 !important;
 }
 
+html[data-theme="dark"] .session-status-badge--in-progress {
+    background: linear-gradient(135deg, rgba(76, 141, 255, 0.28), rgba(76, 141, 255, 0.14));
+    border-color: rgba(128, 176, 255, 0.62);
+    color: #cfe3ff;
+    text-shadow: 0 0 10px rgba(76, 141, 255, 0.34);
+}
+
+html[data-theme="dark"] .session-status-dot--in-progress {
+    background: #8db8ff;
+    box-shadow:
+        0 0 0 2px rgba(230, 237, 245, 0.82),
+        0 0 14px rgba(92, 152, 255, 0.62);
+}
+
 html[data-theme="dark"] .border,
 html[data-theme="dark"] .border-border,
 html[data-theme="dark"] .border-gray-100,
