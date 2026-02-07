@@ -160,6 +160,20 @@ THINKING_STAGES = {
     "generating": {"index": 2, "message": "正在生成下一个问题..."},
 }
 
+# ============ 报告生成进度状态追踪 ============
+report_generation_status = {}   # { session_id: { state, stage_index, total_stages, progress, message, updated_at, active } }
+report_generation_status_lock = threading.Lock()
+
+REPORT_GENERATION_STAGES = {
+    "queued": {"index": 0, "progress": 5, "message": "已提交请求，准备生成报告..."},
+    "building_prompt": {"index": 1, "progress": 20, "message": "正在整理访谈与资料上下文..."},
+    "generating": {"index": 2, "progress": 65, "message": "正在调用 AI 生成报告正文..."},
+    "fallback": {"index": 3, "progress": 78, "message": "AI 响应较慢，正在切换模板生成..."},
+    "saving": {"index": 4, "progress": 90, "message": "正在保存报告并更新会话状态..."},
+    "completed": {"index": 5, "progress": 100, "message": "报告生成完成"},
+    "failed": {"index": 5, "progress": 100, "message": "报告生成失败"},
+}
+
 # ============ 预生成缓存（智能预生成）============
 prefetch_cache = {}            # { session_id: { dimension: { question_data, created_at, valid } } }
 prefetch_cache_lock = threading.Lock()
@@ -297,6 +311,30 @@ def clear_thinking_status(session_id: str):
     """清除思考进度状态"""
     with thinking_status_lock:
         thinking_status.pop(session_id, None)
+
+
+def update_report_generation_status(session_id: str, stage: str, message: Optional[str] = None, active: bool = True):
+    """更新报告生成进度状态（线程安全）"""
+    stage_info = REPORT_GENERATION_STAGES.get(stage)
+    if not stage_info:
+        return
+
+    with report_generation_status_lock:
+        report_generation_status[session_id] = {
+            "active": active,
+            "state": stage,
+            "stage_index": stage_info["index"],
+            "total_stages": 6,
+            "progress": stage_info["progress"],
+            "message": message or stage_info["message"],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+def clear_report_generation_status(session_id: str):
+    """清除报告生成进度状态"""
+    with report_generation_status_lock:
+        report_generation_status.pop(session_id, None)
 
 
 # ============ 预生成缓存函数 ============
@@ -4858,66 +4896,84 @@ def generate_report(session_id):
     if not session_file.exists():
         return jsonify({"error": "会话不存在"}), 404
 
-    session = json.loads(session_file.read_text(encoding="utf-8"))
+    update_report_generation_status(session_id, "queued")
 
-    # 检查是否有 Claude API
-    if claude_client:
-        prompt = build_report_prompt(session)
+    try:
+        session = json.loads(session_file.read_text(encoding="utf-8"))
 
-        # 日志：记录报告生成 prompt 统计
+        # 检查是否有 Claude API
+        if claude_client:
+            update_report_generation_status(session_id, "building_prompt")
+            prompt = build_report_prompt(session)
+
+            # 日志：记录报告生成 prompt 统计
+            if ENABLE_DEBUG_LOG:
+                ref_docs_count = len(session.get("reference_materials", session.get("reference_docs", []) + session.get("research_docs", [])))
+                interview_count = len(session.get("interview_log", []))
+                print(f"📊 报告生成 Prompt 统计：总长度={len(prompt)}字符，参考资料={ref_docs_count}个，访谈记录={interview_count}条")
+
+            update_report_generation_status(session_id, "generating")
+            report_content = call_claude(
+                prompt,
+                max_tokens=MAX_TOKENS_REPORT,
+                call_type="report"
+            )
+
+            if report_content:
+                # 追加完整的访谈记录附录（确保附录完整）
+                appendix = generate_interview_appendix(session)
+                report_content = report_content + appendix
+
+                update_report_generation_status(session_id, "saving")
+                # 保存报告
+                topic_slug = session.get("topic", "report").replace(" ", "-")[:30]
+                date_str = datetime.now().strftime("%Y%m%d")
+                filename = f"deep-vision-{date_str}-{topic_slug}.md"
+                report_file = REPORTS_DIR / filename
+                report_file.write_text(report_content, encoding="utf-8")
+
+                # 更新会话状态
+                session["status"] = "completed"
+                session["updated_at"] = get_utc_now()
+                session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+
+                update_report_generation_status(session_id, "completed", active=False)
+
+                return jsonify({
+                    "success": True,
+                    "report_path": str(report_file),
+                    "report_name": filename,
+                    "ai_generated": True
+                })
+
+        # 回退到简单报告生成
+        update_report_generation_status(session_id, "fallback")
+        report_content = generate_simple_report(session)
+        update_report_generation_status(session_id, "saving")
+        topic_slug = session.get("topic", "report").replace(" ", "-")[:30]
+        date_str = datetime.now().strftime("%Y%m%d")
+        filename = f"deep-vision-{date_str}-{topic_slug}.md"
+        report_file = REPORTS_DIR / filename
+        report_file.write_text(report_content, encoding="utf-8")
+
+        session["status"] = "completed"
+        session["updated_at"] = get_utc_now()
+        session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        update_report_generation_status(session_id, "completed", active=False)
+
+        return jsonify({
+            "success": True,
+            "report_path": str(report_file),
+            "report_name": filename,
+            "ai_generated": False
+        })
+    except Exception as exc:
+        error_detail = str(exc)[:200] or "未知错误"
+        update_report_generation_status(session_id, "failed", message=f"报告生成失败：{error_detail}", active=False)
         if ENABLE_DEBUG_LOG:
-            ref_docs_count = len(session.get("reference_materials", session.get("reference_docs", []) + session.get("research_docs", [])))
-            interview_count = len(session.get("interview_log", []))
-            print(f"📊 报告生成 Prompt 统计：总长度={len(prompt)}字符，参考资料={ref_docs_count}个，访谈记录={interview_count}条")
-
-        report_content = call_claude(
-            prompt,
-            max_tokens=MAX_TOKENS_REPORT,
-            call_type="report"
-        )
-
-        if report_content:
-            # 追加完整的访谈记录附录（确保附录完整）
-            appendix = generate_interview_appendix(session)
-            report_content = report_content + appendix
-
-            # 保存报告
-            topic_slug = session.get("topic", "report").replace(" ", "-")[:30]
-            date_str = datetime.now().strftime("%Y%m%d")
-            filename = f"deep-vision-{date_str}-{topic_slug}.md"
-            report_file = REPORTS_DIR / filename
-            report_file.write_text(report_content, encoding="utf-8")
-
-            # 更新会话状态
-            session["status"] = "completed"
-            session["updated_at"] = get_utc_now()
-            session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
-
-            return jsonify({
-                "success": True,
-                "report_path": str(report_file),
-                "report_name": filename,
-                "ai_generated": True
-            })
-
-    # 回退到简单报告生成
-    report_content = generate_simple_report(session)
-    topic_slug = session.get("topic", "report").replace(" ", "-")[:30]
-    date_str = datetime.now().strftime("%Y%m%d")
-    filename = f"deep-vision-{date_str}-{topic_slug}.md"
-    report_file = REPORTS_DIR / filename
-    report_file.write_text(report_content, encoding="utf-8")
-
-    session["status"] = "completed"
-    session["updated_at"] = get_utc_now()
-    session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    return jsonify({
-        "success": True,
-        "report_path": str(report_file),
-        "report_name": filename,
-        "ai_generated": False
-    })
+            print(f"❌ 报告生成异常: {error_detail}")
+        return jsonify({"error": "访谈报告生成失败", "detail": error_detail}), 500
 
 
 def generate_interview_appendix(session: dict) -> str:
@@ -5967,6 +6023,26 @@ def get_thinking_status(session_id):
         })
     else:
         return jsonify({"active": False})
+
+
+@app.route('/api/status/report-generation/<session_id>', methods=['GET'])
+def get_report_generation_status(session_id):
+    """获取报告生成进度状态"""
+    with report_generation_status_lock:
+        status = report_generation_status.get(session_id)
+
+    if status:
+        return jsonify({
+            "active": bool(status.get("active", False)),
+            "state": status.get("state", "queued"),
+            "stage_index": int(status.get("stage_index", 0)),
+            "total_stages": int(status.get("total_stages", 6)),
+            "progress": int(status.get("progress", 0)),
+            "message": status.get("message", "正在生成报告..."),
+            "updated_at": status.get("updated_at"),
+        })
+
+    return jsonify({"active": False})
 
 
 @app.route('/api/metrics', methods=['GET'])

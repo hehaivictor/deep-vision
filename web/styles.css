@@ -450,6 +450,43 @@
     box-shadow: none;
 }
 
+.report-action-progress-shell {
+    position: relative;
+    isolation: isolate;
+}
+
+.report-action-progress-content {
+    position: relative;
+    z-index: 2;
+}
+
+.report-action-progress-text {
+    white-space: nowrap;
+    min-width: 0;
+    line-height: 1.1;
+}
+
+.report-action-progress-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0;
+    z-index: 1;
+    background: linear-gradient(90deg, rgba(37, 99, 235, 0.34) 0%, rgba(37, 99, 235, 0.5) 100%);
+    transition: width 0.28s ease;
+}
+
+.report-action-progressing {
+    background: #dbeafe;
+    color: #1d4ed8;
+    border: 1px solid #93c5fd;
+    box-shadow: 0 1px 2px rgba(37, 99, 235, 0.12);
+}
+
+.report-generation-progress-bar {
+    background: linear-gradient(90deg, #60a5fa 0%, #2563eb 100%);
+    transition: width 0.35s ease;
+}
+
 @media (hover: hover) and (pointer: fine) {
     .report-action-primary:hover,
     .report-action-secondary:hover,
@@ -1510,6 +1547,29 @@ html[data-theme="dark"] .report-action-disabled {
     color: #8592a1;
     border-color: #465361;
     box-shadow: none;
+}
+
+html[data-theme="dark"] .report-action-progressing {
+    background: rgba(76, 141, 255, 0.22);
+    color: #dbeafe;
+    border-color: rgba(124, 174, 255, 0.62);
+    box-shadow: 0 2px 8px rgba(3, 10, 20, 0.3);
+}
+
+html[data-theme="dark"] .report-action-progress-fill {
+    background: linear-gradient(90deg, rgba(76, 141, 255, 0.42) 0%, rgba(124, 174, 255, 0.56) 100%);
+}
+
+html[data-theme="dark"] .report-generation-progress-bar {
+    background: linear-gradient(90deg, #7fb3ff 0%, #4c8dff 100%);
+}
+
+
+@media (prefers-reduced-motion: reduce) {
+    .report-generation-progress-bar,
+    .report-action-progress-fill {
+        transition: none !important;
+    }
 }
 
 html[data-theme="dark"] input::placeholder,
