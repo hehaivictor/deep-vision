@@ -197,7 +197,32 @@ def load_presentation_map() -> dict:
         return {}
     try:
         payload = json.loads(PRESENTATION_MAP_FILE.read_text(encoding="utf-8"))
-        return payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            return {}
+        normalized = {}
+        mutated = False
+        for raw_name, record in payload.items():
+            name = normalize_presentation_report_filename(raw_name)
+            if not name:
+                mutated = True
+                continue
+            if not isinstance(record, dict):
+                mutated = True
+                continue
+            if name in normalized:
+                previous = normalized.get(name, {})
+                previous_ts = datetime.fromisoformat(previous.get("created_at", "1970-01-01T00:00:00")) if previous.get("created_at") else datetime.min
+                current_ts = datetime.fromisoformat(record.get("created_at", "1970-01-01T00:00:00")) if record.get("created_at") else datetime.min
+                if current_ts >= previous_ts:
+                    normalized[name] = record
+                mutated = True
+            else:
+                normalized[name] = record
+            if name != raw_name:
+                mutated = True
+        if mutated:
+            save_presentation_map(normalized)
+        return normalized
     except Exception:
         return {}
 
@@ -212,7 +237,43 @@ def save_presentation_map(data: dict) -> None:
         pass
 
 
+def normalize_presentation_report_filename(report_filename: Optional[str]) -> str:
+    if not isinstance(report_filename, str):
+        return ""
+    cleaned = report_filename.strip()
+    if not cleaned:
+        return ""
+    if cleaned.lower() in {"null", "undefined", "none"}:
+        return ""
+    return cleaned
+
+
+def find_execution_owner_in_map(data: dict, execution_id: str) -> str:
+    if not execution_id or not isinstance(data, dict):
+        return ""
+    for raw_name, record in data.items():
+        if not isinstance(record, dict):
+            continue
+        if record.get("execution_id") != execution_id:
+            continue
+        normalized_name = normalize_presentation_report_filename(raw_name)
+        if normalized_name:
+            return normalized_name
+    return ""
+
+
+def get_execution_owner_report(execution_id: str) -> str:
+    if not execution_id:
+        return ""
+    with PRESENTATION_MAP_LOCK:
+        data = load_presentation_map()
+    return find_execution_owner_in_map(data, execution_id)
+
+
 def record_presentation_file(report_filename: str, download_info: Optional[dict] = None, pdf_url: Optional[str] = None) -> Optional[dict]:
+    report_filename = normalize_presentation_report_filename(report_filename)
+    if not report_filename:
+        return None
     record = {
         "created_at": datetime.now().isoformat()
     }
@@ -233,26 +294,64 @@ def record_presentation_file(report_filename: str, download_info: Optional[dict]
 
 
 def record_presentation_execution(report_filename: str, execution_id: str) -> None:
-    if not execution_id:
+    report_filename = normalize_presentation_report_filename(report_filename)
+    if not execution_id or not report_filename:
         return
     with PRESENTATION_MAP_LOCK:
         data = load_presentation_map()
+        owner = find_execution_owner_in_map(data, execution_id)
+        if owner and owner != report_filename:
+            if ENABLE_DEBUG_LOG:
+                print(f"⚠️ 忽略跨报告 execution_id 绑定: {execution_id} 已属于 {owner}, 当前={report_filename}")
+            return
         record = data.get(report_filename) if isinstance(data.get(report_filename), dict) else {}
         record = record or {}
+        stopped_at = record.get("stopped_at")
+        stopped_execution_id = str(record.get("stopped_execution_id") or "").strip()
+        if stopped_at and (not stopped_execution_id or stopped_execution_id == execution_id):
+            if ENABLE_DEBUG_LOG:
+                print(f"⚠️ 忽略已停止任务的 execution_id 回写: execution_id={execution_id}, report={report_filename}")
+            return
         record["execution_id"] = execution_id
         record.pop("stopped_at", None)
+        record.pop("stopped_execution_id", None)
         if "created_at" not in record:
             record["created_at"] = datetime.now().isoformat()
         data[report_filename] = record
         save_presentation_map(data)
 
 
-def mark_presentation_stopped(report_filename: str) -> None:
+def clear_presentation_execution(report_filename: str) -> None:
+    report_filename = normalize_presentation_report_filename(report_filename)
+    if not report_filename:
+        return
     with PRESENTATION_MAP_LOCK:
         data = load_presentation_map()
         record = data.get(report_filename) if isinstance(data.get(report_filename), dict) else {}
         record = record or {}
+        if "execution_id" not in record:
+            return
         record.pop("execution_id", None)
+        data[report_filename] = record
+        save_presentation_map(data)
+
+
+def mark_presentation_stopped(report_filename: str, execution_id: str = "") -> None:
+    report_filename = normalize_presentation_report_filename(report_filename)
+    if not report_filename:
+        return
+    with PRESENTATION_MAP_LOCK:
+        data = load_presentation_map()
+        record = data.get(report_filename) if isinstance(data.get(report_filename), dict) else {}
+        record = record or {}
+        stopped_execution_id = str(execution_id or "").strip()
+        if not stopped_execution_id:
+            stopped_execution_id = str(record.get("execution_id") or "").strip()
+        record.pop("execution_id", None)
+        if stopped_execution_id:
+            record["stopped_execution_id"] = stopped_execution_id
+        else:
+            record.pop("stopped_execution_id", None)
         record["stopped_at"] = datetime.now().isoformat()
         if "created_at" not in record:
             record["created_at"] = datetime.now().isoformat()
@@ -261,21 +360,43 @@ def mark_presentation_stopped(report_filename: str) -> None:
 
 
 def clear_presentation_stopped(report_filename: str) -> None:
+    report_filename = normalize_presentation_report_filename(report_filename)
+    if not report_filename:
+        return
     with PRESENTATION_MAP_LOCK:
         data = load_presentation_map()
         record = data.get(report_filename) if isinstance(data.get(report_filename), dict) else {}
         record = record or {}
-        if "stopped_at" in record:
+        if "stopped_at" in record or "stopped_execution_id" in record:
             record.pop("stopped_at", None)
+            record.pop("stopped_execution_id", None)
             data[report_filename] = record
             save_presentation_map(data)
 
 
 def get_presentation_record(report_filename: str) -> Optional[dict]:
+    report_filename = normalize_presentation_report_filename(report_filename)
+    if not report_filename:
+        return None
     with PRESENTATION_MAP_LOCK:
         data = load_presentation_map()
     record = data.get(report_filename)
     return record if isinstance(record, dict) else None
+
+
+def is_presentation_execution_stopped(report_filename: str, execution_id: str = "") -> bool:
+    report_filename = normalize_presentation_report_filename(report_filename)
+    if not report_filename:
+        return False
+    record = get_presentation_record(report_filename) or {}
+    stopped_at = record.get("stopped_at")
+    if not stopped_at:
+        return False
+    stopped_execution_id = str(record.get("stopped_execution_id") or "").strip()
+    current_execution_id = str(execution_id or "").strip()
+    if stopped_execution_id and current_execution_id and stopped_execution_id != current_execution_id:
+        return False
+    return True
 
 
 def is_path_under(path: Path, directory: Path) -> bool:
@@ -5653,15 +5774,30 @@ def get_report_presentation(filename):
 
 @app.route('/api/reports/<path:filename>/presentation/status', methods=['GET'])
 def get_report_presentation_status(filename):
+    filename = normalize_presentation_report_filename(filename)
+    if not filename:
+        return jsonify({"exists": False})
+
     record = get_presentation_record(filename)
     if not record:
         return jsonify({"exists": False})
+
     pdf_url = record.get("pdf_url")
     execution_id = record.get("execution_id")
     stopped_at = record.get("stopped_at")
+
+    if execution_id:
+        owner = get_execution_owner_report(execution_id)
+        if owner and owner != filename:
+            if ENABLE_DEBUG_LOG:
+                print(f"⚠️ 清理跨报告 execution_id: execution_id={execution_id}, owner={owner}, filename={filename}")
+            clear_presentation_execution(filename)
+            execution_id = ""
+
     if execution_id and stopped_at:
-        clear_presentation_stopped(filename)
-        stopped_at = None
+        clear_presentation_execution(filename)
+        execution_id = ""
+
     path_str = record.get("path")
     file_exists = False
     if path_str:
@@ -5669,6 +5805,7 @@ def get_report_presentation_status(filename):
         downloads_dir = get_downloads_dir()
         if file_path.exists() and is_path_under(file_path, downloads_dir):
             file_exists = True
+
     processing = bool(execution_id and not pdf_url and not stopped_at)
     if processing:
         try:
@@ -5683,6 +5820,7 @@ def get_report_presentation_status(filename):
                 processing = False
         except Exception:
             pass
+
     return jsonify({
         "exists": bool(pdf_url or file_exists),
         "pdf_url": pdf_url,
@@ -5741,12 +5879,17 @@ def get_report(filename):
 @app.route('/api/reports/<path:filename>/refly', methods=['POST'])
 def send_report_to_refly(filename):
     """将报告发送到演示文稿服务生成演示文稿"""
+    filename = normalize_presentation_report_filename(filename)
+    if not filename:
+        return jsonify({"error": "报告文件名无效"}), 400
+
     report_file = REPORTS_DIR / filename
     if not report_file.exists():
         return jsonify({"error": "报告不存在"}), 404
 
     if not is_refly_configured():
         return jsonify({"error": "演示文稿服务未配置"}), 400
+
     clear_presentation_stopped(filename)
     execution_id = ""
 
@@ -5767,6 +5910,33 @@ def send_report_to_refly(filename):
                 "refly_response": run_response
             }), 502
 
+        owner = get_execution_owner_report(execution_id)
+        if owner and owner != filename:
+            if ENABLE_DEBUG_LOG:
+                print(f"⚠️ 拦截跨报告 execution_id 复用: execution_id={execution_id}, owner={owner}, filename={filename}")
+            return jsonify({
+                "error": "生成任务归属冲突，请重试",
+                "mismatch": True,
+                "owner_report": owner,
+                "execution_id": execution_id
+            }), 409
+
+        if is_presentation_execution_stopped(filename, execution_id):
+            try:
+                url = get_refly_abort_url(execution_id)
+                headers = {"Authorization": f"Bearer {REFLY_API_KEY}"}
+                requests.post(url, headers=headers, timeout=REFLY_TIMEOUT)
+            except Exception:
+                pass
+            return jsonify({
+                "processing": False,
+                "execution_id": "",
+                "stopped": True,
+                "message": "演示文稿生成已停止"
+            })
+
+        record_presentation_execution(filename, execution_id)
+
         status_response = poll_refly_execution(execution_id)
         output_response = wait_for_refly_output_ready(execution_id)
         pdf_url = (
@@ -5775,6 +5945,13 @@ def send_report_to_refly(filename):
             or build_pdf_url_from_result_info(output_response)
         )
         if not pdf_url:
+            if is_presentation_execution_stopped(filename, execution_id):
+                return jsonify({
+                    "processing": False,
+                    "execution_id": "",
+                    "stopped": True,
+                    "message": "演示文稿生成已停止"
+                })
             record_presentation_execution(filename, execution_id)
             return jsonify({
                 "message": "演示文稿仍在生成中，请稍后重试",
@@ -5782,6 +5959,14 @@ def send_report_to_refly(filename):
                 "refly_status": status_response,
                 "refly_response": output_response,
                 "processing": True
+            })
+
+        if is_presentation_execution_stopped(filename, execution_id):
+            return jsonify({
+                "processing": False,
+                "execution_id": "",
+                "stopped": True,
+                "message": "演示文稿生成已停止"
             })
 
         presentation_url = pdf_url
@@ -5831,30 +6016,36 @@ def send_report_to_refly(filename):
             print(f"⚠️ 演示文稿服务 HTTP 错误: {detail}")
         return jsonify({"error": "演示文稿服务请求失败"}), 502
     except requests.exceptions.Timeout:
-        if execution_id:
+        stopped = is_presentation_execution_stopped(filename, execution_id)
+        if execution_id and not stopped:
             record_presentation_execution(filename, execution_id)
         return jsonify({
-            "processing": True,
-            "execution_id": execution_id,
-            "message": "演示文稿仍在生成中，请稍后重试"
+            "processing": not stopped,
+            "execution_id": "" if stopped else execution_id,
+            "stopped": stopped,
+            "message": "演示文稿生成已停止" if stopped else "演示文稿仍在生成中，请稍后重试"
         }), 202
     except requests.exceptions.SSLError:
-        if execution_id:
+        stopped = is_presentation_execution_stopped(filename, execution_id)
+        if execution_id and not stopped:
             record_presentation_execution(filename, execution_id)
         return jsonify({
-            "processing": True,
-            "execution_id": execution_id,
-            "message": "演示文稿仍在生成中，请稍后重试"
+            "processing": not stopped,
+            "execution_id": "" if stopped else execution_id,
+            "stopped": stopped,
+            "message": "演示文稿生成已停止" if stopped else "演示文稿仍在生成中，请稍后重试"
         }), 202
     except requests.RequestException as exc:
         if ENABLE_DEBUG_LOG:
             print(f"⚠️ 演示文稿服务请求异常: {exc}")
-        if execution_id:
+        stopped = is_presentation_execution_stopped(filename, execution_id)
+        if execution_id and not stopped:
             record_presentation_execution(filename, execution_id)
         return jsonify({
-            "processing": True,
-            "execution_id": execution_id,
-            "message": "演示文稿仍在生成中，请稍后重试"
+            "processing": not stopped,
+            "execution_id": "" if stopped else execution_id,
+            "stopped": stopped,
+            "message": "演示文稿生成已停止" if stopped else "演示文稿仍在生成中，请稍后重试"
         }), 202
     except Exception as exc:
         return jsonify({"error": f"提交生成任务失败: {str(exc)}"}), 500
@@ -5862,9 +6053,35 @@ def send_report_to_refly(filename):
 
 @app.route('/api/reports/<path:filename>/refly/status', methods=['GET'])
 def check_refly_status(filename):
+    filename = normalize_presentation_report_filename(filename)
+    if not filename:
+        return jsonify({"error": "filename 缺失"}), 400
     execution_id = request.args.get("execution_id", "").strip()
     if not execution_id:
         return jsonify({"error": "execution_id 缺失"}), 400
+
+    current_record = get_presentation_record(filename) or {}
+    stopped_at = current_record.get("stopped_at")
+    stopped_execution_id = str(current_record.get("stopped_execution_id") or "").strip()
+    if stopped_at and (not stopped_execution_id or stopped_execution_id == execution_id):
+        return jsonify({
+            "processing": False,
+            "execution_id": "",
+            "stopped": True,
+            "message": "演示文稿生成已停止"
+        })
+
+    owner = get_execution_owner_report(execution_id)
+    if owner and owner != filename:
+        if ENABLE_DEBUG_LOG:
+            print(f"⚠️ 拦截跨报告状态查询: execution_id={execution_id}, owner={owner}, filename={filename}")
+        return jsonify({
+            "processing": False,
+            "execution_id": execution_id,
+            "mismatch": True,
+            "owner_report": owner,
+            "message": "execution_id 与报告不匹配"
+        }), 409
     try:
         status_response = fetch_refly_status_once(execution_id)
         output_response = fetch_refly_output(execution_id)
@@ -5874,6 +6091,16 @@ def check_refly_status(filename):
             or build_pdf_url_from_result_info(output_response)
         )
         if not pdf_url:
+            latest_record = get_presentation_record(filename) or {}
+            latest_stopped_at = latest_record.get("stopped_at")
+            latest_stopped_execution_id = str(latest_record.get("stopped_execution_id") or "").strip()
+            if latest_stopped_at and (not latest_stopped_execution_id or latest_stopped_execution_id == execution_id):
+                return jsonify({
+                    "processing": False,
+                    "execution_id": "",
+                    "stopped": True,
+                    "message": "演示文稿生成已停止"
+                })
             record_presentation_execution(filename, execution_id)
             return jsonify({
                 "processing": True,
@@ -5887,24 +6114,30 @@ def check_refly_status(filename):
             "pdf_url": pdf_url
         })
     except requests.exceptions.Timeout:
+        stopped = is_presentation_execution_stopped(filename, execution_id)
         return jsonify({
-            "processing": True,
-            "execution_id": execution_id,
-            "message": "演示文稿仍在生成中，请稍后重试"
+            "processing": not stopped,
+            "execution_id": "" if stopped else execution_id,
+            "stopped": stopped,
+            "message": "演示文稿生成已停止" if stopped else "演示文稿仍在生成中，请稍后重试"
         })
     except requests.exceptions.SSLError:
+        stopped = is_presentation_execution_stopped(filename, execution_id)
         return jsonify({
-            "processing": True,
-            "execution_id": execution_id,
-            "message": "演示文稿仍在生成中，请稍后重试"
+            "processing": not stopped,
+            "execution_id": "" if stopped else execution_id,
+            "stopped": stopped,
+            "message": "演示文稿生成已停止" if stopped else "演示文稿仍在生成中，请稍后重试"
         })
     except requests.RequestException as exc:
         if ENABLE_DEBUG_LOG:
             print(f"⚠️ 演示文稿服务请求异常: {exc}")
+        stopped = is_presentation_execution_stopped(filename, execution_id)
         return jsonify({
-            "processing": True,
-            "execution_id": execution_id,
-            "message": "演示文稿仍在生成中，请稍后重试"
+            "processing": not stopped,
+            "execution_id": "" if stopped else execution_id,
+            "stopped": stopped,
+            "message": "演示文稿生成已停止" if stopped else "演示文稿仍在生成中，请稍后重试"
         })
     except Exception as exc:
         return jsonify({"error": f"查询生成状态失败: {str(exc)}"}), 500
@@ -5912,10 +6145,14 @@ def check_refly_status(filename):
 
 @app.route('/api/reports/<path:filename>/presentation/abort', methods=['POST'])
 def abort_report_presentation(filename):
+    filename = normalize_presentation_report_filename(filename)
+    if not filename:
+        return jsonify({"error": "filename 缺失"}), 400
+
     execution_id = request.args.get("execution_id", "").strip()
     if not execution_id:
         record = get_presentation_record(filename) or {}
-        execution_id = record.get("execution_id", "")
+        execution_id = str(record.get("execution_id") or "").strip()
     if not execution_id:
         mark_presentation_stopped(filename)
         return jsonify({"success": True, "execution_id": ""})
@@ -5924,12 +6161,12 @@ def abort_report_presentation(filename):
         headers = {"Authorization": f"Bearer {REFLY_API_KEY}"}
         response = requests.post(url, headers=headers, timeout=REFLY_TIMEOUT)
         response.raise_for_status()
-        mark_presentation_stopped(filename)
+        mark_presentation_stopped(filename, execution_id=execution_id)
         return jsonify({"success": True, "execution_id": execution_id})
     except requests.RequestException as exc:
         if ENABLE_DEBUG_LOG:
             print(f"⚠️ 演示文稿中止失败: {exc}")
-        mark_presentation_stopped(filename)
+        mark_presentation_stopped(filename, execution_id=execution_id)
         return jsonify({"success": True, "execution_id": execution_id, "warning": "中止请求失败，已本地标记停止"})
 
 
