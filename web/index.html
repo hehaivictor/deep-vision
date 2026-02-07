@@ -1661,7 +1661,7 @@
                                                         </div>
                                                     </template>
                                                     <span class="font-medium" x-text="option"></span>
-                                                    <span x-show="isOptionRecommended(option)"
+                                                    <span x-show="!isAssessmentSession() && isOptionRecommended(option)"
                                                           class="ml-1 tag-pill tag-pill--xs">AI 推荐</span>
                                                 </div>
                                             </div>

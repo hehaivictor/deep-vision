@@ -2062,6 +2062,8 @@ function deepVision() {
         },
 
         normalizeAiRecommendation(result) {
+            if (this.isAssessmentSession()) return null;
+
             const rec = result?.ai_recommendation;
             if (!rec || typeof rec !== 'object') return null;
 
@@ -2124,6 +2126,8 @@ function deepVision() {
         },
 
         getAiRecommendationMatches() {
+            if (this.isAssessmentSession()) return [];
+
             const rec = this.currentQuestion?.aiRecommendation;
             const options = this.currentQuestion?.options || [];
             if (!rec || !Array.isArray(rec.recommendedOptions)) return [];
@@ -2141,10 +2145,13 @@ function deepVision() {
         },
 
         isOptionRecommended(option) {
+            if (this.isAssessmentSession()) return false;
             return this.getAiRecommendationMatches().includes(option);
         },
 
         applyAiRecommendation() {
+            if (this.isAssessmentSession()) return;
+
             const rec = this.currentQuestion?.aiRecommendation;
             if (!rec || !rec.recommendedOptions || rec.recommendedOptions.length === 0) return;
 
