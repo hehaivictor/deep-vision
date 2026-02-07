@@ -1831,7 +1831,9 @@
                                     <template x-if="currentSession.status === 'completed'">
                                         <div class="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
                                             <button @click="viewLatestReportForSession()"
-                                                    class="report-action-primary px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto cursor-pointer">
+                                                    :disabled="isGeneratingCurrentReport()"
+                                                    :class="isGeneratingCurrentReport() ? 'report-action-disabled cursor-not-allowed' : 'report-action-primary cursor-pointer'"
+                                                    class="px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 flex items-center justify-center gap-2 w-full sm:w-auto">
                                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                                 </svg>
@@ -2097,19 +2099,21 @@
                                     <div class="flex flex-col gap-1 w-full sm:w-auto" x-show="isPresentationEnabled()">
                                         <button @click="(generatingSlides || presentationPolling) ? stopPresentationGeneration() : generatePresentation()"
                                                 x-show="!presentationPdfUrl"
-                                                :class="(generatingSlides || presentationPolling) ? 'report-action-generate-running' : 'report-action-generate'"
-                                                class="px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2 w-full sm:w-auto"
+                                                :class="(generatingSlides || presentationPolling) ? 'report-action-generate-progressing cursor-wait' : 'report-action-generate cursor-pointer'"
+                                                class="report-action-progress-shell px-4 py-2 rounded-lg text-sm font-medium transition-colors w-full sm:w-auto relative overflow-hidden"
                                                 :aria-busy="(generatingSlides || presentationPolling) ? 'true' : 'false'">
-                                            <svg x-show="!generatingSlides" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h18v12H3V3zm0 12l4 6h10l4-6M9 9h6M9 12h6"/>
-                                            </svg>
-                                            <svg x-show="generatingSlides || presentationPolling" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
-                                            </svg>
-                                            <span x-text="(generatingSlides || presentationPolling) ? '正在生成演示文稿（点击停止）' : '生成演示文稿'"></span>
+                                            <span x-show="generatingSlides || presentationPolling" class="report-action-progress-fill" :style="getPresentationGenerationButtonProgressStyle()" aria-hidden="true"></span>
+                                            <span class="report-action-progress-content flex items-center justify-center gap-2 leading-5">
+                                                <svg x-show="!generatingSlides && !presentationPolling" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h18v12H3V3zm0 12l4 6h10l4-6M9 9h6M9 12h6"/>
+                                                </svg>
+                                                <svg x-show="generatingSlides || presentationPolling" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                                                </svg>
+                                                <span x-text="getPresentationGenerationButtonText()"></span>
+                                            </span>
                                         </button>
-                                        <span x-show="generatingSlides || presentationPolling" class="text-xs text-muted">预计 8-10 分钟，可随时停止</span>
                                     </div>
                                     <button x-show="isPresentationEnabled() && presentationPdfUrl && !generatingSlides"
                                             @click="openPresentationPdf()"
