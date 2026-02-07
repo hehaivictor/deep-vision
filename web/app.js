@@ -40,6 +40,7 @@ function deepVision() {
         reportGenerationServerMessage: '',
         reportGenerationLastError: '',
         generatingSlides: false,
+        generatingSlidesReportName: '',
         presentationPolling: false,
         presentationPollInterval: null,
         presentationExecutionId: '',
@@ -2969,6 +2970,12 @@ function deepVision() {
                 this.presentationPdfUrl = status?.pdf_url || '';
                 this.presentationLocalUrl = status?.presentation_local_url || '';
                 this.updatePresentationProgressFromResult(status);
+                if (status?.stopped) {
+                    this.stopPresentationPolling();
+                    this.resetPresentationProgressFeedback();
+                    this.presentationState = 'stopped';
+                    return;
+                }
                 if (status?.processing && status?.execution_id) {
                     this.startPresentationPolling(status.execution_id, this.selectedReport);
                 } else if (status?.pdf_url) {
@@ -3213,9 +3220,27 @@ function deepVision() {
             };
         },
 
+        isPresentationRunningForReport(reportName = '') {
+            const normalizedReportName = String(reportName || '').trim();
+            if (!normalizedReportName) {
+                return false;
+            }
+            if (this.generatingSlides && this.generatingSlidesReportName === normalizedReportName) {
+                return true;
+            }
+            if (this.presentationPolling && this.presentationPollingReportName === normalizedReportName) {
+                return true;
+            }
+            return false;
+        },
+
+        isPresentationGeneratingCurrentReport() {
+            return this.isPresentationRunningForReport(this.selectedReport);
+        },
+
         updatePresentationProgressFromResult(result) {
             const estimate = this.estimatePresentationProgressFromRefly(result || {});
-            const isRunning = Boolean(this.generatingSlides || this.presentationPolling);
+            const isRunning = this.isPresentationGeneratingCurrentReport();
             const nextStageIndex = Math.max(0, Math.min((estimate.totalStages || 1) - 1, Number(estimate.stageIndex) || 0));
             const stageChanged = nextStageIndex !== this.presentationStageIndex || estimate.stageStatus !== this.presentationStageStatus;
 
@@ -3268,7 +3293,7 @@ function deepVision() {
         startPresentationProgressSmoothing() {
             this.stopPresentationProgressSmoothing();
             this.presentationSmoothTimer = setInterval(() => {
-                const active = this.generatingSlides || this.presentationPolling;
+                const active = this.isPresentationGeneratingCurrentReport();
                 if (!active) return;
                 if (this.presentationState === 'completed' || this.presentationState === 'failed' || this.presentationState === 'stopped') {
                     return;
@@ -3325,7 +3350,7 @@ function deepVision() {
         },
 
         getPresentationGenerationButtonText() {
-            if (!(this.generatingSlides || this.presentationPolling)) {
+            if (!this.isPresentationGeneratingCurrentReport()) {
                 return '生成演示文稿';
             }
             return `正在生成演示文稿...${this.getPresentationGenerationButtonProgressText()}（点击停止）`;
@@ -3393,6 +3418,25 @@ function deepVision() {
                     ) {
                         return;
                     }
+                    if (result?.mismatch) {
+                        this.stopPresentationPolling();
+                        if (this.selectedReport === currentReportName) {
+                            this.resetPresentationProgressFeedback();
+                            this.showToast('检测到生成任务不属于当前报告，已停止自动轮询', 'warning');
+                        }
+                        return;
+                    }
+                    if (result?.stopped) {
+                        this.stopPresentationPolling();
+                        this.generatingSlides = false;
+                        this.generatingSlidesReportName = '';
+                        if (this.selectedReport === currentReportName) {
+                            this.resetPresentationProgressFeedback();
+                            this.presentationState = 'stopped';
+                            this.showToast('演示文稿生成已停止', 'warning');
+                        }
+                        return;
+                    }
                     this.updatePresentationProgressFromResult(result);
                     if (result?.pdf_url) {
                         this.presentationPdfUrl = result.pdf_url;
@@ -3450,6 +3494,7 @@ function deepVision() {
                 );
                 this.stopPresentationPolling();
                 this.generatingSlides = false;
+                this.generatingSlidesReportName = '';
                 this.presentationExecutionId = '';
                 this.presentationState = 'stopped';
                 this.presentationProgress = 0;
@@ -3573,9 +3618,23 @@ function deepVision() {
         },
 
         async generatePresentation() {
-            if (!this.selectedReport || this.generatingSlides) return;
+            const targetReportName = String(this.selectedReport || '').trim();
+            if (!targetReportName) return;
+            if (this.isPresentationGeneratingCurrentReport()) return;
+            if (this.generatingSlides) {
+                this.showToast('正在提交演示文稿生成任务，请稍候', 'warning');
+                return;
+            }
 
             this.generatingSlides = true;
+            this.generatingSlidesReportName = targetReportName;
+            if (
+                this.presentationPolling
+                && this.presentationPollingReportName
+                && this.presentationPollingReportName !== targetReportName
+            ) {
+                this.stopPresentationPolling();
+            }
             this.presentationPdfUrl = '';
             this.presentationExecutionId = '';
             this.presentationPolling = false;
@@ -3589,30 +3648,49 @@ function deepVision() {
             this.startPresentationProgressSmoothing();
             try {
                 const result = await this.apiCall(
-                    `/reports/${encodeURIComponent(this.selectedReport)}/refly`,
+                    `/reports/${encodeURIComponent(targetReportName)}/refly`,
                     { method: 'POST' }
                 );
-                this.updatePresentationProgressFromResult(result);
+                const requestStillActive = this.generatingSlidesReportName === targetReportName
+                    || this.presentationPollingReportName === targetReportName;
+                if (!requestStillActive) {
+                    return;
+                }
+                if (this.selectedReport === targetReportName) {
+                    this.updatePresentationProgressFromResult(result);
+                }
+                if (result?.stopped) {
+                    this.stopPresentationPolling();
+                    if (this.selectedReport === targetReportName) {
+                        this.resetPresentationProgressFeedback();
+                        this.presentationState = 'stopped';
+                    }
+                    this.showToast('演示文稿生成已停止', 'warning');
+                    return;
+                }
                 if (result?.processing) {
                     this.showToast('演示文稿生成中，将自动刷新', 'warning');
                     if (result?.execution_id) {
-                        this.startPresentationPolling(result.execution_id, this.selectedReport);
+                        this.startPresentationPolling(result.execution_id, targetReportName);
                     }
                     return;
                 }
+
+                this.stopPresentationProgressSmoothing();
                 const downloadPath = result?.download_path || result?.downloaded_path;
                 const hasDownload = Boolean(downloadPath || result?.download_filename);
                 const localUrl = result?.presentation_local_url;
                 const pdfUrl = result?.pdf_url || '';
                 if (pdfUrl) {
-                    this.presentationPdfUrl = pdfUrl;
-                    this.presentationState = 'completed';
-                    this.presentationProgress = 100;
-                    this.presentationRawProgress = 100;
-                    this.stopPresentationProgressSmoothing();
+                    if (this.selectedReport === targetReportName) {
+                        this.presentationPdfUrl = pdfUrl;
+                        this.presentationState = 'completed';
+                        this.presentationProgress = 100;
+                        this.presentationRawProgress = 100;
+                    }
                     this.lastPresentationUrl = pdfUrl;
-                    const localLink = `/api/reports/${encodeURIComponent(this.selectedReport)}/presentation/link`;
-                    const opened = this.openUrl(localLink);
+                    const localLink = `/api/reports/${encodeURIComponent(targetReportName)}/presentation/link`;
+                    const opened = this.selectedReport === targetReportName ? this.openUrl(localLink) : false;
                     const message = opened ? '演示文稿已生成，已在新窗口打开' : '演示文稿已生成，点击打开';
                     this.showToast(message, 'success', {
                         actionLabel: '打开',
@@ -3620,9 +3698,11 @@ function deepVision() {
                         duration: 7000
                     });
                 } else if (localUrl) {
-                    this.presentationLocalUrl = localUrl;
+                    if (this.selectedReport === targetReportName) {
+                        this.presentationLocalUrl = localUrl;
+                    }
                     this.lastPresentationUrl = localUrl;
-                    const opened = this.openUrl(localUrl);
+                    const opened = this.selectedReport === targetReportName ? this.openUrl(localUrl) : false;
                     const baseMessage = hasDownload
                         ? '演示文稿已生成，已保存到下载文件夹'
                         : '演示文稿已生成';
@@ -3638,6 +3718,11 @@ function deepVision() {
                     this.showToast('已提交生成任务，正在生成演示文稿', 'success');
                 }
             } catch (error) {
+                const requestStillActive = this.generatingSlidesReportName === targetReportName
+                    || this.presentationPollingReportName === targetReportName;
+                if (!requestStillActive) {
+                    return;
+                }
                 const rawMessage = error.message || '请求失败';
                 const lower = rawMessage.toLowerCase();
                 let message = `生成演示文稿失败：${rawMessage}`;
@@ -3648,7 +3733,10 @@ function deepVision() {
                 this.stopPresentationProgressSmoothing();
                 this.showToast(message, 'error');
             } finally {
-                this.generatingSlides = false;
+                if (this.generatingSlidesReportName === targetReportName) {
+                    this.generatingSlides = false;
+                    this.generatingSlidesReportName = '';
+                }
             }
         },
 
