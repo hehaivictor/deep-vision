@@ -179,6 +179,7 @@ function deepVision() {
         sessionSearchQuery: '',
         sessionStatusFilter: 'all',
         sessionSortOrder: 'newest',
+        sessionGroupBy: 'none',
         filteredSessions: [],
         currentPage: 1,
         pageSize: 10,
@@ -197,6 +198,7 @@ function deepVision() {
         virtualReportOverscan: 6,
         virtualReportScrollTop: 0,
         virtualReportViewportHeight: 0,
+        reportGridColumns: 1,
         reportItemHeights: {},
         reportItemOffsets: [0],
         reportTotalHeight: 0,
@@ -228,7 +230,7 @@ function deepVision() {
         selectedReportNames: [],
         reportSearchQuery: '',
         reportSortOrder: 'newest',
-        reportGroupByDate: true,
+        reportGroupBy: 'none',
         reportSearchDebounceTimer: null,
         interviewTopicMinHeight: 0,
         lastPresentationUrl: '',
@@ -1211,6 +1213,9 @@ function deepVision() {
             try {
                 this.sessions = await this.apiCall('/sessions');
                 this.filterSessions();  // 加载完成后执行筛选
+                if (Array.isArray(this.reports) && this.reports.length > 0) {
+                    this.filterReports();
+                }
             } catch (error) {
                 this.showToast('加载会话列表失败', 'error');
             } finally {
@@ -1506,6 +1511,85 @@ function deepVision() {
         buildSessionTopicSlug(topic) {
             if (!topic || typeof topic !== 'string') return '';
             return topic.trim().replace(/\s+/g, '-').slice(0, 30);
+        },
+
+        parseValidTimestamp(dateStr) {
+            const timestamp = new Date(dateStr || '').getTime();
+            return Number.isFinite(timestamp) ? timestamp : 0;
+        },
+
+        findMatchedSessionForReport(report) {
+            const reportName = report?.name;
+            if (!reportName || !Array.isArray(this.sessions) || this.sessions.length === 0) {
+                return null;
+            }
+
+            const reportTs = this.parseValidTimestamp(report?.created_at);
+            let matchedSession = null;
+            let bestDiff = Number.POSITIVE_INFINITY;
+            let bestAnchorTs = 0;
+
+            this.sessions.forEach(session => {
+                const topicSlug = this.buildSessionTopicSlug(session?.topic || '');
+                if (!topicSlug || !reportName.endsWith(`-${topicSlug}.md`)) {
+                    return;
+                }
+
+                const sessionAnchorTs = this.parseValidTimestamp(session?.updated_at || session?.created_at);
+                const diff = Math.abs(sessionAnchorTs - reportTs);
+
+                if (!matchedSession || diff < bestDiff || (diff === bestDiff && sessionAnchorTs > bestAnchorTs)) {
+                    matchedSession = session;
+                    bestDiff = diff;
+                    bestAnchorTs = sessionAnchorTs;
+                }
+            });
+
+            return matchedSession;
+        },
+
+        extractReportDisplayTitle(reportName) {
+            if (!reportName || typeof reportName !== 'string') return '';
+
+            let normalized = reportName.trim();
+            normalized = normalized.replace(/\.[^.]+$/, '');
+            normalized = normalized.replace(/^deep-vision-\d{8}-/i, '');
+            normalized = normalized.replace(/^deep-vision-/i, '');
+            normalized = normalized.replace(/[-_]+/g, ' ').trim();
+
+            return normalized || reportName;
+        },
+
+        resolveReportDisplayTitle(report, matchedSession = null) {
+            if (!report) return '未命名报告';
+
+            const explicitTitle = (report.title || report.topic || report.report_title || '').trim();
+            if (explicitTitle) return explicitTitle;
+
+            const linkedSession = matchedSession || this.findMatchedSessionForReport(report);
+            const sessionTopic = (linkedSession?.topic || '').trim();
+            if (sessionTopic) return sessionTopic;
+
+            const fallbackTitle = this.extractReportDisplayTitle(report.name || '');
+            return fallbackTitle || report.name || '未命名报告';
+        },
+
+        resolveReportScenarioName(report, matchedSession = null) {
+            if (!report) return '未分类场景';
+
+            const explicitScenario = (report.scenario_name || report.scenario_label || report.scenario || '').trim();
+            if (explicitScenario) return explicitScenario;
+
+            const linkedSession = matchedSession || this.findMatchedSessionForReport(report);
+            const scenarioName = (linkedSession?.scenario_config?.name || '').trim();
+            if (scenarioName) return scenarioName;
+
+            if (linkedSession?.scenario_id) {
+                const scenario = this.scenarios.find(item => item.id === linkedSession.scenario_id);
+                if (scenario?.name) return scenario.name;
+            }
+
+            return '未分类场景';
         },
 
         estimateLinkedReportCount(sessionIds) {
@@ -3834,34 +3918,15 @@ function deepVision() {
                 result = result.filter(s => this.getEffectiveSessionStatus(s) === this.sessionStatusFilter);
             }
 
-            // 排序
+            // 排序（仅保留时间维度）
             switch (this.sessionSortOrder) {
-                case 'newest':
-                    result.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-                    break;
                 case 'oldest':
                     result.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
                     break;
-                case 'progress':
-                    result.sort((a, b) => this.getSessionTotalProgress(b) - this.getSessionTotalProgress(a));
+                case 'newest':
+                default:
+                    result.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
                     break;
-                case 'scenario': {
-                    result.sort((a, b) => {
-                        const nameA = (a.scenario_config?.name || '').toLowerCase();
-                        const nameB = (b.scenario_config?.name || '').toLowerCase();
-                        if (!nameA && !nameB) {
-                            return 0;
-                        }
-                        if (!nameA) {
-                            return 1;
-                        }
-                        if (!nameB) {
-                            return -1;
-                        }
-                        return nameA.localeCompare(nameB, 'zh-Hans');
-                    });
-                    break;
-                }
             }
 
             this.filteredSessions = result;
@@ -3886,11 +3951,25 @@ function deepVision() {
 
         // 筛选和排序报告
         filterReports() {
-            let result = [...this.reports];
+            let result = Array.isArray(this.reports)
+                ? this.reports.map(report => {
+                    const matchedSession = this.findMatchedSessionForReport(report);
+                    return {
+                        ...report,
+                        display_title: this.resolveReportDisplayTitle(report, matchedSession),
+                        scenario_name: this.resolveReportScenarioName(report, matchedSession)
+                    };
+                })
+                : [];
 
             if (this.reportSearchQuery.trim()) {
                 const query = this.reportSearchQuery.toLowerCase();
-                result = result.filter(r => r.name?.toLowerCase().includes(query));
+                result = result.filter(r => {
+                    const reportName = r.name?.toLowerCase() || '';
+                    const displayTitle = (r.display_title || '').toLowerCase();
+                    const scenarioName = (r.scenario_name || '').toLowerCase();
+                    return reportName.includes(query) || displayTitle.includes(query) || scenarioName.includes(query);
+                });
             }
 
             switch (this.reportSortOrder) {
@@ -3916,7 +3995,7 @@ function deepVision() {
         },
 
         buildReportItems(reports) {
-            if (!this.reportGroupByDate) {
+            if (this.reportGroupBy === 'none') {
                 return reports.map(report => ({
                     type: 'report',
                     key: report.name,
@@ -3924,22 +4003,86 @@ function deepVision() {
                 }));
             }
 
-            const items = [];
-            let lastDateKey = null;
+            const groupsMap = new Map();
+            const isOldest = this.reportSortOrder === 'oldest';
+
             reports.forEach(report => {
-                const dateKey = this.getReportDateKey(report.created_at);
-                if (dateKey !== lastDateKey) {
-                    items.push({
-                        type: 'group',
-                        key: `group-${dateKey}`,
-                        label: this.formatReportDateLabel(dateKey)
-                    });
-                    lastDateKey = dateKey;
+                let key = 'all';
+                let label = '全部报告';
+
+                if (this.reportGroupBy === 'date') {
+                    const dateKey = this.getReportDateKey(report.created_at) || 'unknown-date';
+                    key = `date-${dateKey}`;
+                    label = this.formatReportDateLabel(dateKey);
+                } else if (this.reportGroupBy === 'scenario') {
+                    const scenarioName = (report.scenario_name || '未分类场景').trim();
+                    key = scenarioName && scenarioName !== '未分类场景'
+                        ? `scenario-${scenarioName}`
+                        : 'scenario-uncategorized';
+                    label = scenarioName || '未分类场景';
                 }
+
+                const createdAtTs = this.parseValidTimestamp(report.created_at);
+
+                if (!groupsMap.has(key)) {
+                    groupsMap.set(key, {
+                        key,
+                        label,
+                        reports: [],
+                        latestTs: createdAtTs,
+                        oldestTs: createdAtTs
+                    });
+                }
+
+                const group = groupsMap.get(key);
+                group.reports.push(report);
+                group.latestTs = Math.max(group.latestTs, createdAtTs);
+                group.oldestTs = Math.min(group.oldestTs, createdAtTs);
+            });
+
+            const sortByCreatedAt = (a, b) => {
+                const tsA = this.parseValidTimestamp(a.created_at);
+                const tsB = this.parseValidTimestamp(b.created_at);
+                return isOldest ? tsA - tsB : tsB - tsA;
+            };
+
+            const groups = Array.from(groupsMap.values());
+            groups.forEach(group => {
+                group.reports.sort(sortByCreatedAt);
+            });
+
+            groups.sort((a, b) => {
+                const anchorA = isOldest ? a.oldestTs : a.latestTs;
+                const anchorB = isOldest ? b.oldestTs : b.latestTs;
+                if (anchorA !== anchorB) {
+                    return isOldest ? anchorA - anchorB : anchorB - anchorA;
+                }
+                return a.label.localeCompare(b.label, 'zh-Hans');
+            });
+
+            if (this.reportGroupBy === 'scenario') {
+                const uncategorizedIndex = groups.findIndex(group => group.key === 'scenario-uncategorized');
+                if (uncategorizedIndex >= 0) {
+                    const [uncategorized] = groups.splice(uncategorizedIndex, 1);
+                    groups.push(uncategorized);
+                }
+            }
+
+            const items = [];
+            groups.forEach(group => {
                 items.push({
-                    type: 'report',
-                    key: report.name,
-                    report
+                    type: 'group',
+                    key: `group-${group.key}`,
+                    label: group.label,
+                    count: group.reports.length
+                });
+
+                group.reports.forEach(report => {
+                    items.push({
+                        type: 'report',
+                        key: report.name,
+                        report
+                    });
                 });
             });
 
@@ -4074,15 +4217,156 @@ function deepVision() {
         },
 
         get sessionsToRender() {
-            return this.useVirtualList ? this.virtualVisibleSessions : this.paginatedSessions;
+            return this.useVirtualList && this.sessionGroupBy === 'none'
+                ? this.virtualVisibleSessions
+                : this.paginatedSessions;
+        },
+
+        get groupedSessions() {
+            if (this.sessionGroupBy === 'none') {
+                return [];
+            }
+
+            const groupsMap = new Map();
+            const isOldest = this.sessionSortOrder === 'oldest';
+
+            this.filteredSessions.forEach(session => {
+                let key = 'none';
+                let label = '全部会话';
+
+                if (this.sessionGroupBy === 'scenario') {
+                    const scenarioName = (session.scenario_config?.name || '').trim();
+                    key = scenarioName ? `scenario-${scenarioName}` : 'scenario-uncategorized';
+                    label = scenarioName || '未分类场景';
+                } else if (this.sessionGroupBy === 'date') {
+                    const dateKey = this.getSessionDateKey(session.created_at) || 'unknown-date';
+                    key = `date-${dateKey}`;
+                    label = this.formatSessionDateGroupLabel(dateKey);
+                } else if (this.sessionGroupBy === 'status') {
+                    const status = this.getEffectiveSessionStatus(session) || 'other';
+                    key = `status-${status}`;
+                    const statusLabelMap = {
+                        in_progress: '进行中',
+                        pending_review: '待确认',
+                        completed: '已完成',
+                        paused: '已暂停'
+                    };
+                    label = statusLabelMap[status] || '其他状态';
+                }
+
+                const createdAtTs = Number.isFinite(new Date(session.created_at).getTime())
+                    ? new Date(session.created_at).getTime()
+                    : 0;
+
+                if (!groupsMap.has(key)) {
+                    groupsMap.set(key, {
+                        key,
+                        label,
+                        sessions: [],
+                        latestTs: createdAtTs,
+                        oldestTs: createdAtTs,
+                        statusCounts: {
+                            in_progress: 0,
+                            pending_review: 0,
+                            completed: 0,
+                            paused: 0,
+                            other: 0
+                        }
+                    });
+                }
+
+                const group = groupsMap.get(key);
+                group.sessions.push(session);
+                group.latestTs = Math.max(group.latestTs, createdAtTs);
+                group.oldestTs = Math.min(group.oldestTs, createdAtTs);
+
+                const status = this.getEffectiveSessionStatus(session);
+                if (status === 'in_progress' || status === 'pending_review' || status === 'completed' || status === 'paused') {
+                    group.statusCounts[status] += 1;
+                } else {
+                    group.statusCounts.other += 1;
+                }
+            });
+
+            const sortByCreatedAt = (a, b) => {
+                const tsA = Number.isFinite(new Date(a.created_at).getTime()) ? new Date(a.created_at).getTime() : 0;
+                const tsB = Number.isFinite(new Date(b.created_at).getTime()) ? new Date(b.created_at).getTime() : 0;
+                return isOldest ? tsA - tsB : tsB - tsA;
+            };
+
+            const grouped = Array.from(groupsMap.values());
+            grouped.forEach(group => {
+                group.sessions.sort(sortByCreatedAt);
+            });
+
+            grouped.sort((a, b) => {
+                if (this.sessionGroupBy === 'status') {
+                    const statusOrder = {
+                        'status-in_progress': 0,
+                        'status-pending_review': 1,
+                        'status-completed': 2,
+                        'status-paused': 3
+                    };
+                    const orderA = statusOrder[a.key] ?? 99;
+                    const orderB = statusOrder[b.key] ?? 99;
+                    if (orderA !== orderB) {
+                        return orderA - orderB;
+                    }
+                    return a.label.localeCompare(b.label, 'zh-Hans');
+                }
+
+                const anchorA = isOldest ? a.oldestTs : a.latestTs;
+                const anchorB = isOldest ? b.oldestTs : b.latestTs;
+                if (anchorA !== anchorB) {
+                    return isOldest ? anchorA - anchorB : anchorB - anchorA;
+                }
+                return a.label.localeCompare(b.label, 'zh-Hans');
+            });
+
+            if (this.sessionGroupBy === 'scenario') {
+                const uncategorizedIndex = grouped.findIndex(group => group.key === 'scenario-uncategorized');
+                if (uncategorizedIndex >= 0) {
+                    const [uncategorized] = grouped.splice(uncategorizedIndex, 1);
+                    grouped.push(uncategorized);
+                }
+            }
+
+            return grouped;
+        },
+
+        get sessionDisplayGroups() {
+            if (this.sessionGroupBy === 'none') {
+                return [{
+                    key: 'group-all',
+                    label: '',
+                    showHeader: false,
+                    sessions: this.sessionsToRender,
+                    statusCounts: {
+                        in_progress: 0,
+                        pending_review: 0,
+                        completed: 0,
+                        paused: 0,
+                        other: 0
+                    }
+                }];
+            }
+
+            return this.groupedSessions.map(group => ({
+                ...group,
+                showHeader: true
+            }));
         },
 
         get paginationStart() {
             if (this.filteredSessions.length === 0) return 0;
+            if (this.sessionGroupBy !== 'none') return 1;
             return (this.currentPage - 1) * this.pageSize + 1;
         },
 
         get paginationEnd() {
+            if (this.sessionGroupBy !== 'none') {
+                return this.filteredSessions.length;
+            }
             return Math.min(this.currentPage * this.pageSize, this.filteredSessions.length);
         },
 
@@ -4100,26 +4384,35 @@ function deepVision() {
         },
 
         get virtualReportPaddingTop() {
-            if (!this.useVirtualReportList) return 0;
+            if (!this.useVirtualReportList || this.isReportTwoColumnLayout) return 0;
             const baseTop = this.reportItemOffsets[this.virtualReportStartRow] || 0;
             const gapAdjust = this.reportItems.length > 0 ? this.virtualReportRowGap : 0;
             return Math.max(0, baseTop - gapAdjust);
         },
 
         get virtualReportPaddingBottom() {
-            if (!this.useVirtualReportList) return 0;
+            if (!this.useVirtualReportList || this.isReportTwoColumnLayout) return 0;
             const endOffset = this.reportItemOffsets[this.virtualReportEndRow] || 0;
             const gapAdjust = this.reportItems.length > 0 ? this.virtualReportRowGap : 0;
             return Math.max(0, this.reportTotalHeight - endOffset - gapAdjust);
         },
 
         get virtualVisibleReports() {
-            if (!this.useVirtualReportList) return [];
+            if (!this.useVirtualReportList || this.isReportTwoColumnLayout) return this.reportItems;
             return this.reportItems.slice(this.virtualReportStartRow, this.virtualReportEndRow);
+        },
+
+        get isReportTwoColumnLayout() {
+            return this.reportGridColumns > 1;
         },
 
         get reportsToRender() {
             return this.useVirtualReportList ? this.virtualVisibleReports : this.reportItems;
+        },
+
+        get reportGroupCount() {
+            if (this.reportGroupBy === 'none') return 0;
+            return this.reportItems.filter(item => item.type === 'group').length;
         },
 
         get visiblePages() {
@@ -4183,6 +4476,7 @@ function deepVision() {
 
         updateVirtualReportLayout() {
             if (!this.useVirtualReportList) return;
+            this.reportGridColumns = window.matchMedia('(min-width: 768px)').matches ? 2 : 1;
             this.virtualReportViewportHeight = window.innerHeight || 0;
             this.onReportListScroll();
         },
@@ -4195,6 +4489,7 @@ function deepVision() {
 
         resetVirtualReportScroll() {
             if (!this.useVirtualReportList) return;
+            this.reportGridColumns = window.matchMedia('(min-width: 768px)').matches ? 2 : 1;
             this.virtualReportViewportHeight = window.innerHeight || 0;
             this.onReportListScroll();
         },
@@ -4853,9 +5148,37 @@ function deepVision() {
             });
         },
 
+        getSessionDateKey(dateStr) {
+            if (!dateStr) return '';
+            const date = new Date(dateStr);
+            if (!Number.isFinite(date.getTime())) return '';
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        },
+
+        formatSessionDateGroupLabel(dateKey) {
+            if (!dateKey || dateKey === 'unknown-date') return '未标注日期';
+
+            const todayKey = this.getSessionDateKey(new Date().toISOString());
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+            const yesterdayKey = this.getSessionDateKey(yesterday.toISOString());
+
+            if (dateKey === todayKey) return '今天';
+            if (dateKey === yesterdayKey) return '昨天';
+
+            const date = new Date(`${dateKey}T00:00:00`);
+            if (!Number.isFinite(date.getTime())) return dateKey;
+            const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+            return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${weekdays[date.getDay()]}`;
+        },
+
         getReportDateKey(dateStr) {
             if (!dateStr) return '';
             const date = new Date(dateStr);
+            if (!Number.isFinite(date.getTime())) return '';
             const year = date.getFullYear();
             const month = String(date.getMonth() + 1).padStart(2, '0');
             const day = String(date.getDate()).padStart(2, '0');
@@ -4863,7 +5186,7 @@ function deepVision() {
         },
 
         formatReportDateLabel(dateKey) {
-            if (!dateKey) return '';
+            if (!dateKey || dateKey === 'unknown-date') return '未标注日期';
             const parts = dateKey.split('-');
             if (parts.length !== 3) return dateKey;
             const year = Number(parts[0]);
