@@ -25,6 +25,7 @@ function deepVision() {
         reportGenerationState: 'idle',
         reportGenerationAction: 'generate',
         reportGenerationSessionId: '',
+        reportGenerationRequestStartedAt: 0,
         reportGenerationStatusUpdatedAt: 0,
         reportGenerationTransitionTimer: null,
         reportGenerationResetTimer: null,
@@ -42,6 +43,15 @@ function deepVision() {
         presentationPolling: false,
         presentationPollInterval: null,
         presentationExecutionId: '',
+        presentationPollingReportName: '',
+        presentationProgress: 0,
+        presentationRawProgress: 0,
+        presentationStageIndex: 0,
+        presentationTotalStages: 4,
+        presentationStageStatus: 'pending',
+        presentationState: 'idle',
+        presentationPhaseStartedAt: 0,
+        presentationSmoothTimer: null,
         webSearching: false,  // Web Search API 调用状态
         webSearchPollInterval: null,  // Web Search 状态轮询定时器
         quoteRotationInterval: null,  // 诗句轮播定时器
@@ -2617,6 +2627,7 @@ function deepVision() {
             this.clearReportGenerationResetTimer();
             this.reportGenerationAction = action === 'regenerate' ? 'regenerate' : 'generate';
             this.reportGenerationSessionId = this.currentSession?.session_id || '';
+            this.reportGenerationRequestStartedAt = Date.now();
             this.reportGenerationState = 'submitting';
             this.reportGenerationStatusUpdatedAt = Date.now();
             this.reportGenerationPhaseStartedAt = Date.now();
@@ -2680,6 +2691,7 @@ function deepVision() {
             this.reportGenerationState = 'idle';
             this.reportGenerationAction = 'generate';
             this.reportGenerationSessionId = '';
+            this.reportGenerationRequestStartedAt = 0;
             this.reportGenerationStatusUpdatedAt = 0;
             this.reportGenerationProgress = 0;
             this.reportGenerationRawProgress = 0;
@@ -2714,6 +2726,12 @@ function deepVision() {
                     }
 
                     const state = data.state || this.reportGenerationServerState;
+                    const statusUpdatedAt = this.parseValidTimestamp(data.updated_at);
+                    const requestStartedAt = this.reportGenerationRequestStartedAt || 0;
+                    if (statusUpdatedAt && requestStartedAt && statusUpdatedAt + 500 < requestStartedAt) {
+                        return;
+                    }
+
                     if (state !== this.reportGenerationServerState) {
                         this.reportGenerationPhaseStartedAt = Date.now();
                     }
@@ -2733,7 +2751,7 @@ function deepVision() {
                     this.reportGenerationTotalStages = Number.isFinite(Number(data.total_stages))
                         ? Number(data.total_stages)
                         : this.reportGenerationTotalStages;
-                    this.reportGenerationStatusUpdatedAt = this.parseValidTimestamp(data.updated_at) || Date.now();
+                    this.reportGenerationStatusUpdatedAt = statusUpdatedAt || Date.now();
                     if (data.message) {
                         this.reportGenerationLastError = '';
                         this.reportGenerationServerMessage = data.message;
@@ -2857,14 +2875,16 @@ function deepVision() {
             this.generatingReport = true;
             this.generatingReportSessionId = this.currentSession?.session_id || '';
             this.startReportGenerationFeedback(action);
-            this.startReportGenerationPolling(this.generatingReportSessionId);
-            this.startWebSearchPolling();  // 开始轮询 Web Search 状态
 
             try {
-                const result = await this.apiCall(
+                const requestPromise = this.apiCall(
                     `/sessions/${this.currentSession.session_id}/generate-report`,
                     { method: 'POST' }
                 );
+                this.startReportGenerationPolling(this.generatingReportSessionId);
+                this.startWebSearchPolling();  // 开始轮询 Web Search 状态
+
+                const result = await requestPromise;
 
                 if (result.success) {
                     const aiMsg = result.ai_generated ? '（AI 生成）' : '（模板生成）';
@@ -2939,6 +2959,7 @@ function deepVision() {
             if (!this.selectedReport) {
                 this.presentationPdfUrl = '';
                 this.presentationLocalUrl = '';
+                this.resetPresentationProgressFeedback();
                 return;
             }
             try {
@@ -2947,13 +2968,367 @@ function deepVision() {
                 );
                 this.presentationPdfUrl = status?.pdf_url || '';
                 this.presentationLocalUrl = status?.presentation_local_url || '';
+                this.updatePresentationProgressFromResult(status);
                 if (status?.processing && status?.execution_id) {
-                    this.startPresentationPolling(status.execution_id);
+                    this.startPresentationPolling(status.execution_id, this.selectedReport);
+                } else if (status?.pdf_url) {
+                    this.presentationProgress = 100;
+                    this.presentationRawProgress = 100;
+                    this.presentationState = 'completed';
+                    this.stopPresentationProgressSmoothing();
+                } else {
+                    this.resetPresentationProgressFeedback();
                 }
             } catch (error) {
                 this.presentationPdfUrl = '';
                 this.presentationLocalUrl = '';
+                this.resetPresentationProgressFeedback();
             }
+        },
+
+        getPresentationStageProfiles() {
+            return [
+                {
+                    title: '解析 Markdown 并规划内容结构',
+                    expectedMs: 120000,
+                    weight: 18,
+                    keywords: ['markdown', '解析', '规划', '结构', 'outline']
+                },
+                {
+                    title: '生成 4K 演示文稿图像',
+                    expectedMs: 300000,
+                    weight: 34,
+                    keywords: ['4k', '演示', '文稿', '图像', 'slide', 'presentation']
+                },
+                {
+                    title: '生成 4K 信息图',
+                    expectedMs: 260000,
+                    weight: 33,
+                    keywords: ['4k', '信息图', 'infographic', '图表']
+                },
+                {
+                    title: '整合为 PDF 并生成下载链接',
+                    expectedMs: 90000,
+                    weight: 15,
+                    keywords: ['pdf', '下载', '链接', '整合', 'export']
+                }
+            ];
+        },
+
+        normalizeReflyStageStatus(rawStatus) {
+            const text = String(rawStatus || '').trim().toLowerCase();
+            if (!text) return 'pending';
+            if (['finish', 'finished', 'completed', 'success', 'succeeded', 'done'].some(key => text.includes(key))) {
+                return 'finished';
+            }
+            if (['fail', 'failed', 'error', 'cancelled', 'canceled', 'aborted', 'stopped'].some(key => text.includes(key))) {
+                return 'failed';
+            }
+            if (['executing', 'running', 'processing', 'in_progress', 'working'].some(key => text.includes(key))) {
+                return 'running';
+            }
+            return 'pending';
+        },
+
+        matchPresentationStageIndex(title, fallbackIndex = -1) {
+            const profiles = this.getPresentationStageProfiles();
+            const normalizedTitle = String(title || '').trim().toLowerCase();
+            let bestIndex = -1;
+            let bestScore = 0;
+
+            profiles.forEach((profile, index) => {
+                const score = (profile.keywords || []).reduce((sum, keyword) => {
+                    const token = String(keyword || '').trim().toLowerCase();
+                    return token && normalizedTitle.includes(token) ? sum + 1 : sum;
+                }, 0);
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestIndex = index;
+                }
+            });
+
+            if (bestIndex >= 0) return bestIndex;
+            if (fallbackIndex >= 0 && fallbackIndex < profiles.length) return fallbackIndex;
+            return -1;
+        },
+
+        getPresentationNodeElapsedMs(startTime, endTime) {
+            const startTs = this.parseValidTimestamp(startTime);
+            if (!startTs) return 0;
+            const endTs = this.parseValidTimestamp(endTime);
+            const anchor = endTs || Date.now();
+            return Math.max(0, anchor - startTs);
+        },
+
+        getPresentationStageBaseProgress(stageIndex = 0) {
+            const profiles = this.getPresentationStageProfiles();
+            const index = Math.max(0, Math.min(profiles.length, Number(stageIndex) || 0));
+            let base = 0;
+            for (let i = 0; i < index; i += 1) {
+                base += profiles[i]?.weight || 0;
+            }
+            return base;
+        },
+
+        getPresentationStageWeight(stageIndex = 0) {
+            const profiles = this.getPresentationStageProfiles();
+            const profile = profiles[Math.max(0, Math.min(profiles.length - 1, Number(stageIndex) || 0))];
+            return profile?.weight || 0;
+        },
+
+        getPresentationStageExpectedDuration(stageIndex = 0) {
+            const profiles = this.getPresentationStageProfiles();
+            const profile = profiles[Math.max(0, Math.min(profiles.length - 1, Number(stageIndex) || 0))];
+            return profile?.expectedMs || 120000;
+        },
+
+        estimatePresentationProgressFromRefly(result) {
+            const profiles = this.getPresentationStageProfiles();
+            const totalStages = profiles.length;
+            if (totalStages === 0) {
+                return {
+                    progress: result?.pdf_url ? 100 : 0,
+                    stageIndex: 0,
+                    totalStages: 0,
+                    stageStatus: result?.pdf_url ? 'finished' : 'pending',
+                    state: result?.pdf_url ? 'completed' : (result?.processing ? 'executing' : 'idle')
+                };
+            }
+
+            if (result?.pdf_url) {
+                return {
+                    progress: 100,
+                    stageIndex: totalStages - 1,
+                    totalStages,
+                    stageStatus: 'finished',
+                    state: 'completed'
+                };
+            }
+
+            const stageData = profiles.map((profile, index) => ({
+                index,
+                title: profile.title,
+                status: 'pending',
+                progress: 0,
+                weight: profile.weight,
+                expectedMs: profile.expectedMs
+            }));
+
+            const outputs = Array.isArray(result?.refly_response?.data?.output)
+                ? result.refly_response.data.output
+                : Array.isArray(result?.refly_response?.output)
+                    ? result.refly_response.output
+                    : [];
+
+            const getPriority = (status) => {
+                if (status === 'finished') return 4;
+                if (status === 'failed') return 3;
+                if (status === 'running') return 2;
+                return 1;
+            };
+
+            outputs.forEach((node, nodeIndex) => {
+                if (!node || typeof node !== 'object') return;
+                const stageIndex = this.matchPresentationStageIndex(node.title || node.name || '', nodeIndex);
+                if (stageIndex < 0 || stageIndex >= totalStages) return;
+
+                const status = this.normalizeReflyStageStatus(node.status);
+                const elapsedMs = this.getPresentationNodeElapsedMs(node.startTime, node.endTime);
+                const expectedMs = stageData[stageIndex].expectedMs || 1;
+                let stageProgress = 0;
+                if (status === 'finished') {
+                    stageProgress = 100;
+                } else if (status === 'running') {
+                    const ratio = elapsedMs > 0 ? elapsedMs / expectedMs : 0;
+                    stageProgress = Math.min(92, Math.max(12, Math.round(ratio * 100)));
+                } else if (status === 'failed') {
+                    const ratio = elapsedMs > 0 ? elapsedMs / expectedMs : 0;
+                    stageProgress = Math.min(96, Math.max(25, Math.round(ratio * 100) || 60));
+                }
+
+                const current = stageData[stageIndex];
+                const shouldReplace = getPriority(status) > getPriority(current.status)
+                    || (status === current.status && stageProgress >= current.progress);
+
+                if (shouldReplace) {
+                    current.status = status;
+                    current.progress = Math.max(0, Math.min(100, stageProgress));
+                    current.title = node.title || current.title;
+                }
+            });
+
+            const totalWeight = stageData.reduce((sum, stage) => sum + (stage.weight || 0), 0) || 100;
+            const weighted = stageData.reduce((sum, stage) => {
+                return sum + ((stage.progress || 0) / 100) * (stage.weight || 0);
+            }, 0);
+
+            let progress = Math.round((weighted / totalWeight) * 100);
+
+            const workflowStatus = String(
+                result?.refly_status?.status
+                || result?.refly_status?.data?.status
+                || ''
+            ).trim().toLowerCase();
+            const workflowState = this.normalizeReflyStageStatus(workflowStatus);
+            const isProcessing = Boolean(result?.processing);
+
+            if (isProcessing && progress < 5) {
+                progress = 5;
+            }
+            if (workflowState === 'finished' && progress < 96) {
+                progress = 96;
+            }
+            if (isProcessing) {
+                progress = Math.min(99, progress);
+            }
+
+            const runningStage = stageData.find(stage => stage.status === 'running');
+            const pendingStage = stageData.find(stage => stage.status === 'pending');
+            const failedStage = stageData.find(stage => stage.status === 'failed');
+            const finishedStages = stageData.filter(stage => stage.status === 'finished');
+
+            let stageIndex = 0;
+            let stageStatus = 'pending';
+            if (failedStage) {
+                stageIndex = failedStage.index;
+                stageStatus = 'failed';
+            } else if (runningStage) {
+                stageIndex = runningStage.index;
+                stageStatus = 'running';
+            } else if (pendingStage) {
+                stageIndex = pendingStage.index;
+                stageStatus = 'pending';
+            } else if (finishedStages.length > 0) {
+                stageIndex = Math.min(totalStages - 1, finishedStages[finishedStages.length - 1].index);
+                stageStatus = 'finished';
+            }
+
+            return {
+                progress: Math.max(0, Math.min(100, progress)),
+                stageIndex,
+                totalStages,
+                stageStatus,
+                state: workflowStatus || (isProcessing ? 'executing' : 'idle')
+            };
+        },
+
+        updatePresentationProgressFromResult(result) {
+            const estimate = this.estimatePresentationProgressFromRefly(result || {});
+            const isRunning = Boolean(this.generatingSlides || this.presentationPolling);
+            const nextStageIndex = Math.max(0, Math.min((estimate.totalStages || 1) - 1, Number(estimate.stageIndex) || 0));
+            const stageChanged = nextStageIndex !== this.presentationStageIndex || estimate.stageStatus !== this.presentationStageStatus;
+
+            this.presentationTotalStages = estimate.totalStages || this.presentationTotalStages || 4;
+            this.presentationStageIndex = nextStageIndex;
+            this.presentationStageStatus = estimate.stageStatus || this.presentationStageStatus || 'pending';
+            this.presentationState = estimate.state || this.presentationState || 'idle';
+
+            if (stageChanged || !this.presentationPhaseStartedAt) {
+                this.presentationPhaseStartedAt = Date.now();
+            }
+
+            if (result?.pdf_url) {
+                this.presentationRawProgress = 100;
+                this.presentationProgress = 100;
+                this.presentationState = 'completed';
+                this.presentationStageStatus = 'finished';
+                this.stopPresentationProgressSmoothing();
+                return;
+            }
+
+            if (!isRunning) {
+                return;
+            }
+
+            if (isRunning) {
+                this.presentationRawProgress = Math.max(
+                    this.presentationRawProgress || 0,
+                    estimate.progress || 0,
+                    5
+                );
+                this.presentationProgress = Math.max(
+                    this.presentationProgress || 0,
+                    this.presentationRawProgress || 0
+                );
+            } else {
+                this.presentationRawProgress = estimate.progress || 0;
+                this.presentationProgress = estimate.progress || 0;
+            }
+
+            if (estimate.progress >= 100) {
+                this.presentationRawProgress = 100;
+                this.presentationProgress = 100;
+                this.presentationState = 'completed';
+                this.presentationStageStatus = 'finished';
+                this.stopPresentationProgressSmoothing();
+            }
+        },
+
+        startPresentationProgressSmoothing() {
+            this.stopPresentationProgressSmoothing();
+            this.presentationSmoothTimer = setInterval(() => {
+                const active = this.generatingSlides || this.presentationPolling;
+                if (!active) return;
+                if (this.presentationState === 'completed' || this.presentationState === 'failed' || this.presentationState === 'stopped') {
+                    return;
+                }
+
+                const now = Date.now();
+                const phaseStart = this.presentationPhaseStartedAt || now;
+                const elapsed = Math.max(0, now - phaseStart);
+                const expected = this.getPresentationStageExpectedDuration(this.presentationStageIndex);
+                const phaseRatio = expected > 0 ? Math.min(1, elapsed / expected) : 1;
+                const base = this.getPresentationStageBaseProgress(this.presentationStageIndex);
+                const weight = this.getPresentationStageWeight(this.presentationStageIndex);
+                const phaseTarget = Math.min(99, base + weight * phaseRatio);
+
+                const current = Math.max(0, Math.min(100, this.presentationProgress || 0));
+                const backend = Math.max(0, Math.min(100, this.presentationRawProgress || 0));
+                const softTarget = Math.max(current, backend, phaseTarget);
+                const cappedTarget = Math.min(99, softTarget);
+
+                if (cappedTarget > current + 0.1) {
+                    const step = Math.min(1.2, (cappedTarget - current) * 0.22 + 0.18);
+                    this.presentationProgress = Math.min(cappedTarget, current + step);
+                } else if (backend > current + 0.1) {
+                    this.presentationProgress = Math.min(backend, current + 1.4);
+                }
+            }, 180);
+        },
+
+        stopPresentationProgressSmoothing() {
+            if (this.presentationSmoothTimer) {
+                clearInterval(this.presentationSmoothTimer);
+                this.presentationSmoothTimer = null;
+            }
+        },
+
+        resetPresentationProgressFeedback() {
+            this.stopPresentationProgressSmoothing();
+            this.presentationProgress = 0;
+            this.presentationRawProgress = 0;
+            this.presentationStageIndex = 0;
+            this.presentationTotalStages = 4;
+            this.presentationStageStatus = 'pending';
+            this.presentationState = 'idle';
+            this.presentationPhaseStartedAt = 0;
+        },
+
+        getPresentationGenerationButtonProgressText() {
+            const progress = Math.max(0, Math.min(100, Math.round(this.presentationProgress || 0)));
+            return `${progress}%`;
+        },
+
+        getPresentationGenerationButtonProgressStyle() {
+            return `width: ${this.getPresentationGenerationButtonProgressText()};`;
+        },
+
+        getPresentationGenerationButtonText() {
+            if (!(this.generatingSlides || this.presentationPolling)) {
+                return '生成演示文稿';
+            }
+            return `正在生成演示文稿...${this.getPresentationGenerationButtonProgressText()}（点击停止）`;
         },
 
         openPresentationPdf() {
@@ -2972,37 +3347,76 @@ function deepVision() {
             }
         },
 
-        startPresentationPolling(executionId) {
-            if (!executionId || this.presentationPolling) return;
+        startPresentationPolling(executionId, reportName = '') {
+            if (!executionId) return;
+            const targetReportName = (reportName || this.selectedReport || '').trim();
+            if (!targetReportName) return;
+            if (
+                this.presentationPolling
+                && this.presentationExecutionId === executionId
+                && this.presentationPollingReportName === targetReportName
+            ) {
+                return;
+            }
+            this.stopPresentationPolling();
             this.presentationPolling = true;
             this.presentationExecutionId = executionId;
+            this.presentationPollingReportName = targetReportName;
+            this.presentationState = 'executing';
+            this.presentationPhaseStartedAt = this.presentationPhaseStartedAt || Date.now();
+            this.presentationRawProgress = Math.max(this.presentationRawProgress || 0, 5);
+            this.presentationProgress = Math.max(this.presentationProgress || 0, 5);
+            this.startPresentationProgressSmoothing();
             let attempts = 0;
             const maxAttempts = 200; // 约 20 分钟（每 6 秒）
-            this.presentationPollInterval = setInterval(async () => {
+            let timeoutNotified = false;
+            const currentExecutionId = executionId;
+            const currentReportName = targetReportName;
+
+            const pollOnce = async () => {
+                if (
+                    !this.presentationPolling
+                    || this.presentationExecutionId !== currentExecutionId
+                    || this.presentationPollingReportName !== currentReportName
+                ) {
+                    return;
+                }
                 attempts += 1;
                 try {
                     const result = await this.apiCall(
-                        `/reports/${encodeURIComponent(this.selectedReport)}/refly/status?execution_id=${encodeURIComponent(this.presentationExecutionId)}`
+                        `/reports/${encodeURIComponent(currentReportName)}/refly/status?execution_id=${encodeURIComponent(currentExecutionId)}`
                     );
+                    if (
+                        !this.presentationPolling
+                        || this.presentationExecutionId !== currentExecutionId
+                        || this.presentationPollingReportName !== currentReportName
+                    ) {
+                        return;
+                    }
+                    this.updatePresentationProgressFromResult(result);
                     if (result?.pdf_url) {
                         this.presentationPdfUrl = result.pdf_url;
-                        this.presentationPolling = false;
-                        this.presentationExecutionId = '';
-                        clearInterval(this.presentationPollInterval);
-                        this.presentationPollInterval = null;
-                        const localLink = `/api/reports/${encodeURIComponent(this.selectedReport)}/presentation/link`;
+                        this.presentationState = 'completed';
+                        this.presentationRawProgress = 100;
+                        this.presentationProgress = 100;
+                        this.stopPresentationPolling();
+                        const localLink = `/api/reports/${encodeURIComponent(currentReportName)}/presentation/link`;
                         this.showToast('演示文稿已生成，点击查看', 'success', {
                             actionLabel: '查看',
                             actionUrl: localLink,
                             duration: 7000
                         });
-                    } else if (attempts >= maxAttempts) {
+                    } else if (attempts >= maxAttempts && !timeoutNotified) {
+                        timeoutNotified = true;
                         this.showToast('演示文稿仍在生成中，请稍后再试', 'warning');
                     }
                 } catch (error) {
                     // 忽略短暂错误，继续轮询
                 }
-            }, 6000);
+            };
+
+            pollOnce();
+            this.presentationPollInterval = setInterval(pollOnce, 6000);
         },
 
         stopPresentationPolling() {
@@ -3012,10 +3426,18 @@ function deepVision() {
             }
             this.presentationPolling = false;
             this.presentationExecutionId = '';
+            this.presentationPollingReportName = '';
+            this.stopPresentationProgressSmoothing();
+            this.presentationProgress = 0;
+            this.presentationRawProgress = 0;
+            this.presentationStageIndex = 0;
+            this.presentationStageStatus = 'pending';
+            this.presentationPhaseStartedAt = 0;
         },
 
         async stopPresentationGeneration() {
-            if (!this.selectedReport) return;
+            const targetReportName = (this.presentationPollingReportName || this.selectedReport || '').trim();
+            if (!targetReportName) return;
             const confirmed = window.confirm('确定停止本次演示文稿生成？可稍后重新生成');
             if (!confirmed) return;
             try {
@@ -3023,12 +3445,18 @@ function deepVision() {
                     ? `?execution_id=${encodeURIComponent(this.presentationExecutionId)}`
                     : '';
                 await this.apiCall(
-                    `/reports/${encodeURIComponent(this.selectedReport)}/presentation/abort${execParam}`,
+                    `/reports/${encodeURIComponent(targetReportName)}/presentation/abort${execParam}`,
                     { method: 'POST' }
                 );
                 this.stopPresentationPolling();
                 this.generatingSlides = false;
                 this.presentationExecutionId = '';
+                this.presentationState = 'stopped';
+                this.presentationProgress = 0;
+                this.presentationRawProgress = 0;
+                this.presentationStageIndex = 0;
+                this.presentationStageStatus = 'pending';
+                this.presentationPhaseStartedAt = 0;
                 this.showToast('已停止生成', 'success');
             } catch (error) {
                 this.showToast('停止失败，请稍后重试', 'error');
@@ -3149,15 +3577,26 @@ function deepVision() {
 
             this.generatingSlides = true;
             this.presentationPdfUrl = '';
+            this.presentationExecutionId = '';
+            this.presentationPolling = false;
+            this.presentationState = 'submitting';
+            this.presentationStageIndex = 0;
+            this.presentationStageStatus = 'pending';
+            this.presentationTotalStages = this.getPresentationStageProfiles().length || 4;
+            this.presentationPhaseStartedAt = Date.now();
+            this.presentationProgress = 5;
+            this.presentationRawProgress = 5;
+            this.startPresentationProgressSmoothing();
             try {
                 const result = await this.apiCall(
                     `/reports/${encodeURIComponent(this.selectedReport)}/refly`,
                     { method: 'POST' }
                 );
+                this.updatePresentationProgressFromResult(result);
                 if (result?.processing) {
                     this.showToast('演示文稿生成中，将自动刷新', 'warning');
                     if (result?.execution_id) {
-                        this.startPresentationPolling(result.execution_id);
+                        this.startPresentationPolling(result.execution_id, this.selectedReport);
                     }
                     return;
                 }
@@ -3167,6 +3606,10 @@ function deepVision() {
                 const pdfUrl = result?.pdf_url || '';
                 if (pdfUrl) {
                     this.presentationPdfUrl = pdfUrl;
+                    this.presentationState = 'completed';
+                    this.presentationProgress = 100;
+                    this.presentationRawProgress = 100;
+                    this.stopPresentationProgressSmoothing();
                     this.lastPresentationUrl = pdfUrl;
                     const localLink = `/api/reports/${encodeURIComponent(this.selectedReport)}/presentation/link`;
                     const opened = this.openUrl(localLink);
@@ -3201,6 +3644,8 @@ function deepVision() {
                 if (lower.includes('timeout') || lower.includes('timed out') || lower.includes('ssl') || lower.includes('httpsconnectionpool')) {
                     message = '生成演示文稿超时，请稍后重试';
                 }
+                this.presentationState = 'failed';
+                this.stopPresentationProgressSmoothing();
                 this.showToast(message, 'error');
             } finally {
                 this.generatingSlides = false;
@@ -4005,6 +4450,7 @@ function deepVision() {
             this.presentationPdfUrl = '';
             this.presentationLocalUrl = '';
             this.stopPresentationPolling();
+            this.resetPresentationProgressFeedback();
             this.exitSessionBatchMode();
             this.exitReportBatchMode();
             if (view === 'sessions') {
