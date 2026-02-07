@@ -347,7 +347,7 @@ const SITE_CONFIG = {
   // 版本信息从 version.json 动态加载
   version: {
     // 版本号（初始值，会被 version.json 覆盖）
-    current: "1.3.2",
+    current: "1.26.0",
 
     // 版本信息文件路径
     configFile: "version.json",

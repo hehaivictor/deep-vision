@@ -721,245 +721,26 @@
 
                     <!-- 搜索和筛选栏 -->
                     <div class="bg-surface border border-border rounded-xl p-3 md:p-4" x-show="!selectedReport">
-                        <div class="flex flex-col sm:flex-row gap-3">
+                        <div class="flex flex-col gap-3">
                             <!-- 搜索框 -->
                             <div class="relative flex-1">
-                                <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-                                </svg>
-                                <input type="text"
-                                       x-model="sessionSearchQuery"
-                                       @input="onSessionSearchInput()"
-                                       placeholder="搜索访谈主题..."
-                                       class="w-full pl-9 pr-8 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
-                                <button x-show="sessionSearchQuery"
-                                        @click="sessionSearchQuery = ''; filterSessions()"
-                                        class="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 cursor-pointer">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                    <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
                                     </svg>
-                                </button>
+                                    <input type="text"
+                                           x-model="sessionSearchQuery"
+                                           @input="onSessionSearchInput()"
+                                           placeholder="搜索访谈主题..."
+                                           class="w-full pl-9 pr-8 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                    <button x-show="sessionSearchQuery"
+                                            @click="sessionSearchQuery = ''; filterSessions()"
+                                            class="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 cursor-pointer">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                                        </svg>
+                                    </button>
                             </div>
 
-                            <!-- 状态筛选 -->
-                            <div class="flex gap-2">
-                                <button @click="sessionStatusFilter = 'all'; filterSessions()"
-                                        :class="sessionStatusFilter === 'all' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
-                                        class="px-3 py-2 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap">
-                                    全部
-                                </button>
-                                <button @click="sessionStatusFilter = 'in_progress'; filterSessions()"
-                                        :class="sessionStatusFilter === 'in_progress' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
-                                        class="px-3 py-2 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap">
-                                    进行中
-                                </button>
-                                <button @click="sessionStatusFilter = 'pending_review'; filterSessions()"
-                                        :class="getSessionStatusCount('pending_review') > 0
-                                            ? (sessionStatusFilter === 'pending_review'
-                                                ? 'bg-amber-500 text-white'
-                                                : 'bg-amber-100 text-amber-700 border border-amber-200 hover:bg-amber-50')
-                                            : (sessionStatusFilter === 'pending_review'
-                                                ? 'bg-primary text-white'
-                                                : 'bg-gray-100 text-secondary hover:bg-gray-200')"
-                                        class="px-3 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5">
-                                    待确认
-                                    <span x-show="getSessionStatusCount('pending_review') > 0"
-                                          class="inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-[11px] font-semibold bg-white border border-amber-200 text-amber-700 shadow-sm"
-                                          x-text="getSessionStatusCount('pending_review')"></span>
-                                </button>
-                                <button @click="sessionStatusFilter = 'completed'; filterSessions()"
-                                        :class="sessionStatusFilter === 'completed' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
-                                        class="px-3 py-2 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap">
-                                    已完成
-                                </button>
-                            </div>
-
-                            <!-- 排序 -->
-                            <div class="relative shrink-0"
-                                 x-data="{
-                                     open: false,
-                                     highlightedIndex: 0,
-                                     menuStyle: 'right: 0px; left: auto; top: calc(100% + 6px); bottom: auto; max-height: 280px; --sort-menu-origin: top right;',
-                                     options: [
-                                         { value: 'newest', label: '最新优先' },
-                                         { value: 'oldest', label: '最早优先' },
-                                         { value: 'progress', label: '进度排序' },
-                                         { value: 'scenario', label: '场景排序' }
-                                     ],
-                                     getCurrentIndex() {
-                                         const index = this.options.findIndex(option => option.value === sessionSortOrder);
-                                         return index >= 0 ? index : 0;
-                                     },
-                                     openMenu() {
-                                         this.open = true;
-                                         this.highlightedIndex = this.getCurrentIndex();
-                                         this.$nextTick(() => {
-                                             this.updateMenuPlacement();
-                                             this.focusHighlightedOption();
-                                         });
-                                     },
-                                     closeMenu() {
-                                         this.open = false;
-                                     },
-                                     updateMenuPlacement() {
-                                         const triggerElement = this.$refs.trigger;
-                                         const menuElement = this.$refs.menu;
-                                         if (!triggerElement || !menuElement) return;
-
-                                         const viewportPadding = 8;
-                                         const menuGap = 6;
-                                         const triggerRect = triggerElement.getBoundingClientRect();
-                                         const menuRect = menuElement.getBoundingClientRect();
-
-                                         let horizontal = 'right: 0px; left: auto;';
-                                         let vertical = `top: calc(100% + ${menuGap}px); bottom: auto;`;
-                                         let alignLeft = false;
-
-                                         const rightAlignedLeft = triggerRect.right - menuRect.width;
-                                         if (rightAlignedLeft < viewportPadding) {
-                                             const leftAlignedRight = triggerRect.left + menuRect.width;
-                                             if (leftAlignedRight <= window.innerWidth - viewportPadding) {
-                                                 horizontal = 'left: 0px; right: auto;';
-                                                 alignLeft = true;
-                                             } else {
-                                                 const safeLeft = Math.max(
-                                                     viewportPadding,
-                                                     Math.min(triggerRect.left, window.innerWidth - viewportPadding - menuRect.width)
-                                                 );
-                                                 horizontal = `left: ${Math.round(safeLeft - triggerRect.left)}px; right: auto;`;
-                                                 alignLeft = true;
-                                             }
-                                         }
-
-                                         const spaceBelow = window.innerHeight - triggerRect.bottom - viewportPadding - menuGap;
-                                         const spaceAbove = triggerRect.top - viewportPadding - menuGap;
-                                         const shouldOpenUpward = spaceBelow < menuRect.height && spaceAbove > spaceBelow;
-                                         if (shouldOpenUpward) {
-                                             vertical = `bottom: calc(100% + ${menuGap}px); top: auto;`;
-                                         }
-
-                                         const availableHeight = Math.max(120, shouldOpenUpward ? spaceAbove : spaceBelow);
-                                         const maxHeight = Math.min(320, Math.floor(availableHeight));
-                                         const originVertical = shouldOpenUpward ? 'bottom' : 'top';
-                                         const originHorizontal = alignLeft ? 'left' : 'right';
-
-                                         this.menuStyle = `${horizontal} ${vertical} max-height: ${maxHeight}px; --sort-menu-origin: ${originVertical} ${originHorizontal};`;
-                                     },
-                                     focusHighlightedOption() {
-                                         const optionId = `session-sort-option-${this.highlightedIndex}`;
-                                         const optionElement = document.getElementById(optionId);
-                                         if (!optionElement) return;
-                                         optionElement.focus({ preventScroll: true });
-                                         optionElement.scrollIntoView({ block: 'nearest' });
-                                     },
-                                     moveHighlight(step) {
-                                         if (!this.open) {
-                                             this.openMenu();
-                                             return;
-                                         }
-                                         const maxIndex = this.options.length - 1;
-                                         this.highlightedIndex = Math.min(maxIndex, Math.max(0, this.highlightedIndex + step));
-                                         this.$nextTick(() => this.focusHighlightedOption());
-                                     },
-                                     cycleTab(step) {
-                                         if (!this.open) return;
-                                         const maxIndex = this.options.length - 1;
-                                         if (maxIndex < 0) return;
-                                         let nextIndex = this.highlightedIndex + step;
-                                         if (nextIndex > maxIndex) nextIndex = 0;
-                                         if (nextIndex < 0) nextIndex = maxIndex;
-                                         this.highlightedIndex = nextIndex;
-                                         this.$nextTick(() => this.focusHighlightedOption());
-                                     },
-                                     handleTriggerTab(event) {
-                                         if (!this.open) return;
-                                         event.preventDefault();
-                                         this.highlightedIndex = event.shiftKey ? this.options.length - 1 : 0;
-                                         this.$nextTick(() => this.focusHighlightedOption());
-                                     },
-                                     selectValue(value) {
-                                         sessionSortOrder = value;
-                                         filterSessions();
-                                         this.closeMenu();
-                                         this.$nextTick(() => this.$refs.trigger?.focus());
-                                     },
-                                     selectHighlighted() {
-                                         const option = this.options[this.highlightedIndex];
-                                         if (!option) return;
-                                         this.selectValue(option.value);
-                                     }
-                                 }"
-                                 @click.outside="closeMenu()"
-                                 @resize.window="if (open) updateMenuPlacement()"
-                                 @scroll.window.passive="if (open) updateMenuPlacement()"
-                                 @keydown.escape.window="if (open) { closeMenu(); $nextTick(() => $refs.trigger?.focus()); }">
-                                <button type="button"
-                                        x-ref="trigger"
-                                        @click="open ? closeMenu() : openMenu()"
-                                        @keydown.down.prevent="open ? moveHighlight(1) : openMenu()"
-                                        @keydown.up.prevent="open ? moveHighlight(-1) : openMenu()"
-                                        @keydown.enter.prevent="open ? selectHighlighted() : openMenu()"
-                                        @keydown.space.prevent="open ? selectHighlighted() : openMenu()"
-                                        @keydown.tab="handleTriggerTab($event)"
-                                        :aria-expanded="open.toString()"
-                                        aria-haspopup="listbox"
-                                        aria-label="会话排序方式"
-                                        :class="open ? 'sort-dropdown-trigger--open' : ''"
-                                        class="sort-dropdown-trigger px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer bg-white inline-flex items-center justify-between gap-2 min-w-[104px]">
-                                    <span x-text="(options.find(option => option.value === sessionSortOrder) || options[0]).label"></span>
-                                    <svg class="sort-dropdown-chevron w-3.5 h-3.5"
-                                         :class="open ? 'rotate-180' : ''"
-                                         fill="none"
-                                         stroke="currentColor"
-                                         viewBox="0 0 24 24"
-                                         aria-hidden="true">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6 9l6 6 6-6"/>
-                                    </svg>
-                                </button>
-
-                                <div x-show="open"
-                                     x-ref="menu"
-                                     x-cloak
-                                     x-transition.origin.top.right
-                                     @keydown.tab.prevent="cycleTab($event.shiftKey ? -1 : 1)"
-                                     :style="menuStyle"
-                                     class="sort-dropdown-menu absolute z-30 min-w-[132px] rounded-lg border border-gray-200 bg-white shadow-lg p-1.5"
-                                     role="listbox"
-                                     :aria-activedescendant="`session-sort-option-${highlightedIndex}`"
-                                     aria-label="会话排序选项">
-                                    <template x-for="(option, index) in options" :key="option.value">
-                                        <button type="button"
-                                                :id="`session-sort-option-${index}`"
-                                                @click="selectValue(option.value)"
-                                                @mouseenter="highlightedIndex = index"
-                                                @focus="highlightedIndex = index"
-                                                @keydown.down.prevent="moveHighlight(1)"
-                                                @keydown.up.prevent="moveHighlight(-1)"
-                                                @keydown.home.prevent="highlightedIndex = 0; $nextTick(() => focusHighlightedOption())"
-                                                @keydown.end.prevent="highlightedIndex = options.length - 1; $nextTick(() => focusHighlightedOption())"
-                                                @keydown.enter.prevent="selectValue(option.value)"
-                                                @keydown.space.prevent="selectValue(option.value)"
-                                                @keydown.escape.prevent="closeMenu(); $nextTick(() => $refs.trigger?.focus())"
-                                                :aria-selected="(sessionSortOrder === option.value).toString()"
-                                                role="option"
-                                                class="sort-dropdown-option w-full px-2.5 py-1.5 rounded-md text-xs text-left inline-flex items-center justify-between gap-2 cursor-pointer"
-                                                :class="[
-                                                    sessionSortOrder === option.value ? 'sort-dropdown-option--active' : '',
-                                                    highlightedIndex === index ? 'sort-dropdown-option--highlight' : ''
-                                                ]">
-                                            <span x-text="option.label"></span>
-                                            <svg class="sort-dropdown-check w-3.5 h-3.5"
-                                                 :class="sessionSortOrder === option.value ? 'opacity-100 scale-100' : 'opacity-0 scale-90'"
-                                                 fill="none"
-                                                 stroke="currentColor"
-                                                 viewBox="0 0 24 24"
-                                                 aria-hidden="true">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                                            </svg>
-                                        </button>
-                                    </template>
-                                </div>
-                            </div>
                         </div>
                     </div>
 
@@ -978,15 +759,57 @@
                     <template x-if="!loading">
                         <div class="space-y-4">
                             <!-- 结果统计 -->
-                            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm text-muted" x-show="filteredSessions.length > 0 || sessionBatchMode">
-                                <div>
-                                    <template x-if="useVirtualList">
-                                        <span>共 <span x-text="filteredSessions.length"></span> 条</span>
-                                    </template>
-                                    <template x-if="!useVirtualList">
-                                        <span>显示 <span x-text="paginationStart"></span>-<span x-text="paginationEnd"></span> / 共 <span x-text="filteredSessions.length"></span> 条</span>
-                                    </template>
+                            <div class="flex items-center gap-2 text-sm text-muted" x-show="filteredSessions.length > 0 || sessionBatchMode">
+                                <template x-if="useVirtualList && sessionGroupBy === 'none'">
+                                    <span>共 <span x-text="filteredSessions.length"></span> 条</span>
+                                </template>
+                                <template x-if="!useVirtualList || sessionGroupBy !== 'none'">
+                                    <span>显示 <span x-text="paginationStart"></span>-<span x-text="paginationEnd"></span> / 共 <span x-text="filteredSessions.length"></span> 条</span>
+                                </template>
+                                <template x-if="sessionGroupBy !== 'none'">
+                                    <span class="ml-2">· 共 <span x-text="groupedSessions.length"></span> 组</span>
+                                </template>
+                            </div>
+
+                            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"
+                                 x-show="filteredSessions.length > 0 || sessionBatchMode"
+                                 x-cloak>
+                                <div class="flex flex-wrap items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2 py-1.5 w-fit max-w-full">
+                                    <span class="text-xs text-muted px-1">显示方式</span>
+                                    <button @click="sessionGroupBy = 'none'; filterSessions()"
+                                            :class="sessionGroupBy === 'none' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                            class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap">
+                                        不分组
+                                    </button>
+                                    <button @click="sessionGroupBy = 'scenario'; filterSessions()"
+                                            :class="sessionGroupBy === 'scenario' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                            class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap">
+                                        按场景
+                                    </button>
+                                    <button @click="sessionGroupBy = 'date'; filterSessions()"
+                                            :class="sessionGroupBy === 'date' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                            class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap">
+                                        按日期
+                                    </button>
+                                    <button @click="sessionGroupBy = 'status'; filterSessions()"
+                                            :class="sessionGroupBy === 'status' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                            class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap">
+                                        按状态
+                                    </button>
+                                    <span class="w-px h-4 bg-gray-200 mx-0.5"></span>
+                                    <span class="text-xs text-muted px-1">排序</span>
+                                    <button @click="sessionSortOrder = 'newest'; filterSessions()"
+                                            :class="sessionSortOrder === 'newest' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                            class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap">
+                                        最新
+                                    </button>
+                                    <button @click="sessionSortOrder = 'oldest'; filterSessions()"
+                                            :class="sessionSortOrder === 'oldest' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                            class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap">
+                                        最早
+                                    </button>
                                 </div>
+
                                 <div class="flex items-center gap-2 self-end sm:self-auto">
                                     <button x-show="!sessionBatchMode"
                                             @click="enterSessionBatchMode()"
@@ -1020,79 +843,99 @@
                             </div>
 
                             <!-- 会话卡片列表 -->
-                            <div x-ref="sessionListScroller">
-                                <div :style="useVirtualList ? `height: ${virtualPaddingTop}px;` : ''"></div>
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    <template x-for="session in sessionsToRender" :key="session.session_id">
-                                        <div class="group session-card-glow bg-surface border border-border rounded-xl transition-all duration-200 p-4 cursor-pointer h-32 overflow-hidden relative"
-                                             :class="sessionBatchMode && isSessionSelected(session.session_id) ? 'ring-2 ring-primary/50 border-primary/50' : ''"
-                                             @click="sessionBatchMode ? toggleSessionSelection(session.session_id) : openSession(session.session_id)">
-                                        <div x-show="sessionBatchMode" class="absolute top-3 left-3 z-10">
-                                            <input type="checkbox"
-                                                   :checked="isSessionSelected(session.session_id)"
-                                                   @click.stop="toggleSessionSelection(session.session_id)"
-                                                   class="batch-checkbox w-4 h-4 border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
-                                        </div>
-                                        <div class="absolute top-3 right-3 z-10">
-                                            <span class="session-status-badge"
-                                                  :class="[getSessionStatusBadgeClass(getEffectiveSessionStatus(session)), sessionBatchMode ? 'session-status-badge--batch' : '']">
-                                                <span class="session-status-dot"
-                                                      :class="getSessionStatusDotClass(getEffectiveSessionStatus(session))"
-                                                      aria-hidden="true"></span>
-                                                <span x-text="getStatusText(getEffectiveSessionStatus(session))"></span>
-                                            </span>
-                                        </div>
-                                        <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_230px] gap-x-3 gap-y-2 h-full items-center">
-                                            <!-- 左侧：标题 + 摘要 + 元信息 -->
-                                            <div class="min-w-0 flex flex-col justify-start pr-24 sm:pr-0" :class="sessionBatchMode ? 'pl-7' : ''">
-                                                <h3 class="text-lg font-semibold text-primary line-clamp-1 transition-colors duration-200 group-hover:text-primary-hover"
-                                                    :title="session.topic"
-                                                    x-text="session.topic"></h3>
-                                                <span x-show="session.scenario_config?.name"
-                                                      class="mt-2 tag-pill w-fit self-start shrink-0"
-                                                      :title="session.scenario_config?.name || ''"
-                                                      x-text="session.scenario_config?.name || ''"></span>
-                                                <template x-if="session.description">
-                                                    <p class="text-sm text-secondary line-clamp-2 mt-1"
-                                                       :title="session.description"
-                                                       x-text="session.description"></p>
-                                                </template>
-                                            </div>
+                            <div x-ref="sessionListScroller" class="space-y-4">
+                                <div :style="sessionGroupBy === 'none' && useVirtualList ? `height: ${virtualPaddingTop}px;` : ''"></div>
 
-                                            <!-- 右侧：操作 -->
-                                            <div class="flex items-start justify-end w-full pt-7">
-                                                    <button @click.stop="confirmDeleteSession(session.session_id)"
-                                                            x-show="!sessionBatchMode"
-                                                            class="p-1.5 text-gray-400 hover:text-danger hover:bg-red-50 rounded-md transition-colors cursor-pointer sm:opacity-0 sm:pointer-events-none sm:group-hover:opacity-100 sm:group-hover:pointer-events-auto"
-                                                            aria-label="删除会话">
-                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                                                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                                                        </svg>
-                                                    </button>
+                                <template x-for="group in sessionDisplayGroups" :key="group.key">
+                                    <section class="space-y-2">
+                                        <div x-show="group.showHeader" x-cloak class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-1 pt-1">
+                                            <div class="flex items-center gap-2 min-w-0">
+                                                <h3 class="text-sm font-semibold text-primary truncate" x-text="group.label"></h3>
+                                                <span class="text-[11px] text-muted px-1.5 py-0.5 rounded bg-gray-100" x-text="`${group.sessions.length} 条`"></span>
                                             </div>
+                                            <div class="flex items-center gap-3 text-[11px] text-muted">
+                                                <span x-show="group.statusCounts.in_progress > 0">进行中 <span class="font-semibold text-[#1d4ed8]" x-text="group.statusCounts.in_progress"></span></span>
+                                                <span x-show="group.statusCounts.pending_review > 0">待确认 <span class="font-semibold text-[#b45309]" x-text="group.statusCounts.pending_review"></span></span>
+                                                <span x-show="group.statusCounts.completed > 0">已完成 <span class="font-semibold text-[#047857]" x-text="group.statusCounts.completed"></span></span>
+                                                <span x-show="group.statusCounts.paused > 0">已暂停 <span class="font-semibold text-gray-600" x-text="group.statusCounts.paused"></span></span>
+                                                <span x-show="group.statusCounts.other > 0">其他 <span class="font-semibold" x-text="group.statusCounts.other"></span></span>
+                                            </div>
+                                        </div>
 
-                                            <!-- 底部行：元信息 + 进度（同一水平线） -->
-                                            <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_230px] gap-2 sm:col-span-2 mt-1">
-                                                <div class="flex items-center gap-x-2 text-[12px] text-muted min-w-0 whitespace-nowrap overflow-hidden transition-colors duration-200 group-hover:text-secondary">
-                                                    <span class="truncate">创建: <span x-text="formatDate(session.created_at)"></span></span>
-                                                    <span class="hidden sm:inline shrink-0">·</span>
-                                                    <span class="shrink-0">问答: <span x-text="session.interview_count || 0"></span> 条</span>
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            <template x-for="session in group.sessions" :key="`${group.key}-${session.session_id}`">
+                                                <div class="group session-card-glow bg-surface border border-border rounded-xl transition-all duration-200 p-4 cursor-pointer h-32 overflow-hidden relative"
+                                                     :class="sessionBatchMode && isSessionSelected(session.session_id) ? 'ring-2 ring-primary/50 border-primary/50' : ''"
+                                                     @click="sessionBatchMode ? toggleSessionSelection(session.session_id) : openSession(session.session_id)">
+                                                <div x-show="sessionBatchMode" class="absolute top-3 left-3 z-10">
+                                                    <input type="checkbox"
+                                                           :checked="isSessionSelected(session.session_id)"
+                                                           @click.stop="toggleSessionSelection(session.session_id)"
+                                                           class="batch-checkbox w-4 h-4 border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
                                                 </div>
-                                                <div class="grid grid-cols-[32px_minmax(0,1fr)_36px] items-center gap-2 w-full">
-                                                    <span class="text-[12px] text-muted">进度</span>
-                                                    <div class="h-1.5 bg-gray-200/80 rounded-full overflow-hidden">
-                                                        <div class="h-full rounded-full transition-all duration-500"
-                                                             :style="getProgressBarStyle(getSessionTotalProgress(session))"></div>
+                                                <div class="absolute top-3 right-3 z-10">
+                                                    <span class="session-status-badge"
+                                                          :class="[getSessionStatusBadgeClass(getEffectiveSessionStatus(session)), sessionBatchMode ? 'session-status-badge--batch' : '']">
+                                                        <span class="session-status-dot"
+                                                              :class="getSessionStatusDotClass(getEffectiveSessionStatus(session))"
+                                                              aria-hidden="true"></span>
+                                                        <span x-text="getStatusText(getEffectiveSessionStatus(session))"></span>
+                                                    </span>
+                                                </div>
+                                                <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_230px] gap-x-3 gap-y-2 h-full items-center">
+                                                    <!-- 左侧：标题 + 摘要 + 元信息 -->
+                                                    <div class="min-w-0 flex flex-col justify-start pr-24 sm:pr-0" :class="sessionBatchMode ? 'pl-7' : ''">
+                                                        <h3 class="text-lg font-semibold text-primary line-clamp-1 transition-colors duration-200 group-hover:text-primary-hover"
+                                                            :title="session.topic"
+                                                            x-text="session.topic"></h3>
+                                                        <span x-show="session.scenario_config?.name"
+                                                              class="mt-2 tag-pill w-fit self-start shrink-0"
+                                                              :title="session.scenario_config?.name || ''"
+                                                              x-text="session.scenario_config?.name || ''"></span>
+                                                        <template x-if="session.description">
+                                                            <p class="text-sm text-secondary line-clamp-2 mt-1"
+                                                               :title="session.description"
+                                                               x-text="session.description"></p>
+                                                        </template>
                                                     </div>
-                                                    <span class="text-[12px] text-muted text-right" x-text="getSessionTotalProgress(session) + '%'"></span>
+
+                                                    <!-- 右侧：操作 -->
+                                                    <div class="flex items-start justify-end w-full pt-7">
+                                                            <button @click.stop="confirmDeleteSession(session.session_id)"
+                                                                    x-show="!sessionBatchMode"
+                                                                    class="p-1.5 text-gray-400 hover:text-danger hover:bg-red-50 rounded-md transition-colors cursor-pointer sm:opacity-0 sm:pointer-events-none sm:group-hover:opacity-100 sm:group-hover:pointer-events-auto"
+                                                                    aria-label="删除会话">
+                                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                                          d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                                                                </svg>
+                                                            </button>
+                                                    </div>
+
+                                                    <!-- 底部行：元信息 + 进度（同一水平线） -->
+                                                    <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_230px] gap-2 sm:col-span-2 mt-1">
+                                                        <div class="flex items-center gap-x-2 text-[12px] text-muted min-w-0 whitespace-nowrap overflow-hidden transition-colors duration-200 group-hover:text-secondary">
+                                                            <span class="truncate">创建: <span x-text="formatDate(session.created_at)"></span></span>
+                                                            <span class="hidden sm:inline shrink-0">·</span>
+                                                            <span class="shrink-0">问答: <span x-text="session.interview_count || 0"></span> 条</span>
+                                                        </div>
+                                                        <div class="grid grid-cols-[32px_minmax(0,1fr)_36px] items-center gap-2 w-full">
+                                                            <span class="text-[12px] text-muted">进度</span>
+                                                            <div class="h-1.5 bg-gray-200/80 rounded-full overflow-hidden">
+                                                                <div class="h-full rounded-full transition-all duration-500"
+                                                                     :style="getProgressBarStyle(getSessionTotalProgress(session))"></div>
+                                                            </div>
+                                                            <span class="text-[12px] text-muted text-right" x-text="getSessionTotalProgress(session) + '%'"></span>
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             </div>
+                                            </template>
                                         </div>
-                                    </div>
-                                    </template>
-                                </div>
-                                <div :style="useVirtualList ? `height: ${virtualPaddingBottom}px;` : ''"></div>
+                                    </section>
+                                </template>
+
+                                <div :style="sessionGroupBy === 'none' && useVirtualList ? `height: ${virtualPaddingBottom}px;` : ''"></div>
                             </div>
 
                             <!-- 空状态：无搜索结果 -->
@@ -1103,7 +946,7 @@
                                     </svg>
                                     <h3 class="text-lg font-medium text-gray-600 mb-2">未找到匹配的会话</h3>
                                     <p class="text-muted mb-4">尝试调整搜索条件或筛选器</p>
-                                    <button @click="sessionSearchQuery = ''; sessionStatusFilter = 'all'; filterSessions()"
+                                    <button @click="sessionSearchQuery = ''; sessionStatusFilter = 'all'; sessionSortOrder = 'newest'; sessionGroupBy = 'none'; filterSessions()"
                                             class="text-primary hover:text-primary/80 text-sm font-medium cursor-pointer">
                                         清除筛选条件
                                     </button>
@@ -1127,7 +970,7 @@
                             </template>
 
                             <!-- 分页控件 -->
-                            <template x-if="!useVirtualList && totalPages > 1">
+                            <template x-if="sessionGroupBy === 'none' && !useVirtualList && totalPages > 1">
                                 <div class="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
                                     <div class="flex items-center gap-2">
                                         <button @click="goToPage(currentPage - 1)"
@@ -2040,7 +1883,7 @@
 
                     <!-- 搜索和筛选栏 -->
                     <div class="bg-surface border border-border rounded-xl p-3 md:p-4" x-show="!selectedReport">
-                        <div class="flex flex-col sm:flex-row gap-3">
+                        <div class="flex flex-col gap-3">
                             <!-- 搜索框 -->
                             <div class="relative flex-1">
                                 <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2049,7 +1892,7 @@
                                 <input type="text"
                                        x-model="reportSearchQuery"
                                        @input="onReportSearchInput()"
-                                       placeholder="搜索报告名称..."
+                                       placeholder="搜索报告名称或场景..."
                                        class="w-full pl-9 pr-8 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
                                 <button x-show="reportSearchQuery"
                                         @click="reportSearchQuery = ''; filterReports()"
@@ -2060,204 +1903,52 @@
                                 </button>
                             </div>
 
-                            <!-- 排序 -->
-                            <div class="relative shrink-0"
-                                 x-data="{
-                                     open: false,
-                                     highlightedIndex: 0,
-                                     menuStyle: 'right: 0px; left: auto; top: calc(100% + 6px); bottom: auto; max-height: 280px; --sort-menu-origin: top right;',
-                                     options: [
-                                         { value: 'newest', label: '最新优先' },
-                                         { value: 'oldest', label: '最早优先' }
-                                     ],
-                                     getCurrentIndex() {
-                                         const index = this.options.findIndex(option => option.value === reportSortOrder);
-                                         return index >= 0 ? index : 0;
-                                     },
-                                     openMenu() {
-                                         this.open = true;
-                                         this.highlightedIndex = this.getCurrentIndex();
-                                         this.$nextTick(() => {
-                                             this.updateMenuPlacement();
-                                             this.focusHighlightedOption();
-                                         });
-                                     },
-                                     closeMenu() {
-                                         this.open = false;
-                                     },
-                                     updateMenuPlacement() {
-                                         const triggerElement = this.$refs.trigger;
-                                         const menuElement = this.$refs.menu;
-                                         if (!triggerElement || !menuElement) return;
-
-                                         const viewportPadding = 8;
-                                         const menuGap = 6;
-                                         const triggerRect = triggerElement.getBoundingClientRect();
-                                         const menuRect = menuElement.getBoundingClientRect();
-
-                                         let horizontal = 'right: 0px; left: auto;';
-                                         let vertical = `top: calc(100% + ${menuGap}px); bottom: auto;`;
-                                         let alignLeft = false;
-
-                                         const rightAlignedLeft = triggerRect.right - menuRect.width;
-                                         if (rightAlignedLeft < viewportPadding) {
-                                             const leftAlignedRight = triggerRect.left + menuRect.width;
-                                             if (leftAlignedRight <= window.innerWidth - viewportPadding) {
-                                                 horizontal = 'left: 0px; right: auto;';
-                                                 alignLeft = true;
-                                             } else {
-                                                 const safeLeft = Math.max(
-                                                     viewportPadding,
-                                                     Math.min(triggerRect.left, window.innerWidth - viewportPadding - menuRect.width)
-                                                 );
-                                                 horizontal = `left: ${Math.round(safeLeft - triggerRect.left)}px; right: auto;`;
-                                                 alignLeft = true;
-                                             }
-                                         }
-
-                                         const spaceBelow = window.innerHeight - triggerRect.bottom - viewportPadding - menuGap;
-                                         const spaceAbove = triggerRect.top - viewportPadding - menuGap;
-                                         const shouldOpenUpward = spaceBelow < menuRect.height && spaceAbove > spaceBelow;
-                                         if (shouldOpenUpward) {
-                                             vertical = `bottom: calc(100% + ${menuGap}px); top: auto;`;
-                                         }
-
-                                         const availableHeight = Math.max(120, shouldOpenUpward ? spaceAbove : spaceBelow);
-                                         const maxHeight = Math.min(320, Math.floor(availableHeight));
-                                         const originVertical = shouldOpenUpward ? 'bottom' : 'top';
-                                         const originHorizontal = alignLeft ? 'left' : 'right';
-
-                                         this.menuStyle = `${horizontal} ${vertical} max-height: ${maxHeight}px; --sort-menu-origin: ${originVertical} ${originHorizontal};`;
-                                     },
-                                     focusHighlightedOption() {
-                                         const optionId = `report-sort-option-${this.highlightedIndex}`;
-                                         const optionElement = document.getElementById(optionId);
-                                         if (!optionElement) return;
-                                         optionElement.focus({ preventScroll: true });
-                                         optionElement.scrollIntoView({ block: 'nearest' });
-                                     },
-                                     moveHighlight(step) {
-                                         if (!this.open) {
-                                             this.openMenu();
-                                             return;
-                                         }
-                                         const maxIndex = this.options.length - 1;
-                                         this.highlightedIndex = Math.min(maxIndex, Math.max(0, this.highlightedIndex + step));
-                                         this.$nextTick(() => this.focusHighlightedOption());
-                                     },
-                                     cycleTab(step) {
-                                         if (!this.open) return;
-                                         const maxIndex = this.options.length - 1;
-                                         if (maxIndex < 0) return;
-                                         let nextIndex = this.highlightedIndex + step;
-                                         if (nextIndex > maxIndex) nextIndex = 0;
-                                         if (nextIndex < 0) nextIndex = maxIndex;
-                                         this.highlightedIndex = nextIndex;
-                                         this.$nextTick(() => this.focusHighlightedOption());
-                                     },
-                                     handleTriggerTab(event) {
-                                         if (!this.open) return;
-                                         event.preventDefault();
-                                         this.highlightedIndex = event.shiftKey ? this.options.length - 1 : 0;
-                                         this.$nextTick(() => this.focusHighlightedOption());
-                                     },
-                                     selectValue(value) {
-                                         reportSortOrder = value;
-                                         filterReports();
-                                         this.closeMenu();
-                                         this.$nextTick(() => this.$refs.trigger?.focus());
-                                     },
-                                     selectHighlighted() {
-                                         const option = this.options[this.highlightedIndex];
-                                         if (!option) return;
-                                         this.selectValue(option.value);
-                                     }
-                                 }"
-                                 @click.outside="closeMenu()"
-                                 @resize.window="if (open) updateMenuPlacement()"
-                                 @scroll.window.passive="if (open) updateMenuPlacement()"
-                                 @keydown.escape.window="if (open) { closeMenu(); $nextTick(() => $refs.trigger?.focus()); }">
-                                <button type="button"
-                                        x-ref="trigger"
-                                        @click="open ? closeMenu() : openMenu()"
-                                        @keydown.down.prevent="open ? moveHighlight(1) : openMenu()"
-                                        @keydown.up.prevent="open ? moveHighlight(-1) : openMenu()"
-                                        @keydown.enter.prevent="open ? selectHighlighted() : openMenu()"
-                                        @keydown.space.prevent="open ? selectHighlighted() : openMenu()"
-                                        @keydown.tab="handleTriggerTab($event)"
-                                        :aria-expanded="open.toString()"
-                                        aria-haspopup="listbox"
-                                        aria-label="报告排序方式"
-                                        :class="open ? 'sort-dropdown-trigger--open' : ''"
-                                        class="sort-dropdown-trigger px-3 py-2 text-xs border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary cursor-pointer bg-white inline-flex items-center justify-between gap-2 min-w-[104px]">
-                                    <span x-text="(options.find(option => option.value === reportSortOrder) || options[0]).label"></span>
-                                    <svg class="sort-dropdown-chevron w-3.5 h-3.5"
-                                         :class="open ? 'rotate-180' : ''"
-                                         fill="none"
-                                         stroke="currentColor"
-                                         viewBox="0 0 24 24"
-                                         aria-hidden="true">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6 9l6 6 6-6"/>
-                                    </svg>
-                                </button>
-
-                                <div x-show="open"
-                                     x-ref="menu"
-                                     x-cloak
-                                     x-transition.origin.top.right
-                                     @keydown.tab.prevent="cycleTab($event.shiftKey ? -1 : 1)"
-                                     :style="menuStyle"
-                                     class="sort-dropdown-menu absolute z-30 min-w-[132px] rounded-lg border border-gray-200 bg-white shadow-lg p-1.5"
-                                     role="listbox"
-                                     :aria-activedescendant="`report-sort-option-${highlightedIndex}`"
-                                     aria-label="报告排序选项">
-                                    <template x-for="(option, index) in options" :key="option.value">
-                                        <button type="button"
-                                                :id="`report-sort-option-${index}`"
-                                                @click="selectValue(option.value)"
-                                                @mouseenter="highlightedIndex = index"
-                                                @focus="highlightedIndex = index"
-                                                @keydown.down.prevent="moveHighlight(1)"
-                                                @keydown.up.prevent="moveHighlight(-1)"
-                                                @keydown.home.prevent="highlightedIndex = 0; $nextTick(() => focusHighlightedOption())"
-                                                @keydown.end.prevent="highlightedIndex = options.length - 1; $nextTick(() => focusHighlightedOption())"
-                                                @keydown.enter.prevent="selectValue(option.value)"
-                                                @keydown.space.prevent="selectValue(option.value)"
-                                                @keydown.escape.prevent="closeMenu(); $nextTick(() => $refs.trigger?.focus())"
-                                                :aria-selected="(reportSortOrder === option.value).toString()"
-                                                role="option"
-                                                class="sort-dropdown-option w-full px-2.5 py-1.5 rounded-md text-xs text-left inline-flex items-center justify-between gap-2 cursor-pointer"
-                                                :class="[
-                                                    reportSortOrder === option.value ? 'sort-dropdown-option--active' : '',
-                                                    highlightedIndex === index ? 'sort-dropdown-option--highlight' : ''
-                                                ]">
-                                            <span x-text="option.label"></span>
-                                            <svg class="sort-dropdown-check w-3.5 h-3.5"
-                                                 :class="reportSortOrder === option.value ? 'opacity-100 scale-100' : 'opacity-0 scale-90'"
-                                                 fill="none"
-                                                 stroke="currentColor"
-                                                 viewBox="0 0 24 24"
-                                                 aria-hidden="true">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                                            </svg>
-                                        </button>
-                                    </template>
-                                </div>
-                            </div>
-
-                            <!-- 日期分组 -->
-                            <button @click="reportGroupByDate = !reportGroupByDate; filterReports()"
-                                    :class="reportGroupByDate ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
-                                    class="px-3 py-2 text-xs font-medium rounded-lg transition-colors cursor-pointer whitespace-nowrap">
-                                按日期分组
-                            </button>
                         </div>
                     </div>
 
                     <template x-if="!selectedReport">
                         <div class="space-y-4">
-                            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-sm text-muted" x-show="filteredReports.length > 0 || reportBatchMode">
+                            <div class="flex items-center gap-2 text-sm text-muted" x-show="filteredReports.length > 0 || reportBatchMode">
                                 <span>共 <span x-text="filteredReports.length"></span> 条</span>
+                                <template x-if="reportGroupBy !== 'none'">
+                                    <span class="ml-2">· 共 <span x-text="reportGroupCount"></span> 组</span>
+                                </template>
+                            </div>
+
+                            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"
+                                 x-show="filteredReports.length > 0 || reportBatchMode"
+                                 x-cloak>
+                                <div class="flex flex-wrap items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2 py-1.5 w-fit max-w-full">
+                                    <span class="text-xs text-muted px-1">显示方式</span>
+                                    <button @click="reportGroupBy = 'none'; filterReports()"
+                                            :class="reportGroupBy === 'none' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                            class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap">
+                                        不分组
+                                    </button>
+                                    <button @click="reportGroupBy = 'scenario'; filterReports()"
+                                            :class="reportGroupBy === 'scenario' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                            class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap">
+                                        按场景
+                                    </button>
+                                    <button @click="reportGroupBy = 'date'; filterReports()"
+                                            :class="reportGroupBy === 'date' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                            class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap">
+                                        按日期
+                                    </button>
+                                    <span class="w-px h-4 bg-gray-200 mx-0.5"></span>
+                                    <span class="text-xs text-muted px-1">排序</span>
+                                    <button @click="reportSortOrder = 'newest'; filterReports()"
+                                            :class="reportSortOrder === 'newest' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                            class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap">
+                                        最新
+                                    </button>
+                                    <button @click="reportSortOrder = 'oldest'; filterReports()"
+                                            :class="reportSortOrder === 'oldest' ? 'bg-primary text-white' : 'bg-gray-100 text-secondary hover:bg-gray-200'"
+                                            class="px-2.5 py-1 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap">
+                                        最早
+                                    </button>
+                                </div>
+
                                 <div class="flex items-center gap-2 self-end sm:self-auto">
                                     <button x-show="!reportBatchMode"
                                             @click="enterReportBatchMode()"
@@ -2291,19 +1982,21 @@
                             </div>
 
                             <template x-if="filteredReports.length > 0">
-                            <div x-ref="reportListScroller" class="grid gap-4">
+                            <div x-ref="reportListScroller" class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div x-show="!useVirtualReportList || virtualReportPaddingTop > 0"
+                                     class="col-span-1 md:col-span-2"
                                      :style="useVirtualReportList ? `height: ${virtualReportPaddingTop}px;` : ''"></div>
                                 <template x-for="item in reportsToRender" :key="item.key">
                                     <div class="contents">
-                                        <div x-show="item.type === 'group'" x-cloak class="flex items-center py-2 min-h-[40px]" :data-report-key="item.type === 'group' ? item.key : null">
+                                        <div x-show="item.type === 'group'" x-cloak class="col-span-1 md:col-span-2 flex items-center py-2 min-h-[40px]" :data-report-key="item.type === 'group' ? item.key : null">
                                             <div class="flex items-center gap-3 w-full">
                                                 <span class="text-xs font-medium text-muted" x-text="item.label"></span>
+                                                <span class="text-[11px] text-muted px-1.5 py-0.5 rounded bg-gray-100" x-text="`${item.count || 0} 条`"></span>
                                                 <div class="flex-1 h-px bg-gray-200"></div>
                                             </div>
                                         </div>
                                         <template x-if="item.type === 'report'">
-                                            <div x-cloak class="group report-card-glow bg-surface border border-border rounded-xl transition-all duration-200 p-5 min-h-[96px] cursor-pointer"
+                                            <div x-cloak class="group report-card-glow bg-surface border border-border rounded-xl transition-all duration-200 p-5 min-h-[96px] h-full cursor-pointer"
                                                  :class="reportBatchMode && isReportSelected(item.report.name) ? 'ring-2 ring-primary/50 border-primary/50' : ''"
                                                  :data-report-key="item.key"
                                                  @click="reportBatchMode ? toggleReportSelection(item.report.name) : viewReport(item.report.name)">
@@ -2321,9 +2014,10 @@
                                                                   d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
                                                         </svg>
                                                     </div>
-                                                    <div class="min-w-0">
-                                                        <h3 class="font-semibold text-primary whitespace-normal break-words leading-snug transition-colors duration-200 group-hover:text-primary-hover" :title="item.report.name" x-text="item.report.name"></h3>
-                                                        <p class="text-sm text-muted transition-colors duration-200 group-hover:text-secondary" x-text="formatDate(item.report.created_at)"></p>
+                                                    <div class="min-w-0 flex flex-col">
+                                                        <h3 class="font-semibold text-primary whitespace-normal break-words leading-snug transition-colors duration-200 group-hover:text-primary-hover" :title="item.report.display_title || item.report.name" x-text="item.report.display_title || item.report.name"></h3>
+                                                        <span class="mt-2 tag-pill w-fit self-start shrink-0" x-text="item.report.scenario_name || '未分类场景'"></span>
+                                                        <p class="mt-2 text-sm text-muted transition-colors duration-200 group-hover:text-secondary" x-text="formatDate(item.report.created_at)"></p>
                                                     </div>
                                                 </div>
                                                 <div class="flex items-center gap-2 shrink-0" x-show="!reportBatchMode">
@@ -2342,6 +2036,7 @@
                                     </div>
                                 </template>
                                 <div x-show="!useVirtualReportList || virtualReportPaddingBottom > 0"
+                                     class="col-span-1 md:col-span-2"
                                      :style="useVirtualReportList ? `height: ${virtualReportPaddingBottom}px;` : ''"></div>
                             </div>
                             </template>
@@ -2361,7 +2056,7 @@
                                     <div>
                                         <h3 class="text-lg font-medium text-gray-600 mb-2">未找到匹配的报告</h3>
                                         <p class="text-muted mb-4">尝试调整搜索关键词或筛选条件</p>
-                                        <button @click="reportSearchQuery = ''; reportSortOrder = 'newest'; reportGroupByDate = true; filterReports()"
+                                        <button @click="reportSearchQuery = ''; reportSortOrder = 'newest'; reportGroupBy = 'none'; filterReports()"
                                                 class="text-primary hover:text-primary/80 text-sm font-medium cursor-pointer">
                                             清除筛选条件
                                         </button>
