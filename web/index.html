@@ -639,7 +639,7 @@
                              x-transition:leave-start="opacity-100 translate-y-0 scale-100"
                              x-transition:leave-end="opacity-0 -translate-y-1 scale-95"
                              @click.outside="showThemeMenu = false"
-                             class="theme-menu dv-popover-panel absolute right-0 mt-2 w-36 rounded-xl border border-gray-200 bg-white p-1.5 shadow-lg z-50">
+                             class="theme-menu dv-popover-panel absolute right-0 mt-2 w-44 rounded-xl border border-gray-200 bg-white p-1.5 shadow-lg z-50">
                             <button @click="setThemeMode('light')"
                                     :class="getThemeOptionClass('light')"
                                     class="theme-menu-item w-full text-left px-2.5 py-2 text-sm rounded-lg border transition-colors duration-150">
@@ -2501,6 +2501,7 @@
         <!-- ========== 新建会话弹窗 ========== -->
         <div x-show="showNewSessionModal"
              data-dialog-key="showNewSessionModal"
+             x-bind="getDialogAttrs('showNewSessionModal')"
              x-transition:enter="transition ease-out duration-200"
              x-transition:enter-start="opacity-0"
              x-transition:enter-end="opacity-100"
@@ -2510,18 +2511,21 @@
              class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-3 sm:p-4"
              @click.self="attemptCloseNewSessionModal()"
              @keydown.escape.window="attemptCloseNewSessionModal()">
-            <div data-guide="guide-modal" class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
+            <div data-guide="guide-modal"
+                 x-bind="getDialogPanelAttrs('showNewSessionModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95"
                  x-transition:enter-end="opacity-100 scale-100">
                 <div class="flex items-center justify-between mb-4">
-                    <h3 class="text-xl font-semibold text-primary">新建访谈会话</h3>
+                    <h3 id="dv-dialog-new-session-title" class="text-xl font-semibold text-primary">新建访谈会话</h3>
                     <button @click="attemptCloseNewSessionModal()" class="text-gray-500 hover:text-gray-700 cursor-pointer" aria-label="关闭">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                         </svg>
                     </button>
                 </div>
+                <p id="dv-dialog-new-session-desc" class="sr-only">创建新的访谈会话，可填写主题、描述并选择场景。</p>
                 <form @submit.prevent="createNewSession()">
                     <div class="mb-4">
                         <label for="newTopic" class="block text-sm font-medium text-secondary mb-2">访谈主题 <span class="required-asterisk">*</span></label>
@@ -2841,6 +2845,7 @@
         <!-- ========== 自定义场景编辑器弹窗 ========== -->
         <div x-show="showCustomScenarioModal"
              data-dialog-key="showCustomScenarioModal"
+             x-bind="getDialogAttrs('showCustomScenarioModal')"
              x-transition:enter="transition ease-out duration-200"
              x-transition:enter-start="opacity-0"
              x-transition:enter-end="opacity-100"
@@ -2850,12 +2855,13 @@
              class="dv-overlay fixed inset-0 flex items-center justify-center z-[60] p-3 sm:p-4"
              @click.self="showCustomScenarioModal = false"
              @keydown.escape.window="showCustomScenarioModal = false">
-            <div class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-lg p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
+            <div x-bind="getDialogPanelAttrs('showCustomScenarioModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-lg p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95"
                  x-transition:enter-end="opacity-100 scale-100">
                 <div class="flex items-center justify-between mb-4">
-                    <h3 class="text-xl font-semibold text-primary">创建自定义场景</h3>
+                    <h3 id="dv-dialog-custom-scenario-title" class="text-xl font-semibold text-primary">创建自定义场景</h3>
                     <button @click="showCustomScenarioModal = false" class="text-gray-500 hover:text-gray-700 cursor-pointer" aria-label="关闭">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -2864,6 +2870,7 @@
                 </div>
 
                 <!-- 场景基本信息 -->
+                <p id="dv-dialog-custom-scenario-desc" class="sr-only">可自定义场景名称、描述和维度，保存后用于新建会话。</p>
                 <div class="space-y-4">
                     <div>
                         <label class="block text-sm font-medium text-secondary mb-1">场景名称 <span class="required-asterisk">*</span></label>
@@ -2947,6 +2954,7 @@
         <!-- ========== AI 场景生成输入弹窗 ========== -->
         <div x-show="showAiGenerateModal"
              data-dialog-key="showAiGenerateModal"
+             x-bind="getDialogAttrs('showAiGenerateModal')"
              x-transition:enter="transition ease-out duration-200"
              x-transition:enter-start="opacity-0"
              x-transition:enter-end="opacity-100"
@@ -2956,7 +2964,8 @@
              class="dv-overlay fixed inset-0 flex items-center justify-center z-[60] p-3 sm:p-4"
              @click.self="showAiGenerateModal = false"
              @keydown.escape.window="showAiGenerateModal = false">
-            <div class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-md p-4 sm:p-6"
+            <div x-bind="getDialogPanelAttrs('showAiGenerateModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-md p-4 sm:p-6"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95 translate-y-1"
                  x-transition:enter-end="opacity-100 scale-100 translate-y-0"
@@ -2970,7 +2979,7 @@
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
                             </svg>
                         </div>
-                        <h3 class="text-xl font-semibold text-primary">AI 智能创建场景</h3>
+                        <h3 id="dv-dialog-ai-generate-title" class="text-xl font-semibold text-primary">AI 智能创建场景</h3>
                     </div>
                     <button @click="showAiGenerateModal = false" class="text-gray-500 hover:text-gray-700 cursor-pointer" aria-label="关闭">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2979,6 +2988,7 @@
                     </button>
                 </div>
 
+                <p id="dv-dialog-ai-generate-desc" class="sr-only">输入场景需求描述，AI 将生成可编辑的访谈场景结构。</p>
                 <div class="space-y-4">
                     <div>
                         <label class="block text-sm font-medium text-secondary mb-2">描述您想做什么</label>
@@ -3023,6 +3033,7 @@
         <!-- ========== AI 场景预览编辑弹窗 ========== -->
         <div x-show="showAiPreviewModal"
              data-dialog-key="showAiPreviewModal"
+             x-bind="getDialogAttrs('showAiPreviewModal')"
              x-transition:enter="transition ease-out duration-200"
              x-transition:enter-start="opacity-0"
              x-transition:enter-end="opacity-100"
@@ -3032,7 +3043,8 @@
              class="dv-overlay fixed inset-0 flex items-center justify-center z-[60] p-3 sm:p-4"
              @click.self="showAiPreviewModal = false"
              @keydown.escape.window="showAiPreviewModal = false">
-            <div class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
+            <div x-bind="getDialogPanelAttrs('showAiPreviewModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95 translate-y-1"
                  x-transition:enter-end="opacity-100 scale-100 translate-y-0"
@@ -3046,7 +3058,7 @@
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                             </svg>
                         </div>
-                        <h3 class="text-xl font-semibold text-primary">预览生成的场景</h3>
+                        <h3 id="dv-dialog-ai-preview-title" class="text-xl font-semibold text-primary">预览生成的场景</h3>
                     </div>
                     <button @click="showAiPreviewModal = false" class="text-gray-500 hover:text-gray-700 cursor-pointer" aria-label="关闭">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3055,6 +3067,7 @@
                     </button>
                 </div>
 
+                <p id="dv-dialog-ai-preview-desc" class="sr-only">可预览并编辑 AI 生成的场景内容，确认后保存。</p>
                 <!-- AI 设计说明 - 可折叠 -->
                 <template x-if="aiExplanation">
                     <div class="mb-4 rounded-lg border border-blue-100 overflow-hidden">
@@ -3211,6 +3224,7 @@
         <!-- ========== 里程碑弹窗 ========== -->
         <div x-show="showMilestoneModal"
              data-dialog-key="showMilestoneModal"
+             x-bind="getDialogAttrs('showMilestoneModal')"
              x-transition:enter="transition ease-out duration-200"
              x-transition:enter-start="opacity-0"
              x-transition:enter-end="opacity-100"
@@ -3218,7 +3232,8 @@
              x-transition:leave-start="opacity-100"
              x-transition:leave-end="opacity-0"
              class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-4">
-            <div class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-md w-full p-6"
+            <div x-bind="getDialogPanelAttrs('showMilestoneModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-md w-full p-6"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95"
                  x-transition:enter-end="opacity-100 scale-100">
@@ -3231,9 +3246,11 @@
                     </div>
 
                     <!-- 标题 -->
-                    <h3 class="dv-modal-title dv-modal-title--success mb-2">
+                    <h3 id="dv-dialog-milestone-title" class="dv-modal-title dv-modal-title--success mb-2">
                         <span x-text="milestoneData?.dimName || ''"></span> 收集完成
                     </h3>
+
+                    <p id="dv-dialog-milestone-desc" class="sr-only">显示当前维度完成状态和下一步引导。</p>
 
                     <!-- 统计信息 -->
                     <template x-if="milestoneData?.stats">
@@ -3279,6 +3296,7 @@
         <!-- ========== 删除确认弹窗 ========== -->
         <div x-show="showDeleteModal"
              data-dialog-key="showDeleteModal"
+             x-bind="getDialogAttrs('showDeleteModal')"
              x-transition:enter="transition ease-out duration-200"
              x-transition:enter-start="opacity-0"
              x-transition:enter-end="opacity-100"
@@ -3288,7 +3306,8 @@
              class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
              @click.self="showDeleteModal = false"
              @keydown.escape.window="showDeleteModal = false">
-            <div class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6"
+            <div x-bind="getDialogPanelAttrs('showDeleteModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95 translate-y-1"
                  x-transition:enter-end="opacity-100 scale-100 translate-y-0"
@@ -3301,8 +3320,8 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                         </svg>
                     </div>
-                    <h3 class="dv-modal-title dv-modal-title--danger mb-2">确认删除</h3>
-                    <p class="dv-modal-body dv-modal-body--danger mb-6">确定要删除这个会话吗？此操作无法撤销。</p>
+                    <h3 id="dv-dialog-delete-session-title" class="dv-modal-title dv-modal-title--danger mb-2">确认删除</h3>
+                    <p id="dv-dialog-delete-session-desc" class="dv-modal-body dv-modal-body--danger mb-6">确定要删除这个会话吗？此操作无法撤销。</p>
                     <div class="dv-modal-actions">
                         <button @click="showDeleteModal = false"
                                 data-dialog-autofocus
@@ -3321,6 +3340,7 @@
         <!-- ========== 重新开始访谈确认弹窗 ========== -->
         <div x-show="showRestartModal"
              data-dialog-key="showRestartModal"
+             x-bind="getDialogAttrs('showRestartModal')"
              x-transition:enter="transition ease-out duration-200"
              x-transition:enter-start="opacity-0"
              x-transition:enter-end="opacity-100"
@@ -3330,7 +3350,8 @@
              class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
              @click.self="showRestartModal = false"
              @keydown.escape.window="showRestartModal = false">
-            <div class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6"
+            <div x-bind="getDialogPanelAttrs('showRestartModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95 translate-y-1"
                  x-transition:enter-end="opacity-100 scale-100 translate-y-0"
@@ -3343,8 +3364,8 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                         </svg>
                     </div>
-                    <h3 class="dv-modal-title dv-modal-title--warning mb-2">确认重新开始访谈</h3>
-                    <p class="dv-modal-body mb-6">当前访谈内容将被保存为参考资料，并开始新一轮访谈。确定继续吗？</p>
+                    <h3 id="dv-dialog-restart-session-title" class="dv-modal-title dv-modal-title--warning mb-2">确认重新开始访谈</h3>
+                    <p id="dv-dialog-restart-session-desc" class="dv-modal-body mb-6">当前访谈内容将被保存为参考资料，并开始新一轮访谈。确定继续吗？</p>
                     <div class="dv-modal-actions">
                         <button @click="showRestartModal = false"
                                 data-dialog-autofocus
@@ -3363,6 +3384,7 @@
         <!-- ========== 删除文档确认弹窗 ========== -->
         <div x-show="showDeleteDocModal"
              data-dialog-key="showDeleteDocModal"
+             x-bind="getDialogAttrs('showDeleteDocModal')"
              x-transition:enter="transition ease-out duration-200"
              x-transition:enter-start="opacity-0"
              x-transition:enter-end="opacity-100"
@@ -3372,7 +3394,8 @@
              class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
              @click.self="cancelDeleteDoc()"
              @keydown.escape.window="cancelDeleteDoc()">
-            <div class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6"
+            <div x-bind="getDialogPanelAttrs('showDeleteDocModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95 translate-y-1"
                  x-transition:enter-end="opacity-100 scale-100 translate-y-0"
@@ -3385,8 +3408,8 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                         </svg>
                     </div>
-                    <h3 class="dv-modal-title dv-modal-title--danger mb-2">确认删除文档</h3>
-                    <p class="dv-modal-body dv-modal-body--danger mb-2">确定要删除以下文档吗？</p>
+                    <h3 id="dv-dialog-delete-doc-title" class="dv-modal-title dv-modal-title--danger mb-2">确认删除文档</h3>
+                    <p id="dv-dialog-delete-doc-desc" class="dv-modal-body dv-modal-body--danger mb-2">确定要删除以下文档吗？</p>
                     <p class="dv-modal-body font-semibold mb-6" x-text="docToDelete ? docToDelete.name : ''"></p>
                     <div class="dv-modal-actions">
                         <button @click="cancelDeleteDoc()"
@@ -3406,6 +3429,7 @@
         <!-- ========== 删除报告确认弹窗 ========== -->
         <div x-show="showDeleteReportModal"
              data-dialog-key="showDeleteReportModal"
+             x-bind="getDialogAttrs('showDeleteReportModal')"
              x-transition:enter="transition ease-out duration-200"
              x-transition:enter-start="opacity-0"
              x-transition:enter-end="opacity-100"
@@ -3415,7 +3439,8 @@
              class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
              @click.self="showDeleteReportModal = false"
              @keydown.escape.window="showDeleteReportModal = false">
-            <div class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6"
+            <div x-bind="getDialogPanelAttrs('showDeleteReportModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95 translate-y-1"
                  x-transition:enter-end="opacity-100 scale-100 translate-y-0"
@@ -3428,8 +3453,8 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                         </svg>
                     </div>
-                    <h3 class="dv-modal-title dv-modal-title--danger mb-2">确认删除报告</h3>
-                    <p class="dv-modal-body dv-modal-body--danger mb-6">确定要删除这个报告吗？此操作无法撤销。</p>
+                    <h3 id="dv-dialog-delete-report-title" class="dv-modal-title dv-modal-title--danger mb-2">确认删除报告</h3>
+                    <p id="dv-dialog-delete-report-desc" class="dv-modal-body dv-modal-body--danger mb-6">确定要删除这个报告吗？此操作无法撤销。</p>
                     <div class="dv-modal-actions">
                         <button @click="showDeleteReportModal = false"
                                 data-dialog-autofocus
@@ -3448,6 +3473,7 @@
         <!-- ========== 批量删除确认弹窗 ========== -->
         <div x-show="showBatchDeleteModal"
              data-dialog-key="showBatchDeleteModal"
+             x-bind="getDialogAttrs('showBatchDeleteModal')"
              x-transition:enter="transition ease-out duration-200"
              x-transition:enter-start="opacity-0"
              x-transition:enter-end="opacity-100"
@@ -3457,7 +3483,8 @@
              class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
              @click.self="closeBatchDeleteModal()"
              @keydown.escape.window="closeBatchDeleteModal()">
-            <div class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-md w-full p-6"
+            <div x-bind="getDialogPanelAttrs('showBatchDeleteModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-md w-full p-6"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95 translate-y-1"
                  x-transition:enter-end="opacity-100 scale-100 translate-y-0"
@@ -3470,8 +3497,8 @@
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
                         </svg>
                     </div>
-                    <h3 class="dv-modal-title dv-modal-title--danger mb-2">确认批量删除</h3>
-                    <p class="dv-modal-body dv-modal-body--danger mb-2">
+                    <h3 id="dv-dialog-batch-delete-title" class="dv-modal-title dv-modal-title--danger mb-2">确认批量删除</h3>
+                    <p id="dv-dialog-batch-delete-desc" class="dv-modal-body dv-modal-body--danger mb-2">
                         确定要删除这 <span class="font-semibold text-primary" x-text="batchDeleteSummary.items"></span> 条记录吗？
                     </p>
                     <p class="dv-modal-body dv-modal-body--subtle mb-4" x-show="batchDeleteTarget === 'sessions'">
@@ -3516,7 +3543,10 @@
              x-transition:leave="transition ease-in duration-150"
              x-transition:leave-start="opacity-100 translate-y-0"
              x-transition:leave-end="opacity-0 translate-y-2"
-             class="fixed bottom-6 right-6 z-50">
+             :aria-live="toast.ariaLive"
+             :aria-atomic="toast.ariaAtomic"
+             :role="toast.role"
+             class="fixed bottom-6 right-6 z-[var(--dv-z-toast,50)]">
             <div :class="toast.type === 'success' ? 'bg-success' : toast.type === 'error' ? 'bg-danger' : 'bg-cta'"
                  class="text-white px-5 py-3 rounded-lg shadow-sm flex items-center gap-3">
                 <template x-if="toast.type === 'success'">
@@ -3562,6 +3592,7 @@
         <!-- ========== 更新日志弹窗 ========== -->
         <div x-show="showChangelogModal"
              data-dialog-key="showChangelogModal"
+             x-bind="getDialogAttrs('showChangelogModal')"
              x-transition:enter="transition ease-out duration-200"
              x-transition:enter-start="opacity-0"
              x-transition:enter-end="opacity-100"
@@ -3571,7 +3602,8 @@
              class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
              @click.self="showChangelogModal = false"
              @keydown.escape.window="showChangelogModal = false">
-            <div class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[80vh] flex flex-col"
+            <div x-bind="getDialogPanelAttrs('showChangelogModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[80vh] flex flex-col"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95 translate-y-1"
                  x-transition:enter-end="opacity-100 scale-100 translate-y-0"
@@ -3587,7 +3619,7 @@
                             </svg>
                         </div>
                         <div>
-                            <h3 class="text-lg font-semibold text-primary">更新日志</h3>
+                            <h3 id="dv-dialog-changelog-title" class="text-lg font-semibold text-primary">更新日志</h3>
                             <p class="text-xs text-muted">Deep Vision 版本历史</p>
                         </div>
                     </div>
@@ -3598,6 +3630,7 @@
                     </button>
                 </div>
 
+                <p id="dv-dialog-changelog-desc" class="sr-only">查看 Deep Vision 历史版本更新内容。</p>
                 <!-- 更新日志内容 -->
                 <div class="flex-1 overflow-y-auto p-5">
                     <template x-if="changelog && changelog.length > 0">

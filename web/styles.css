@@ -34,6 +34,29 @@
     --dv-duration-progress: 420ms;
     --dv-ease-standard: cubic-bezier(0.2, 0, 0, 1);
     --dv-ease-emphasized: cubic-bezier(0.2, 0.8, 0.2, 1);
+    --dv-color-brand: #357be2;
+    --dv-color-brand-hover: #2563eb;
+    --dv-color-text-primary: #111827;
+    --dv-color-text-secondary: #4b5563;
+    --dv-color-text-muted: #6b7280;
+    --dv-color-surface: #ffffff;
+    --dv-color-surface-secondary: #f8fafc;
+    --dv-color-border: #d1d5db;
+    --dv-color-success: #22c55e;
+    --dv-color-warning: #f59e0b;
+    --dv-color-danger: #ef4444;
+    --dv-color-overlay: rgba(15, 23, 42, 0.5);
+    --dv-radius-sm: 0.5rem;
+    --dv-radius-md: 0.75rem;
+    --dv-radius-lg: 1rem;
+    --dv-radius-xl: 1.25rem;
+    --dv-shadow-card: 0 8px 24px rgba(15, 23, 42, 0.08);
+    --dv-shadow-modal: 0 26px 64px rgba(15, 23, 42, 0.28);
+    --dv-shadow-focus: 0 0 0 3px rgba(53, 123, 226, 0.2);
+    --dv-z-dropdown: 40;
+    --dv-z-modal: 50;
+    --dv-z-toast: 60;
+    --dv-z-guide: 70;
     --dv-focus-border-color: #357be2;
     --dv-focus-ring-color: rgba(53, 123, 226, 0.2);
     --dv-focus-ring-strong: rgba(53, 123, 226, 0.42);
@@ -41,7 +64,7 @@
 }
 
 .dv-overlay {
-    background: rgba(15, 23, 42, 0.5);
+    background: var(--dv-color-overlay);
     backdrop-filter: blur(3px);
     -webkit-backdrop-filter: blur(3px);
     padding-top: max(0.75rem, env(safe-area-inset-top, 0px));
@@ -50,9 +73,8 @@
 
 .dv-modal-panel {
     border: 1px solid rgba(148, 163, 184, 0.28);
-    box-shadow:
-        0 26px 64px rgba(15, 23, 42, 0.28),
-        0 8px 18px rgba(15, 23, 42, 0.14);
+    border-radius: var(--dv-radius-xl);
+    box-shadow: var(--dv-shadow-modal);
 }
 
 .dv-popover-panel {
@@ -111,7 +133,7 @@
 .dv-modal-btn-secondary,
 .dv-modal-btn-primary,
 .dv-modal-btn-danger {
-    border-radius: 0.65rem;
+    border-radius: var(--dv-radius-md);
     border: 1px solid transparent;
     min-height: 2.5rem;
     font-weight: 600;
@@ -130,14 +152,14 @@
 }
 
 .dv-modal-btn-primary {
-    border-color: #357be2;
-    background: #357be2;
+    border-color: var(--dv-color-brand);
+    background: var(--dv-color-brand);
     color: #ffffff;
 }
 
 .dv-modal-btn-primary:hover {
-    border-color: #2563eb;
-    background: #2563eb;
+    border-color: var(--dv-color-brand-hover);
+    background: var(--dv-color-brand-hover);
 }
 
 .dv-modal-btn-danger {
@@ -346,7 +368,7 @@
 }
 
 .btn-sage-blue {
-    box-shadow: 0 1px 2px rgba(53, 123, 226, 0.28);
+    box-shadow: var(--dv-shadow-card);
 }
 
 .btn-sage-blue:hover {
@@ -360,15 +382,15 @@
 }
 
 .report-action-primary {
-    background: #357be2;
+    background: var(--dv-color-brand);
     color: #ffffff;
-    border: 1px solid #357be2;
+    border: 1px solid var(--dv-color-brand);
     box-shadow: 0 1px 2px rgba(53, 123, 226, 0.28);
 }
 
 .report-action-primary:hover {
-    background: #2563eb;
-    border-color: #2563eb;
+    background: var(--dv-color-brand-hover);
+    border-color: var(--dv-color-brand-hover);
     box-shadow: 0 4px 12px rgba(37, 99, 235, 0.26);
 }
 
@@ -397,9 +419,9 @@
 }
 
 .report-action-generate {
-    background: #f59e0b;
+    background: var(--dv-color-warning);
     color: #ffffff;
-    border: 1px solid #f59e0b;
+    border: 1px solid var(--dv-color-warning);
     box-shadow: 0 1px 2px rgba(245, 158, 11, 0.24);
 }
 
@@ -950,6 +972,10 @@ html[data-theme="dark"] body {
     --dv-focus-underlay: rgba(21, 27, 36, 0.96);
     background: #1b1f24;
     color: #e6edf5;
+}
+
+html[data-theme="dark"] .dv-overlay {
+    z-index: var(--dv-z-modal);
 }
 
 html[data-theme="dark"] .dv-overlay {

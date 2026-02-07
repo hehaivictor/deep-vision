@@ -1,0 +1,67 @@
+{
+  "date": "2026-02-07",
+  "base_url": "http://127.0.0.1:8889",
+  "note": "自动化环境为静态服务（无后端 API）。",
+  "results": [
+    {
+      "id": 1,
+      "name": "主题菜单可用性",
+      "status": "通过",
+      "detail": "菜单项=['浅色', '深色', '跟随系统']"
+    },
+    {
+      "id": 2,
+      "name": "科技理性锁定",
+      "status": "通过",
+      "detail": "brand=#357BE2,菜单项=['浅色', '深色', '跟随系统']"
+    },
+    {
+      "id": 3,
+      "name": "主题持久化",
+      "status": "通过",
+      "detail": "切换后=dark,刷新后=dark,storage=dark"
+    },
+    {
+      "id": 4,
+      "name": "头部键盘导航",
+      "status": "通过",
+      "detail": "Enter后可见=True,Esc后可见=False"
+    },
+    {
+      "id": 5,
+      "name": "弹窗语义与初始焦点",
+      "status": "通过",
+      "detail": "role=dialog,modal=true,labelledby=dv-dialog-new-session-title,焦点在内=True"
+    },
+    {
+      "id": 6,
+      "name": "弹窗焦点闭环",
+      "status": "通过",
+      "detail": "Tab闭环=True,Esc后可见=False"
+    },
+    {
+      "id": 7,
+      "name": "Toast 状态反馈",
+      "status": "通过",
+      "detail": "success(status,polite) error(alert,assertive)"
+    },
+    {
+      "id": 8,
+      "name": "核心主链路",
+      "status": "阻塞",
+      "detail": "/api/sessions=404（静态环境）"
+    },
+    {
+      "id": 9,
+      "name": "异常恢复能力（可测项）",
+      "status": "通过",
+      "detail": "错误提示可见"
+    },
+    {
+      "id": 10,
+      "name": "响应式与性能感知（可测项）",
+      "status": "通过",
+      "detail": "横向溢出=False,主题按钮可见=True"
+    }
+  ]
+}

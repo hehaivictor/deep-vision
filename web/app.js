@@ -35,9 +35,14 @@ function deepVision() {
         themeStorageKey: 'deepvision_theme_mode',
         themeMode: 'system',
         effectiveTheme: 'light',
+        visualPreset: (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG?.visualPresets?.default) || 'rational',
         showThemeMenu: false,
         dialogFocusWatchRegistered: false,
         dialogFocusReturnTargets: {},
+        dialogTabTrapRegistered: false,
+        dialogTabTrapListener: null,
+        dialogA11yConfig: (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG?.a11y?.dialogs) ? SITE_CONFIG.a11y.dialogs : {},
+        toastA11yConfig: (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG?.a11y?.toast) ? SITE_CONFIG.a11y.toast : {},
         managedDialogKeys: [
             'showNewSessionModal',
             'showCustomScenarioModal',
@@ -317,7 +322,17 @@ function deepVision() {
         otherSelected: false,  // "其他"选项是否被选中
 
         // Toast 通知
-        toast: { show: false, message: '', type: 'success', actionLabel: '', actionUrl: '' },
+        toast: {
+            show: false,
+            message: '',
+            type: 'success',
+            actionLabel: '',
+            actionUrl: '',
+            role: 'status',
+            ariaLive: 'polite',
+            ariaAtomic: true,
+            announceMode: 'polite'
+        },
         toastTimer: null,
 
         // 里程碑弹窗
@@ -360,6 +375,8 @@ function deepVision() {
                 this.currentQuoteSource = this.quotes[0].source;
             }
 
+            this.visualPreset = this.resolveVisualPreset();
+            this.applyDesignTokens('system', this.resolveEffectiveTheme('system'));
             this.initTheme();
             this.registerDialogFocusWatchers();
             await this.loadVersionInfo();
@@ -383,6 +400,7 @@ function deepVision() {
         registerDialogFocusWatchers() {
             if (this.dialogFocusWatchRegistered || typeof this.$watch !== 'function') return;
             this.dialogFocusWatchRegistered = true;
+            this.registerDialogTabTrap();
 
             this.managedDialogKeys.forEach((key) => {
                 this.$watch(key, (isVisible) => {
@@ -396,6 +414,68 @@ function deepVision() {
             });
         },
 
+        registerDialogTabTrap() {
+            if (this.dialogTabTrapRegistered || typeof document === 'undefined') return;
+            this.dialogTabTrapRegistered = true;
+
+            this.dialogTabTrapListener = (event) => {
+                if (event.key !== 'Tab') return;
+                const key = this.getTopVisibleDialogKey();
+                if (!key) return;
+
+                const dialog = document.querySelector(`[data-dialog-key="${key}"]`);
+                if (!(dialog instanceof HTMLElement)) return;
+                this.trapDialogFocus(event, dialog);
+            };
+
+            document.addEventListener('keydown', this.dialogTabTrapListener, true);
+        },
+
+        getTopVisibleDialogKey() {
+            for (let index = this.managedDialogKeys.length - 1; index >= 0; index -= 1) {
+                const key = this.managedDialogKeys[index];
+                if (this[key]) return key;
+            }
+            return '';
+        },
+
+        trapDialogFocus(event, dialog) {
+            if (!(dialog instanceof HTMLElement)) return;
+
+            const focusableSelector = 'button:not([disabled]):not([tabindex="-1"]), [href], input:not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"]), textarea:not([disabled]):not([tabindex="-1"]), [tabindex]:not([tabindex="-1"])';
+            const focusable = Array.from(dialog.querySelectorAll(focusableSelector)).filter((element) => {
+                if (!(element instanceof HTMLElement)) return false;
+                if (element.hasAttribute('disabled') || element.getAttribute('aria-hidden') === 'true') return false;
+                return element.offsetParent !== null || element === document.activeElement;
+            });
+
+            if (focusable.length === 0) {
+                event.preventDefault();
+                if (typeof dialog.focus === 'function') {
+                    dialog.focus({ preventScroll: true });
+                }
+                return;
+            }
+
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            const active = document.activeElement;
+            const activeInside = active instanceof HTMLElement && dialog.contains(active);
+
+            if (event.shiftKey) {
+                if (active === first || !activeInside) {
+                    event.preventDefault();
+                    last.focus({ preventScroll: true });
+                }
+                return;
+            }
+
+            if (active === last || !activeInside) {
+                event.preventDefault();
+                first.focus({ preventScroll: true });
+            }
+        },
+
         captureDialogFocusTarget(key) {
             const activeElement = document.activeElement;
             if (!(activeElement instanceof HTMLElement)) return;
@@ -403,14 +483,60 @@ function deepVision() {
             this.dialogFocusReturnTargets[key] = activeElement;
         },
 
+        getDialogConfig(key) {
+            if (!key) return {};
+            return this.dialogA11yConfig?.[key] || {};
+        },
+
+        getDialogAttrs(key) {
+            const config = this.getDialogConfig(key);
+            const attrs = {
+                role: 'dialog',
+                'aria-modal': 'true',
+                tabindex: '-1'
+            };
+
+            if (config.dialogId) attrs.id = config.dialogId;
+            if (config.titleId) attrs['aria-labelledby'] = config.titleId;
+            if (config.descId) attrs['aria-describedby'] = config.descId;
+
+            return attrs;
+        },
+
+        getDialogPanelAttrs(key) {
+            const config = this.getDialogConfig(key);
+            const attrs = {};
+
+            if (config.titleId) attrs['aria-labelledby'] = config.titleId;
+            if (config.descId) attrs['aria-describedby'] = config.descId;
+
+            return attrs;
+        },
+
+        resolveDialogInitialFocus(key, dialog) {
+            if (!(dialog instanceof HTMLElement)) return null;
+            const config = this.getDialogConfig(key);
+            if (config.initialFocus) {
+                const preferred = dialog.querySelector(config.initialFocus);
+                if (preferred instanceof HTMLElement && !preferred.hasAttribute('disabled')) {
+                    return preferred;
+                }
+            }
+
+            const fallback = dialog.querySelector('[data-dialog-autofocus]')
+                || dialog.querySelector('input, textarea, button, [href], [tabindex]:not([tabindex="-1"])');
+            if (!(fallback instanceof HTMLElement) || fallback.hasAttribute('disabled')) {
+                return null;
+            }
+            return fallback;
+        },
+
         focusDialogAutofocus(key) {
             const dialog = document.querySelector(`[data-dialog-key="${key}"]`);
             if (!(dialog instanceof HTMLElement)) return;
 
-            const target = dialog.querySelector('[data-dialog-autofocus]')
-                || dialog.querySelector('input, textarea, button, [href], [tabindex]:not([tabindex="-1"])');
+            const target = this.resolveDialogInitialFocus(key, dialog);
             if (!(target instanceof HTMLElement)) return;
-            if (target.hasAttribute('disabled')) return;
             target.focus({ preventScroll: true });
         },
 
@@ -423,9 +549,99 @@ function deepVision() {
             delete this.dialogFocusReturnTargets[key];
 
             if (this.isAnyDialogVisible(key)) return;
-            if (!(target instanceof HTMLElement)) return;
-            if (!target.isConnected || typeof target.focus !== 'function') return;
-            target.focus({ preventScroll: true });
+            if (target instanceof HTMLElement && target.isConnected && typeof target.focus === 'function') {
+                target.focus({ preventScroll: true });
+                return;
+            }
+
+            const returnSelector = this.getDialogConfig(key)?.returnFocus;
+            if (!returnSelector) return;
+
+            const fallbackTarget = document.querySelector(returnSelector);
+            if (!(fallbackTarget instanceof HTMLElement)) return;
+            if (typeof fallbackTarget.focus !== 'function') return;
+            fallbackTarget.focus({ preventScroll: true });
+        },
+
+        applyDesignTokens(mode = 'system', effectiveTheme = this.effectiveTheme || 'light') {
+            if (typeof document === 'undefined') return;
+
+            const tokens = (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG?.designTokens)
+                ? SITE_CONFIG.designTokens
+                : null;
+            const visualPresetConfig = (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG?.visualPresets?.options)
+                ? SITE_CONFIG.visualPresets.options
+                : null;
+            const motion = (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG?.motion)
+                ? SITE_CONFIG.motion
+                : null;
+            const a11y = (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG?.a11y)
+                ? SITE_CONFIG.a11y
+                : null;
+
+            const root = document.documentElement;
+            const palette = effectiveTheme === 'dark' ? tokens?.dark?.colors : tokens?.light?.colors;
+            const preset = visualPresetConfig?.[this.visualPreset] || null;
+            const presetByTheme = effectiveTheme === 'dark' ? preset?.dark : preset?.light;
+            const presetColors = presetByTheme?.colors || {};
+            const presetShadow = presetByTheme?.shadow || {};
+            const presetRadius = preset?.radius || {};
+            const presetMotion = preset?.motion || {};
+
+            const tokenMap = {
+                '--dv-color-brand': presetColors.brand ?? palette?.brand,
+                '--dv-color-brand-hover': presetColors.brandHover ?? palette?.brandHover,
+                '--dv-color-text-primary': palette?.textPrimary,
+                '--dv-color-text-secondary': palette?.textSecondary,
+                '--dv-color-text-muted': palette?.textMuted,
+                '--dv-color-surface': palette?.surface,
+                '--dv-color-surface-secondary': palette?.surfaceSecondary,
+                '--dv-color-border': palette?.border,
+                '--dv-color-success': palette?.success,
+                '--dv-color-warning': palette?.warning,
+                '--dv-color-danger': palette?.danger,
+                '--dv-color-overlay': presetColors.overlay ?? palette?.overlay,
+                '--dv-radius-sm': tokens?.radius?.sm,
+                '--dv-radius-md': presetRadius.md ?? tokens?.radius?.md,
+                '--dv-radius-lg': presetRadius.lg ?? tokens?.radius?.lg,
+                '--dv-radius-xl': presetRadius.xl ?? tokens?.radius?.xl,
+                '--dv-shadow-card': presetShadow.card ?? tokens?.shadow?.card,
+                '--dv-shadow-modal': presetShadow.modal ?? tokens?.shadow?.modal,
+                '--dv-shadow-focus': tokens?.shadow?.focus,
+                '--dv-z-dropdown': Number.isFinite(tokens?.zIndex?.dropdown) ? String(tokens.zIndex.dropdown) : null,
+                '--dv-z-modal': Number.isFinite(tokens?.zIndex?.modal) ? String(tokens.zIndex.modal) : null,
+                '--dv-z-toast': Number.isFinite(tokens?.zIndex?.toast) ? String(tokens.zIndex.toast) : null,
+                '--dv-z-guide': Number.isFinite(tokens?.zIndex?.guide) ? String(tokens.zIndex.guide) : null,
+                '--dv-duration-fast': Number.isFinite(motion?.durations?.fast) ? `${motion.durations.fast}ms` : null,
+                '--dv-duration-base': Number.isFinite(presetMotion?.durations?.base)
+                    ? `${presetMotion.durations.base}ms`
+                    : (Number.isFinite(motion?.durations?.base) ? `${motion.durations.base}ms` : null),
+                '--dv-duration-slow': Number.isFinite(presetMotion?.durations?.slow)
+                    ? `${presetMotion.durations.slow}ms`
+                    : (Number.isFinite(motion?.durations?.slow) ? `${motion.durations.slow}ms` : null),
+                '--dv-duration-progress': Number.isFinite(motion?.durations?.progress) ? `${motion.durations.progress}ms` : null,
+                '--dv-ease-standard': motion?.easing?.standard,
+                '--dv-ease-emphasized': presetMotion?.easing?.emphasized ?? motion?.easing?.emphasized
+            };
+
+            Object.entries(tokenMap).forEach(([key, value]) => {
+                if (value === undefined || value === null || value === '') return;
+                root.style.setProperty(key, value);
+            });
+
+            const focusRing = a11y?.focusRing || {};
+            const isDark = effectiveTheme === 'dark';
+            const focusMap = {
+                '--dv-focus-border-color': isDark ? focusRing.borderColorDark : focusRing.borderColorLight,
+                '--dv-focus-ring-color': isDark ? focusRing.ringColorDark : focusRing.ringColorLight,
+                '--dv-focus-ring-strong': isDark ? focusRing.ringStrongDark : focusRing.ringStrongLight,
+                '--dv-focus-underlay': isDark ? focusRing.underlayDark : focusRing.underlayLight
+            };
+
+            Object.entries(focusMap).forEach(([key, value]) => {
+                if (value === undefined || value === null || value === '') return;
+                root.style.setProperty(key, value);
+            });
         },
 
         initTheme() {
@@ -474,6 +690,12 @@ function deepVision() {
                 : (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
             return matchesDark ? 'dark' : 'light';
         },
+        resolveVisualPreset() {
+            const presetConfig = (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG?.visualPresets) ? SITE_CONFIG.visualPresets : null;
+            const defaultPreset = presetConfig?.default || 'rational';
+            const options = presetConfig?.options || {};
+            return options[defaultPreset] ? defaultPreset : 'rational';
+        },
 
         applyThemeMode(mode, options = {}) {
             const validModes = ['light', 'dark', 'system'];
@@ -491,6 +713,7 @@ function deepVision() {
             root.setAttribute('data-theme-mode', mode);
             root.setAttribute('data-theme', effective);
             root.style.colorScheme = effective;
+            this.applyDesignTokens(mode, effective);
 
             if (persist) {
                 try {
@@ -925,8 +1148,10 @@ function deepVision() {
 
             // 检查用户是否禁用了动效（可访问性支持）
             const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            const disableTypingEffect = (typeof SITE_CONFIG !== 'undefined'
+                && SITE_CONFIG?.motion?.reducedMotion?.disableTypingEffect === true);
 
-            if (prefersReducedMotion) {
+            if (prefersReducedMotion || disableTypingEffect) {
                 // 禁用动效时：立即显示所有内容
                 this.typingText = questionText;
                 this.typingComplete = true;
@@ -4669,13 +4894,19 @@ function deepVision() {
             const actionUrl = options.actionUrl || '';
             const duration = Number.isFinite(options.duration) ? options.duration : 4000;
             const persist = options.persist === true;
+            const normalizedType = ['success', 'error', 'warning', 'info'].includes(type) ? type : 'info';
+            const a11yMeta = this.getToastA11yMeta(normalizedType, options);
 
             this.toast = {
                 show: true,
                 message,
-                type,
+                type: normalizedType,
                 actionLabel,
-                actionUrl
+                actionUrl,
+                role: a11yMeta.role,
+                ariaLive: a11yMeta.ariaLive,
+                ariaAtomic: a11yMeta.ariaAtomic,
+                announceMode: a11yMeta.announceMode
             };
 
             if (this.toastTimer) {
@@ -4686,6 +4917,23 @@ function deepVision() {
                     this.toast.show = false;
                 }, duration);
             }
+        },
+
+        getToastA11yMeta(type = 'success', options = {}) {
+            const config = this.toastA11yConfig || {};
+            const defaultLive = config.defaultLive || 'polite';
+            const errorLive = config.errorLive || 'assertive';
+            const roleByType = config.roleByType || {};
+            const announceMode = options.announceMode || (type === 'error' ? 'assertive' : defaultLive);
+
+            return {
+                role: roleByType[type] || (type === 'error' || type === 'warning' ? 'alert' : 'status'),
+                ariaLive: announceMode === 'assertive' ? errorLive : defaultLive,
+                ariaAtomic: options.atomic === false
+                    ? 'false'
+                    : (config.atomic === false ? 'false' : 'true'),
+                announceMode
+            };
         },
 
         // ============ 组合C：等待状态增强 ============

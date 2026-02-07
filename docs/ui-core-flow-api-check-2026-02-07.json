@@ -1,0 +1,47 @@
+{
+  "date": "2026-02-07",
+  "base_url": "http://127.0.0.1:5001",
+  "flow": "create_session -> next_question -> submit_answer -> generate_report -> fetch_report",
+  "steps": [
+    {
+      "name": "创建会话",
+      "status": "通过",
+      "detail": "status=200, session_id=dv-20260207095939-bf1f7e08"
+    },
+    {
+      "name": "获取会话详情",
+      "status": "通过",
+      "detail": "status=200, dimensions=['business_process', 'customer_needs', 'project_constraints', 'tech_constraints']"
+    },
+    {
+      "name": "获取下一题",
+      "status": "通过",
+      "detail": "status=200, dimension=business_process"
+    },
+    {
+      "name": "提交回答",
+      "status": "通过",
+      "detail": "status=200"
+    },
+    {
+      "name": "生成报告",
+      "status": "通过",
+      "detail": "status=200, report=deep-vision-20260207-自动化冒烟-095939.md, ai_generated=True"
+    },
+    {
+      "name": "读取/导出报告",
+      "status": "通过",
+      "detail": "status=200, bytes=12006"
+    }
+  ],
+  "cleanup": [
+    {
+      "delete_report": "deep-vision-20260207-自动化冒烟-095939.md",
+      "status": 200
+    },
+    {
+      "delete_session": "dv-20260207095939-bf1f7e08",
+      "status": 200
+    }
+  ]
+}
