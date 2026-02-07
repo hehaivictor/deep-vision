@@ -1162,14 +1162,8 @@
             }
         }
 
-        // 键盘导航
-        document.addEventListener('keydown', (e) => {
-            // 检查是否在输入框中，如果是则不响应
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
-                return;
-            }
-
-            // 获取当前可见的section
+        // 获取当前可见 section 的索引
+        function getCurrentSectionIndex() {
             let currentSectionIndex = 0;
             const scrollPosition = window.scrollY + window.innerHeight / 2;
 
@@ -1183,7 +1177,28 @@
                 }
             });
 
-            // 向下键 - 滚动到下一个section
+            return currentSectionIndex;
+        }
+
+        // 键盘导航
+        document.addEventListener('keydown', (e) => {
+            // 检查是否在输入框中，如果是则不响应
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                return;
+            }
+
+            const currentSectionIndex = getCurrentSectionIndex();
+
+            // 向上键 - 回到上一个 section
+            if (e.key === 'ArrowUp' || e.key === 'Up') {
+                e.preventDefault();
+                if (currentSectionIndex > 0) {
+                    allSections[currentSectionIndex - 1].scrollIntoView({ behavior: 'smooth' });
+                }
+                return;
+            }
+
+            // 向下键 - 滚动到下一个 section
             if (e.key === 'ArrowDown' || e.key === 'Down') {
                 e.preventDefault();
                 if (currentSectionIndex < allSections.length - 1) {
