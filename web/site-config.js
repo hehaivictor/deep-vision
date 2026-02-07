@@ -90,6 +90,210 @@ const SITE_CONFIG = {
     progressComplete: "#357BE2",
   },
 
+  // ============ 设计 Token（语义层） ============
+  designTokens: {
+    light: {
+      colors: {
+        brand: "#357BE2",
+        brandHover: "#2563EB",
+        textPrimary: "#0F172A",
+        textSecondary: "#475569",
+        textMuted: "#64748B",
+        surface: "#FFFFFF",
+        surfaceSecondary: "#F8FAFC",
+        border: "#E2E8F0",
+        success: "#22C55E",
+        warning: "#F59E0B",
+        danger: "#EF4444",
+        overlay: "rgba(15, 23, 42, 0.5)",
+      },
+    },
+    dark: {
+      colors: {
+        brand: "#5C98FF",
+        brandHover: "#78B1FF",
+        textPrimary: "#E6EDF5",
+        textSecondary: "#B7C4D4",
+        textMuted: "#95A3B6",
+        surface: "#1F242C",
+        surfaceSecondary: "#151A21",
+        border: "#3A4655",
+        success: "#4ADE80",
+        warning: "#FACC15",
+        danger: "#FB7185",
+        overlay: "rgba(3, 8, 18, 0.66)",
+      },
+    },
+    radius: {
+      sm: "0.5rem",
+      md: "0.75rem",
+      lg: "1rem",
+      xl: "1.25rem",
+    },
+    spacing: {
+      compact: "0.5rem",
+      base: "0.75rem",
+      comfortable: "1rem",
+      spacious: "1.5rem",
+    },
+    shadow: {
+      card: "0 8px 24px rgba(15, 23, 42, 0.08)",
+      modal: "0 26px 64px rgba(15, 23, 42, 0.28)",
+      focus: "0 0 0 3px rgba(53, 123, 226, 0.2)",
+    },
+    zIndex: {
+      dropdown: 40,
+      modal: 50,
+      toast: 60,
+      guide: 70,
+    },
+  },
+
+  // ============ 视觉预设（锁定科技理性） ============
+  visualPresets: {
+    // 默认预设
+    default: "rational",
+
+    // 完全锁定默认预设（忽略 URL/本地存储的其他预设）
+    locked: true,
+
+    // 预设定义
+    options: {
+      // A：科技理性（稳健）
+      rational: {
+        label: "科技理性",
+        light: {
+          colors: {
+            brand: "#357BE2",
+            brandHover: "#2563EB",
+            overlay: "rgba(15, 23, 42, 0.5)",
+          },
+          shadow: {
+            card: "0 8px 24px rgba(15, 23, 42, 0.08)",
+            modal: "0 26px 64px rgba(15, 23, 42, 0.28)",
+          },
+        },
+        dark: {
+          colors: {
+            brand: "#5C98FF",
+            brandHover: "#78B1FF",
+            overlay: "rgba(3, 8, 18, 0.66)",
+          },
+          shadow: {
+            card: "0 10px 30px rgba(1, 7, 17, 0.34)",
+            modal: "0 30px 66px rgba(1, 4, 10, 0.62)",
+          },
+        },
+      },
+    },
+  },
+
+  // ============ 动效策略 ============
+  motion: {
+    durations: {
+      fast: 140,
+      base: 180,
+      slow: 240,
+      progress: 420,
+    },
+    easing: {
+      standard: "cubic-bezier(0.2, 0, 0, 1)",
+      emphasized: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+    },
+    reducedMotion: {
+      disableTypingEffect: true,
+      disableNonEssentialPulse: true,
+    },
+  },
+
+  // ============ 可访问性配置 ============
+  a11y: {
+    minContrastAA: 4.5,
+    focusRing: {
+      borderColorLight: "#357BE2",
+      borderColorDark: "#5C98FF",
+      ringColorLight: "rgba(53, 123, 226, 0.2)",
+      ringColorDark: "rgba(92, 152, 255, 0.22)",
+      ringStrongLight: "rgba(53, 123, 226, 0.42)",
+      ringStrongDark: "rgba(92, 152, 255, 0.48)",
+      underlayLight: "rgba(255, 255, 255, 0.92)",
+      underlayDark: "rgba(21, 27, 36, 0.96)",
+    },
+    toast: {
+      atomic: true,
+      defaultLive: "polite",
+      errorLive: "assertive",
+      roleByType: {
+        success: "status",
+        info: "status",
+        warning: "alert",
+        error: "alert",
+      },
+    },
+    dialogs: {
+      showNewSessionModal: {
+        dialogId: "dv-dialog-new-session",
+        titleId: "dv-dialog-new-session-title",
+        descId: "dv-dialog-new-session-desc",
+        initialFocus: "[data-guide='guide-topic']",
+        returnFocus: "[data-guide='guide-new-session']",
+      },
+      showCustomScenarioModal: {
+        dialogId: "dv-dialog-custom-scenario",
+        titleId: "dv-dialog-custom-scenario-title",
+        descId: "dv-dialog-custom-scenario-desc",
+        initialFocus: "#customScenarioName",
+      },
+      showAiGenerateModal: {
+        dialogId: "dv-dialog-ai-generate",
+        titleId: "dv-dialog-ai-generate-title",
+        descId: "dv-dialog-ai-generate-desc",
+        initialFocus: "#aiScenarioDescription",
+      },
+      showAiPreviewModal: {
+        dialogId: "dv-dialog-ai-preview",
+        titleId: "dv-dialog-ai-preview-title",
+        descId: "dv-dialog-ai-preview-desc",
+        initialFocus: "#aiGeneratedScenarioName",
+      },
+      showMilestoneModal: {
+        dialogId: "dv-dialog-milestone",
+        titleId: "dv-dialog-milestone-title",
+        descId: "dv-dialog-milestone-desc",
+      },
+      showDeleteModal: {
+        dialogId: "dv-dialog-delete-session",
+        titleId: "dv-dialog-delete-session-title",
+        descId: "dv-dialog-delete-session-desc",
+      },
+      showRestartModal: {
+        dialogId: "dv-dialog-restart-session",
+        titleId: "dv-dialog-restart-session-title",
+        descId: "dv-dialog-restart-session-desc",
+      },
+      showDeleteDocModal: {
+        dialogId: "dv-dialog-delete-doc",
+        titleId: "dv-dialog-delete-doc-title",
+        descId: "dv-dialog-delete-doc-desc",
+      },
+      showDeleteReportModal: {
+        dialogId: "dv-dialog-delete-report",
+        titleId: "dv-dialog-delete-report-title",
+        descId: "dv-dialog-delete-report-desc",
+      },
+      showBatchDeleteModal: {
+        dialogId: "dv-dialog-batch-delete",
+        titleId: "dv-dialog-batch-delete-title",
+        descId: "dv-dialog-batch-delete-desc",
+      },
+      showChangelogModal: {
+        dialogId: "dv-dialog-changelog",
+        titleId: "dv-dialog-changelog-title",
+        descId: "dv-dialog-changelog-desc",
+      },
+    },
+  },
+
   // ============ 主题配置 ============
   theme: {
     // 默认主题模式：light / dark / system
