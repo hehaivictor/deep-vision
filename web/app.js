@@ -349,6 +349,9 @@ function deepVision() {
         selectedAnswers: [],  // 改用数组支持多选
         otherAnswerText: '',
         otherSelected: false,  // "其他"选项是否被选中
+        singleSelectDisambiguationActive: false,
+        singleSelectDisambiguationOptions: [],
+        singleSelectDisambiguationRawText: '',
 
         // Toast 通知
         toast: {
@@ -1918,6 +1921,7 @@ function deepVision() {
             this.selectedAnswers = [];
             this.otherAnswerText = '';
             this.otherSelected = false;
+            this.resetSingleSelectDisambiguation();
 
             try {
                 const response = await fetch(`${API_BASE}/sessions/${this.currentSession.session_id}/next-question`, {
@@ -2133,6 +2137,160 @@ function deepVision() {
                 .replace(/[（）()，,。．.]/g, '');
         },
 
+        parseChineseNumberToken(token) {
+            const normalized = String(token || '')
+                .trim()
+                .replace(/[两]/g, '二');
+            if (!normalized) return null;
+
+            if (/^\d+$/.test(normalized)) {
+                return parseInt(normalized, 10);
+            }
+
+            const digitMap = {
+                一: 1,
+                二: 2,
+                三: 3,
+                四: 4,
+                五: 5,
+                六: 6,
+                七: 7,
+                八: 8,
+                九: 9
+            };
+
+            if (normalized === '十') return 10;
+            if (digitMap[normalized]) return digitMap[normalized];
+
+            const tenPrefix = normalized.match(/^十([一二三四五六七八九])$/);
+            if (tenPrefix) {
+                return 10 + digitMap[tenPrefix[1]];
+            }
+
+            const tenComposite = normalized.match(/^([一二三四五六七八九])十([一二三四五六七八九])?$/);
+            if (tenComposite) {
+                const tens = digitMap[tenComposite[1]] * 10;
+                const ones = tenComposite[2] ? digitMap[tenComposite[2]] : 0;
+                return tens + ones;
+            }
+
+            return null;
+        },
+
+        resolveOtherInputReferences(inputText, options) {
+            const text = (inputText || '').trim();
+            const optionList = Array.isArray(options) ? options : [];
+            if (!text || optionList.length === 0) {
+                return {
+                    matchedOptions: [],
+                    customText: '',
+                    pureReference: false
+                };
+            }
+
+            const matchedIndexes = new Set();
+            const compactText = text.replace(/\s+/g, '');
+            const hasSelectAllHint = /(以上(所有|全部|都)|所有|全部|全选|全都|都要|都选|都可以|都行)/.test(compactText)
+                && !/(不是|不要|不选|排除|除了)/.test(compactText);
+
+            const ordinalPattern = /第\s*([0-9一二三四五六七八九十两]+)\s*[个项条点]?/g;
+            let ordinalMatch;
+            while ((ordinalMatch = ordinalPattern.exec(text)) !== null) {
+                const parsed = this.parseChineseNumberToken(ordinalMatch[1]);
+                if (Number.isInteger(parsed) && parsed >= 1 && parsed <= optionList.length) {
+                    matchedIndexes.add(parsed - 1);
+                }
+            }
+
+            const colloquialOrdinalPattern = /([一二三四五六七八九十两0-9]+)个/g;
+            let colloquialMatch;
+            while ((colloquialMatch = colloquialOrdinalPattern.exec(text)) !== null) {
+                const parsed = this.parseChineseNumberToken(colloquialMatch[1]);
+                if (Number.isInteger(parsed) && parsed >= 1 && parsed <= optionList.length) {
+                    matchedIndexes.add(parsed - 1);
+                }
+            }
+
+            const tokenized = text
+                .replace(/[，,、；;／/]/g, ' ')
+                .replace(/[（）()【】\[\]]/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .split(' ')
+                .filter(Boolean);
+
+            tokenized.forEach(token => {
+                const cleaned = token.replace(/^[^\u4e00-\u9fa50-9]+|[^\u4e00-\u9fa50-9]+$/g, '');
+                const parsed = this.parseChineseNumberToken(cleaned);
+                if (Number.isInteger(parsed) && parsed >= 1 && parsed <= optionList.length) {
+                    matchedIndexes.add(parsed - 1);
+                }
+            });
+
+            // 仅当没有识别到任何明确编号时，才把“以上所有/全部”解释为全选
+            if (hasSelectAllHint && matchedIndexes.size === 0) {
+                optionList.forEach((_, idx) => matchedIndexes.add(idx));
+            }
+
+            const matchedOptions = Array.from(matchedIndexes)
+                .sort((a, b) => a - b)
+                .map(idx => optionList[idx]);
+
+            const remainder = text
+                .replace(/第\s*[0-9一二三四五六七八九十两]+\s*[个项条点]?/g, ' ')
+                .replace(/\b\d+\b/g, ' ')
+                .replace(/[一二三四五六七八九十两]+(?=[、，,;；\s]|$)/g, ' ')
+                .replace(/以上(所有|全部|都)|所有|全部|全选|全都|都要|都选/g, ' ')
+                .replace(/(或者|和|及|与|或|、|，|,|;|；|\/)/g, ' ')
+                .replace(/\s+/g, '');
+
+            const pureReference = matchedOptions.length > 0 && remainder.length === 0;
+            return {
+                matchedOptions,
+                customText: pureReference ? '' : text,
+                pureReference
+            };
+        },
+
+        resetSingleSelectDisambiguation() {
+            this.singleSelectDisambiguationActive = false;
+            this.singleSelectDisambiguationOptions = [];
+            this.singleSelectDisambiguationRawText = '';
+        },
+
+        openSingleSelectDisambiguation(options, rawText = '') {
+            this.singleSelectDisambiguationOptions = Array.isArray(options) ? [...options] : [];
+            this.singleSelectDisambiguationRawText = rawText || '';
+            this.singleSelectDisambiguationActive = this.singleSelectDisambiguationOptions.length > 1;
+        },
+
+        chooseSingleSelectDisambiguation(option) {
+            if (!option) return;
+            this.selectedAnswers = [option];
+            this.otherSelected = false;
+            this.otherAnswerText = '';
+            this.resetSingleSelectDisambiguation();
+            this.showToast('已按单选规则选择主项，可直接提交', 'info');
+        },
+
+        continueSingleSelectWithCustomText() {
+            const template = '我更倾向于【】，因为【】';
+            this.selectedAnswers = [];
+            this.otherSelected = true;
+            this.otherAnswerText = template;
+            this.resetSingleSelectDisambiguation();
+            this.showToast('已填入模板，请补充你的判断依据', 'info');
+            this.$nextTick(() => {
+                const input = this.$refs.otherInput;
+                if (!input) return;
+                input.focus();
+                const firstSlotStart = template.indexOf('【') + 1;
+                if (firstSlotStart > 0) {
+                    input.setSelectionRange(firstSlotStart, firstSlotStart);
+                }
+            });
+        },
+
         matchRecommendedOption(recommended, options) {
             if (!recommended || !options || options.length === 0) return null;
             const direct = options.find(opt => opt === recommended);
@@ -2199,6 +2357,7 @@ function deepVision() {
             }
             this.otherSelected = false;
             this.otherAnswerText = '';
+            this.resetSingleSelectDisambiguation();
             this.aiRecommendationApplied = true;
         },
 
@@ -2208,6 +2367,7 @@ function deepVision() {
             this.selectedAnswers = [...(prev.selectedAnswers || [])];
             this.otherSelected = !!prev.otherSelected;
             this.otherAnswerText = prev.otherAnswerText || '';
+            this.resetSingleSelectDisambiguation();
             this.aiRecommendationApplied = false;
             this.aiRecommendationPrevSelection = null;
         },
@@ -2249,6 +2409,7 @@ function deepVision() {
         // 切换选项选择状态
         toggleOption(option) {
             this.clearAiRecommendationApplied();
+            this.resetSingleSelectDisambiguation();
             if (this.currentQuestion.multiSelect) {
                 // 多选模式：切换选中状态
                 const index = this.selectedAnswers.indexOf(option);
@@ -2273,6 +2434,7 @@ function deepVision() {
         // 切换"其他"选项
         toggleOther() {
             this.clearAiRecommendationApplied();
+            this.resetSingleSelectDisambiguation();
             if (this.currentQuestion.multiSelect) {
                 // 多选模式：切换"其他"选中状态
                 this.otherSelected = !this.otherSelected;
@@ -2306,21 +2468,45 @@ function deepVision() {
 
             // 构建答案
             let answer;
+            const otherText = this.otherAnswerText.trim();
+            const otherReference = this.otherSelected
+                ? this.resolveOtherInputReferences(otherText, this.currentQuestion.options)
+                : { matchedOptions: [], customText: '', pureReference: false };
+
+            if (!this.currentQuestion.multiSelect
+                && this.otherSelected
+                && otherReference.pureReference
+                && otherReference.matchedOptions.length > 1) {
+                this.submitting = false;
+                this.openSingleSelectDisambiguation(otherReference.matchedOptions, otherText);
+                return;
+            }
+
             if (this.currentQuestion.multiSelect) {
                 // 多选：合并所有选中的答案
                 const answers = [...this.selectedAnswers];
-                if (this.otherSelected && this.otherAnswerText.trim()) {
-                    answers.push(this.otherAnswerText.trim());
+                if (this.otherSelected && otherText) {
+                    if (otherReference.matchedOptions.length > 0) {
+                        answers.push(...otherReference.matchedOptions);
+                    }
+                    if (otherReference.customText) {
+                        answers.push(otherReference.customText);
+                    }
                 }
-                if (answers.length === 0) {
+                const uniqueAnswers = Array.from(new Set(answers.map(item => String(item || '').trim()).filter(Boolean)));
+                if (uniqueAnswers.length === 0) {
                     this.submitting = false;
                     return;
                 }
-                answer = answers.join('；');  // 使用中文分号分隔
+                answer = uniqueAnswers.join('；');  // 使用中文分号分隔
             } else {
                 // 单选
                 if (this.otherSelected) {
-                    answer = this.otherAnswerText.trim();
+                    if (otherReference.pureReference && otherReference.matchedOptions.length > 0) {
+                        answer = otherReference.matchedOptions[0];
+                    } else {
+                        answer = otherText;
+                    }
                 } else {
                     answer = this.selectedAnswers.length > 0 ? this.selectedAnswers[0] : '';
                 }
@@ -2449,6 +2635,7 @@ function deepVision() {
                 this.selectedAnswers = [];
                 this.otherAnswerText = '';
                 this.otherSelected = false;
+                this.resetSingleSelectDisambiguation();
                 this.loadingQuestion = false;
 
                 this.showToast('已恢复上一题，请重新作答', 'success');
