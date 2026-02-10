@@ -77,6 +77,7 @@ function deepVision() {
         themeStorageKey: 'deepvision_theme_mode',
         themeMode: 'system',
         effectiveTheme: 'light',
+        authViewLightLocked: false,
         visualPreset: (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG?.visualPresets?.default) || 'rational',
         showAccountMenu: false,
         dialogFocusWatchRegistered: false,
@@ -428,6 +429,7 @@ function deepVision() {
             await this.checkAuthStatus();
 
             if (!this.authReady) {
+                this.enforceAuthViewLightTheme();
                 this.authChecking = false;
                 return;
             }
@@ -498,6 +500,7 @@ function deepVision() {
             this.stopPresentationPolling();
             this.resetPresentationProgressFeedback();
             this.resetReportGenerationFeedback();
+            this.enforceAuthViewLightTheme();
 
             if (showToast) {
                 this.showToast(toastMessage, toastType);
@@ -522,6 +525,25 @@ function deepVision() {
 
         clearAuthErrors() {
             this.authErrors = { account: '', password: '', confirmPassword: '' };
+        },
+
+        enforceAuthViewLightTheme() {
+            const root = document.documentElement;
+            if (!(root instanceof HTMLElement)) return;
+
+            this.authViewLightLocked = true;
+            this.effectiveTheme = 'light';
+            root.setAttribute('data-theme-mode', 'light');
+            root.setAttribute('data-theme', 'light');
+            root.style.colorScheme = 'light';
+            this.applyDesignTokens('light', 'light');
+            this.applyMermaidTheme('light');
+        },
+
+        restoreThemeAfterAuth() {
+            if (!this.authViewLightLocked) return;
+            this.authViewLightLocked = false;
+            this.applyThemeMode(this.themeMode, { persist: false, rerenderCharts: false });
         },
 
         getAuthInputType(account = '') {
@@ -586,6 +608,7 @@ function deepVision() {
                 this.authForm.password = '';
                 this.authForm.confirmPassword = '';
                 this.clearAuthErrors();
+                this.restoreThemeAfterAuth();
                 this.showToast(this.authMode === 'register' ? '注册成功，已自动登录' : '登录成功', 'success');
 
                 await this.loadScenarios();
