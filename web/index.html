@@ -616,7 +616,7 @@
                        :key="currentQuoteIndex + '-source'">
                     </p>
                 </div>
-                <nav class="flex items-center gap-2 md:gap-3">
+                <nav class="flex items-center gap-2 md:gap-3" x-show="authReady" x-cloak>
                     <button @click="switchView('sessions')"
                             :class="getHeaderNavClass(currentView === 'sessions')"
                             class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium">
@@ -635,28 +635,30 @@
                         <span class="hidden sm:inline">帮助</span>
                         <span class="sm:hidden">帮助</span>
                     </button>
-                    <div class="relative" @keydown.escape.window="showThemeMenu = false">
-                        <button @click="showThemeMenu = !showThemeMenu"
+                    <div class="relative" @keydown.escape.window="showAccountMenu = false">
+                        <button @click="showAccountMenu = !showAccountMenu"
                                 :class="getHeaderNavClass(false)"
                                 class="theme-toggle-trigger w-10 h-10 rounded-lg transition-all duration-200 cursor-pointer inline-flex items-center justify-center"
-                                title="主题设置"
-                                aria-label="主题设置"
+                                aria-label="账号与外观设置"
                                 aria-haspopup="menu"
-                                :aria-expanded="showThemeMenu.toString()">
-                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M12 3v2m0 14v2m9-9h-2M5 12H3m14.95 6.364-1.414-1.414M7.464 7.464 6.05 6.05m11.314 0-1.414 1.414M7.464 16.536 6.05 17.95M12 8a4 4 0 100 8 4 4 0 000-8z"/>
+                                :aria-expanded="showAccountMenu.toString()">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8h3m4 0h9M4 16h9m4 0h3"/>
+                                <circle cx="9" cy="8" r="2" stroke-width="2"/>
+                                <circle cx="15" cy="16" r="2" stroke-width="2"/>
                             </svg>
                         </button>
                         <div x-cloak
-                             x-show="showThemeMenu"
+                             x-show="showAccountMenu"
                              x-transition:enter="transition ease-out duration-200"
                              x-transition:enter-start="opacity-0 -translate-y-1 scale-95"
                              x-transition:enter-end="opacity-100 translate-y-0 scale-100"
                              x-transition:leave="transition ease-in duration-150"
                              x-transition:leave-start="opacity-100 translate-y-0 scale-100"
                              x-transition:leave-end="opacity-0 -translate-y-1 scale-95"
-                             @click.outside="showThemeMenu = false"
-                             class="theme-menu dv-popover-panel absolute right-0 mt-2 w-44 rounded-xl border border-gray-200 bg-white p-1.5 shadow-lg z-50">
+                             @click.outside="showAccountMenu = false"
+                             class="theme-menu account-menu dv-popover-panel absolute right-0 mt-2 w-52 rounded-xl border border-gray-200 bg-white p-1.5 shadow-lg z-50">
+                            <div class="account-menu-section-title px-2.5 py-1.5 text-xs font-semibold tracking-wide">外观</div>
                             <button @click="setThemeMode('light')"
                                     :class="getThemeOptionClass('light')"
                                     class="theme-menu-item w-full text-left px-2.5 py-2 text-sm rounded-lg border transition-colors duration-150">
@@ -672,12 +674,109 @@
                                     class="theme-menu-item w-full text-left px-2.5 py-2 text-sm rounded-lg border transition-colors duration-150 mt-1">
                                 跟随系统
                             </button>
+                            <div class="account-menu-divider my-2"></div>
+                            <div class="account-menu-section-title px-2.5 py-1.5 text-xs font-semibold tracking-wide">账号</div>
+                            <button @click="requestLogout()"
+                                    class="account-menu-logout-btn w-full text-left px-2.5 py-2 text-sm rounded-lg border border-transparent transition-colors duration-150">
+                                退出登录
+                            </button>
                         </div>
                     </div>
                 </nav>
             </div>
         </header>
 
+        <template x-if="authChecking">
+            <main class="flex-1 max-w-7xl mx-auto w-full px-4 py-6 flex items-center justify-center">
+                <div class="bg-surface border border-border rounded-2xl p-8 shadow-sm w-full max-w-md text-center">
+                    <div class="w-10 h-10 mx-auto border-2 border-primary/20 border-t-primary rounded-full animate-spin"></div>
+                    <p class="mt-4 text-sm text-muted">正在检查登录状态...</p>
+                </div>
+            </main>
+        </template>
+
+        <template x-if="!authChecking && !authReady">
+            <main class="flex-1 max-w-7xl mx-auto w-full px-4 py-6 flex items-center justify-center">
+                <div class="w-full max-w-md bg-surface border border-border rounded-2xl shadow-sm px-6 pb-6 pt-7 md:px-8 md:pb-8 md:pt-9 space-y-6">
+                    <div class="text-center space-y-2 pb-1">
+                        <h2 class="text-xl font-semibold text-primary">欢迎回来</h2>
+                        <p class="text-sm text-muted">登录后即可使用访谈与报告功能</p>
+                    </div>
+
+                    <div class="flex rounded-lg bg-surface-secondary border border-border p-1">
+                        <button @click="setAuthMode('login')"
+                                :class="authMode === 'login' ? 'bg-surface text-primary shadow-sm' : 'text-muted hover:text-primary'"
+                                class="flex-1 px-3 py-2 text-sm font-medium rounded-md transition-colors cursor-pointer">
+                            登录
+                        </button>
+                        <button @click="setAuthMode('register')"
+                                :class="authMode === 'register' ? 'bg-surface text-primary shadow-sm' : 'text-muted hover:text-primary'"
+                                class="flex-1 px-3 py-2 text-sm font-medium rounded-md transition-colors cursor-pointer">
+                            注册
+                        </button>
+                    </div>
+
+                    <form class="space-y-4" @submit.prevent="submitAuth()" novalidate>
+                        <div>
+                            <label for="auth-account" class="block text-sm font-medium text-primary mb-1">邮箱或手机号</label>
+                            <input id="auth-account"
+                                   data-auth-autofocus
+                                   x-model.trim="authForm.account"
+                                   @input="authErrors.account = ''"
+                                   :type="getAuthInputType(authForm.account)"
+                                   inputmode="text"
+                                   autocomplete="username"
+                                   placeholder="请输入邮箱或手机号"
+                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                                   :aria-invalid="authErrors.account ? 'true' : 'false'"
+                                   required>
+                            <p x-show="authErrors.account" x-text="authErrors.account" class="mt-1 text-xs text-red-500"></p>
+                        </div>
+
+                        <div>
+                            <label for="auth-password" class="block text-sm font-medium text-primary mb-1">密码</label>
+                            <input id="auth-password"
+                                   x-model="authForm.password"
+                                   @input="authErrors.password = ''"
+                                   type="password"
+                                   :autocomplete="authMode === 'register' ? 'new-password' : 'current-password'"
+                                   placeholder="请输入密码（8-64位）"
+                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                                   :aria-invalid="authErrors.password ? 'true' : 'false'"
+                                   required>
+                            <p x-show="authErrors.password" x-text="authErrors.password" class="mt-1 text-xs text-red-500"></p>
+                        </div>
+
+                        <div x-show="authMode === 'register'" x-cloak>
+                            <label for="auth-confirm-password" class="block text-sm font-medium text-primary mb-1">确认密码</label>
+                            <input id="auth-confirm-password"
+                                   x-model="authForm.confirmPassword"
+                                   @input="authErrors.confirmPassword = ''"
+                                   type="password"
+                                   autocomplete="new-password"
+                                   placeholder="请再次输入密码"
+                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                                   :aria-invalid="authErrors.confirmPassword ? 'true' : 'false'"
+                                   required>
+                            <p x-show="authErrors.confirmPassword" x-text="authErrors.confirmPassword" class="mt-1 text-xs text-red-500"></p>
+                        </div>
+
+                        <button type="submit"
+                                :disabled="authLoading"
+                                class="btn-sage-blue w-full text-white px-5 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                            <svg x-show="authLoading" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke-width="4"></circle>
+                                <path class="opacity-75" d="M4 12a8 8 0 018-8" stroke-width="4" stroke-linecap="round"></path>
+                            </svg>
+                            <span x-text="authMode === 'register' ? (authLoading ? '注册中...' : '注册并开始使用') : (authLoading ? '登录中...' : '登录')"></span>
+                        </button>
+                    </form>
+                </div>
+            </main>
+        </template>
+
+        <template x-if="authReady">
+            <div>
         <!-- 流程步骤指示器（仅在访谈中显示） -->
         <template x-if="currentView === 'interview' && currentSession">
             <div class="bg-white border-b border-gray-200 shadow-sm">
@@ -2251,6 +2350,8 @@
                 </div>
             </template>
         </main>
+            </div>
+        </template>
 
         <!-- ========== 新建会话弹窗 ========== -->
         <div x-show="showNewSessionModal"
@@ -3146,6 +3247,50 @@
                         <button @click="deleteReport()"
                                 class="dv-modal-btn-danger px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer">
                             删除
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== 退出登录确认弹窗 ========== -->
+        <div x-show="showLogoutConfirmModal"
+             data-dialog-key="showLogoutConfirmModal"
+             x-bind="getDialogAttrs('showLogoutConfirmModal')"
+             x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0"
+             x-transition:enter-end="opacity-100"
+             x-transition:leave="transition ease-in duration-150"
+             x-transition:leave-start="opacity-100"
+             x-transition:leave-end="opacity-0"
+             class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
+             @click.self="showLogoutConfirmModal = false"
+             @keydown.escape.window="showLogoutConfirmModal = false">
+            <div x-bind="getDialogPanelAttrs('showLogoutConfirmModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6"
+                 x-transition:enter="transition ease-out duration-200"
+                 x-transition:enter-start="opacity-0 scale-95 translate-y-1"
+                 x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+                 x-transition:leave="transition ease-in duration-150"
+                 x-transition:leave-start="opacity-100 scale-100 translate-y-0"
+                 x-transition:leave-end="opacity-0 scale-95 translate-y-1">
+                <div class="text-center">
+                    <div class="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <svg class="w-6 h-6 text-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0-4-4m4 4H9m4 8H7a2 2 0 01-2-2V6a2 2 0 012-2h6"/>
+                        </svg>
+                    </div>
+                    <h3 class="dv-modal-title dv-modal-title--danger mb-2">确认退出登录</h3>
+                    <p class="dv-modal-body dv-modal-body--danger mb-6">退出后将返回登录页，是否继续？</p>
+                    <div class="dv-modal-actions">
+                        <button @click="showLogoutConfirmModal = false"
+                                data-dialog-autofocus
+                                class="dv-modal-btn-secondary px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer">
+                            取消
+                        </button>
+                        <button @click="confirmLogout()"
+                                class="dv-modal-btn-danger px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer">
+                            确认退出
                         </button>
                     </div>
                 </div>
