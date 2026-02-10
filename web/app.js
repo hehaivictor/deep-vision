@@ -29,6 +29,9 @@ function deepVision() {
             password: '',
             confirmPassword: ''
         },
+        authAccountHistoryStorageKey: 'deepvision_auth_account_history',
+        authAccountHistoryMaxItems: 5,
+        authAccountHistory: [],
         currentUser: null,
         loading: false,
         loadingQuestion: false,
@@ -202,6 +205,12 @@ function deepVision() {
         // 服务状态
         serverStatus: null,
         aiAvailable: false,
+        interviewDepthV2: {
+            enabled: false,
+            modes: ['quick', 'standard', 'deep'],
+            deep_mode_skip_followup_confirm: true,
+            mode_configs: null
+        },
 
         // 会话相关
         sessions: [],
@@ -423,6 +432,7 @@ function deepVision() {
             this.visualPreset = this.resolveVisualPreset();
             this.applyDesignTokens('system', this.resolveEffectiveTheme('system'));
             this.initTheme();
+            this.loadAuthAccountHistory();
             this.registerDialogFocusWatchers();
             await this.loadVersionInfo();
             await this.checkServerStatus();
@@ -523,6 +533,77 @@ function deepVision() {
             }
         },
 
+        focusAuthPasswordInput() {
+            const input = document.querySelector('[data-auth-password]');
+            if (input && typeof input.focus === 'function') {
+                input.focus({ preventScroll: true });
+            }
+        },
+
+        loadAuthAccountHistory() {
+            if (typeof localStorage === 'undefined') return;
+
+            try {
+                const raw = localStorage.getItem(this.authAccountHistoryStorageKey);
+                if (!raw) {
+                    this.authAccountHistory = [];
+                    return;
+                }
+
+                const parsed = JSON.parse(raw);
+                if (!Array.isArray(parsed)) {
+                    this.authAccountHistory = [];
+                    return;
+                }
+
+                const deduped = [];
+                parsed.forEach((item) => {
+                    const value = String(item || '').trim();
+                    if (!value || deduped.includes(value)) return;
+                    deduped.push(value);
+                });
+
+                this.authAccountHistory = deduped.slice(0, this.authAccountHistoryMaxItems);
+            } catch (error) {
+                this.authAccountHistory = [];
+                console.warn('读取历史登录账号失败');
+            }
+        },
+
+        persistAuthAccountHistory() {
+            if (typeof localStorage === 'undefined') return;
+
+            try {
+                localStorage.setItem(this.authAccountHistoryStorageKey, JSON.stringify(this.authAccountHistory));
+            } catch (error) {
+                console.warn('保存历史登录账号失败');
+            }
+        },
+
+        rememberAuthAccount(account = '') {
+            const value = String(account || '').trim();
+            if (!value) return;
+
+            this.authAccountHistory = [value, ...this.authAccountHistory.filter((item) => item !== value)]
+                .slice(0, this.authAccountHistoryMaxItems);
+            this.persistAuthAccountHistory();
+        },
+
+        selectAuthHistoryAccount(account = '') {
+            const value = String(account || '').trim();
+            if (!value) return;
+
+            this.authForm.account = value;
+            this.authErrors.account = '';
+            this.$nextTick(() => this.focusAuthPasswordInput());
+        },
+
+        handleAuthPasswordEnter(event) {
+            if (event?.isComposing || this.authMode !== 'login') return;
+            event.preventDefault();
+            this.submitAuth();
+        },
+
         clearAuthErrors() {
             this.authErrors = { account: '', password: '', confirmPassword: '' };
         },
@@ -591,13 +672,14 @@ function deepVision() {
                 return;
             }
 
+            const account = String(this.authForm.account || '').trim();
             this.authLoading = true;
             try {
                 const endpoint = this.authMode === 'register' ? '/auth/register' : '/auth/login';
                 const result = await this.apiCall(endpoint, {
                     method: 'POST',
                     body: JSON.stringify({
-                        account: String(this.authForm.account || '').trim(),
+                        account,
                         password: this.authForm.password
                     }),
                     skipAuthRedirect: true
@@ -605,6 +687,9 @@ function deepVision() {
 
                 this.currentUser = result?.user || null;
                 this.authReady = Boolean(this.currentUser);
+                if (this.authMode === 'login') {
+                    this.rememberAuthAccount(account);
+                }
                 this.authForm.password = '';
                 this.authForm.confirmPassword = '';
                 this.clearAuthErrors();
@@ -1263,6 +1348,13 @@ function deepVision() {
                 if (response.ok) {
                     this.serverStatus = await response.json();
                     this.aiAvailable = this.serverStatus.ai_available;
+                    const depthConfig = this.serverStatus?.interview_depth_v2 || {};
+                    this.interviewDepthV2 = {
+                        enabled: depthConfig.enabled === true,
+                        modes: Array.isArray(depthConfig.modes) ? depthConfig.modes : ['quick', 'standard', 'deep'],
+                        deep_mode_skip_followup_confirm: depthConfig.deep_mode_skip_followup_confirm !== false,
+                        mode_configs: depthConfig.mode_configs || null
+                    };
                     if (!this.aiAvailable) {
                         this.showToast('AI 功能未启用（需设置 ANTHROPIC_API_KEY）', 'warning');
                     }
@@ -2231,6 +2323,10 @@ function deepVision() {
                     const completedDimension = this.currentDimension;
                     const completedDimName = this.getDimensionName(completedDimension);
 
+                    if (result.quality_warning) {
+                        this.showToast('该维度已达上限保护完成，建议后续补充细节以提升结论可信度', 'warning');
+                    }
+
                     // 与后端 completed 判定保持一致，修正本地覆盖率，避免历史会话反复命中
                     if (this.currentSession?.dimensions?.[completedDimension]) {
                         this.currentSession.dimensions[completedDimension].coverage = 100;
@@ -2889,6 +2985,18 @@ function deepVision() {
         // 用户跳过当前问题的追问
         async skipFollowUp() {
             if (!this.currentSession || this.submitting) return;
+
+            const currentMode = this.currentSession?.interview_mode || 'standard';
+            const needConfirm = currentMode === 'deep'
+                && this.interviewDepthV2?.deep_mode_skip_followup_confirm === true;
+
+            if (needConfirm) {
+                const confirmed = window.confirm('跳过追问会降低该维度结论可信度，是否继续？');
+                if (!confirmed) {
+                    return;
+                }
+            }
+
             this.submitting = true;
 
             try {
@@ -4975,10 +5083,33 @@ function deepVision() {
         // 获取访谈模式配置
         getInterviewModeConfig() {
             if (!this.currentSession) return null;
-            const modes = {
-                quick: { formal: 2, followUp: 2, total: 8, range: "12-16" },
-                standard: { formal: 3, followUp: 4, total: 16, range: "20-28" },
-                deep: { formal: 4, followUp: 6, total: 24, range: "28-40" }
+            const modeConfigs = this.interviewDepthV2?.mode_configs;
+            const modes = modeConfigs ? {
+                quick: {
+                    formal: modeConfigs.quick?.formal_questions_per_dim ?? 2,
+                    formalMax: modeConfigs.quick?.max_formal_questions_per_dim ?? 2,
+                    followUp: modeConfigs.quick?.follow_up_budget_per_dim ?? 2,
+                    total: modeConfigs.quick?.total_follow_up_budget ?? 8,
+                    range: modeConfigs.quick?.estimated_questions ?? "12-16"
+                },
+                standard: {
+                    formal: modeConfigs.standard?.formal_questions_per_dim ?? 3,
+                    formalMax: modeConfigs.standard?.max_formal_questions_per_dim ?? 3,
+                    followUp: modeConfigs.standard?.follow_up_budget_per_dim ?? 4,
+                    total: modeConfigs.standard?.total_follow_up_budget ?? 16,
+                    range: modeConfigs.standard?.estimated_questions ?? "20-28"
+                },
+                deep: {
+                    formal: modeConfigs.deep?.formal_questions_per_dim ?? 4,
+                    formalMax: modeConfigs.deep?.max_formal_questions_per_dim ?? 4,
+                    followUp: modeConfigs.deep?.follow_up_budget_per_dim ?? 6,
+                    total: modeConfigs.deep?.total_follow_up_budget ?? 24,
+                    range: modeConfigs.deep?.estimated_questions ?? "28-40"
+                }
+            } : {
+                quick: { formal: 2, formalMax: 2, followUp: 2, total: 8, range: "12-16" },
+                standard: { formal: 3, formalMax: 3, followUp: 4, total: 16, range: "20-28" },
+                deep: { formal: 4, formalMax: 4, followUp: 6, total: 24, range: "28-40" }
             };
             const mode = this.currentSession.interview_mode || 'standard';
             return modes[mode] || modes.standard;
