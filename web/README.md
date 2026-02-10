@@ -234,6 +234,57 @@ AI 冲突提示: ⚠️ 发现潜在冲突
 - `SECRET_KEY`：用于签名会话 Cookie。
 - `AUTH_DB_PATH`：用户数据库路径（默认 `data/auth/users.db`）。
 
+### 管理员手动迁移（历史数据归属）
+
+当你希望将历史会话/报告统一归属给某个账号，避免“首次访问归属”造成不确定性时，使用：
+
+- 脚本路径：`scripts/admin_migrate_ownership.py`
+- 设计原则：默认 `dry-run`（仅预览，不落盘），显式加 `--apply` 才执行。
+- 快速入口：`docs/data-ownership-migration-guide.md`
+
+1) 列出可选目标用户
+
+```bash
+python3 scripts/admin_migrate_ownership.py list-users
+```
+
+2) 预览迁移（仅迁移无归属数据，推荐）
+
+```bash
+python3 scripts/admin_migrate_ownership.py migrate \
+  --to-account 13770696032 \
+  --scope unowned
+```
+
+3) 确认后执行迁移（自动创建备份目录）
+
+```bash
+python3 scripts/admin_migrate_ownership.py migrate \
+  --to-account 13770696032 \
+  --scope unowned \
+  --apply
+```
+
+4) 回滚迁移（按备份目录恢复）
+
+```bash
+python3 scripts/admin_migrate_ownership.py rollback \
+  --backup-dir data/operations/ownership-migrations/<迁移目录>
+```
+
+5) 审计迁移结果
+
+```bash
+python3 scripts/admin_migrate_ownership.py audit \
+  --user-account 13770696032
+```
+
+参数说明：
+- `--scope unowned`：仅迁移 `owner_user_id` 为空/无效的数据（推荐）。
+- `--scope all`：将全部会话/报告归属改为目标用户（谨慎使用）。
+- `--scope from-user --from-user-id N`：仅迁移来源用户 `N` 的数据。
+- `--kinds sessions,reports`：可只迁移其中一种，例如 `--kinds sessions`。
+
 ### 核心 API 示例
 
 **1. AI 生成问题**
