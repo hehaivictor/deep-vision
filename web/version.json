@@ -1,7 +1,23 @@
 {
-  "version": "1.32.0",
+  "version": "1.33.0",
   "releaseDate": "2026-02-10",
   "changelog": [
+    {
+      "version": "1.33.0",
+      "date": "2026-02-10",
+      "type": "minor",
+      "title": "新增管理员数据归属迁移能力",
+      "changes": [
+        "脚本能力",
+        "新增管理员迁移脚本，支持 list-users、migrate、audit、rollback",
+        "支持 dry-run 预览、apply 落盘、自动备份与摘要输出",
+        "支持按 unowned/from-user/all 范围与 sessions/reports 对象迁移",
+        "文档更新",
+        "新增数据归属迁移操作手册，覆盖预检、迁移、审计与回滚流程",
+        "增加超简版命令清单，便于运营快速执行",
+        "在 Web README 增加迁移快速入口与使用说明"
+      ]
+    },
     {
       "version": "1.32.0",
       "date": "2026-02-10",
