@@ -217,7 +217,7 @@ function deepVision() {
         currentSession: null,
         newSessionTopic: '',
         newSessionDescription: '',
-        selectedInterviewMode: 'standard',  // 默认标准模式
+        selectedInterviewMode: 'deep',  // 默认深度模式
         hoveredDepthMode: null,  // 深度选项悬停状态
         showScenarioSelector: false,  // 场景选择器面板
         scenarioSearchQuery: '',  // 场景搜索关键词
@@ -1627,7 +1627,7 @@ function deepVision() {
                 this.showNewSessionModal = false;
                 this.newSessionTopic = '';
                 this.newSessionDescription = '';
-                this.selectedInterviewMode = 'standard';  // 重置为默认值
+                this.selectedInterviewMode = 'deep';  // 重置为默认值
                 this.selectedScenario = null;  // 重置场景选择
                 this.showScenarioSelector = false;  // 重置场景选择器
                 this.scenarioSearchQuery = '';  // 重置搜索关键词
