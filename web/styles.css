@@ -314,6 +314,7 @@
 :where(
     .theme-toggle-trigger,
     .theme-menu-item,
+    .account-menu-logout-btn,
     .sort-dropdown-trigger,
     .btn-sage-blue,
     .dv-modal-btn-secondary,
@@ -346,6 +347,7 @@
 .dv-modal-btn-danger,
 .theme-toggle-trigger,
 .theme-menu-item,
+.account-menu-logout-btn,
 .batch-select-toggle-btn,
 .batch-cancel-btn,
 .batch-delete-btn,
@@ -363,6 +365,7 @@
 }
 
 .theme-menu-item:active,
+.account-menu-logout-btn:active,
 .btn-sage-blue:active {
     transform: translateY(0.5px);
 }
@@ -379,6 +382,25 @@
     background: #111827;
     color: #ffffff;
     border-color: #111827;
+}
+
+.account-menu-section-title {
+    color: #6b7280;
+}
+
+.account-menu-divider {
+    height: 1px;
+    background: #e5e7eb;
+}
+
+.account-menu-logout-btn {
+    color: #b42318;
+}
+
+.account-menu-logout-btn:hover {
+    background: #fef2f2;
+    color: #991b1b;
+    border-color: #fecaca;
 }
 
 .report-action-primary {
@@ -1477,6 +1499,7 @@ html[data-theme="dark"] .sort-dropdown-option--active {
     .dv-modal-btn-danger,
     .theme-toggle-trigger,
     .theme-menu-item,
+    .account-menu-logout-btn,
     .report-card-glow,
     .session-card-glow,
     .batch-select-toggle-btn,
@@ -1648,6 +1671,24 @@ html[data-theme="dark"] .theme-menu {
 
 html[data-theme="dark"] .theme-menu-item {
     color: #c8d2df;
+}
+
+html[data-theme="dark"] .account-menu-section-title {
+    color: #98a4b3;
+}
+
+html[data-theme="dark"] .account-menu-divider {
+    background: #364250;
+}
+
+html[data-theme="dark"] .account-menu-logout-btn {
+    color: #fda4af;
+}
+
+html[data-theme="dark"] .account-menu-logout-btn:hover {
+    background: #3a1f28;
+    color: #fecdd3;
+    border-color: #7f1d1d;
 }
 
 html[data-theme="dark"] .theme-toggle-trigger {

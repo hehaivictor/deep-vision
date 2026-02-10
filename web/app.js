@@ -15,6 +15,21 @@ function deepVision() {
     return {
         // ============ 状态 ============
         currentView: 'sessions',
+        authReady: false,
+        authMode: 'login',
+        authLoading: false,
+        authChecking: true,
+        authForm: {
+            account: '',
+            password: '',
+            confirmPassword: ''
+        },
+        authErrors: {
+            account: '',
+            password: '',
+            confirmPassword: ''
+        },
+        currentUser: null,
         loading: false,
         loadingQuestion: false,
         questionRequestId: 0,
@@ -63,7 +78,7 @@ function deepVision() {
         themeMode: 'system',
         effectiveTheme: 'light',
         visualPreset: (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG?.visualPresets?.default) || 'rational',
-        showThemeMenu: false,
+        showAccountMenu: false,
         dialogFocusWatchRegistered: false,
         dialogFocusReturnTargets: {},
         dialogTabTrapRegistered: false,
@@ -76,6 +91,7 @@ function deepVision() {
             'showAiGenerateModal',
             'showAiPreviewModal',
             'showDeleteModal',
+            'showLogoutConfirmModal',
             'showRestartModal',
             'showDeleteDocModal',
             'showDeleteReportModal',
@@ -197,6 +213,7 @@ function deepVision() {
         scenarioSearchQuery: '',  // 场景搜索关键词
         showNewSessionModal: false,
         showDeleteModal: false,
+        showLogoutConfirmModal: false,
         sessionToDelete: null,
         sessionBatchMode: false,
         selectedSessionIds: [],
@@ -408,6 +425,13 @@ function deepVision() {
             this.registerDialogFocusWatchers();
             await this.loadVersionInfo();
             await this.checkServerStatus();
+            await this.checkAuthStatus();
+
+            if (!this.authReady) {
+                this.authChecking = false;
+                return;
+            }
+
             await this.loadScenarios();
             await this.loadSessions();
             await this.loadReports();
@@ -417,11 +441,193 @@ function deepVision() {
             this.checkFirstVisit();
             this.initGuide();
 
+            this.authChecking = false;
+
             // 初始化虚拟列表
             this.$nextTick(() => {
                 this.setupVirtualList();
                 this.setupVirtualReportList();
             });
+        },
+
+        async checkAuthStatus() {
+            try {
+                const result = await this.apiCall('/auth/me', { skipAuthRedirect: true });
+                this.currentUser = result?.user || null;
+                this.authReady = Boolean(this.currentUser);
+            } catch (error) {
+                this.enterLoginState({ showToast: false });
+            }
+        },
+
+        enterLoginState(options = {}) {
+            const {
+                showToast = false,
+                toastMessage = '登录状态已失效，请重新登录',
+                toastType = 'warning'
+            } = options;
+
+            this.authChecking = false;
+            this.authReady = false;
+            this.currentUser = null;
+            this.authLoading = false;
+            this.currentView = 'sessions';
+            this.currentSession = null;
+            this.sessions = [];
+            this.reports = [];
+            this.filteredReports = [];
+            this.filteredSessions = [];
+            this.reportItems = [];
+            this.selectedReport = null;
+            this.reportContent = '';
+            this.showNewSessionModal = false;
+            this.showDeleteModal = false;
+            this.showLogoutConfirmModal = false;
+            this.showDeleteReportModal = false;
+            this.showBatchDeleteModal = false;
+            this.showRestartModal = false;
+            this.showDeleteDocModal = false;
+            this.showAccountMenu = false;
+            this.sessionBatchMode = false;
+            this.reportBatchMode = false;
+            this.selectedSessionIds = [];
+            this.selectedReportNames = [];
+            this.stopThinkingPolling();
+            this.stopWebSearchPolling();
+            this.stopReportGenerationPolling();
+            this.stopPresentationPolling();
+            this.resetPresentationProgressFeedback();
+            this.resetReportGenerationFeedback();
+
+            if (showToast) {
+                this.showToast(toastMessage, toastType);
+            }
+            this.$nextTick(() => this.focusAuthAccountInput());
+        },
+
+        setAuthMode(mode = 'login') {
+            this.authMode = mode === 'register' ? 'register' : 'login';
+            this.authErrors = { account: '', password: '', confirmPassword: '' };
+            this.authForm.password = '';
+            this.authForm.confirmPassword = '';
+            this.$nextTick(() => this.focusAuthAccountInput());
+        },
+
+        focusAuthAccountInput() {
+            const input = document.querySelector('[data-auth-autofocus]');
+            if (input && typeof input.focus === 'function') {
+                input.focus({ preventScroll: true });
+            }
+        },
+
+        clearAuthErrors() {
+            this.authErrors = { account: '', password: '', confirmPassword: '' };
+        },
+
+        getAuthInputType(account = '') {
+            const value = String(account || '').trim();
+            if (value.includes('@')) return 'email';
+            return 'tel';
+        },
+
+        validateAuthForm() {
+            const errors = { account: '', password: '', confirmPassword: '' };
+            const account = String(this.authForm.account || '').trim();
+            const password = String(this.authForm.password || '');
+
+            if (!account) {
+                errors.account = '请输入邮箱或手机号';
+            } else if (account.includes('@')) {
+                const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                if (!emailPattern.test(account)) {
+                    errors.account = '请输入有效邮箱';
+                }
+            } else {
+                const normalizedPhone = account.replace(/[\s-]/g, '').replace(/^\+86/, '').replace(/^86(?=1\d{10}$)/, '');
+                if (!/^1\d{10}$/.test(normalizedPhone)) {
+                    errors.account = '请输入有效手机号（11位）';
+                }
+            }
+
+            if (password.length < 8 || password.length > 64) {
+                errors.password = '密码长度需为 8-64 位';
+            }
+
+            if (this.authMode === 'register' && password !== this.authForm.confirmPassword) {
+                errors.confirmPassword = '两次输入的密码不一致';
+            }
+
+            this.authErrors = errors;
+            return !errors.account && !errors.password && !errors.confirmPassword;
+        },
+
+        async submitAuth() {
+            if (this.authLoading) return;
+
+            if (!this.validateAuthForm()) {
+                this.showToast('请先修正表单错误', 'warning');
+                return;
+            }
+
+            this.authLoading = true;
+            try {
+                const endpoint = this.authMode === 'register' ? '/auth/register' : '/auth/login';
+                const result = await this.apiCall(endpoint, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        account: String(this.authForm.account || '').trim(),
+                        password: this.authForm.password
+                    }),
+                    skipAuthRedirect: true
+                });
+
+                this.currentUser = result?.user || null;
+                this.authReady = Boolean(this.currentUser);
+                this.authForm.password = '';
+                this.authForm.confirmPassword = '';
+                this.clearAuthErrors();
+                this.showToast(this.authMode === 'register' ? '注册成功，已自动登录' : '登录成功', 'success');
+
+                await this.loadScenarios();
+                await this.loadSessions();
+                await this.loadReports();
+                this.startQuoteRotation();
+                this.checkFirstVisit();
+                this.initGuide();
+            } catch (error) {
+                this.showToast(error?.message || '登录失败，请重试', 'error');
+            } finally {
+                this.authLoading = false;
+            }
+        },
+
+        async logout() {
+            if (this.authLoading) return;
+            this.showAccountMenu = false;
+            this.showLogoutConfirmModal = false;
+            this.authLoading = true;
+            try {
+                await this.apiCall('/auth/logout', { method: 'POST', skipAuthRedirect: true });
+            } catch (error) {
+                // 忽略退出失败，前端仍执行本地登出
+            } finally {
+                this.enterLoginState({
+                    showToast: true,
+                    toastMessage: '已退出登录',
+                    toastType: 'success'
+                });
+            }
+        },
+
+        requestLogout() {
+            this.showAccountMenu = false;
+            this.showLogoutConfirmModal = true;
+        },
+
+        async confirmLogout() {
+            if (this.authLoading) return;
+            this.showLogoutConfirmModal = false;
+            await this.logout();
         },
 
         registerDialogFocusWatchers() {
@@ -734,7 +940,7 @@ function deepVision() {
 
             this.themeMode = mode;
             this.effectiveTheme = effective;
-            this.showThemeMenu = false;
+            this.showAccountMenu = false;
 
             const root = document.documentElement;
             root.setAttribute('data-theme-mode', mode);
@@ -1002,6 +1208,11 @@ function deepVision() {
 
         // 启动诗句轮播
         startQuoteRotation() {
+            if (this.quoteRotationInterval) {
+                clearInterval(this.quoteRotationInterval);
+                this.quoteRotationInterval = null;
+            }
+
             // 如果配置文件禁用了诗句轮播或没有诗句，则不启动
             if (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.quotes?.enabled === false) {
                 return;
@@ -1211,9 +1422,10 @@ function deepVision() {
         // ============ API 调用 ============
         async apiCall(endpoint, options = {}) {
             try {
+                const { skipAuthRedirect = false, ...fetchOptions } = options;
                 const response = await fetch(`${API_BASE}${endpoint}`, {
                     headers: { 'Content-Type': 'application/json' },
-                    ...options
+                    ...fetchOptions
                 });
                 if (!response.ok) {
                     let errorMsg = `HTTP ${response.status}`;
@@ -1223,6 +1435,15 @@ function deepVision() {
                     } catch (parseError) {
                         // 响应非 JSON 格式，使用 HTTP 状态信息
                     }
+
+                    if (response.status === 401 && !skipAuthRedirect) {
+                        this.enterLoginState({
+                            showToast: true,
+                            toastMessage: '登录状态已失效，请重新登录',
+                            toastType: 'warning'
+                        });
+                    }
+
                     throw new Error(errorMsg);
                 }
                 return await response.json();
@@ -1299,7 +1520,12 @@ function deepVision() {
                 this.currentView = 'interview';
                 this.showToast('会话创建成功', 'success');
             } catch (error) {
-                this.showToast('创建会话失败', 'error');
+                const message = String(error?.message || '').trim();
+                if (message.includes('请先登录')) {
+                    this.showToast('登录状态已失效，请重新登录后再试', 'error');
+                } else {
+                    this.showToast(message || '创建会话失败', 'error');
+                }
             } finally {
                 this.loading = false;
             }
@@ -4685,6 +4911,7 @@ function deepVision() {
 
         // ============ 工具方法 ============
         switchView(view) {
+            if (!this.authReady) return;
             this.currentView = view;
             this.selectedReport = null;
             this.presentationPdfUrl = '';
@@ -4702,6 +4929,7 @@ function deepVision() {
         },
 
         exitInterview() {
+            if (!this.authReady) return;
             // 清理所有定时器，防止内存泄漏
             this.stopThinkingPolling();
             this.stopWebSearchPolling();

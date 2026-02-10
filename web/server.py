@@ -19,16 +19,19 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import threading
 import time as _time
 import requests
-from datetime import datetime, timezone
+from functools import wraps
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, unquote, urlparse
 
-from flask import Flask, jsonify, request, send_from_directory, redirect
+from flask import Flask, jsonify, request, send_from_directory, redirect, session
 from flask_cors import CORS
+from werkzeug.security import check_password_hash, generate_password_hash
 
 # 加载配置文件
 try:
@@ -120,8 +123,32 @@ except ImportError:
     HAS_ANTHROPIC = False
     print("警告: anthropic 库未安装，将无法使用 AI 功能")
 
+try:
+    import config as runtime_config
+except Exception:
+    runtime_config = None
+
 app = Flask(__name__, static_folder='.')
 CORS(app)
+
+# Session 配置
+config_secret_key = getattr(runtime_config, "SECRET_KEY", "") if runtime_config else ""
+env_secret_key = os.environ.get("DEEPVISION_SECRET_KEY", "") or os.environ.get("SECRET_KEY", "")
+if config_secret_key or env_secret_key:
+    app_secret_key = config_secret_key or env_secret_key
+elif DEBUG_MODE:
+    # 开发模式使用固定默认密钥，避免每次重启后登录态全部失效
+    app_secret_key = os.environ.get("DEEPVISION_DEV_SECRET_KEY", "deepvision-dev-secret-key")
+    print("⚠️  未配置 SECRET_KEY，开发模式使用固定默认会话密钥")
+else:
+    app_secret_key = secrets.token_hex(32)
+    print("⚠️  未配置 SECRET_KEY，当前使用临时会话密钥（重启后登录态会失效）")
+
+app.config["SECRET_KEY"] = app_secret_key
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = not DEBUG_MODE
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
 # 路径配置
 SKILL_DIR = Path(__file__).parent.parent.resolve()
@@ -133,13 +160,29 @@ TEMP_DIR = DATA_DIR / "temp"
 METRICS_DIR = DATA_DIR / "metrics"
 SUMMARIES_DIR = DATA_DIR / "summaries"  # 文档摘要缓存目录
 PRESENTATIONS_DIR = DATA_DIR / "presentations"
+AUTH_DIR = DATA_DIR / "auth"
 PRESENTATION_MAP_FILE = PRESENTATIONS_DIR / ".presentation_map.json"
 PRESENTATION_MAP_LOCK = threading.Lock()
 DELETED_REPORTS_FILE = REPORTS_DIR / ".deleted_reports.json"
 DELETED_DOCS_FILE = DATA_DIR / ".deleted_docs.json"  # 软删除记录文件
+REPORT_OWNERS_FILE = REPORTS_DIR / ".owners.json"
+REPORT_OWNERS_LOCK = threading.Lock()
 
-for d in [SESSIONS_DIR, REPORTS_DIR, CONVERTED_DIR, TEMP_DIR, METRICS_DIR, SUMMARIES_DIR, PRESENTATIONS_DIR]:
+auth_db_from_config = getattr(runtime_config, "AUTH_DB_PATH", "") if runtime_config else ""
+auth_db_from_env = os.environ.get("DEEPVISION_AUTH_DB_PATH", "")
+raw_auth_db_path = auth_db_from_env or auth_db_from_config
+if raw_auth_db_path:
+    AUTH_DB_PATH = Path(raw_auth_db_path).expanduser()
+    if not AUTH_DB_PATH.is_absolute():
+        AUTH_DB_PATH = (SKILL_DIR / AUTH_DB_PATH).resolve()
+else:
+    AUTH_DB_PATH = AUTH_DIR / "users.db"
+
+for d in [SESSIONS_DIR, REPORTS_DIR, CONVERTED_DIR, TEMP_DIR, METRICS_DIR, SUMMARIES_DIR, PRESENTATIONS_DIR, AUTH_DIR]:
     d.mkdir(parents=True, exist_ok=True)
+
+AUTH_EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+AUTH_PHONE_PATTERN = re.compile(r"^1\d{10}$")
 
 # ============ 场景配置加载器 ============
 import sys
@@ -190,6 +233,143 @@ def safe_load_session(session_file: Path) -> dict:
     except Exception as e:
         print(f"⚠️ 读取会话文件失败: {session_file}, 错误: {e}")
         return None
+
+
+def get_auth_db_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(AUTH_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_auth_db() -> None:
+    with get_auth_db_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE,
+                phone TEXT UNIQUE,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                CHECK (email IS NOT NULL OR phone IS NOT NULL)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone)")
+        conn.commit()
+
+
+def normalize_phone_number(raw_phone: str) -> str:
+    normalized = re.sub(r"[\s-]", "", raw_phone or "")
+    if normalized.startswith("+86"):
+        normalized = normalized[3:]
+    elif normalized.startswith("86") and len(normalized) == 13:
+        normalized = normalized[2:]
+    return normalized
+
+
+def normalize_account(account: str) -> tuple[Optional[str], Optional[str], str]:
+    account_text = str(account or "").strip()
+    if not account_text:
+        return None, None, "账号不能为空"
+
+    if "@" in account_text:
+        email = account_text.lower()
+        if not AUTH_EMAIL_PATTERN.match(email):
+            return None, None, "请输入有效的邮箱地址"
+        return email, None, ""
+
+    phone = normalize_phone_number(account_text)
+    if not AUTH_PHONE_PATTERN.match(phone):
+        return None, None, "请输入有效的手机号（中国大陆 11 位）"
+    return None, phone, ""
+
+
+def build_user_payload(row: sqlite3.Row) -> dict:
+    return {
+        "id": int(row["id"]),
+        "email": row["email"] or "",
+        "phone": row["phone"] or "",
+        "account": row["email"] or row["phone"] or "",
+        "created_at": row["created_at"]
+    }
+
+
+def query_user_by_id(user_id: int) -> Optional[sqlite3.Row]:
+    with get_auth_db_connection() as conn:
+        return conn.execute(
+            "SELECT id, email, phone, password_hash, created_at, updated_at FROM users WHERE id = ? LIMIT 1",
+            (user_id,)
+        ).fetchone()
+
+
+def query_user_by_account(email: Optional[str], phone: Optional[str]) -> Optional[sqlite3.Row]:
+    with get_auth_db_connection() as conn:
+        if email:
+            return conn.execute(
+                "SELECT id, email, phone, password_hash, created_at, updated_at FROM users WHERE email = ? LIMIT 1",
+                (email,)
+            ).fetchone()
+        if phone:
+            return conn.execute(
+                "SELECT id, email, phone, password_hash, created_at, updated_at FROM users WHERE phone = ? LIMIT 1",
+                (phone,)
+            ).fetchone()
+    return None
+
+
+def get_current_user() -> Optional[sqlite3.Row]:
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+
+    try:
+        user_id_int = int(user_id)
+    except (TypeError, ValueError):
+        session.clear()
+        return None
+
+    user_row = query_user_by_id(user_id_int)
+    if not user_row:
+        session.clear()
+        return None
+
+    return user_row
+
+
+def login_user(user_row: sqlite3.Row) -> None:
+    session.clear()
+    session.permanent = True
+    session["user_id"] = int(user_row["id"])
+
+
+def require_login(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        user = get_current_user()
+        if not user:
+            return jsonify({"error": "请先登录"}), 401
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+@app.before_request
+def enforce_auth_for_protected_routes():
+    if request.method == "OPTIONS":
+        return None
+
+    path = request.path or ""
+    if path.startswith("/api/sessions") or path.startswith("/api/reports"):
+        if not get_current_user():
+            return jsonify({"error": "请先登录"}), 401
+
+    return None
+
+
+init_auth_db()
 
 
 def load_presentation_map() -> dict:
@@ -919,6 +1099,132 @@ def get_deleted_reports() -> set:
         return set(data.get("deleted", []))
     except Exception:
         return set()
+
+
+def load_report_owners() -> dict:
+    if not REPORT_OWNERS_FILE.exists():
+        return {}
+    try:
+        payload = json.loads(REPORT_OWNERS_FILE.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return {}
+        normalized = {}
+        for name, owner in payload.items():
+            if not isinstance(name, str):
+                continue
+            try:
+                owner_id = int(owner)
+            except (TypeError, ValueError):
+                continue
+            if owner_id <= 0:
+                continue
+            normalized[name] = owner_id
+        return normalized
+    except Exception:
+        return {}
+
+
+def save_report_owners(data: dict) -> None:
+    REPORT_OWNERS_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+
+
+def get_report_owner_id(filename: str) -> int:
+    with REPORT_OWNERS_LOCK:
+        owners = load_report_owners()
+    try:
+        return int(owners.get(filename, 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def set_report_owner_id(filename: str, owner_user_id: int) -> None:
+    owner_id = int(owner_user_id)
+    with REPORT_OWNERS_LOCK:
+        owners = load_report_owners()
+        owners[filename] = owner_id
+        save_report_owners(owners)
+
+
+def ensure_report_owner(filename: str, owner_user_id: int) -> bool:
+    owner = get_report_owner_id(filename)
+    owner_id = int(owner_user_id)
+    if owner <= 0:
+        set_report_owner_id(filename, owner_id)
+        return True
+    return owner == owner_id
+
+
+def is_session_owned_by_user(session: dict, user_id: int) -> bool:
+    if not isinstance(session, dict):
+        return False
+    owner = session.get("owner_user_id")
+    try:
+        owner_id = int(owner)
+    except (TypeError, ValueError):
+        return False
+    return owner_id == int(user_id)
+
+
+def ensure_session_owner(session: dict, session_file: Path, user_id: int) -> bool:
+    if not isinstance(session, dict):
+        return False
+
+    current_owner = session.get("owner_user_id")
+    try:
+        owner_id = int(current_owner)
+    except (TypeError, ValueError):
+        owner_id = 0
+
+    user_id_int = int(user_id)
+    if owner_id <= 0:
+        session["owner_user_id"] = user_id_int
+        session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+        return True
+
+    return owner_id == user_id_int
+
+
+def get_current_user_id_or_none() -> Optional[int]:
+    user = get_current_user()
+    if not user:
+        return None
+    try:
+        return int(user["id"])
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def load_session_for_user(session_id: str, user_id: int, include_missing: bool = False):
+    session_file = SESSIONS_DIR / f"{session_id}.json"
+    if not session_file.exists():
+        if include_missing:
+            return None, None, "not_found"
+        return None, "会话不存在", 404
+
+    session_data = safe_load_session(session_file)
+    if session_data is None:
+        return None, "会话数据损坏", 500
+
+    if not ensure_session_owner(session_data, session_file, user_id):
+        return None, "会话不存在", 404
+
+    if include_missing:
+        return session_file, session_data, "ok"
+    return session_file, session_data
+
+
+def enforce_report_owner_or_404(filename: str, user_id: int) -> tuple[Optional[Path], Optional[tuple]]:
+    report_file = REPORTS_DIR / filename
+    if not report_file.exists():
+        return None, (jsonify({"error": "报告不存在"}), 404)
+
+    if not ensure_report_owner(filename, user_id):
+        return None, (jsonify({"error": "报告不存在"}), 404)
+
+    return report_file, None
 
 
 def mark_report_as_deleted(filename: str):
@@ -3858,15 +4164,105 @@ def recognize_scenario():
     })
 
 
+# ============ 认证 API ============
+
+@app.route('/api/auth/register', methods=['POST'])
+def auth_register():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "无效的请求数据"}), 400
+
+    account = str(data.get("account", "")).strip()
+    password = str(data.get("password", ""))
+
+    email, phone, account_error = normalize_account(account)
+    if account_error:
+        return jsonify({"error": account_error}), 400
+
+    if len(password) < 8 or len(password) > 64:
+        return jsonify({"error": "密码长度需为 8-64 位"}), 400
+
+    if query_user_by_account(email, phone):
+        return jsonify({"error": "该账号已注册"}), 409
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    password_hash = generate_password_hash(password, method="pbkdf2:sha256")
+
+    try:
+        with get_auth_db_connection() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO users (email, phone, password_hash, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (email, phone, password_hash, now_iso, now_iso)
+            )
+            conn.commit()
+            user_id = cursor.lastrowid
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "该账号已注册"}), 409
+
+    user_row = query_user_by_id(user_id)
+    if not user_row:
+        return jsonify({"error": "注册失败，请重试"}), 500
+
+    login_user(user_row)
+    return jsonify({"user": build_user_payload(user_row)}), 201
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "无效的请求数据"}), 400
+
+    account = str(data.get("account", "")).strip()
+    password = str(data.get("password", ""))
+
+    if not account or not password:
+        return jsonify({"error": "账号和密码不能为空"}), 400
+
+    email, phone, account_error = normalize_account(account)
+    if account_error:
+        return jsonify({"error": account_error}), 400
+
+    user_row = query_user_by_account(email, phone)
+    if not user_row or not check_password_hash(user_row["password_hash"], password):
+        return jsonify({"error": "账号或密码错误"}), 401
+
+    login_user(user_row)
+    return jsonify({"user": build_user_payload(user_row)})
+
+
+@app.route('/api/auth/logout', methods=['POST'])
+def auth_logout():
+    session.clear()
+    return jsonify({"success": True})
+
+
+@app.route('/api/auth/me', methods=['GET'])
+def auth_me():
+    user_row = get_current_user()
+    if not user_row:
+        return jsonify({"error": "请先登录"}), 401
+    return jsonify({"user": build_user_payload(user_row)})
+
+
 # ============ 会话 API ============
 
 @app.route('/api/sessions', methods=['GET'])
 def list_sessions():
     """获取所有会话"""
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
     sessions = []
     for f in SESSIONS_DIR.glob("*.json"):
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
+            if not is_session_owned_by_user(data, user_id):
+                continue
             sessions.append({
                 "session_id": data.get("session_id"),
                 "topic": data.get("topic"),
@@ -3888,6 +4284,10 @@ def list_sessions():
 @app.route('/api/sessions', methods=['POST'])
 def create_session():
     """创建新会话"""
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
     data = request.get_json()
     if not data:
         return jsonify({"error": "无效的请求数据"}), 400
@@ -3933,6 +4333,7 @@ def create_session():
 
     session = {
         "session_id": session_id,
+        "owner_user_id": user_id,
         "topic": topic,
         "description": description,  # 存储主题描述
         "interview_mode": interview_mode,  # 存储访谈模式
@@ -3964,13 +4365,16 @@ def create_session():
 @app.route('/api/sessions/<session_id>', methods=['GET'])
 def get_session(session_id):
     """获取会话详情"""
-    session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return jsonify({"error": "会话不存在"}), 404
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
 
-    session = safe_load_session(session_file)
-    if session is None:
-        return jsonify({"error": "会话数据损坏"}), 500
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        _file, error_msg, status_code = loaded
+        return jsonify({"error": error_msg}), status_code
+
+    session_file, session = loaded
 
     # 数据迁移：兼容旧会话格式
     session = migrate_session_docs(session)
@@ -3980,14 +4384,20 @@ def get_session(session_id):
 @app.route('/api/sessions/<session_id>', methods=['PUT'])
 def update_session(session_id):
     """更新会话"""
-    session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return jsonify({"error": "会话不存在"}), 404
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        _file, error_msg, status_code = loaded
+        return jsonify({"error": error_msg}), status_code
 
     updates = request.get_json()
-    session = safe_load_session(session_file)
-    if session is None:
-        return jsonify({"error": "会话数据损坏"}), 500
+    session_file, session = loaded
+
+    if not isinstance(updates, dict):
+        return jsonify({"error": "无效的请求数据"}), 400
 
     # 定义允许更新的字段白名单
     UPDATABLE_FIELDS = {"description", "topic", "status"}
@@ -4005,9 +4415,17 @@ def update_session(session_id):
 @app.route('/api/sessions/<session_id>', methods=['DELETE'])
 def delete_session(session_id):
     """删除会话"""
-    session_file = SESSIONS_DIR / f"{session_id}.json"
-    if session_file.exists():
-        session_file.unlink()
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    loaded = load_session_for_user(session_id, user_id, include_missing=True)
+    session_file, _session, state = loaded
+
+    if state == "not_found":
+        return jsonify({"error": "会话不存在"}), 404
+
+    session_file.unlink()
 
     # ========== 步骤7: 清理缓存和状态 ==========
     invalidate_prefetch(session_id)
@@ -4019,6 +4437,10 @@ def delete_session(session_id):
 @app.route('/api/sessions/batch-delete', methods=['POST'])
 def batch_delete_sessions():
     """批量删除会话（默认允许删除进行中的会话）。"""
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
     data = request.get_json(silent=True) or {}
     session_ids = unique_non_empty_strings(data.get("session_ids", []))
     delete_reports = bool(data.get("delete_reports", False))
@@ -4041,6 +4463,10 @@ def batch_delete_sessions():
         session = safe_load_session(session_file)
         if session is None:
             skipped_sessions.append({"session_id": session_id, "reason": "会话数据损坏"})
+            continue
+
+        if not is_session_owned_by_user(session, user_id):
+            missing_sessions.append(session_id)
             continue
 
         if skip_in_progress:
@@ -4256,11 +4682,16 @@ def parse_question_response(response: str, debug: bool = False) -> Optional[dict
 @app.route('/api/sessions/<session_id>/next-question', methods=['POST'])
 def get_next_question(session_id):
     """获取下一个问题（AI 生成）"""
-    session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return jsonify({"error": "会话不存在"}), 404
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
 
-    session = json.loads(session_file.read_text(encoding="utf-8"))
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        _file, error_msg, status_code = loaded
+        return jsonify({"error": error_msg}), status_code
+
+    session_file, session = loaded
     data = request.get_json() or {}
     default_dim = get_dimension_order_for_session(session)[0] if get_dimension_order_for_session(session) else "customer_needs"
     dimension = data.get("dimension", default_dim)
@@ -4563,11 +4994,16 @@ def get_fallback_question(session: dict, dimension: str) -> dict:
 @app.route('/api/sessions/<session_id>/submit-answer', methods=['POST'])
 def submit_answer(session_id):
     """提交回答"""
-    session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return jsonify({"error": "会话不存在"}), 404
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
 
-    session = json.loads(session_file.read_text(encoding="utf-8"))
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        _file, error_msg, status_code = loaded
+        return jsonify({"error": error_msg}), status_code
+
+    session_file, session = loaded
 
     # 验证请求数据
     data = request.get_json()
@@ -4669,11 +5105,16 @@ def submit_answer(session_id):
 @app.route('/api/sessions/<session_id>/undo-answer', methods=['POST'])
 def undo_answer(session_id):
     """撤销最后一个回答"""
-    session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return jsonify({"error": "会话不存在"}), 404
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
 
-    session = json.loads(session_file.read_text(encoding="utf-8"))
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        _file, error_msg, status_code = loaded
+        return jsonify({"error": error_msg}), status_code
+
+    session_file, session = loaded
 
     # 检查是否有回答可以撤销
     if not session.get("interview_log") or len(session["interview_log"]) == 0:
@@ -4705,11 +5146,16 @@ def skip_follow_up(session_id):
     用户主动跳过当前问题的追问
     标记最后一个正式问题的回答为"不需要追问"
     """
-    session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return jsonify({"error": "会话不存在"}), 404
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
 
-    session = json.loads(session_file.read_text(encoding="utf-8"))
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        _file, error_msg, status_code = loaded
+        return jsonify({"error": error_msg}), status_code
+
+    session_file, session = loaded
     data = request.get_json() or {}
     dimension = data.get("dimension")
 
@@ -4748,11 +5194,16 @@ def complete_dimension(session_id):
     用户主动完成当前维度
     将当前维度标记为已完成（覆盖度设为100%）
     """
-    session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return jsonify({"error": "会话不存在"}), 404
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
 
-    session = json.loads(session_file.read_text(encoding="utf-8"))
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        _file, error_msg, status_code = loaded
+        return jsonify({"error": error_msg}), status_code
+
+    session_file, session = loaded
     data = request.get_json() or {}
     dimension = data.get("dimension")
 
@@ -4793,9 +5244,16 @@ def complete_dimension(session_id):
 @app.route('/api/sessions/<session_id>/documents', methods=['POST'])
 def upload_document(session_id):
     """上传参考文档"""
-    session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return jsonify({"error": "会话不存在"}), 404
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        _file, error_msg, status_code = loaded
+        return jsonify({"error": error_msg}), status_code
+
+    session_file, session = loaded
 
     if 'file' not in request.files:
         return jsonify({"error": "未找到文件"}), 400
@@ -4861,7 +5319,6 @@ def upload_document(session_id):
         return jsonify({"error": "文件解析后内容为空"}), 400
 
     # 更新会话
-    session = json.loads(session_file.read_text(encoding="utf-8"))
     # 数据迁移：兼容旧会话
     session = migrate_session_docs(session)
     session["reference_materials"].append({
@@ -4888,11 +5345,16 @@ def delete_document(session_id, doc_name):
     if '..' in doc_name or doc_name.startswith('/'):
         return jsonify({"error": "无效的文档名"}), 400
 
-    session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return jsonify({"error": "会话不存在"}), 404
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
 
-    session = json.loads(session_file.read_text(encoding="utf-8"))
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        _file, error_msg, status_code = loaded
+        return jsonify({"error": error_msg}), status_code
+
+    session_file, session = loaded
     # 数据迁移：兼容旧会话
     session = migrate_session_docs(session)
 
@@ -4924,11 +5386,16 @@ def delete_document(session_id, doc_name):
 @app.route('/api/sessions/<session_id>/restart-interview', methods=['POST'])
 def restart_interview(session_id):
     """重新访谈：将当前访谈记录保存为参考资料，然后重置访谈状态"""
-    session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return jsonify({"error": "会话不存在"}), 404
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
 
-    session = json.loads(session_file.read_text(encoding="utf-8"))
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        _file, error_msg, status_code = loaded
+        return jsonify({"error": error_msg}), status_code
+
+    session_file, session = loaded
     # 数据迁移：兼容旧会话
     session = migrate_session_docs(session)
 
@@ -5013,15 +5480,20 @@ def restart_interview(session_id):
 @app.route('/api/sessions/<session_id>/generate-report', methods=['POST'])
 def generate_report(session_id):
     """生成访谈报告（AI 生成）"""
-    session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return jsonify({"error": "会话不存在"}), 404
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        _file, error_msg, status_code = loaded
+        return jsonify({"error": error_msg}), status_code
+
+    session_file, session = loaded
 
     update_report_generation_status(session_id, "queued")
 
     try:
-        session = json.loads(session_file.read_text(encoding="utf-8"))
-
         # 检查是否有 Claude API
         if claude_client:
             update_report_generation_status(session_id, "building_prompt")
@@ -5052,6 +5524,7 @@ def generate_report(session_id):
                 filename = f"deep-vision-{date_str}-{topic_slug}.md"
                 report_file = REPORTS_DIR / filename
                 report_file.write_text(report_content, encoding="utf-8")
+                set_report_owner_id(filename, user_id)
 
                 # 更新会话状态
                 session["status"] = "completed"
@@ -5076,6 +5549,7 @@ def generate_report(session_id):
         filename = f"deep-vision-{date_str}-{topic_slug}.md"
         report_file = REPORTS_DIR / filename
         report_file.write_text(report_content, encoding="utf-8")
+        set_report_owner_id(filename, user_id)
 
         session["status"] = "completed"
         session["updated_at"] = get_utc_now()
@@ -5752,6 +6226,19 @@ def download_presentation_file(url: str, name: str = "") -> Optional[dict]:
 
 @app.route('/api/reports/<path:filename>/presentation', methods=['GET'])
 def get_report_presentation(filename):
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    filename = normalize_presentation_report_filename(filename)
+    if not filename:
+        return jsonify({"error": "演示文稿不存在"}), 404
+
+    _report_file, owner_error = enforce_report_owner_or_404(filename, user_id)
+    if owner_error:
+        response, status_code = owner_error
+        return response, status_code
+
     record = get_presentation_record(filename)
     if not record:
         return jsonify({"error": "演示文稿不存在"}), 404
@@ -5774,8 +6261,16 @@ def get_report_presentation(filename):
 
 @app.route('/api/reports/<path:filename>/presentation/status', methods=['GET'])
 def get_report_presentation_status(filename):
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
     filename = normalize_presentation_report_filename(filename)
     if not filename:
+        return jsonify({"exists": False})
+
+    _report_file, owner_error = enforce_report_owner_or_404(filename, user_id)
+    if owner_error:
         return jsonify({"exists": False})
 
     record = get_presentation_record(filename)
@@ -5833,6 +6328,19 @@ def get_report_presentation_status(filename):
 
 @app.route('/api/reports/<path:filename>/presentation/link', methods=['GET'])
 def get_report_presentation_link(filename):
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    filename = normalize_presentation_report_filename(filename)
+    if not filename:
+        return jsonify({"error": "演示文稿不存在"}), 404
+
+    _report_file, owner_error = enforce_report_owner_or_404(filename, user_id)
+    if owner_error:
+        response, status_code = owner_error
+        return response, status_code
+
     record = get_presentation_record(filename)
     if not record:
         return jsonify({"error": "演示文稿不存在"}), 404
@@ -5847,11 +6355,17 @@ def get_report_presentation_link(filename):
 @app.route('/api/reports', methods=['GET'])
 def list_reports():
     """获取所有报告（排除已删除的）"""
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
     deleted = get_deleted_reports()
     reports = []
     for f in REPORTS_DIR.glob("*.md"):
         # 跳过已标记为删除的报告
         if f.name in deleted:
+            continue
+        if not ensure_report_owner(f.name, user_id):
             continue
         stat = f.stat()
         reports.append({
@@ -5868,9 +6382,14 @@ def list_reports():
 @app.route('/api/reports/<path:filename>', methods=['GET'])
 def get_report(filename):
     """获取报告内容"""
-    report_file = REPORTS_DIR / filename
-    if not report_file.exists():
-        return jsonify({"error": "报告不存在"}), 404
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    report_file, owner_error = enforce_report_owner_or_404(filename, user_id)
+    if owner_error:
+        response, status_code = owner_error
+        return response, status_code
 
     content = report_file.read_text(encoding="utf-8")
     return jsonify({"name": filename, "content": content})
@@ -5879,13 +6398,18 @@ def get_report(filename):
 @app.route('/api/reports/<path:filename>/refly', methods=['POST'])
 def send_report_to_refly(filename):
     """将报告发送到演示文稿服务生成演示文稿"""
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
     filename = normalize_presentation_report_filename(filename)
     if not filename:
         return jsonify({"error": "报告文件名无效"}), 400
 
-    report_file = REPORTS_DIR / filename
-    if not report_file.exists():
-        return jsonify({"error": "报告不存在"}), 404
+    report_file, owner_error = enforce_report_owner_or_404(filename, user_id)
+    if owner_error:
+        response, status_code = owner_error
+        return response, status_code
 
     if not is_refly_configured():
         return jsonify({"error": "演示文稿服务未配置"}), 400
@@ -6053,9 +6577,19 @@ def send_report_to_refly(filename):
 
 @app.route('/api/reports/<path:filename>/refly/status', methods=['GET'])
 def check_refly_status(filename):
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
     filename = normalize_presentation_report_filename(filename)
     if not filename:
         return jsonify({"error": "filename 缺失"}), 400
+
+    _report_file, owner_error = enforce_report_owner_or_404(filename, user_id)
+    if owner_error:
+        response, status_code = owner_error
+        return response, status_code
+
     execution_id = request.args.get("execution_id", "").strip()
     if not execution_id:
         return jsonify({"error": "execution_id 缺失"}), 400
@@ -6145,9 +6679,18 @@ def check_refly_status(filename):
 
 @app.route('/api/reports/<path:filename>/presentation/abort', methods=['POST'])
 def abort_report_presentation(filename):
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
     filename = normalize_presentation_report_filename(filename)
     if not filename:
         return jsonify({"error": "filename 缺失"}), 400
+
+    _report_file, owner_error = enforce_report_owner_or_404(filename, user_id)
+    if owner_error:
+        response, status_code = owner_error
+        return response, status_code
 
     execution_id = request.args.get("execution_id", "").strip()
     if not execution_id:
@@ -6173,9 +6716,14 @@ def abort_report_presentation(filename):
 @app.route('/api/reports/<path:filename>', methods=['DELETE'])
 def delete_report(filename):
     """删除报告（仅标记为已删除，保留文件存档）"""
-    report_file = REPORTS_DIR / filename
-    if not report_file.exists():
-        return jsonify({"error": "报告不存在"}), 404
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    report_file, owner_error = enforce_report_owner_or_404(filename, user_id)
+    if owner_error:
+        response, status_code = owner_error
+        return response, status_code
 
     try:
         # 只标记为已删除，不真正删除文件
@@ -6191,6 +6739,10 @@ def delete_report(filename):
 @app.route('/api/reports/batch-delete', methods=['POST'])
 def batch_delete_reports():
     """批量删除报告（软删除）。"""
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
     data = request.get_json(silent=True) or {}
     report_names = unique_non_empty_strings(data.get("report_names", []))
 
@@ -6202,9 +6754,12 @@ def batch_delete_reports():
     missing_reports = []
 
     for report_name in report_names:
-        report_file = REPORTS_DIR / report_name
-        if not report_file.exists():
-            missing_reports.append(report_name)
+        report_file, owner_error = enforce_report_owner_or_404(report_name, user_id)
+        if owner_error:
+            if report_file is None and not (REPORTS_DIR / report_name).exists():
+                missing_reports.append(report_name)
+            else:
+                skipped_reports.append({"name": report_name, "reason": "无权限或报告不存在"})
             continue
 
         try:
@@ -6247,6 +6802,14 @@ def get_web_search_status():
 @app.route('/api/status/thinking/<session_id>', methods=['GET'])
 def get_thinking_status(session_id):
     """获取 AI 思考进度状态（用于前端分阶段进度展示）"""
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        return jsonify({"active": False})
+
     with thinking_status_lock:
         status = thinking_status.get(session_id)
 
@@ -6265,6 +6828,14 @@ def get_thinking_status(session_id):
 @app.route('/api/status/report-generation/<session_id>', methods=['GET'])
 def get_report_generation_status(session_id):
     """获取报告生成进度状态"""
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        return jsonify({"active": False})
+
     with report_generation_status_lock:
         status = report_generation_status.get(session_id)
 
