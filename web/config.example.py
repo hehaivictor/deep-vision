@@ -48,6 +48,16 @@ ENABLE_DEBUG_LOG = True
 # 是否启用联网搜索（需要配置 ZHIPU_API_KEY）
 ENABLE_WEB_SEARCH = True
 
+# 是否启用访谈深度增强 V2（灰度开关）
+# 关闭时完全回退旧逻辑
+ENABLE_INTERVIEW_DEPTH_V2 = False
+
+# 启用 V2 的模式列表（可选：quick, standard, deep）
+INTERVIEW_DEPTH_V2_MODES = ["quick", "standard", "deep"]
+
+# 深度模式跳过追问是否要求二次确认
+DEEP_MODE_SKIP_FOLLOWUP_CONFIRM = True
+
 # ============ 搜索 API 配置 ============
 
 # 智谱AI Web Search API 配置

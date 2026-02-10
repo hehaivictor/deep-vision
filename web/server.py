@@ -128,6 +128,39 @@ try:
 except Exception:
     runtime_config = None
 
+
+def _parse_env_bool(value, default: bool) -> bool:
+    """解析布尔环境变量。"""
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_mode_list(value, default: list[str]) -> list[str]:
+    """规范化访谈模式列表配置。"""
+    if isinstance(value, str):
+        candidates = [item.strip() for item in value.split(",") if item.strip()]
+        return candidates or default
+    if isinstance(value, (list, tuple, set)):
+        candidates = [str(item).strip() for item in value if str(item).strip()]
+        return candidates or default
+    return default
+
+
+DEFAULT_DEPTH_V2_MODES = ["quick", "standard", "deep"]
+ENABLE_INTERVIEW_DEPTH_V2 = _parse_env_bool(
+    os.environ.get("ENABLE_INTERVIEW_DEPTH_V2"),
+    bool(getattr(runtime_config, "ENABLE_INTERVIEW_DEPTH_V2", False)) if runtime_config else False,
+)
+INTERVIEW_DEPTH_V2_MODES = _normalize_mode_list(
+    os.environ.get("INTERVIEW_DEPTH_V2_MODES", getattr(runtime_config, "INTERVIEW_DEPTH_V2_MODES", None) if runtime_config else None),
+    DEFAULT_DEPTH_V2_MODES,
+)
+DEEP_MODE_SKIP_FOLLOWUP_CONFIRM = _parse_env_bool(
+    os.environ.get("DEEP_MODE_SKIP_FOLLOWUP_CONFIRM"),
+    bool(getattr(runtime_config, "DEEP_MODE_SKIP_FOLLOWUP_CONFIRM", True)) if runtime_config else True,
+)
+
 app = Flask(__name__, static_folder='.')
 CORS(app)
 
@@ -699,8 +732,11 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str):
     dim_logs = [l for l in interview_log if l.get("dimension") == current_dimension]
     formal_count = len([l for l in dim_logs if not l.get("is_follow_up", False)])
 
-    # 当前维度第2题已回答（即将进入第3题），预生成下一维度首题
-    if formal_count < 2:
+    current_mode_config = get_interview_mode_config(session)
+    current_min_formal = current_mode_config.get("formal_questions_per_dim", 2)
+
+    # 当前维度达到最低正式题后，预生成下一维度首题
+    if formal_count < current_min_formal:
         return
 
     # 维度顺序
@@ -713,7 +749,10 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str):
         candidate = dimension_order[(current_idx + i) % len(dimension_order)]
         cand_logs = [l for l in interview_log if l.get("dimension") == candidate]
         cand_formal = len([l for l in cand_logs if not l.get("is_follow_up", False)])
-        if cand_formal < 3:
+
+        # 兼容动态场景：构造轻量 session 以读取该会话模式配置
+        candidate_min_formal = get_interview_mode_config(session).get("formal_questions_per_dim", 3)
+        if cand_formal < candidate_min_formal:
             next_dimension = candidate
             break
 
@@ -742,7 +781,7 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str):
                            if l.get("dimension") == next_dimension]
 
             # 构建预生成的 prompt
-            prompt, truncated_docs = build_interview_prompt(
+            prompt, truncated_docs, _decision_meta = build_interview_prompt(
                 session_data, next_dimension, next_dim_logs
             )
 
@@ -804,7 +843,7 @@ def prefetch_first_question(session_id: str):
             first_dim = get_dimension_order_for_session(session_data)[0] if get_dimension_order_for_session(session_data) else "customer_needs"
 
             # 首题不依赖任何历史记录
-            prompt, truncated_docs = build_interview_prompt(
+            prompt, truncated_docs, _decision_meta = build_interview_prompt(
                 session_data, first_dim, []
             )
 
@@ -2286,6 +2325,7 @@ INTERVIEW_MODES = {
     "quick": {
         "name": "快速模式",
         "formal_questions_per_dim": 2,
+        "max_formal_questions_per_dim": 2,
         "follow_up_budget_per_dim": 2,
         "total_follow_up_budget": 8,
         "max_questions_per_formal": 1,  # 每个正式问题最多追问次数
@@ -2294,6 +2334,7 @@ INTERVIEW_MODES = {
     "standard": {
         "name": "标准模式",
         "formal_questions_per_dim": 3,
+        "max_formal_questions_per_dim": 3,
         "follow_up_budget_per_dim": 4,
         "total_follow_up_budget": 16,
         "max_questions_per_formal": 2,
@@ -2302,6 +2343,7 @@ INTERVIEW_MODES = {
     "deep": {
         "name": "深度模式",
         "formal_questions_per_dim": 4,
+        "max_formal_questions_per_dim": 4,
         "follow_up_budget_per_dim": 6,
         "total_follow_up_budget": 24,
         "max_questions_per_formal": 3,
@@ -2309,8 +2351,68 @@ INTERVIEW_MODES = {
     }
 }
 
+# 访谈模式 V2 配置（深度增强）
+INTERVIEW_MODES_V2 = {
+    "quick": {
+        "formal_questions_per_dim": 2,
+        "max_formal_questions_per_dim": 3,
+        "follow_up_budget_per_dim": 3,
+        "total_follow_up_budget": 10,
+        "max_questions_per_formal": 1,
+        "estimated_questions": "14-20",
+        "quality_thresholds": {
+            "coverage": 0.65,
+            "depth": 0.45,
+            "volume": 0.35,
+            "high": 0.65,
+            "medium": 0.5,
+            "low": 0.35,
+        },
+    },
+    "standard": {
+        "formal_questions_per_dim": 3,
+        "max_formal_questions_per_dim": 4,
+        "follow_up_budget_per_dim": 5,
+        "total_follow_up_budget": 18,
+        "max_questions_per_formal": 2,
+        "estimated_questions": "24-34",
+        "quality_thresholds": {
+            "coverage": 0.8,
+            "depth": 0.6,
+            "volume": 0.45,
+            "high": 0.8,
+            "medium": 0.65,
+            "low": 0.45,
+        },
+    },
+    "deep": {
+        "formal_questions_per_dim": 4,
+        "max_formal_questions_per_dim": 6,
+        "follow_up_budget_per_dim": 8,
+        "total_follow_up_budget": 30,
+        "max_questions_per_formal": 3,
+        "estimated_questions": "34-52",
+        "quality_thresholds": {
+            "coverage": 0.9,
+            "depth": 0.72,
+            "volume": 0.6,
+            "high": 0.9,
+            "medium": 0.75,
+            "low": 0.6,
+        },
+    },
+}
+
 # 默认模式
 DEFAULT_INTERVIEW_MODE = "standard"
+
+# 追问硬触发信号（V2）
+HARD_FOLLOW_UP_SIGNALS = {
+    "vague_expression",
+    "generic_answer",
+    "option_only",
+    "contradiction_detected",
+}
 
 # 疲劳度信号权重
 FATIGUE_SIGNALS = {
@@ -2344,10 +2446,58 @@ SATURATION_THRESHOLDS = {
 }
 
 
+def get_mode_identifier(session: dict) -> str:
+    """获取会话模式ID（做容错）。"""
+    if not isinstance(session, dict):
+        return DEFAULT_INTERVIEW_MODE
+    mode = session.get("interview_mode", DEFAULT_INTERVIEW_MODE)
+    if mode not in INTERVIEW_MODES:
+        return DEFAULT_INTERVIEW_MODE
+    return mode
+
+
+def is_interview_depth_v2_enabled(session: dict) -> bool:
+    """判断当前会话是否启用深度增强 V2。"""
+    mode = get_mode_identifier(session)
+    return ENABLE_INTERVIEW_DEPTH_V2 and mode in INTERVIEW_DEPTH_V2_MODES
+
+
+def get_mode_saturation_thresholds(session: dict) -> dict:
+    """获取当前模式的饱和度阈值。"""
+    mode_config = get_interview_mode_config(session)
+    if mode_config.get("depth_v2_enabled"):
+        quality = mode_config.get("quality_thresholds") or {}
+        return {
+            "high": quality.get("high", SATURATION_THRESHOLDS["high"]),
+            "medium": quality.get("medium", SATURATION_THRESHOLDS["medium"]),
+            "low": quality.get("low", SATURATION_THRESHOLDS["low"]),
+        }
+    return SATURATION_THRESHOLDS
+
+
 def get_interview_mode_config(session: dict) -> dict:
     """获取会话的访谈模式配置"""
-    mode = session.get("interview_mode", DEFAULT_INTERVIEW_MODE)
-    return INTERVIEW_MODES.get(mode, INTERVIEW_MODES[DEFAULT_INTERVIEW_MODE])
+    mode = get_mode_identifier(session)
+    base_config = dict(INTERVIEW_MODES.get(mode, INTERVIEW_MODES[DEFAULT_INTERVIEW_MODE]))
+
+    if is_interview_depth_v2_enabled(session):
+        v2_override = INTERVIEW_MODES_V2.get(mode, {})
+        mode_config = {**base_config, **v2_override}
+        mode_config["depth_v2_enabled"] = True
+        return mode_config
+
+    base_config["depth_v2_enabled"] = False
+    return base_config
+
+
+def get_interview_mode_display_config(mode: str, enable_depth_v2: bool = False) -> dict:
+    """获取某个模式的展示配置（用于前端UI渲染）。"""
+    base = dict(INTERVIEW_MODES.get(mode, INTERVIEW_MODES[DEFAULT_INTERVIEW_MODE]))
+    if enable_depth_v2:
+        v2_override = INTERVIEW_MODES_V2.get(mode, {})
+        base.update(v2_override)
+    base["depth_v2_enabled"] = bool(enable_depth_v2)
+    return base
 
 
 def calculate_dimension_coverage(session: dict, dimension: str) -> int:
@@ -2355,7 +2505,10 @@ def calculate_dimension_coverage(session: dict, dimension: str) -> int:
     formal_count = len([log for log in session.get("interview_log", [])
                        if log.get("dimension") == dimension and not log.get("is_follow_up", False)])
     mode_config = get_interview_mode_config(session)
-    required_questions = mode_config.get("formal_questions_per_dim", 3)
+    if mode_config.get("depth_v2_enabled"):
+        required_questions = mode_config.get("max_formal_questions_per_dim", mode_config.get("formal_questions_per_dim", 3))
+    else:
+        required_questions = mode_config.get("formal_questions_per_dim", 3)
     if required_questions <= 0:
         return 100
     return min(100, int(formal_count / required_questions * 100))
@@ -2528,10 +2681,12 @@ def calculate_dimension_saturation(session: dict, dimension: str) -> dict:
     # 综合饱和度
     saturation_score = coverage_score * 0.4 + depth_score * 0.3 + volume_score * 0.3
 
+    thresholds = get_mode_saturation_thresholds(session)
+
     # 确定饱和度级别
-    if saturation_score >= SATURATION_THRESHOLDS["high"]:
+    if saturation_score >= thresholds["high"]:
         level = "high"
-    elif saturation_score >= SATURATION_THRESHOLDS["medium"]:
+    elif saturation_score >= thresholds["medium"]:
         level = "medium"
     else:
         level = "low"
@@ -2611,6 +2766,197 @@ def calculate_user_fatigue(session: dict, dimension: str) -> dict:
     }
 
 
+def get_dimension_missing_aspects(session: dict, dimension: str) -> list:
+    """获取当前维度尚未覆盖的关键方面。"""
+    saturation = calculate_dimension_saturation(session, dimension)
+    covered = set(saturation.get("covered_aspects", []))
+    dim_info = get_dimension_info_for_session(session).get(dimension, {})
+    key_aspects = dim_info.get("key_aspects", [])
+    return [aspect for aspect in key_aspects if aspect and aspect not in covered]
+
+
+def get_follow_up_round_for_dimension_logs(dim_logs: list) -> int:
+    """计算当前维度最后一个正式问题的追问轮次。"""
+    formal_indices = [i for i, log in enumerate(dim_logs) if not log.get("is_follow_up", False)]
+    if not formal_indices:
+        return 0
+
+    last_formal_idx = formal_indices[-1]
+    chained = 0
+    for log in dim_logs[last_formal_idx + 1:]:
+        if log.get("is_follow_up", False):
+            chained += 1
+        else:
+            break
+    return chained
+
+
+def has_pending_forced_follow_up(session: dict, dimension: str) -> bool:
+    """判断当前维度是否存在待执行的强制追问。"""
+    dim_logs = [log for log in session.get("interview_log", []) if log.get("dimension") == dimension]
+    if not dim_logs:
+        return False
+
+    last_log = dim_logs[-1]
+    if last_log.get("is_follow_up", False):
+        return False
+
+    if last_log.get("hard_triggered") and not last_log.get("user_skip_follow_up", False):
+        return True
+
+    return False
+
+
+def evaluate_answer_quality(eval_result: dict, answer: str, is_follow_up: bool, follow_up_round: int) -> dict:
+    """将回答评估结果映射为质量分数与标签。"""
+    signals = eval_result.get("signals", [])
+    hard_triggered = eval_result.get("hard_triggered", False)
+
+    quality_score = 0.5
+    answer_len = len((answer or "").strip())
+
+    if answer_len >= 120:
+        quality_score += 0.2
+    elif answer_len >= 80:
+        quality_score += 0.1
+
+    if eval_result.get("has_numbers"):
+        quality_score += 0.1
+
+    scenario_keywords = ["比如", "例如", "当", "如果", "场景", "案例"]
+    if any(keyword in (answer or "") for keyword in scenario_keywords):
+        quality_score += 0.1
+
+    negative_penalty = {
+        "too_short": 0.2,
+        "vague_expression": 0.25,
+        "generic_answer": 0.3,
+        "option_only": 0.2,
+        "no_quantification": 0.1,
+        "single_selection": 0.1,
+        "contradiction_detected": 0.25,
+    }
+    quality_score -= sum(negative_penalty.get(signal, 0.05) for signal in signals)
+
+    if is_follow_up and follow_up_round >= 1 and not hard_triggered:
+        quality_score += 0.05
+
+    quality_score = max(0.0, min(1.0, quality_score))
+
+    quality_signals = []
+    if quality_score >= 0.75:
+        quality_signals.append("high_quality")
+    if eval_result.get("has_numbers"):
+        quality_signals.append("quantified")
+    if answer_len >= 80:
+        quality_signals.append("detailed")
+
+    for signal in signals:
+        if signal not in quality_signals:
+            quality_signals.append(signal)
+
+    return {
+        "quality_score": round(quality_score, 2),
+        "quality_signals": quality_signals,
+        "hard_triggered": bool(hard_triggered),
+    }
+
+
+def evaluate_dimension_completion_v2(session: dict, dimension: str) -> dict:
+    """维度完成门禁（V2）：题量 + 质量 + 强制追问。"""
+    mode_config = get_interview_mode_config(session)
+    dim_logs = [log for log in session.get("interview_log", []) if log.get("dimension") == dimension]
+    formal_count = len([log for log in dim_logs if not log.get("is_follow_up", False)])
+    min_formal = mode_config.get("formal_questions_per_dim", 3)
+    max_formal = mode_config.get("max_formal_questions_per_dim", min_formal)
+
+    budget_status = get_follow_up_budget_status(session, dimension)
+    saturation = calculate_dimension_saturation(session, dimension)
+    fatigue = calculate_user_fatigue(session, dimension)
+
+    quality_thresholds = mode_config.get("quality_thresholds") or {}
+    coverage_threshold = quality_thresholds.get("coverage", 0.8)
+    depth_threshold = quality_thresholds.get("depth", 0.6)
+    volume_threshold = quality_thresholds.get("volume", 0.45)
+
+    missing_aspects = get_dimension_missing_aspects(session, dimension)
+    follow_up_round = get_follow_up_round_for_dimension_logs(dim_logs)
+    pending_forced_follow_up = has_pending_forced_follow_up(session, dimension)
+
+    snapshot = {
+        "formal_count": formal_count,
+        "min_formal": min_formal,
+        "max_formal": max_formal,
+        "coverage": saturation.get("coverage_score", 0),
+        "depth": saturation.get("depth_score", 0),
+        "volume": saturation.get("volume_score", 0),
+        "saturation": saturation.get("saturation_score", 0),
+        "missing_aspects": missing_aspects,
+        "follow_up_round": follow_up_round,
+        "pending_forced_follow_up": pending_forced_follow_up,
+        "budget_status": budget_status,
+        "fatigue": fatigue,
+    }
+
+    # 1. 待执行强制追问
+    if pending_forced_follow_up and follow_up_round < 1:
+        return {
+            "can_complete": False,
+            "reason": "存在待执行的关键追问，需要至少追问1次",
+            "action": "continue",
+            "quality_warning": False,
+            "snapshot": snapshot,
+        }
+
+    # 2. 最低正式题未达标
+    if formal_count < min_formal:
+        return {
+            "can_complete": False,
+            "reason": f"正式问题数量不足（{formal_count}/{min_formal}）",
+            "action": "continue",
+            "quality_warning": False,
+            "snapshot": snapshot,
+        }
+
+    meets_quality = (
+        saturation.get("coverage_score", 0) >= coverage_threshold
+        and saturation.get("depth_score", 0) >= depth_threshold
+        and saturation.get("volume_score", 0) >= volume_threshold
+        and not missing_aspects
+    )
+
+    # 3. 达到质量门槛可完成
+    if meets_quality and not pending_forced_follow_up:
+        return {
+            "can_complete": True,
+            "reason": "达到维度质量门槛",
+            "action": "complete",
+            "quality_warning": False,
+            "snapshot": snapshot,
+        }
+
+    # 4. 达到上限保护或预算耗尽，强制完成
+    budget_exhausted = not budget_status.get("can_follow_up", True)
+    reached_upper_bound = formal_count >= max_formal
+    if reached_upper_bound or budget_exhausted:
+        return {
+            "can_complete": True,
+            "reason": "达到上限保护，允许强制完成",
+            "action": "force_complete",
+            "quality_warning": not meets_quality,
+            "snapshot": snapshot,
+        }
+
+    # 5. 继续提问
+    return {
+        "can_complete": False,
+        "reason": "质量门槛未达成，继续提问",
+        "action": "continue",
+        "quality_warning": False,
+        "snapshot": snapshot,
+    }
+
+
 def should_follow_up_comprehensive(session: dict, dimension: str,
                                     rule_based_result: dict) -> dict:
     """
@@ -2647,6 +2993,22 @@ def should_follow_up_comprehensive(session: dict, dimension: str,
             "decision_factors": ["budget_exhausted"]
         }
 
+    fatigue = calculate_user_fatigue(session, dimension)
+
+    depth_v2_enabled = get_interview_mode_config(session).get("depth_v2_enabled", False)
+
+    # V2: 硬触发信号优先（在疲劳保护之外）
+    hard_triggered = depth_v2_enabled and bool(rule_based_result.get("hard_triggered", False))
+    if hard_triggered and fatigue.get("fatigue_score", 0) < 0.9:
+        return {
+            "should_follow_up": True,
+            "reason": rule_based_result.get("reason") or "检测到关键模糊/冲突，需要至少追问一次",
+            "budget_status": budget_status,
+            "saturation": calculate_dimension_saturation(session, dimension),
+            "fatigue": fatigue,
+            "decision_factors": ["hard_signal_forced_follow_up"]
+        }
+
     # 2. 检查饱和度
     saturation = calculate_dimension_saturation(session, dimension)
     if saturation["level"] == "high":
@@ -2661,7 +3023,6 @@ def should_follow_up_comprehensive(session: dict, dimension: str,
         }
 
     # 3. 检查疲劳度
-    fatigue = calculate_user_fatigue(session, dimension)
     if fatigue["should_force_progress"]:
         decision_factors.append("user_fatigue")
         return {
@@ -2687,7 +3048,7 @@ def should_follow_up_comprehensive(session: dict, dimension: str,
         }
 
     # 中等饱和度时限制追问
-    if saturation["level"] == "medium":
+    if depth_v2_enabled and saturation["level"] == "medium":
         # 检查是否已经追问过
         if budget_status["current_question_used"] >= 1:
             decision_factors.append("medium_saturation_limit")
@@ -2805,7 +3166,8 @@ def score_assessment_answer(session: dict, dimension: str, question: str, answer
 
 
 def evaluate_answer_depth(question: str, answer: str, dimension: str,
-                          options: list = None, is_follow_up: bool = False) -> dict:
+                          options: list = None, is_follow_up: bool = False,
+                          depth_v2_enabled: bool = False) -> dict:
     """
     评估回答深度，判断是否需要追问
 
@@ -2822,10 +3184,17 @@ def evaluate_answer_depth(question: str, answer: str, dimension: str,
             "signals": list                # 检测到的信号
         }
     """
-    # 追问的回答不再追问（避免无限追问）
-    if is_follow_up:
-        return {"needs_follow_up": False, "suggest_ai_eval": False,
-                "reason": None, "signals": []}
+    # V1 兼容：追问后的回答不再触发追问
+    if is_follow_up and not depth_v2_enabled:
+        return {
+            "needs_follow_up": False,
+            "suggest_ai_eval": False,
+            "reason": None,
+            "signals": [],
+            "hard_triggered": False,
+            "has_numbers": any(c.isdigit() for c in (answer or "")),
+            "follow_up_score": 0.0,
+        }
 
     signals = []
     answer_stripped = answer.strip()
@@ -2882,6 +3251,23 @@ def evaluate_answer_depth(question: str, answer: str, dimension: str,
         if selected_count <= 1 and answer_len < 30:
             signals.append("single_selection")
 
+    # 7. 轻量矛盾检测（仅 V2）
+    if depth_v2_enabled:
+        contradiction_pairs = [
+            ("需要", "不需要"),
+            ("可以", "不可以"),
+            ("支持", "不支持"),
+            ("已经", "还没"),
+            ("有", "没有"),
+            ("必须", "可选"),
+        ]
+        contradiction_detected = any(
+            left in answer_stripped and right in answer_stripped
+            for left, right in contradiction_pairs
+        )
+        if contradiction_detected:
+            signals.append("contradiction_detected")
+
     # ---- 第二层：判断是否明确不需要追问 ----
 
     # 回答足够详细，不需要追问
@@ -2903,6 +3289,7 @@ def evaluate_answer_depth(question: str, answer: str, dimension: str,
         "option_only": 0.3,
         "no_quantification": 0.2,
         "single_selection": 0.2,
+        "contradiction_detected": 0.6,
     }
     follow_up_score = sum(signal_weights.get(s, 0.1) for s in signals)
     follow_up_score *= sensitivity  # 应用维度敏感度
@@ -2916,21 +3303,32 @@ def evaluate_answer_depth(question: str, answer: str, dimension: str,
     sufficient_score = sum(sufficient_weights.get(s, 0) for s in sufficient_signals)
     follow_up_score -= sufficient_score
 
+    hard_triggered = depth_v2_enabled and any(signal in HARD_FOLLOW_UP_SIGNALS for signal in signals)
+
     # 判断结果
     if follow_up_score >= 0.4:
         # 明确需要追问
         reason = _build_follow_up_reason(signals)
         return {"needs_follow_up": True, "suggest_ai_eval": False,
-                "reason": reason, "signals": signals}
+                "reason": reason, "signals": signals,
+                "hard_triggered": hard_triggered,
+                "has_numbers": has_numbers,
+                "follow_up_score": round(follow_up_score, 2)}
     elif follow_up_score >= 0.15 and not sufficient_signals:
         # 边界情况，建议让AI评估
         reason = _build_follow_up_reason(signals)
         return {"needs_follow_up": False, "suggest_ai_eval": True,
-                "reason": reason, "signals": signals}
+                "reason": reason, "signals": signals,
+                "hard_triggered": hard_triggered,
+                "has_numbers": has_numbers,
+                "follow_up_score": round(follow_up_score, 2)}
     else:
         # 不需要追问
         return {"needs_follow_up": False, "suggest_ai_eval": False,
-                "reason": None, "signals": signals}
+                "reason": None, "signals": signals,
+                "hard_triggered": hard_triggered,
+                "has_numbers": has_numbers,
+                "follow_up_score": round(follow_up_score, 2)}
 
 
 def _build_follow_up_reason(signals: list) -> str:
@@ -2942,13 +3340,14 @@ def _build_follow_up_reason(signals: list) -> str:
         "option_only": "仅选择了预设选项，需要了解具体场景和考量",
         "no_quantification": "缺少量化指标，需要明确具体数据要求",
         "single_selection": "只选择了单一选项，需要了解是否还有其他需求",
+        "contradiction_detected": "回答中存在前后冲突，需要澄清真实约束",
     }
     reasons = [reason_map.get(s, "") for s in signals if s in reason_map]
     return reasons[0] if reasons else "需要进一步了解详细需求"
 
 
 def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
-                           session_id: str = None) -> tuple[str, list]:
+                           session_id: str = None) -> tuple[str, list, dict]:
     """构建访谈 prompt（使用滑动窗口 + 摘要压缩 + 智能追问）
 
     Args:
@@ -2958,7 +3357,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         session_id: 会话ID（可选，用于更新思考进度状态）
 
     Returns:
-        tuple[str, list]: (prompt字符串, 被截断的文档列表)
+        tuple[str, list, dict]: (prompt字符串, 被截断的文档列表, 决策元数据)
     """
     topic = session.get("topic", "未知项目")
     description = session.get("description")
@@ -3068,6 +3467,8 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 
     # 计算正式问题数量（排除追问）
     formal_questions_count = len([log for log in all_dim_logs if not log.get("is_follow_up", False)])
+    mode_config = get_interview_mode_config(session)
+    depth_v2_enabled = mode_config.get("depth_v2_enabled", False)
 
     # ========== 智能追问判断（综合预算+饱和度+疲劳度+规则评估） ==========
     last_log = None
@@ -3076,6 +3477,10 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     follow_up_reason = ""
     eval_signals = []
     comprehensive_decision = None
+    hard_triggered = False
+    missing_aspects = []
+    follow_up_round = get_follow_up_round_for_dimension_logs(all_dim_logs)
+    remaining_question_follow_up_budget = max(0, mode_config.get("max_questions_per_formal", 1) - follow_up_round)
 
     if all_dim_logs:
         last_log = all_dim_logs[-1]
@@ -3090,10 +3495,12 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
             answer=last_answer,
             dimension=dimension,
             options=last_options,
-            is_follow_up=last_is_follow_up
+            is_follow_up=last_is_follow_up,
+            depth_v2_enabled=depth_v2_enabled
         )
 
         eval_signals = eval_result["signals"]
+        hard_triggered = bool(eval_result.get("hard_triggered", False))
 
         # 使用综合决策函数（整合预算、饱和度、疲劳度）
         comprehensive_decision = should_follow_up_comprehensive(
@@ -3107,6 +3514,9 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 
         # 只有在规则层建议 AI 评估且综合决策允许追问时，才建议 AI 评估
         suggest_ai_eval = eval_result["suggest_ai_eval"] and comprehensive_decision["should_follow_up"]
+
+        if depth_v2_enabled:
+            missing_aspects = get_dimension_missing_aspects(session, dimension)
 
         if ENABLE_DEBUG_LOG:
             budget = comprehensive_decision.get("budget_status", {})
@@ -3143,6 +3553,21 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 - 问题要更具体，引导用户给出明确答案
 
 如果判断不需要追问，请生成新问题继续访谈。
+"""
+
+    blindspot_guidance = ""
+    if depth_v2_enabled and not should_follow_up:
+        min_formal = mode_config.get("formal_questions_per_dim", 3)
+        if formal_questions_count >= min_formal and missing_aspects:
+            blindspot_guidance = f"""
+## 盲区补问优先（必须执行）
+
+当前维度仍有未覆盖关键方面：{', '.join(missing_aspects)}
+
+生成新问题时请满足：
+1. 问题必须直接点名至少 1 个未覆盖方面
+2. 不要重复已充分覆盖的信息
+3. 若有多个盲区，优先提问影响决策最大的方面
 """
 
     # 构建追问模式的提示
@@ -3192,6 +3617,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 
 该维度已收集了 {formal_questions_count} 个正式问题的回答，关键方面包括：{', '.join(dim_info.get('key_aspects', []))}
 {ai_eval_guidance}
+{blindspot_guidance}
 {follow_up_section}
 
 如果信息足够，请基于已收集的回答给出对当前选项的 AI 推荐，用于辅助用户决策。若无法推荐，请将 ai_recommendation 设为 null。
@@ -3242,7 +3668,16 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 - 你的整个回复就是这个 JSON 对象，没有其他内容
 - **重要**：is_follow_up 的值已由系统根据预算和饱和度预先决定，请严格按照上述模板设置"""
 
-    return prompt, truncated_docs
+    decision_meta = {
+        "mode": get_mode_identifier(session),
+        "follow_up_round": follow_up_round,
+        "remaining_question_follow_up_budget": remaining_question_follow_up_budget,
+        "hard_triggered": hard_triggered,
+        "missing_aspects": missing_aspects,
+        "depth_v2_enabled": depth_v2_enabled,
+    }
+
+    return prompt, truncated_docs, decision_meta
 
 
 def build_assessment_report_prompt(session: dict) -> str:
@@ -4349,6 +4784,12 @@ def create_session():
         "summary": None
     }
 
+    session["depth_v2"] = {
+        "enabled": bool(ENABLE_INTERVIEW_DEPTH_V2 and interview_mode in INTERVIEW_DEPTH_V2_MODES),
+        "mode": interview_mode,
+        "skip_followup_confirm": DEEP_MODE_SKIP_FOLLOWUP_CONFIRM,
+    }
+
     session_file = SESSIONS_DIR / f"{session_id}.json"
     session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -4730,7 +5171,8 @@ def get_next_question(session_id):
                 answer=last_log.get("answer", ""),
                 dimension=dimension,
                 options=last_log.get("options", []),
-                is_follow_up=last_log.get("is_follow_up", False)
+                is_follow_up=last_log.get("is_follow_up", False),
+                depth_v2_enabled=get_interview_mode_config(session).get("depth_v2_enabled", False)
             )
             comprehensive_check = should_follow_up_comprehensive(
                 session=session,
@@ -4742,6 +5184,18 @@ def get_next_question(session_id):
                     print(f"⚠️ 预生成缓存 is_follow_up=true 但后端决策不允许，强制覆盖为 false")
                 prefetched["is_follow_up"] = False
                 prefetched["follow_up_reason"] = None
+
+        prefetched["decision_meta"] = {
+            "mode": get_mode_identifier(session),
+            "follow_up_round": get_follow_up_round_for_dimension_logs(all_dim_logs),
+            "remaining_question_follow_up_budget": max(
+                0,
+                get_interview_mode_config(session).get("max_questions_per_formal", 1)
+                - get_follow_up_round_for_dimension_logs(all_dim_logs)
+            ),
+            "hard_triggered": False,
+            "missing_aspects": get_dimension_missing_aspects(session, dimension) if get_interview_mode_config(session).get("depth_v2_enabled") else [],
+        }
 
         prefetched["prefetched"] = True
         return jsonify(prefetched)
@@ -4762,47 +5216,97 @@ def get_next_question(session_id):
     # 获取访谈模式配置
     mode_config = get_interview_mode_config(session)
     required_formal_questions = mode_config["formal_questions_per_dim"]
+    depth_v2_enabled = mode_config.get("depth_v2_enabled", False)
 
     # 获取当前维度状态
     dim_data = session.get("dimensions", {}).get(dimension, {})
     dim_coverage = dim_data.get("coverage", 0)
     user_completed = dim_data.get("user_completed", False)
 
-    # 检查维度是否已完成：
-    # 1. 正式问题达到配置数量
-    # 2. 或者 coverage 已经 >= 100%（可能是用户手动完成）
-    # 3. 或者用户标记了 user_completed
-    if formal_questions_count >= required_formal_questions or dim_coverage >= 100 or user_completed:
-        # 使用综合决策检查是否还需要追问
-        # 创建一个虚拟的规则评估结果来触发综合检查
-        comprehensive_check = should_follow_up_comprehensive(
-            session=session,
-            dimension=dimension,
-            rule_based_result={"needs_follow_up": False, "signals": []}
-        )
+    # 用户手动完成优先级最高
+    if dim_coverage >= 100 or user_completed:
+        dim_follow_ups = len([log for log in all_dim_logs if log.get("is_follow_up", False)])
+        return jsonify({
+            "dimension": dimension,
+            "completed": True,
+            "completion_reason": "user_completed",
+            "quality_warning": False,
+            "decision_meta": {
+                "mode": get_mode_identifier(session),
+                "follow_up_round": get_follow_up_round_for_dimension_logs(all_dim_logs),
+                "remaining_question_follow_up_budget": max(0, mode_config.get("max_questions_per_formal", 1) - get_follow_up_round_for_dimension_logs(all_dim_logs)),
+                "hard_triggered": False,
+                "missing_aspects": get_dimension_missing_aspects(session, dimension) if depth_v2_enabled else [],
+            },
+            "stats": {
+                "formal_questions": formal_questions_count,
+                "follow_ups": dim_follow_ups,
+                "saturation": 1.0
+            }
+        })
 
-        # 如果预算已用完或饱和度足够高，直接完成维度
-        budget_status = comprehensive_check.get("budget_status", {})
-        saturation = comprehensive_check.get("saturation", {})
-
-        should_complete = (
-            not budget_status.get("can_follow_up", True) or
-            saturation.get("level") == "high" or
-            formal_questions_count >= required_formal_questions
-        )
-
-        if should_complete:
-            # 计算维度完成的统计信息
+    # V2: 使用新的维度完成门禁
+    if depth_v2_enabled:
+        completion = evaluate_dimension_completion_v2(session, dimension)
+        if completion.get("can_complete"):
             dim_follow_ups = len([log for log in all_dim_logs if log.get("is_follow_up", False)])
+            snapshot = completion.get("snapshot", {})
             return jsonify({
                 "dimension": dimension,
                 "completed": True,
+                "completion_reason": completion.get("reason"),
+                "quality_warning": bool(completion.get("quality_warning", False)),
+                "decision_meta": {
+                    "mode": get_mode_identifier(session),
+                    "follow_up_round": snapshot.get("follow_up_round", get_follow_up_round_for_dimension_logs(all_dim_logs)),
+                    "remaining_question_follow_up_budget": max(0, mode_config.get("max_questions_per_formal", 1) - snapshot.get("follow_up_round", 0)),
+                    "hard_triggered": bool(snapshot.get("pending_forced_follow_up", False)),
+                    "missing_aspects": snapshot.get("missing_aspects", []),
+                },
                 "stats": {
                     "formal_questions": formal_questions_count,
                     "follow_ups": dim_follow_ups,
-                    "saturation": saturation.get("saturation_score", 0) if saturation else 0
+                    "saturation": snapshot.get("saturation", 0)
                 }
             })
+    else:
+        # V1: 兼容旧逻辑
+        if formal_questions_count >= required_formal_questions:
+            comprehensive_check = should_follow_up_comprehensive(
+                session=session,
+                dimension=dimension,
+                rule_based_result={"needs_follow_up": False, "signals": []}
+            )
+
+            budget_status = comprehensive_check.get("budget_status", {})
+            saturation = comprehensive_check.get("saturation", {})
+
+            should_complete = (
+                not budget_status.get("can_follow_up", True) or
+                saturation.get("level") == "high" or
+                formal_questions_count >= required_formal_questions
+            )
+
+            if should_complete:
+                dim_follow_ups = len([log for log in all_dim_logs if log.get("is_follow_up", False)])
+                return jsonify({
+                    "dimension": dimension,
+                    "completed": True,
+                    "completion_reason": "v1_formal_threshold",
+                    "quality_warning": False,
+                    "decision_meta": {
+                        "mode": get_mode_identifier(session),
+                        "follow_up_round": get_follow_up_round_for_dimension_logs(all_dim_logs),
+                        "remaining_question_follow_up_budget": max(0, mode_config.get("max_questions_per_formal", 1) - get_follow_up_round_for_dimension_logs(all_dim_logs)),
+                        "hard_triggered": False,
+                        "missing_aspects": [],
+                    },
+                    "stats": {
+                        "formal_questions": formal_questions_count,
+                        "follow_ups": dim_follow_ups,
+                        "saturation": saturation.get("saturation_score", 0) if saturation else 0
+                    }
+                })
 
     # 调用 Claude 生成问题
     # 判断是否会有搜索（用于设置正确的阶段数）
@@ -4812,7 +5316,7 @@ def get_next_question(session_id):
         # 阶段1: 分析回答
         update_thinking_status(session_id, "analyzing", has_search)
 
-        prompt, truncated_docs = build_interview_prompt(session, dimension, all_dim_logs, session_id=session_id)
+        prompt, truncated_docs, decision_meta = build_interview_prompt(session, dimension, all_dim_logs, session_id=session_id)
 
         # 日志：记录 prompt 长度（便于监控和调优）
         if ENABLE_DEBUG_LOG:
@@ -4845,6 +5349,7 @@ def get_next_question(session_id):
         if result:
             result["dimension"] = dimension
             result["ai_generated"] = True
+            result["decision_meta"] = decision_meta
             # 兜底：避免连续重复问题（最多自动重试一次）
             last_log = all_dim_logs[-1] if all_dim_logs else None
             if last_log and last_log.get("question") == result.get("question"):
@@ -4860,6 +5365,7 @@ def get_next_question(session_id):
                 if retry_result and retry_result.get("question") != last_log.get("question"):
                     retry_result["dimension"] = dimension
                     retry_result["ai_generated"] = True
+                    retry_result["decision_meta"] = decision_meta
                     result = retry_result
                 else:
                     # 清除思考状态
@@ -4880,7 +5386,8 @@ def get_next_question(session_id):
                         answer=last_log.get("answer", ""),
                         dimension=dimension,
                         options=last_log.get("options", []),
-                        is_follow_up=last_log.get("is_follow_up", False)
+                        is_follow_up=last_log.get("is_follow_up", False),
+                        depth_v2_enabled=mode_config.get("depth_v2_enabled", False)
                     )
                     comprehensive_check = should_follow_up_comprehensive(
                         session=session,
@@ -5036,10 +5543,33 @@ def submit_answer(session_id):
         answer=answer,
         dimension=dimension,
         options=options,
-        is_follow_up=is_follow_up
+        is_follow_up=is_follow_up,
+        depth_v2_enabled=get_interview_mode_config(session).get("depth_v2_enabled", False)
     )
     needs_follow_up = eval_result["needs_follow_up"]
     follow_up_signals = eval_result["signals"]
+
+    dim_logs_before = [log for log in session.get("interview_log", []) if log.get("dimension") == dimension]
+    follow_up_round = get_follow_up_round_for_dimension_logs(dim_logs_before)
+    if not is_follow_up:
+        follow_up_round = 0
+    else:
+        follow_up_round += 1
+
+    depth_v2_enabled = get_interview_mode_config(session).get("depth_v2_enabled", False)
+    quality_result = evaluate_answer_quality(
+        eval_result=eval_result,
+        answer=answer,
+        is_follow_up=is_follow_up,
+        follow_up_round=follow_up_round,
+    )
+
+    if not depth_v2_enabled:
+        quality_result = {
+            "quality_score": 0.0,
+            "quality_signals": [],
+            "hard_triggered": False,
+        }
 
     if ENABLE_DEBUG_LOG and (needs_follow_up or eval_result["suggest_ai_eval"]):
         print(f"📝 回答评估: signals={follow_up_signals}, needs_follow_up={needs_follow_up}")
@@ -5053,7 +5583,11 @@ def submit_answer(session_id):
         "options": options,
         "is_follow_up": is_follow_up,
         "needs_follow_up": needs_follow_up,
-        "follow_up_signals": follow_up_signals  # 记录检测到的信号
+        "follow_up_signals": follow_up_signals,  # 记录检测到的信号
+        "quality_score": quality_result["quality_score"],
+        "quality_signals": quality_result["quality_signals"],
+        "hard_triggered": quality_result["hard_triggered"],
+        "follow_up_round": follow_up_round if depth_v2_enabled else 0,
     }
     session["interview_log"].append(log_entry)
 
@@ -6782,12 +7316,26 @@ def batch_delete_reports():
 @app.route('/api/status', methods=['GET'])
 def get_status():
     """获取服务状态"""
+    mode_names = ["quick", "standard", "deep"]
+    mode_configs_effective = {
+        mode: get_interview_mode_display_config(
+            mode,
+            enable_depth_v2=(ENABLE_INTERVIEW_DEPTH_V2 and mode in INTERVIEW_DEPTH_V2_MODES)
+        )
+        for mode in mode_names
+    }
     return jsonify({
         "status": "running",
         "ai_available": claude_client is not None,
         "model": MODEL_NAME if claude_client else None,
         "sessions_dir": str(SESSIONS_DIR),
-        "reports_dir": str(REPORTS_DIR)
+        "reports_dir": str(REPORTS_DIR),
+        "interview_depth_v2": {
+            "enabled": ENABLE_INTERVIEW_DEPTH_V2,
+            "modes": INTERVIEW_DEPTH_V2_MODES,
+            "deep_mode_skip_followup_confirm": DEEP_MODE_SKIP_FOLLOWUP_CONFIRM,
+            "mode_configs": mode_configs_effective,
+        }
     })
 
 
