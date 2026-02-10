@@ -2534,7 +2534,7 @@ class CostMonitor:
         # 检查预算
         daily_cost = self.get_daily_cost()
         if daily_cost > DAILY_BUDGET * 0.8:
-            alert("API cost approaching daily limit")
+            logger.warning("API cost approaching daily limit")
 
     def get_cost_report(self):
         """生成成本报告"""

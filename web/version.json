@@ -1,7 +1,19 @@
 {
-  "version": "1.35.2",
+  "version": "1.36.0",
   "releaseDate": "2026-02-10",
   "changelog": [
+    {
+      "version": "1.36.0",
+      "date": "2026-02-10",
+      "type": "minor",
+      "title": "统一确认交互为站内弹窗",
+      "changes": [
+        "前端交互：新增通用操作确认弹窗，支持警告/危险样式与自定义按钮文案。",
+        "前端交互：替换跳过追问、停止演示文稿生成、删除自定义场景三处原生 confirm 调用。",
+        "可访问性：将 showActionConfirmModal 接入 dialog 配置与焦点管理体系。",
+        "文档示例：将综合方案中的 alert 调整为 logger.warning，避免误用浏览器弹框。"
+      ]
+    },
     {
       "version": "1.35.2",
       "date": "2026-02-10",

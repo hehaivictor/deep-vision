@@ -3310,6 +3310,59 @@
             </div>
         </div>
 
+        <!-- ========== 通用操作确认弹窗 ========== -->
+        <div x-show="showActionConfirmModal"
+             data-dialog-key="showActionConfirmModal"
+             x-bind="getDialogAttrs('showActionConfirmModal')"
+             x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0"
+             x-transition:enter-end="opacity-100"
+             x-transition:leave="transition ease-in duration-150"
+             x-transition:leave-start="opacity-100"
+             x-transition:leave-end="opacity-0"
+             class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
+             @click.self="cancelActionConfirmDialog()"
+             @keydown.escape.window="cancelActionConfirmDialog()">
+            <div x-bind="getDialogPanelAttrs('showActionConfirmModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6"
+                 x-transition:enter="transition ease-out duration-200"
+                 x-transition:enter-start="opacity-0 scale-95 translate-y-1"
+                 x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+                 x-transition:leave="transition ease-in duration-150"
+                 x-transition:leave-start="opacity-100 scale-100 translate-y-0"
+                 x-transition:leave-end="opacity-0 scale-95 translate-y-1">
+                <div class="text-center">
+                    <div class="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-4"
+                         :class="actionConfirmDialog.tone === 'danger' ? 'bg-red-100' : 'bg-amber-100'">
+                        <svg x-show="actionConfirmDialog.tone === 'danger'" class="w-6 h-6 text-danger" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                        <svg x-show="actionConfirmDialog.tone !== 'danger'" class="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                    </div>
+                    <h3 id="dv-dialog-action-confirm-title"
+                        class="dv-modal-title mb-2"
+                        :class="actionConfirmDialog.tone === 'danger' ? 'dv-modal-title--danger' : 'dv-modal-title--warning'"
+                        x-text="actionConfirmDialog.title"></h3>
+                    <p id="dv-dialog-action-confirm-desc"
+                       class="dv-modal-body mb-6"
+                       :class="actionConfirmDialog.tone === 'danger' ? 'dv-modal-body--danger' : ''"
+                       x-text="actionConfirmDialog.message"></p>
+                    <div class="dv-modal-actions">
+                        <button @click="cancelActionConfirmDialog()"
+                                data-dialog-autofocus
+                                class="dv-modal-btn-secondary px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer"
+                                x-text="actionConfirmDialog.cancelText || '取消'"></button>
+                        <button @click="confirmActionConfirmDialog()"
+                                class="px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer"
+                                :class="actionConfirmDialog.tone === 'danger' ? 'dv-modal-btn-danger' : 'dv-modal-btn-primary'"
+                                x-text="actionConfirmDialog.confirmText || '确认'"></button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- ========== 批量删除确认弹窗 ========== -->
         <div x-show="showBatchDeleteModal"
              data-dialog-key="showBatchDeleteModal"
