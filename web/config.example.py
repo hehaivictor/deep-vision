@@ -31,6 +31,12 @@ SERVER_HOST = "0.0.0.0"        # 监听地址，0.0.0.0 表示所有网卡
 SERVER_PORT = 5001             # 监听端口
 DEBUG_MODE = True              # 是否开启调试模式
 
+# 登录鉴权配置（MVP）
+# 建议在生产环境配置固定 SECRET_KEY，否则重启服务后登录态会失效
+SECRET_KEY = "replace-with-a-strong-random-secret"
+# 用户账号数据库路径（相对路径将按 Deep Vision 根目录解析）
+AUTH_DB_PATH = "data/auth/users.db"
+
 # ============ 功能开关 ============
 
 # 是否启用 AI 功能（如果为 False，将使用模拟数据）
