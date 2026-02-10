@@ -75,7 +75,6 @@ function deepVision() {
             'showCustomScenarioModal',
             'showAiGenerateModal',
             'showAiPreviewModal',
-            'showMilestoneModal',
             'showDeleteModal',
             'showRestartModal',
             'showDeleteDocModal',
@@ -366,10 +365,6 @@ function deepVision() {
             announceMode: 'polite'
         },
         toastTimer: null,
-
-        // 里程碑弹窗
-        showMilestoneModal: false,
-        milestoneData: null,  // { dimension: '...', dimName: '...', stats: {...}, nextDimension: '...' }
 
         // 版本信息
         appVersion: (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.version?.current) || '1.0.0',
@@ -1983,17 +1978,21 @@ function deepVision() {
                 }
 
                 if (result.completed) {
-                    // 当前维度已完成，显示里程碑弹窗
+                    // 当前维度已完成：自动推进流程，不再展示里程碑弹窗
                     const completedDimension = this.currentDimension;
                     const completedDimName = this.getDimensionName(completedDimension);
-                    const stats = result.stats || {};
+
+                    // 与后端 completed 判定保持一致，修正本地覆盖率，避免历史会话反复命中
+                    if (this.currentSession?.dimensions?.[completedDimension]) {
+                        this.currentSession.dimensions[completedDimension].coverage = 100;
+                    }
 
                     // 找下一个未完成的维度
                     const currentIdx = this.dimensionOrder.indexOf(this.currentDimension);
                     let nextDim = null;
                     for (let i = 1; i <= this.dimensionOrder.length; i++) {
                         const dim = this.dimensionOrder[(currentIdx + i) % this.dimensionOrder.length];
-                        const dimension = this.currentSession.dimensions[dim];
+                        const dimension = this.currentSession?.dimensions?.[dim];
                         if (dimension && dimension.coverage < 100) {
                             nextDim = dim;
                             break;
@@ -2001,28 +2000,19 @@ function deepVision() {
                     }
 
                     if (nextDim) {
-                        // 还有未完成的维度，显示里程碑弹窗
-                        this.milestoneData = {
-                            dimension: completedDimension,
-                            dimName: completedDimName,
-                            stats: stats,
-                            nextDimension: nextDim,
-                            nextDimName: this.getDimensionName(nextDim),
-                            isLastDimension: false
-                        };
-                        this.showMilestoneModal = true;
+                        this.currentDimension = nextDim;
+                        this.showToast(`${completedDimName}收集完成，已自动进入${this.getDimensionName(nextDim)}`, 'success');
+                        await this.fetchNextQuestion();
                     } else {
-                        // 所有维度都完成
-                        this.milestoneData = {
-                            dimension: completedDimension,
-                            dimName: completedDimName,
-                            stats: stats,
-                            nextDimension: null,
-                            nextDimName: null,
-                            isLastDimension: true
-                        };
-                        this.showMilestoneModal = true;
+                        // 所有维度都完成，停留在访谈阶段等待确认
+                        this.currentStep = 1;
+                        this.currentQuestion = { text: '', options: [], multiSelect: false, aiGenerated: false, aiRecommendation: null };
+                        this.aiRecommendationExpanded = false;
+                        this.aiRecommendationApplied = false;
+                        this.aiRecommendationPrevSelection = null;
+                        this.showToast('所有维度访谈完成！', 'success');
                     }
+                    return;
                 } else {
                     // 方案D: 调用骨架填充（打字机效果 + 选项依次淡入）
                     await this.startSkeletonFill(result);
@@ -2743,31 +2733,6 @@ function deepVision() {
             if (!currentDim) return false;
             const coverage = currentDim.coverage;
             return coverage >= 50 && coverage < 100;
-        },
-
-        // 关闭里程碑弹窗并继续访谈流程
-        async continueMilestone() {
-            this.showMilestoneModal = false;
-
-            if (this.milestoneData && this.milestoneData.isLastDimension) {
-                // 所有维度都完成，停留在访谈阶段等待确认
-                this.currentQuestion = {
-                    text: '',
-                    options: [],
-                    multiSelect: false,
-                    aiGenerated: false,
-                    aiRecommendation: null
-                };
-                this.aiRecommendationExpanded = false;
-                this.aiRecommendationApplied = false;
-                this.aiRecommendationPrevSelection = null;
-            } else if (this.milestoneData && this.milestoneData.nextDimension) {
-                // 切换到下一个维度
-                this.currentDimension = this.milestoneData.nextDimension;
-                await this.fetchNextQuestion();
-            }
-
-            this.milestoneData = null;
         },
 
         goToConfirmation() {
