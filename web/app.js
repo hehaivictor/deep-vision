@@ -206,7 +206,7 @@ function deepVision() {
         serverStatus: null,
         aiAvailable: false,
         interviewDepthV2: {
-            enabled: false,
+            enabled: true,
             modes: ['quick', 'standard', 'deep'],
             deep_mode_skip_followup_confirm: true,
             mode_configs: null
@@ -1350,7 +1350,7 @@ function deepVision() {
                     this.aiAvailable = this.serverStatus.ai_available;
                     const depthConfig = this.serverStatus?.interview_depth_v2 || {};
                     this.interviewDepthV2 = {
-                        enabled: depthConfig.enabled === true,
+                        enabled: true,
                         modes: Array.isArray(depthConfig.modes) ? depthConfig.modes : ['quick', 'standard', 'deep'],
                         deep_mode_skip_followup_confirm: depthConfig.deep_mode_skip_followup_confirm !== false,
                         mode_configs: depthConfig.mode_configs || null
@@ -5087,29 +5087,29 @@ function deepVision() {
             const modes = modeConfigs ? {
                 quick: {
                     formal: modeConfigs.quick?.formal_questions_per_dim ?? 2,
-                    formalMax: modeConfigs.quick?.max_formal_questions_per_dim ?? 2,
-                    followUp: modeConfigs.quick?.follow_up_budget_per_dim ?? 2,
-                    total: modeConfigs.quick?.total_follow_up_budget ?? 8,
-                    range: modeConfigs.quick?.estimated_questions ?? "12-16"
+                    formalMax: modeConfigs.quick?.max_formal_questions_per_dim ?? 3,
+                    followUp: modeConfigs.quick?.follow_up_budget_per_dim ?? 3,
+                    total: modeConfigs.quick?.total_follow_up_budget ?? 10,
+                    range: modeConfigs.quick?.estimated_questions ?? "14-20"
                 },
                 standard: {
                     formal: modeConfigs.standard?.formal_questions_per_dim ?? 3,
-                    formalMax: modeConfigs.standard?.max_formal_questions_per_dim ?? 3,
-                    followUp: modeConfigs.standard?.follow_up_budget_per_dim ?? 4,
-                    total: modeConfigs.standard?.total_follow_up_budget ?? 16,
-                    range: modeConfigs.standard?.estimated_questions ?? "20-28"
+                    formalMax: modeConfigs.standard?.max_formal_questions_per_dim ?? 4,
+                    followUp: modeConfigs.standard?.follow_up_budget_per_dim ?? 5,
+                    total: modeConfigs.standard?.total_follow_up_budget ?? 18,
+                    range: modeConfigs.standard?.estimated_questions ?? "24-34"
                 },
                 deep: {
                     formal: modeConfigs.deep?.formal_questions_per_dim ?? 4,
-                    formalMax: modeConfigs.deep?.max_formal_questions_per_dim ?? 4,
-                    followUp: modeConfigs.deep?.follow_up_budget_per_dim ?? 6,
-                    total: modeConfigs.deep?.total_follow_up_budget ?? 24,
-                    range: modeConfigs.deep?.estimated_questions ?? "28-40"
+                    formalMax: modeConfigs.deep?.max_formal_questions_per_dim ?? 6,
+                    followUp: modeConfigs.deep?.follow_up_budget_per_dim ?? 8,
+                    total: modeConfigs.deep?.total_follow_up_budget ?? 30,
+                    range: modeConfigs.deep?.estimated_questions ?? "34-52"
                 }
             } : {
-                quick: { formal: 2, formalMax: 2, followUp: 2, total: 8, range: "12-16" },
-                standard: { formal: 3, formalMax: 3, followUp: 4, total: 16, range: "20-28" },
-                deep: { formal: 4, formalMax: 4, followUp: 6, total: 24, range: "28-40" }
+                quick: { formal: 2, formalMax: 3, followUp: 3, total: 10, range: "14-20" },
+                standard: { formal: 3, formalMax: 4, followUp: 5, total: 18, range: "24-34" },
+                deep: { formal: 4, formalMax: 6, followUp: 8, total: 30, range: "34-52" }
             };
             const mode = this.currentSession.interview_mode || 'standard';
             return modes[mode] || modes.standard;
