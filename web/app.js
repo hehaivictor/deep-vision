@@ -99,6 +99,7 @@ function deepVision() {
             'showRestartModal',
             'showDeleteDocModal',
             'showDeleteReportModal',
+            'showActionConfirmModal',
             'showBatchDeleteModal',
             'showChangelogModal'
         ],
@@ -227,6 +228,15 @@ function deepVision() {
         sessionToDelete: null,
         sessionBatchMode: false,
         selectedSessionIds: [],
+        showActionConfirmModal: false,
+        actionConfirmDialog: {
+            title: '',
+            message: '',
+            tone: 'warning',
+            confirmText: '确认',
+            cancelText: '取消'
+        },
+        actionConfirmResolve: null,
 
         // 会话列表筛选和分页
         sessionSearchQuery: '',
@@ -499,6 +509,11 @@ function deepVision() {
             this.showBatchDeleteModal = false;
             this.showRestartModal = false;
             this.showDeleteDocModal = false;
+            this.showActionConfirmModal = false;
+            if (typeof this.actionConfirmResolve === 'function') {
+                this.actionConfirmResolve(false);
+            }
+            this.actionConfirmResolve = null;
             this.showAccountMenu = false;
             this.sessionBatchMode = false;
             this.reportBatchMode = false;
@@ -736,6 +751,50 @@ function deepVision() {
             if (this.authLoading) return;
             this.showLogoutConfirmModal = false;
             await this.logout();
+        },
+
+        openActionConfirmDialog(options = {}) {
+            if (typeof this.actionConfirmResolve === 'function') {
+                this.actionConfirmResolve(false);
+            }
+
+            const {
+                title = '确认操作',
+                message = '是否继续？',
+                tone = 'warning',
+                confirmText = '确认',
+                cancelText = '取消'
+            } = options;
+
+            this.actionConfirmDialog = {
+                title,
+                message,
+                tone: tone === 'danger' ? 'danger' : 'warning',
+                confirmText,
+                cancelText
+            };
+            this.showActionConfirmModal = true;
+
+            return new Promise((resolve) => {
+                this.actionConfirmResolve = resolve;
+            });
+        },
+
+        resolveActionConfirmDialog(confirmed) {
+            this.showActionConfirmModal = false;
+            const resolver = this.actionConfirmResolve;
+            this.actionConfirmResolve = null;
+            if (typeof resolver === 'function') {
+                resolver(Boolean(confirmed));
+            }
+        },
+
+        confirmActionConfirmDialog() {
+            this.resolveActionConfirmDialog(true);
+        },
+
+        cancelActionConfirmDialog() {
+            this.resolveActionConfirmDialog(false);
         },
 
         registerDialogFocusWatchers() {
@@ -2991,7 +3050,13 @@ function deepVision() {
                 && this.interviewDepthV2?.deep_mode_skip_followup_confirm === true;
 
             if (needConfirm) {
-                const confirmed = window.confirm('跳过追问会降低该维度结论可信度，是否继续？');
+                const confirmed = await this.openActionConfirmDialog({
+                    title: '确认跳过追问',
+                    message: '跳过追问会降低该维度结论可信度，是否继续？',
+                    tone: 'warning',
+                    confirmText: '继续跳过',
+                    cancelText: '继续作答'
+                });
                 if (!confirmed) {
                     return;
                 }
@@ -3991,7 +4056,13 @@ function deepVision() {
         async stopPresentationGeneration() {
             const targetReportName = (this.presentationPollingReportName || this.selectedReport || '').trim();
             if (!targetReportName) return;
-            const confirmed = window.confirm('确定停止本次演示文稿生成？可稍后重新生成');
+            const confirmed = await this.openActionConfirmDialog({
+                title: '确认停止生成',
+                message: '确定停止本次演示文稿生成？可稍后重新生成。',
+                tone: 'warning',
+                confirmText: '停止生成',
+                cancelText: '取消'
+            });
             if (!confirmed) return;
             try {
                 const execParam = this.presentationExecutionId
@@ -6193,7 +6264,14 @@ function deepVision() {
 
         // 删除自定义场景
         async deleteCustomScenario(scenarioId, scenarioName) {
-            if (!confirm(`确定要删除场景「${scenarioName}」吗？`)) return;
+            const confirmed = await this.openActionConfirmDialog({
+                title: '确认删除场景',
+                message: `确定要删除场景「${scenarioName}」吗？`,
+                tone: 'danger',
+                confirmText: '删除',
+                cancelText: '取消'
+            });
+            if (!confirmed) return;
             try {
                 await this.apiCall(`/scenarios/custom/${scenarioId}`, {
                     method: 'DELETE'

@@ -281,6 +281,11 @@ const SITE_CONFIG = {
         titleId: "dv-dialog-delete-report-title",
         descId: "dv-dialog-delete-report-desc",
       },
+      showActionConfirmModal: {
+        dialogId: "dv-dialog-action-confirm",
+        titleId: "dv-dialog-action-confirm-title",
+        descId: "dv-dialog-action-confirm-desc",
+      },
       showBatchDeleteModal: {
         dialogId: "dv-dialog-batch-delete",
         titleId: "dv-dialog-batch-delete-title",
