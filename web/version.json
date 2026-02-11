@@ -1,7 +1,18 @@
 {
-  "version": "1.37.18",
+  "version": "1.37.19",
   "releaseDate": "2026-02-11",
   "changelog": [
+    {
+      "version": "1.37.19",
+      "date": "2026-02-11",
+      "type": "patch",
+      "title": "同步示例配置中的 Token 默认值",
+      "changes": [
+        "配置一致性：将 MAX_TOKENS_DEFAULT 调整为 5000，与后端默认值对齐",
+        "配置一致性：将 MAX_TOKENS_QUESTION 调整为 2000，与后端默认值对齐",
+        "配置一致性：将 MAX_TOKENS_REPORT 调整为 10000，与后端默认值对齐"
+      ]
+    },
     {
       "version": "1.37.18",
       "date": "2026-02-11",

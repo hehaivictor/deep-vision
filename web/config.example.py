@@ -19,10 +19,10 @@ ANTHROPIC_BASE_URL = "https://api.anthropic.com"  # 或使用代理地址
 # 模型配置
 MODEL_NAME = "claude-sonnet-4-20250514"  # 可选: claude-3-opus, claude-3-sonnet, claude-3-haiku
 
-# Token 限制配置
-MAX_TOKENS_DEFAULT = 2000      # 默认最大 token 数
-MAX_TOKENS_QUESTION = 800      # 生成问题时的最大 token 数
-MAX_TOKENS_REPORT = 4000       # 生成报告时的最大 token 数
+# Token 限制配置（与 server.py 默认值保持一致）
+MAX_TOKENS_DEFAULT = 5000      # 默认最大 token 数
+MAX_TOKENS_QUESTION = 2000     # 生成问题时的最大 token 数
+MAX_TOKENS_REPORT = 10000      # 生成报告时的最大 token 数
 
 # ============ 服务器配置 ============
 
