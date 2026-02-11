@@ -1,7 +1,17 @@
 {
-  "version": "1.37.17",
+  "version": "1.37.18",
   "releaseDate": "2026-02-11",
   "changelog": [
+    {
+      "version": "1.37.18",
+      "date": "2026-02-11",
+      "type": "patch",
+      "title": "调整后端默认 Token 上限",
+      "changes": [
+        "参数调整：将 MAX_TOKENS_DEFAULT 从 6000 下调为 5000",
+        "参数调整：将 MAX_TOKENS_REPORT 从 12000 下调为 10000"
+      ]
+    },
     {
       "version": "1.37.17",
       "date": "2026-02-11",

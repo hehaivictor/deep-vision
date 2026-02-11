@@ -73,9 +73,9 @@ except ImportError:
     ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "")
     ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
     MODEL_NAME = os.environ.get("MODEL_NAME", "")
-    MAX_TOKENS_DEFAULT = 6000
+    MAX_TOKENS_DEFAULT = 5000
     MAX_TOKENS_QUESTION = 2000
-    MAX_TOKENS_REPORT = 12000
+    MAX_TOKENS_REPORT = 10000
     SERVER_HOST = "0.0.0.0"
     SERVER_PORT = 5001
     DEBUG_MODE = True
