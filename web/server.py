@@ -4852,6 +4852,69 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
         value = str(raw_value or "").replace("```mermaid", "").replace("```", "").strip()
         return value or fallback
 
+    def clamp_score(value: float) -> float:
+        return max(0.05, min(0.95, value))
+
+    def build_priority_matrix_for_needs(needs_items: list) -> tuple[str, list]:
+        """构建优先级矩阵 Mermaid 及图例中的数据点说明。"""
+        if not needs_items:
+            fallback_matrix = """quadrantChart
+    title 优先级矩阵
+    x-axis 紧急程度（左低） --> 紧急程度（右高）
+    y-axis 重要程度（下低） --> 重要程度（上高）
+    quadrant-1 立即执行
+    quadrant-2 计划执行
+    quadrant-3 低优先级
+    quadrant-4 可委派
+    Req1: [0.78, 0.82]
+    Req2: [0.62, 0.72]
+    Req3: [0.36, 0.32]"""
+            return fallback_matrix, []
+
+        priority_anchor = {
+            "P0": (0.84, 0.88),  # 右上：立即执行
+            "P1": (0.66, 0.74),  # 偏上：计划执行
+            "P2": (0.72, 0.40),  # 右下：可委派
+            "P3": (0.34, 0.30),  # 左下：低优先级
+        }
+
+        point_lines = []
+        point_legend = []
+        for index, item in enumerate(needs_items[:10], 1):
+            priority = str(item.get("priority", "P1")).upper()
+            if priority not in priority_anchor:
+                priority = "P1"
+            base_x, base_y = priority_anchor[priority]
+            spread = ((index % 4) - 1.5) * 0.03
+            x = clamp_score(base_x + spread)
+            y = clamp_score(base_y - spread * 0.7)
+            point_lines.append(f"    Req{index}: [{x:.2f}, {y:.2f}]")
+
+            name = str(item.get("name", "")).strip() or f"需求{index}"
+            if len(name) > 28:
+                name = name[:28] + "..."
+            point_legend.append(f"- `Req{index}` = {name}")
+
+        matrix = "\n".join([
+            "quadrantChart",
+            "    title 优先级矩阵",
+            "    x-axis 紧急程度（左低） --> 紧急程度（右高）",
+            "    y-axis 重要程度（下低） --> 重要程度（上高）",
+            "    quadrant-1 立即执行",
+            "    quadrant-2 计划执行",
+            "    quadrant-3 低优先级",
+            "    quadrant-4 可委派",
+            *point_lines,
+        ])
+        return matrix, point_legend
+
+    priority_quadrant_mermaid_from_draft = clean_mermaid(
+        visuals.get("priority_quadrant_mermaid", ""),
+        "",
+    )
+    generated_priority_quadrant_mermaid, priority_point_legend = build_priority_matrix_for_needs(needs)
+    priority_quadrant_mermaid = priority_quadrant_mermaid_from_draft or generated_priority_quadrant_mermaid
+
     flow_mermaid = clean_mermaid(
         visuals.get("business_flow_mermaid", ""),
         """flowchart TD
@@ -4921,6 +4984,23 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
         "### 核心需求列表",
         "",
         *needs_table,
+        "",
+        "### 优先级矩阵（Mermaid）",
+        "",
+        "```mermaid",
+        priority_quadrant_mermaid,
+        "```",
+        "",
+        "### 图例说明",
+        "",
+        "- 横轴：紧急程度（左低右高）",
+        "- 纵轴：重要程度（下低上高）",
+        "- 右上：立即执行（重要且紧急）",
+        "- 左上：计划执行（重要但不紧急）",
+        "- 右下：可委派（紧急但不重要）",
+        "- 左下：低优先级（不重要不紧急）",
+        "- 数据点对应关系：",
+        *(priority_point_legend if priority_point_legend else ["- 本次无可映射的需求点"]),
         "",
         "### 优先级清单",
         "",
