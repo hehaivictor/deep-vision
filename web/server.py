@@ -3986,6 +3986,1077 @@ flowchart LR
     return prompt
 
 
+def _extract_first_json_object(raw_text: str) -> Optional[str]:
+    """从文本中提取第一个完整 JSON 对象。"""
+    if not raw_text:
+        return None
+
+    json_start = raw_text.find('{')
+    if json_start < 0:
+        return None
+
+    brace_count = 0
+    in_string = False
+    escape_next = False
+
+    for i in range(json_start, len(raw_text)):
+        char = raw_text[i]
+
+        if escape_next:
+            escape_next = False
+            continue
+        if char == '\\':
+            escape_next = True
+            continue
+        if char == '"' and not escape_next:
+            in_string = not in_string
+            continue
+
+        if in_string:
+            continue
+
+        if char == '{':
+            brace_count += 1
+        elif char == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                return raw_text[json_start:i + 1]
+
+    return None
+
+
+def parse_structured_json_response(raw_text: str, required_keys: Optional[list] = None) -> Optional[dict]:
+    """解析结构化 JSON 响应（兼容代码块与混杂文本）。"""
+    if not raw_text:
+        return None
+
+    text = raw_text.strip()
+    candidates = []
+
+    if text.startswith('{') and text.endswith('}'):
+        candidates.append(text)
+
+    if "```json" in text:
+        try:
+            json_start = text.find("```json") + 7
+            json_end = text.find("```", json_start)
+            if json_end > json_start:
+                candidates.append(text[json_start:json_end].strip())
+        except Exception:
+            pass
+
+    if "```" in text:
+        try:
+            blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)```", text)
+            candidates.extend([block.strip() for block in blocks if block.strip()])
+        except Exception:
+            pass
+
+    extracted = _extract_first_json_object(text)
+    if extracted:
+        candidates.append(extracted)
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+            if not isinstance(parsed, dict):
+                continue
+            if not required_keys:
+                return parsed
+            if all(key in parsed for key in required_keys):
+                return parsed
+            if any(key in parsed for key in required_keys):
+                return parsed
+        except Exception:
+            continue
+
+    return None
+
+
+def _normalize_evidence_refs(raw_refs) -> list:
+    """标准化证据引用，统一为 Q数字 格式。"""
+    refs = []
+    if isinstance(raw_refs, str):
+        refs.extend(re.findall(r"Q\d+", raw_refs.upper()))
+    elif isinstance(raw_refs, list):
+        for item in raw_refs:
+            if isinstance(item, str):
+                refs.extend(re.findall(r"Q\d+", item.upper()))
+
+    dedup = sorted(set(refs), key=lambda ref: int(ref[1:]) if ref[1:].isdigit() else 10**9)
+    return dedup
+
+
+def build_report_evidence_pack(session: dict) -> dict:
+    """构建报告 V3 证据包。"""
+    interview_log = session.get("interview_log", [])
+    dim_info = get_dimension_info_for_session(session)
+    mode_config = get_interview_mode_config(session)
+
+    vague_terms = ["看情况", "不确定", "都可以", "不知道", "可能", "暂时不清楚", "以后再说", "差不多"]
+    unknown_signals = {"vague_expression", "generic_answer", "option_only"}
+
+    contradiction_patterns = [
+        ("need", "需要", "不需要", "需求取向冲突"),
+        ("support", "支持", "不支持", "支持立场冲突"),
+        ("available", "有", "没有", "资源现状冲突"),
+        ("must", "必须", "可选", "约束优先级冲突"),
+        ("ready", "已经", "还没", "准备状态冲突"),
+    ]
+
+    facts = []
+    unknowns = []
+    contradictions = []
+    blindspots = []
+    contradiction_state = {}
+    contradiction_keys = set()
+    unknown_keys = set()
+
+    for idx, log in enumerate(interview_log, 1):
+        q_id = f"Q{idx}"
+        dimension_key = log.get("dimension", "")
+        dim_name = dim_info.get(dimension_key, {}).get("name", dimension_key or "未分类")
+        question = str(log.get("question", "")).strip()
+        answer = str(log.get("answer", "")).strip()
+        signals = log.get("follow_up_signals") if isinstance(log.get("follow_up_signals"), list) else []
+        try:
+            quality_score = float(log.get("quality_score", 0) or 0)
+        except Exception:
+            quality_score = 0.0
+        quality_score = max(0.0, min(1.0, quality_score))
+
+        fact = {
+            "q_id": q_id,
+            "dimension": dimension_key,
+            "dimension_name": dim_name,
+            "question": question,
+            "answer": answer,
+            "is_follow_up": bool(log.get("is_follow_up", False)),
+            "follow_up_round": int(log.get("follow_up_round", 0) or 0),
+            "quality_score": quality_score,
+            "quality_signals": log.get("quality_signals", []) if isinstance(log.get("quality_signals"), list) else [],
+            "follow_up_signals": signals,
+            "hard_triggered": bool(log.get("hard_triggered", False)),
+        }
+        facts.append(fact)
+
+        unknown_reasons = []
+        if any(signal in unknown_signals for signal in signals):
+            unknown_reasons.append("命中模糊回答信号")
+        if any(term in answer for term in vague_terms):
+            unknown_reasons.append("回答存在模糊表述")
+        if quality_score > 0 and quality_score < 0.45:
+            unknown_reasons.append("回答质量偏低")
+        if unknown_reasons:
+            unknown_key = f"{q_id}:{'|'.join(sorted(set(unknown_reasons)))}"
+            if unknown_key not in unknown_keys:
+                unknown_keys.add(unknown_key)
+                unknowns.append({
+                    "q_id": q_id,
+                    "dimension": dim_name,
+                    "reason": "；".join(sorted(set(unknown_reasons))),
+                    "answer_excerpt": answer[:120],
+                })
+
+        for pair_id, positive, negative, description in contradiction_patterns:
+            has_positive = positive in answer
+            has_negative = negative in answer
+
+            if has_positive and has_negative:
+                key = f"self:{pair_id}:{q_id}"
+                if key not in contradiction_keys:
+                    contradiction_keys.add(key)
+                    contradictions.append({
+                        "type": "same_answer_conflict",
+                        "pair_id": pair_id,
+                        "description": description,
+                        "dimension": dim_name,
+                        "evidence_refs": [q_id],
+                        "detail": f"{q_id} 同时出现「{positive}」与「{negative}」",
+                    })
+
+            if not (has_positive or has_negative):
+                continue
+
+            state = "positive" if has_positive else "negative"
+            state_key = (dimension_key, pair_id)
+            previous = contradiction_state.get(state_key)
+            if previous and previous.get("state") != state:
+                key = f"cross:{pair_id}:{previous.get('q_id')}:{q_id}:{dimension_key}"
+                if key not in contradiction_keys:
+                    contradiction_keys.add(key)
+                    contradictions.append({
+                        "type": "cross_answer_conflict",
+                        "pair_id": pair_id,
+                        "description": description,
+                        "dimension": dim_name,
+                        "evidence_refs": [previous.get("q_id"), q_id],
+                        "detail": f"{previous.get('q_id')} 与 {q_id} 对「{positive}/{negative}」存在冲突",
+                    })
+            contradiction_state[state_key] = {"state": state, "q_id": q_id}
+
+    dimension_coverage = {}
+    coverage_values = []
+    for dim_key, info in dim_info.items():
+        dim_logs = [log for log in interview_log if log.get("dimension") == dim_key]
+        formal_count = len([log for log in dim_logs if not log.get("is_follow_up", False)])
+        follow_up_count = len([log for log in dim_logs if log.get("is_follow_up", False)])
+        dim_state = session.get("dimensions", {}).get(dim_key, {})
+        coverage_percent = int(dim_state.get("coverage", 0) or 0)
+        coverage_values.append(max(0, min(100, coverage_percent)) / 100.0)
+        missing_aspects = get_dimension_missing_aspects(session, dim_key)
+
+        for aspect in missing_aspects:
+            blindspots.append({
+                "dimension": info.get("name", dim_key),
+                "aspect": aspect,
+            })
+
+        dimension_coverage[dim_key] = {
+            "name": info.get("name", dim_key),
+            "coverage_percent": max(0, min(100, coverage_percent)),
+            "coverage_ratio": round(max(0, min(100, coverage_percent)) / 100.0, 2),
+            "formal_count": formal_count,
+            "follow_up_count": follow_up_count,
+            "minimum_formal": mode_config.get("formal_questions_per_dim", 3),
+            "maximum_formal": mode_config.get("max_formal_questions_per_dim", mode_config.get("formal_questions_per_dim", 3)),
+            "missing_aspects": missing_aspects,
+            "key_aspects": info.get("key_aspects", []),
+        }
+
+    valid_quality_scores = [fact["quality_score"] for fact in facts if fact.get("quality_score", 0) > 0]
+    average_quality = sum(valid_quality_scores) / len(valid_quality_scores) if valid_quality_scores else 0.0
+    overall_coverage = sum(coverage_values) / len(coverage_values) if coverage_values else 0.0
+
+    total_formal = len([fact for fact in facts if not fact.get("is_follow_up", False)])
+    total_follow_up = len([fact for fact in facts if fact.get("is_follow_up", False)])
+
+    return {
+        "topic": session.get("topic", "未知主题"),
+        "report_type": session.get("scenario_config", {}).get("report", {}).get("type", "standard"),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "facts": facts,
+        "contradictions": contradictions,
+        "unknowns": unknowns,
+        "blindspots": blindspots,
+        "dimension_coverage": dimension_coverage,
+        "overall_coverage": round(overall_coverage, 3),
+        "quality_snapshot": {
+            "average_quality_score": round(average_quality, 3),
+            "hard_triggered_count": len([fact for fact in facts if fact.get("hard_triggered")]),
+            "total_questions": len(facts),
+            "total_formal_questions": total_formal,
+            "total_follow_up_questions": total_follow_up,
+            "follow_up_ratio": round(total_follow_up / len(facts), 3) if facts else 0.0,
+        },
+    }
+
+
+def build_report_draft_prompt_v3(session: dict, evidence_pack: dict) -> str:
+    """构建 V3 报告草案生成 Prompt（结构化 JSON）。"""
+    topic = session.get("topic", "未知主题")
+    description = session.get("description", "")
+    report_type = evidence_pack.get("report_type", "standard")
+    report_type_label = "面试评估" if report_type == "assessment" else "需求访谈"
+
+    dimension_lines = []
+    for dim_key, dim_meta in evidence_pack.get("dimension_coverage", {}).items():
+        missing = "、".join(dim_meta.get("missing_aspects", [])[:4]) if dim_meta.get("missing_aspects") else "无"
+        dimension_lines.append(
+            f"- {dim_meta.get('name', dim_key)}: 覆盖{dim_meta.get('coverage_percent', 0)}%，"
+            f"正式题 {dim_meta.get('formal_count', 0)}，追问 {dim_meta.get('follow_up_count', 0)}，未覆盖方面：{missing}"
+        )
+    dimension_text = "\n".join(dimension_lines) if dimension_lines else "- 暂无维度覆盖数据"
+
+    facts_lines = []
+    for fact in evidence_pack.get("facts", [])[:60]:
+        question_text = (fact.get("question", "") or "").replace("\n", " ").strip()[:90]
+        answer_text = (fact.get("answer", "") or "").replace("\n", " ").strip()[:150]
+        facts_lines.append(
+            f"- {fact.get('q_id')} [{fact.get('dimension_name', '未分类')}] "
+            f"Q: {question_text} | A: {answer_text} | quality={fact.get('quality_score', 0):.2f}"
+        )
+    facts_text = "\n".join(facts_lines) if facts_lines else "- 无有效问答证据"
+
+    contradictions = evidence_pack.get("contradictions", [])
+    contradiction_lines = [
+        f"- {item.get('detail')}（证据: {', '.join(item.get('evidence_refs', []))}）"
+        for item in contradictions[:20]
+    ]
+    contradiction_text = "\n".join(contradiction_lines) if contradiction_lines else "- 未发现明显冲突"
+
+    unknowns = evidence_pack.get("unknowns", [])
+    unknown_lines = [
+        f"- {item.get('q_id')} [{item.get('dimension')}] {item.get('reason')}"
+        for item in unknowns[:20]
+    ]
+    unknown_text = "\n".join(unknown_lines) if unknown_lines else "- 未发现明显模糊回答"
+
+    blindspots = evidence_pack.get("blindspots", [])
+    blindspot_lines = [
+        f"- {item.get('dimension')}: {item.get('aspect')}"
+        for item in blindspots[:20]
+    ]
+    blindspot_text = "\n".join(blindspot_lines) if blindspot_lines else "- 暂无盲区"
+
+    schema_example = {
+        "overview": "访谈概述（2-4段）",
+        "needs": [
+            {
+                "name": "核心需求名称",
+                "priority": "P0",
+                "description": "需求描述",
+                "evidence_refs": ["Q1", "Q3"]
+            }
+        ],
+        "analysis": {
+            "customer_needs": "客户/用户需求分析",
+            "business_flow": "业务流程分析",
+            "tech_constraints": "技术约束分析",
+            "project_constraints": "项目约束分析"
+        },
+        "visualizations": {
+            "priority_quadrant_mermaid": "quadrantChart ...",
+            "business_flow_mermaid": "flowchart TD ...",
+            "demand_pie_mermaid": "pie title ...",
+            "architecture_mermaid": "flowchart LR ..."
+        },
+        "solutions": [
+            {
+                "title": "方案建议标题",
+                "description": "方案说明",
+                "owner": "负责角色",
+                "timeline": "时间计划",
+                "metric": "验收指标",
+                "evidence_refs": ["Q2", "Q8"]
+            }
+        ],
+        "risks": [
+            {
+                "risk": "风险项",
+                "impact": "影响",
+                "mitigation": "缓解措施",
+                "evidence_refs": ["Q6"]
+            }
+        ],
+        "actions": [
+            {
+                "action": "下一步行动",
+                "owner": "负责人角色",
+                "timeline": "预计时间",
+                "metric": "完成标准",
+                "evidence_refs": ["Q4"]
+            }
+        ],
+        "open_questions": [
+            {
+                "question": "未决问题",
+                "reason": "为何未决",
+                "impact": "影响范围",
+                "suggested_follow_up": "建议补充追问",
+                "evidence_refs": ["Q7"]
+            }
+        ],
+        "evidence_index": [
+            {
+                "claim": "关键结论",
+                "confidence": "high",
+                "evidence_refs": ["Q1", "Q5"]
+            }
+        ]
+    }
+
+    return f"""你是一名资深分析顾问。请基于给定证据包生成一份结构化报告草案 JSON，禁止输出任何 JSON 之外的文字。
+
+## 任务类型
+- 报告类型：{report_type_label}
+- 主题：{topic}
+{f"- 主题描述：{description}" if description else ""}
+
+## 维度覆盖快照
+{dimension_text}
+
+## 关键证据（按问答编号）
+{facts_text}
+
+## 冲突信号
+{contradiction_text}
+
+## 模糊与不确定信号
+{unknown_text}
+
+## 盲区清单（必须优先补齐）
+{blindspot_text}
+
+## 输出硬性约束
+1. 输出必须是合法 JSON 对象，首字符是 {{，末字符是 }}。
+2. 所有关键结论都要携带 evidence_refs（格式必须是 Q数字）。
+3. solutions/actions 每一项必须包含 owner、timeline、metric。
+4. 若存在冲突信号，必须在 risks 或 open_questions 中显式处理。
+5. 若存在盲区，必须在 open_questions 中体现对应补问。
+6. visualizations 字段中请输出 Mermaid 语法正文（不要包裹```mermaid代码块）。
+7. 不得编造证据编号，不得引用不存在的 Q 编号。
+
+## JSON 模板（字段必须完整）
+{json.dumps(schema_example, ensure_ascii=False, indent=2)}
+"""
+
+
+def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, list]:
+    """校验并标准化 V3 报告草案。"""
+    issues = []
+
+    def add_issue(issue_type: str, severity: str, message: str, target: str):
+        issues.append({
+            "type": issue_type,
+            "severity": severity,
+            "message": message,
+            "target": target,
+        })
+
+    if not isinstance(draft, dict):
+        add_issue("structure_error", "high", "草案不是 JSON 对象", "root")
+        return {}, issues
+
+    normalized = {
+        "overview": str(draft.get("overview", "")).strip(),
+        "needs": [],
+        "analysis": {
+            "customer_needs": "",
+            "business_flow": "",
+            "tech_constraints": "",
+            "project_constraints": "",
+        },
+        "visualizations": {
+            "priority_quadrant_mermaid": "",
+            "business_flow_mermaid": "",
+            "demand_pie_mermaid": "",
+            "architecture_mermaid": "",
+        },
+        "solutions": [],
+        "risks": [],
+        "actions": [],
+        "open_questions": [],
+        "evidence_index": [],
+    }
+
+    analysis = draft.get("analysis", {})
+    if isinstance(analysis, dict):
+        for key in normalized["analysis"]:
+            normalized["analysis"][key] = str(analysis.get(key, "")).strip()
+
+    visualizations = draft.get("visualizations", {})
+    if isinstance(visualizations, dict):
+        for key in normalized["visualizations"]:
+            normalized["visualizations"][key] = str(visualizations.get(key, "")).strip()
+
+    if not normalized["overview"]:
+        add_issue("structure_error", "high", "overview 不能为空", "overview")
+
+    needs = draft.get("needs", [])
+    if isinstance(needs, list):
+        for idx, item in enumerate(needs):
+            if not isinstance(item, dict):
+                add_issue("structure_error", "medium", "needs 项必须是对象", f"needs[{idx}]")
+                continue
+            refs = _normalize_evidence_refs(item.get("evidence_refs", []))
+            normalized_item = {
+                "name": str(item.get("name", "")).strip(),
+                "priority": str(item.get("priority", "P1")).strip().upper() or "P1",
+                "description": str(item.get("description", "")).strip(),
+                "evidence_refs": refs,
+            }
+            if not normalized_item["name"]:
+                add_issue("structure_error", "medium", "needs.name 不能为空", f"needs[{idx}].name")
+            if not refs:
+                add_issue("no_evidence", "high", "核心需求缺少证据引用", f"needs[{idx}]")
+            normalized["needs"].append(normalized_item)
+
+    for field, id_field in [("solutions", "title"), ("risks", "risk"), ("actions", "action"), ("open_questions", "question"), ("evidence_index", "claim")]:
+        values = draft.get(field, [])
+        if not isinstance(values, list):
+            add_issue("structure_error", "medium", f"{field} 必须是数组", field)
+            continue
+        for idx, item in enumerate(values):
+            if not isinstance(item, dict):
+                add_issue("structure_error", "medium", f"{field} 项必须是对象", f"{field}[{idx}]")
+                continue
+            refs = _normalize_evidence_refs(item.get("evidence_refs", []))
+            normalized_item = dict(item)
+            normalized_item[id_field] = str(item.get(id_field, "")).strip()
+            normalized_item["evidence_refs"] = refs
+
+            if field in {"solutions", "actions"}:
+                normalized_item["owner"] = str(item.get("owner", "")).strip()
+                normalized_item["timeline"] = str(item.get("timeline", "")).strip()
+                normalized_item["metric"] = str(item.get("metric", "")).strip()
+                if not (normalized_item["owner"] and normalized_item["timeline"] and normalized_item["metric"]):
+                    add_issue("not_actionable", "medium", f"{field} 缺少 owner/timeline/metric", f"{field}[{idx}]")
+
+            if field == "risks":
+                normalized_item["impact"] = str(item.get("impact", "")).strip()
+                normalized_item["mitigation"] = str(item.get("mitigation", "")).strip()
+
+            if field == "open_questions":
+                normalized_item["reason"] = str(item.get("reason", "")).strip()
+                normalized_item["impact"] = str(item.get("impact", "")).strip()
+                normalized_item["suggested_follow_up"] = str(item.get("suggested_follow_up", "")).strip()
+
+            if field == "evidence_index":
+                confidence = str(item.get("confidence", "medium")).strip().lower()
+                if confidence not in {"high", "medium", "low"}:
+                    confidence = "medium"
+                normalized_item["confidence"] = confidence
+
+            if not normalized_item.get(id_field):
+                add_issue("structure_error", "medium", f"{field}.{id_field} 不能为空", f"{field}[{idx}].{id_field}")
+            if not refs:
+                add_issue("no_evidence", "high", f"{field} 缺少证据引用", f"{field}[{idx}]")
+
+            normalized[field].append(normalized_item)
+
+    combined_text = json.dumps(normalized, ensure_ascii=False)
+
+    contradictions = evidence_pack.get("contradictions", [])
+    unresolved_conflicts = 0
+    for item in contradictions:
+        refs = item.get("evidence_refs", [])
+        if refs and not any(ref in combined_text for ref in refs):
+            unresolved_conflicts += 1
+    if unresolved_conflicts > 0:
+        add_issue(
+            "unresolved_contradiction",
+            "high",
+            f"存在 {unresolved_conflicts} 条冲突证据未在草案中处理",
+            "risks/open_questions"
+        )
+
+    blindspots = evidence_pack.get("blindspots", [])
+    unresolved_blindspots = []
+    for item in blindspots:
+        aspect = str(item.get("aspect", "")).strip()
+        if aspect and aspect not in combined_text:
+            unresolved_blindspots.append(aspect)
+    if unresolved_blindspots:
+        sample = "、".join(unresolved_blindspots[:5])
+        add_issue(
+            "blindspot",
+            "medium",
+            f"仍有未覆盖盲区未进入草案：{sample}",
+            "open_questions"
+        )
+
+    return normalized, issues
+
+
+def build_report_review_prompt_v3(session: dict, evidence_pack: dict, draft: dict, issues: list) -> str:
+    """构建 V3 审稿与修复 Prompt。"""
+    topic = session.get("topic", "未知主题")
+    contradiction_text = "\n".join(
+        [f"- {item.get('detail')}（证据: {', '.join(item.get('evidence_refs', []))}）" for item in evidence_pack.get("contradictions", [])[:20]]
+    ) or "- 无"
+    blindspot_text = "\n".join(
+        [f"- {item.get('dimension')}: {item.get('aspect')}" for item in evidence_pack.get("blindspots", [])[:20]]
+    ) or "- 无"
+
+    issue_text = "\n".join(
+        [f"- [{item.get('severity', 'medium')}] {item.get('type')}: {item.get('message')} @ {item.get('target', 'unknown')}" for item in issues[:30]]
+    ) or "- 无已知问题"
+
+    response_schema = {
+        "passed": True,
+        "issues": [
+            {
+                "type": "no_evidence",
+                "severity": "high",
+                "message": "问题描述",
+                "target": "字段路径"
+            }
+        ],
+        "revised_draft": {
+            "overview": "修订后的 overview",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [],
+            "open_questions": [],
+            "evidence_index": []
+        }
+    }
+
+    return f"""你是报告质量审稿专家。请对草案执行一致性审稿并直接修复，输出 JSON。
+
+## 访谈主题
+{topic}
+
+## 重点核查规则
+1. no_evidence：关键结论或行动缺少 evidence_refs。
+2. unresolved_contradiction：冲突证据没有被解释或处理。
+3. not_actionable：行动建议缺少 owner/timeline/metric。
+4. blindspot：盲区没有进入 open_questions 或行动计划。
+
+## 冲突证据
+{contradiction_text}
+
+## 盲区证据
+{blindspot_text}
+
+## 当前已知问题
+{issue_text}
+
+## 待审稿草案 JSON
+{json.dumps(draft, ensure_ascii=False)}
+
+## 输出要求
+- 仅输出合法 JSON，禁止附加解释文字。
+- 必须包含 passed、issues、revised_draft 三个字段。
+- revised_draft 必须保留原有结构，并修复可修复问题。
+- 若仍有问题，issues 需完整列出。
+
+## 输出模板
+{json.dumps(response_schema, ensure_ascii=False, indent=2)}
+"""
+
+
+def parse_report_review_response_v3(raw_text: str) -> Optional[dict]:
+    """解析 V3 审稿响应。"""
+    parsed = parse_structured_json_response(raw_text, required_keys=["passed", "issues"])
+    if not parsed:
+        return None
+
+    issues = []
+    raw_issues = parsed.get("issues", [])
+    if isinstance(raw_issues, list):
+        for item in raw_issues:
+            if not isinstance(item, dict):
+                continue
+            issues.append({
+                "type": str(item.get("type", "unknown")).strip(),
+                "severity": str(item.get("severity", "medium")).strip().lower() or "medium",
+                "message": str(item.get("message", "")).strip(),
+                "target": str(item.get("target", "unknown")).strip(),
+            })
+
+    revised_draft = parsed.get("revised_draft", {})
+    if not isinstance(revised_draft, dict):
+        revised_draft = {}
+
+    return {
+        "passed": bool(parsed.get("passed", False)),
+        "issues": issues,
+        "revised_draft": revised_draft,
+    }
+
+
+def _collect_claim_entries_for_quality(draft: dict) -> list:
+    """收集草案中的可计量结论条目。"""
+    claim_entries = []
+    for field in ["needs", "solutions", "risks", "actions", "open_questions", "evidence_index"]:
+        values = draft.get(field, [])
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            claim_entries.append({
+                "field": field,
+                "evidence_refs": _normalize_evidence_refs(item.get("evidence_refs", [])),
+                "owner": str(item.get("owner", "")).strip(),
+                "timeline": str(item.get("timeline", "")).strip(),
+                "metric": str(item.get("metric", "")).strip(),
+            })
+    return claim_entries
+
+
+def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: list) -> dict:
+    """计算 V3 报告质量元数据。"""
+    claim_entries = _collect_claim_entries_for_quality(draft)
+    claim_total = len(claim_entries)
+    evidence_covered = len([entry for entry in claim_entries if entry.get("evidence_refs")])
+    evidence_coverage = (evidence_covered / claim_total) if claim_total > 0 else 0.0
+
+    contradiction_total = len(evidence_pack.get("contradictions", []))
+    unresolved_contradictions = len([item for item in issues if item.get("type") == "unresolved_contradiction"])
+    if contradiction_total <= 0:
+        consistency = 1.0
+    else:
+        consistency = max(0.0, 1.0 - unresolved_contradictions / contradiction_total)
+
+    action_entries = [entry for entry in claim_entries if entry.get("field") in {"solutions", "actions"}]
+    actionable_total = len(action_entries)
+    actionable_count = len([
+        entry for entry in action_entries
+        if entry.get("owner") and entry.get("timeline") and entry.get("metric")
+    ])
+    actionability = (actionable_count / actionable_total) if actionable_total > 0 else 0.0
+
+    overall = 0.4 * evidence_coverage + 0.3 * consistency + 0.3 * actionability
+
+    return {
+        "mode": "v3_structured_reviewed",
+        "evidence_coverage": round(evidence_coverage, 3),
+        "consistency": round(consistency, 3),
+        "actionability": round(actionability, 3),
+        "overall": round(overall, 3),
+        "claim_total": claim_total,
+        "claim_with_evidence": evidence_covered,
+        "review_issue_count": len(issues),
+    }
+
+
+def build_report_quality_meta_fallback(session: dict, mode: str) -> dict:
+    """回退流程的质量元数据估算。"""
+    evidence_pack = build_report_evidence_pack(session)
+    evidence_coverage = float(evidence_pack.get("overall_coverage", 0.0))
+    contradiction_total = len(evidence_pack.get("contradictions", []))
+    consistency = 1.0 if contradiction_total == 0 else 0.6
+    actionability = 0.4
+    overall = 0.4 * evidence_coverage + 0.3 * consistency + 0.3 * actionability
+
+    return {
+        "mode": mode,
+        "evidence_coverage": round(evidence_coverage, 3),
+        "consistency": round(consistency, 3),
+        "actionability": round(actionability, 3),
+        "overall": round(overall, 3),
+        "claim_total": 0,
+        "claim_with_evidence": 0,
+        "review_issue_count": 0,
+    }
+
+
+def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) -> str:
+    """将 V3 结构化草案渲染为 Markdown 报告。"""
+    topic = session.get("topic", "未命名项目")
+    now = datetime.now()
+    report_id = f"deep-vision-{now.strftime('%Y%m%d')}"
+
+    needs = draft.get("needs", []) if isinstance(draft.get("needs", []), list) else []
+    solutions = draft.get("solutions", []) if isinstance(draft.get("solutions", []), list) else []
+    risks = draft.get("risks", []) if isinstance(draft.get("risks", []), list) else []
+    actions = draft.get("actions", []) if isinstance(draft.get("actions", []), list) else []
+    open_questions = draft.get("open_questions", []) if isinstance(draft.get("open_questions", []), list) else []
+    evidence_index = draft.get("evidence_index", []) if isinstance(draft.get("evidence_index", []), list) else []
+    analysis = draft.get("analysis", {}) if isinstance(draft.get("analysis", {}), dict) else {}
+    visuals = draft.get("visualizations", {}) if isinstance(draft.get("visualizations", {}), dict) else {}
+
+    def clean_mermaid(raw_value: str, fallback: str) -> str:
+        value = str(raw_value or "").replace("```mermaid", "").replace("```", "").strip()
+        return value or fallback
+
+    quadrant_mermaid = clean_mermaid(
+        visuals.get("priority_quadrant_mermaid", ""),
+        """quadrantChart
+    title Priority Matrix
+    x-axis Low Urgency --> High Urgency
+    y-axis Low Importance --> High Importance
+    quadrant-1 Do First
+    quadrant-2 Schedule
+    quadrant-3 Delegate
+    quadrant-4 Eliminate
+    Requirement1: [0.75, 0.85]
+    Requirement2: [0.45, 0.65]"""
+    )
+
+    flow_mermaid = clean_mermaid(
+        visuals.get("business_flow_mermaid", ""),
+        """flowchart TD
+    A[开始] --> B[需求澄清]
+    B --> C[方案评估]
+    C --> D[执行计划]
+    D --> E[结束]"""
+    )
+
+    pie_mermaid = clean_mermaid(
+        visuals.get("demand_pie_mermaid", ""),
+        """pie title 需求分布
+    "核心功能" : 40
+    "流程优化" : 30
+    "技术约束" : 20
+    "风险治理" : 10"""
+    )
+
+    architecture_mermaid = clean_mermaid(
+        visuals.get("architecture_mermaid", ""),
+        """flowchart LR
+    A[前端入口] --> B[业务服务]
+    B --> C[(数据存储)]
+    B --> D[第三方服务]"""
+    )
+
+    needs_table = []
+    if needs:
+        needs_table.append("| 优先级 | 需求项 | 描述 | 证据 |")
+        needs_table.append("|:---:|:---|:---|:---|")
+        for item in needs:
+            refs = "、".join(_normalize_evidence_refs(item.get("evidence_refs", []))) or "-"
+            needs_table.append(
+                f"| {item.get('priority', 'P1')} | {item.get('name', '')} | {item.get('description', '')} | {refs} |"
+            )
+    else:
+        needs_table.append("暂无结构化核心需求。")
+
+    priority_group = {"P0": [], "P1": [], "P2": [], "P3": []}
+    for item in needs:
+        priority = str(item.get("priority", "P1")).upper()
+        priority = priority if priority in priority_group else "P1"
+        priority_group[priority].append(item.get("name", "未命名需求"))
+
+    priority_table = [
+        "| 优先级 | 需求项 | 说明 |",
+        "|:---:|:---|:---|",
+        f"| 🔴 P0 立即执行 | {'、'.join(priority_group['P0']) if priority_group['P0'] else '-'} | 重要且紧急，需优先投入 |",
+        f"| 🟡 P1 计划执行 | {'、'.join(priority_group['P1']) if priority_group['P1'] else '-'} | 重要但可分阶段推进 |",
+        f"| 🟢 P2 可委派 | {'、'.join(priority_group['P2']) if priority_group['P2'] else '-'} | 影响有限，可并行安排 |",
+        f"| ⚪ P3 低优先级 | {'、'.join(priority_group['P3']) if priority_group['P3'] else '-'} | 可延后处理并持续观察 |",
+    ]
+
+    lines = [
+        f"# {topic} 访谈报告",
+        "",
+        f"**访谈日期**: {now.strftime('%Y-%m-%d')}",
+        f"**报告编号**: {report_id}",
+        "**生成方式**: V3 结构化草案 + 审稿纠错",
+        "",
+        "---",
+        "",
+        "## 1. 访谈概述",
+        "",
+        draft.get("overview", "暂无概述信息。"),
+        "",
+        "## 2. 需求摘要",
+        "",
+        "### 核心需求列表",
+        "",
+        *needs_table,
+        "",
+        "### 优先级矩阵（Mermaid）",
+        "",
+        "```mermaid",
+        quadrant_mermaid,
+        "```",
+        "",
+        "### 优先级清单",
+        "",
+        *priority_table,
+        "",
+        "## 3. 详细需求分析",
+        "",
+        "### 客户/用户需求",
+        analysis.get("customer_needs", "暂无分析。"),
+        "",
+        "### 业务流程",
+        analysis.get("business_flow", "暂无分析。"),
+        "",
+        "### 技术约束",
+        analysis.get("tech_constraints", "暂无分析。"),
+        "",
+        "### 项目约束",
+        analysis.get("project_constraints", "暂无分析。"),
+        "",
+        "## 4. 可视化分析",
+        "",
+        "### 业务流程图",
+        "```mermaid",
+        flow_mermaid,
+        "```",
+        "",
+        "### 需求分类饼图",
+        "```mermaid",
+        pie_mermaid,
+        "```",
+        "",
+        "### 部署架构图",
+        "```mermaid",
+        architecture_mermaid,
+        "```",
+        "",
+        "## 5. 方案建议",
+        "",
+    ]
+
+    if solutions:
+        for idx, item in enumerate(solutions, 1):
+            refs = "、".join(_normalize_evidence_refs(item.get("evidence_refs", []))) or "-"
+            lines.extend([
+                f"### 建议 {idx}: {item.get('title', '未命名建议')}",
+                f"- 说明：{item.get('description', '')}",
+                f"- Owner：{item.get('owner', '') or '待定'}",
+                f"- 时间：{item.get('timeline', '') or '待定'}",
+                f"- 指标：{item.get('metric', '') or '待定'}",
+                f"- 证据：{refs}",
+                "",
+            ])
+    else:
+        lines.append("暂无结构化方案建议。")
+        lines.append("")
+
+    lines.extend([
+        "## 6. 风险评估",
+        "",
+    ])
+    if risks:
+        for idx, item in enumerate(risks, 1):
+            refs = "、".join(_normalize_evidence_refs(item.get("evidence_refs", []))) or "-"
+            lines.extend([
+                f"### 风险 {idx}: {item.get('risk', '未命名风险')}",
+                f"- 影响：{item.get('impact', '')}",
+                f"- 应对：{item.get('mitigation', '')}",
+                f"- 证据：{refs}",
+                "",
+            ])
+    else:
+        lines.append("暂无结构化风险项。")
+        lines.append("")
+
+    lines.extend([
+        "## 7. 下一步行动",
+        "",
+    ])
+    if actions:
+        for idx, item in enumerate(actions, 1):
+            refs = "、".join(_normalize_evidence_refs(item.get("evidence_refs", []))) or "-"
+            lines.extend([
+                f"### 行动 {idx}: {item.get('action', '未命名行动')}",
+                f"- Owner：{item.get('owner', '') or '待定'}",
+                f"- 时间：{item.get('timeline', '') or '待定'}",
+                f"- 指标：{item.get('metric', '') or '待定'}",
+                f"- 证据：{refs}",
+                "",
+            ])
+    else:
+        lines.append("暂无结构化下一步行动。")
+        lines.append("")
+
+    lines.append("### 未决问题清单")
+    lines.append("")
+    if open_questions:
+        for idx, item in enumerate(open_questions, 1):
+            refs = "、".join(_normalize_evidence_refs(item.get("evidence_refs", []))) or "-"
+            lines.extend([
+                f"{idx}. **问题**：{item.get('question', '')}",
+                f"   - 原因：{item.get('reason', '')}",
+                f"   - 影响：{item.get('impact', '')}",
+                f"   - 建议补问：{item.get('suggested_follow_up', '')}",
+                f"   - 证据：{refs}",
+                "",
+            ])
+    else:
+        lines.append("暂无未决问题。")
+        lines.append("")
+
+    lines.extend([
+        "### 证据索引（摘要）",
+        "",
+    ])
+    if evidence_index:
+        for idx, item in enumerate(evidence_index[:12], 1):
+            refs = "、".join(_normalize_evidence_refs(item.get("evidence_refs", []))) or "-"
+            confidence = str(item.get("confidence", "medium")).lower()
+            lines.append(f"{idx}. {item.get('claim', '')}（置信度: {confidence}，证据: {refs}）")
+        lines.append("")
+    else:
+        lines.append("暂无证据索引。")
+        lines.append("")
+
+    lines.extend([
+        "### 报告质量指标",
+        "",
+        f"- 证据覆盖率：{quality_meta.get('evidence_coverage', 0):.1%}",
+        f"- 一致性得分：{quality_meta.get('consistency', 0):.1%}",
+        f"- 可执行性得分：{quality_meta.get('actionability', 0):.1%}",
+        f"- 综合得分：{quality_meta.get('overall', 0):.1%}",
+        "",
+        "*此报告由 Deep Vision 深瞳生成*",
+        "",
+    ])
+
+    return "\n".join(lines)
+
+
+def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None) -> Optional[dict]:
+    """执行 V3 报告生成流水线。任一阶段失败返回 None。"""
+    try:
+        evidence_pack = build_report_evidence_pack(session)
+
+        if session_id:
+            update_report_generation_status(session_id, "building_prompt", message="正在构建证据包并生成结构化草案...")
+
+        draft_prompt = build_report_draft_prompt_v3(session, evidence_pack)
+        draft_raw = call_claude(
+            draft_prompt,
+            max_tokens=MAX_TOKENS_REPORT,
+            call_type="report_v3_draft",
+        )
+        if not draft_raw:
+            return None
+
+        draft_parsed = parse_structured_json_response(draft_raw, required_keys=["overview", "needs", "analysis"])
+        if not draft_parsed:
+            return None
+
+        current_draft, local_issues = validate_report_draft_v3(draft_parsed, evidence_pack)
+        review_issues = list(local_issues)
+        max_review_rounds = 3  # 初审 + 最多2轮定向修复
+        final_issues = list(local_issues)
+
+        for review_round in range(max_review_rounds):
+            if session_id:
+                update_report_generation_status(
+                    session_id,
+                    "generating",
+                    message=f"正在执行报告一致性审稿（第{review_round + 1}/{max_review_rounds}轮）..."
+                )
+
+            review_prompt = build_report_review_prompt_v3(session, evidence_pack, current_draft, review_issues)
+            review_raw = call_claude(
+                review_prompt,
+                max_tokens=min(MAX_TOKENS_REPORT, 20000),
+                call_type=f"report_v3_review_round_{review_round + 1}",
+            )
+            if not review_raw:
+                return None
+
+            review_parsed = parse_report_review_response_v3(review_raw)
+            if not review_parsed:
+                return None
+
+            if review_parsed.get("revised_draft"):
+                current_draft = review_parsed["revised_draft"]
+
+            current_draft, local_issues = validate_report_draft_v3(current_draft, evidence_pack)
+            merged_issues = []
+            seen_keys = set()
+            for item in (review_parsed.get("issues", []) + local_issues):
+                key = f"{item.get('type')}|{item.get('target')}|{item.get('message')}"
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                merged_issues.append(item)
+            final_issues = merged_issues
+
+            passed = bool(review_parsed.get("passed", False)) and len(merged_issues) == 0
+            if passed:
+                quality_meta = compute_report_quality_meta_v3(current_draft, evidence_pack, final_issues)
+                report_content = render_report_from_draft_v3(session, current_draft, quality_meta)
+                return {
+                    "report_content": report_content,
+                    "quality_meta": quality_meta,
+                    "evidence_pack": evidence_pack,
+                    "review_issues": final_issues,
+                }
+
+            review_issues = merged_issues
+
+        return None
+    except Exception as e:
+        if ENABLE_DEBUG_LOG:
+            print(f"⚠️ V3 报告流程失败: {e}")
+        return None
+
+
 async def call_claude_async(prompt: str, max_tokens: int = None) -> Optional[str]:
     """异步调用 Claude API，带超时控制"""
     if not claude_client:
@@ -5904,66 +6975,85 @@ def generate_report(session_id):
     update_report_generation_status(session_id, "queued")
 
     try:
+        def persist_report(content: str) -> tuple[Path, str]:
+            """保存报告并更新会话状态。"""
+            topic_slug = session.get("topic", "report").replace(" ", "-")[:30]
+            date_str = datetime.now().strftime("%Y%m%d")
+            filename = f"deep-vision-{date_str}-{topic_slug}.md"
+            report_file = REPORTS_DIR / filename
+            report_file.write_text(content, encoding="utf-8")
+            set_report_owner_id(filename, user_id)
+
+            session["status"] = "completed"
+            session["updated_at"] = get_utc_now()
+            session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+            return report_file, filename
+
         # 检查是否有 Claude API
         if claude_client:
-            update_report_generation_status(session_id, "building_prompt")
-            prompt = build_report_prompt(session)
+            update_report_generation_status(session_id, "building_prompt", message="正在执行 V3 证据包构建与结构化草案...")
+            v3_result = generate_report_v3_pipeline(session, session_id=session_id)
 
-            # 日志：记录报告生成 prompt 统计
-            if ENABLE_DEBUG_LOG:
-                ref_docs_count = len(session.get("reference_materials", session.get("reference_docs", []) + session.get("research_docs", [])))
-                interview_count = len(session.get("interview_log", []))
-                print(f"📊 报告生成 Prompt 统计：总长度={len(prompt)}字符，参考资料={ref_docs_count}个，访谈记录={interview_count}条")
+            if v3_result and v3_result.get("report_content"):
+                report_content = v3_result["report_content"] + generate_interview_appendix(session)
+                quality_meta = v3_result.get("quality_meta", {})
+                session["last_report_quality_meta"] = quality_meta
 
-            update_report_generation_status(session_id, "generating")
-            report_content = call_claude(
-                prompt,
-                max_tokens=MAX_TOKENS_REPORT,
-                call_type="report"
-            )
-
-            if report_content:
-                # 追加完整的访谈记录附录（确保附录完整）
-                appendix = generate_interview_appendix(session)
-                report_content = report_content + appendix
-
-                update_report_generation_status(session_id, "saving")
-                # 保存报告
-                topic_slug = session.get("topic", "report").replace(" ", "-")[:30]
-                date_str = datetime.now().strftime("%Y%m%d")
-                filename = f"deep-vision-{date_str}-{topic_slug}.md"
-                report_file = REPORTS_DIR / filename
-                report_file.write_text(report_content, encoding="utf-8")
-                set_report_owner_id(filename, user_id)
-
-                # 更新会话状态
-                session["status"] = "completed"
-                session["updated_at"] = get_utc_now()
-                session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
-
+                update_report_generation_status(session_id, "saving", message="正在保存 V3 审稿增强报告...")
+                report_file, filename = persist_report(report_content)
                 update_report_generation_status(session_id, "completed", active=False)
 
                 return jsonify({
                     "success": True,
                     "report_path": str(report_file),
                     "report_name": filename,
-                    "ai_generated": True
+                    "ai_generated": True,
+                    "v3_enabled": True,
+                    "report_quality_meta": quality_meta,
+                })
+
+            if ENABLE_DEBUG_LOG:
+                print("⚠️ V3 报告流程未通过，自动回退到标准报告生成流程")
+
+            update_report_generation_status(session_id, "generating", message="V3 流程失败，正在回退标准报告生成...")
+            prompt = build_report_prompt(session)
+
+            if ENABLE_DEBUG_LOG:
+                ref_docs_count = len(session.get("reference_materials", session.get("reference_docs", []) + session.get("research_docs", [])))
+                interview_count = len(session.get("interview_log", []))
+                print(f"📊 回退报告 Prompt 统计：总长度={len(prompt)}字符，参考资料={ref_docs_count}个，访谈记录={interview_count}条")
+
+            report_content = call_claude(
+                prompt,
+                max_tokens=MAX_TOKENS_REPORT,
+                call_type="report_legacy_fallback"
+            )
+
+            if report_content:
+                report_content = report_content + generate_interview_appendix(session)
+                quality_meta = build_report_quality_meta_fallback(session, mode="legacy_ai_fallback")
+                session["last_report_quality_meta"] = quality_meta
+
+                update_report_generation_status(session_id, "saving", message="正在保存回退生成报告...")
+                report_file, filename = persist_report(report_content)
+                update_report_generation_status(session_id, "completed", active=False)
+
+                return jsonify({
+                    "success": True,
+                    "report_path": str(report_file),
+                    "report_name": filename,
+                    "ai_generated": True,
+                    "v3_enabled": False,
+                    "report_quality_meta": quality_meta,
                 })
 
         # 回退到简单报告生成
-        update_report_generation_status(session_id, "fallback")
+        update_report_generation_status(session_id, "fallback", message="AI 回退失败，正在使用模板报告兜底...")
         report_content = generate_simple_report(session)
+        quality_meta = build_report_quality_meta_fallback(session, mode="simple_template_fallback")
+        session["last_report_quality_meta"] = quality_meta
         update_report_generation_status(session_id, "saving")
-        topic_slug = session.get("topic", "report").replace(" ", "-")[:30]
-        date_str = datetime.now().strftime("%Y%m%d")
-        filename = f"deep-vision-{date_str}-{topic_slug}.md"
-        report_file = REPORTS_DIR / filename
-        report_file.write_text(report_content, encoding="utf-8")
-        set_report_owner_id(filename, user_id)
-
-        session["status"] = "completed"
-        session["updated_at"] = get_utc_now()
-        session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+        report_file, filename = persist_report(report_content)
 
         update_report_generation_status(session_id, "completed", active=False)
 
@@ -5971,7 +7061,9 @@ def generate_report(session_id):
             "success": True,
             "report_path": str(report_file),
             "report_name": filename,
-            "ai_generated": False
+            "ai_generated": False,
+            "v3_enabled": False,
+            "report_quality_meta": quality_meta,
         })
     except Exception as exc:
         error_detail = str(exc)[:200] or "未知错误"
