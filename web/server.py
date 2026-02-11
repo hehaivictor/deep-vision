@@ -4250,6 +4250,52 @@ def build_report_evidence_pack(session: dict) -> dict:
     }
 
 
+def summarize_evidence_pack_for_debug(evidence_pack: dict) -> dict:
+    """提炼证据包摘要，用于会话内调试留痕。"""
+    if not isinstance(evidence_pack, dict):
+        return {}
+
+    facts = evidence_pack.get("facts", [])
+    contradictions = evidence_pack.get("contradictions", [])
+    unknowns = evidence_pack.get("unknowns", [])
+    blindspots = evidence_pack.get("blindspots", [])
+
+    dimension_summary = {}
+    raw_dimension_coverage = evidence_pack.get("dimension_coverage", {})
+    if isinstance(raw_dimension_coverage, dict):
+        for dim_key, dim_meta in raw_dimension_coverage.items():
+            if not isinstance(dim_meta, dict):
+                continue
+            dimension_summary[dim_key] = {
+                "name": dim_meta.get("name", dim_key),
+                "coverage_percent": int(dim_meta.get("coverage_percent", 0) or 0),
+                "formal_count": int(dim_meta.get("formal_count", 0) or 0),
+                "follow_up_count": int(dim_meta.get("follow_up_count", 0) or 0),
+                "missing_aspects": (dim_meta.get("missing_aspects", []) if isinstance(dim_meta.get("missing_aspects", []), list) else [])[:8],
+            }
+
+    quality_snapshot = evidence_pack.get("quality_snapshot", {})
+    if not isinstance(quality_snapshot, dict):
+        quality_snapshot = {}
+
+    return {
+        "overall_coverage": float(evidence_pack.get("overall_coverage", 0) or 0),
+        "facts_count": len(facts) if isinstance(facts, list) else 0,
+        "contradictions_count": len(contradictions) if isinstance(contradictions, list) else 0,
+        "unknowns_count": len(unknowns) if isinstance(unknowns, list) else 0,
+        "blindspots_count": len(blindspots) if isinstance(blindspots, list) else 0,
+        "quality_snapshot": {
+            "average_quality_score": float(quality_snapshot.get("average_quality_score", 0) or 0),
+            "hard_triggered_count": int(quality_snapshot.get("hard_triggered_count", 0) or 0),
+            "total_questions": int(quality_snapshot.get("total_questions", 0) or 0),
+            "total_formal_questions": int(quality_snapshot.get("total_formal_questions", 0) or 0),
+            "total_follow_up_questions": int(quality_snapshot.get("total_follow_up_questions", 0) or 0),
+            "follow_up_ratio": float(quality_snapshot.get("follow_up_ratio", 0) or 0),
+        },
+        "dimension_coverage": dimension_summary,
+    }
+
+
 def build_report_draft_prompt_v3(session: dict, evidence_pack: dict) -> str:
     """构建 V3 报告草案生成 Prompt（结构化 JSON）。"""
     topic = session.get("topic", "未知主题")
@@ -4438,6 +4484,31 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
         "evidence_index": [],
     }
 
+    valid_q_refs = {
+        str(item.get("q_id", "")).upper().strip()
+        for item in evidence_pack.get("facts", [])
+        if isinstance(item, dict) and re.fullmatch(r"Q\d+", str(item.get("q_id", "")).upper().strip())
+    }
+
+    def normalize_evidence_refs_for_target(raw_refs, target: str) -> list:
+        refs = _normalize_evidence_refs(raw_refs)
+        if not refs:
+            return []
+        if not valid_q_refs:
+            add_issue("invalid_evidence_ref", "high", "证据包缺少可用问答编号，无法验证证据引用", target)
+            return []
+
+        invalid_refs = [ref for ref in refs if ref not in valid_q_refs]
+        if invalid_refs:
+            add_issue(
+                "invalid_evidence_ref",
+                "high",
+                f"包含无效证据引用：{', '.join(invalid_refs)}",
+                target
+            )
+
+        return [ref for ref in refs if ref in valid_q_refs]
+
     analysis = draft.get("analysis", {})
     if isinstance(analysis, dict):
         for key in normalized["analysis"]:
@@ -4457,7 +4528,7 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
             if not isinstance(item, dict):
                 add_issue("structure_error", "medium", "needs 项必须是对象", f"needs[{idx}]")
                 continue
-            refs = _normalize_evidence_refs(item.get("evidence_refs", []))
+            refs = normalize_evidence_refs_for_target(item.get("evidence_refs", []), f"needs[{idx}].evidence_refs")
             normalized_item = {
                 "name": str(item.get("name", "")).strip(),
                 "priority": str(item.get("priority", "P1")).strip().upper() or "P1",
@@ -4479,7 +4550,7 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
             if not isinstance(item, dict):
                 add_issue("structure_error", "medium", f"{field} 项必须是对象", f"{field}[{idx}]")
                 continue
-            refs = _normalize_evidence_refs(item.get("evidence_refs", []))
+            refs = normalize_evidence_refs_for_target(item.get("evidence_refs", []), f"{field}[{idx}].evidence_refs")
             normalized_item = dict(item)
             normalized_item[id_field] = str(item.get(id_field, "")).strip()
             normalized_item["evidence_refs"] = refs
@@ -4666,6 +4737,44 @@ def _collect_claim_entries_for_quality(draft: dict) -> list:
                 "metric": str(item.get("metric", "")).strip(),
             })
     return claim_entries
+
+
+REPORT_V3_QUALITY_THRESHOLDS = {
+    "evidence_coverage": 0.9,
+    "consistency": 0.8,
+    "actionability": 0.8,
+}
+
+
+def build_quality_gate_issues_v3(quality_meta: dict, thresholds: Optional[dict] = None) -> list:
+    """根据质量阈值构建门禁问题列表。"""
+    limit = thresholds or REPORT_V3_QUALITY_THRESHOLDS
+    if not isinstance(quality_meta, dict):
+        return [{
+            "type": "quality_gate_missing",
+            "severity": "high",
+            "message": "缺少质量评分结果，无法通过质量门禁",
+            "target": "quality_meta",
+        }]
+
+    checks = [
+        ("evidence_coverage", "quality_gate_evidence", "证据覆盖率", "needs/solutions/actions/risks/open_questions/evidence_index"),
+        ("consistency", "quality_gate_consistency", "冲突解释完成度", "risks/open_questions"),
+        ("actionability", "quality_gate_actionability", "可执行建议占比", "solutions/actions"),
+    ]
+
+    issues = []
+    for key, issue_type, label, target in checks:
+        current = float(quality_meta.get(key, 0) or 0)
+        required = float(limit.get(key, 0) or 0)
+        if current + 1e-9 < required:
+            issues.append({
+                "type": issue_type,
+                "severity": "high",
+                "message": f"{label}低于门槛（当前{current:.1%}，要求≥{required:.1%}）",
+                "target": target,
+            })
+    return issues
 
 
 def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: list) -> dict:
@@ -4975,7 +5084,7 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
 
 
 def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None) -> Optional[dict]:
-    """执行 V3 报告生成流水线。任一阶段失败返回 None。"""
+    """执行 V3 报告生成流水线。失败时返回包含 reason 的调试结构。"""
     try:
         evidence_pack = build_report_evidence_pack(session)
 
@@ -4989,23 +5098,36 @@ def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None)
             call_type="report_v3_draft",
         )
         if not draft_raw:
-            return None
+            return {
+                "status": "failed",
+                "reason": "draft_generation_failed",
+                "evidence_pack": evidence_pack,
+                "review_issues": [],
+            }
 
         draft_parsed = parse_structured_json_response(draft_raw, required_keys=["overview", "needs", "analysis"])
         if not draft_parsed:
-            return None
+            return {
+                "status": "failed",
+                "reason": "draft_parse_failed",
+                "evidence_pack": evidence_pack,
+                "review_issues": [],
+            }
 
         current_draft, local_issues = validate_report_draft_v3(draft_parsed, evidence_pack)
         review_issues = list(local_issues)
-        max_review_rounds = 3  # 初审 + 最多2轮定向修复
+        base_review_rounds = 3  # 初审 + 最多2轮定向修复
+        quality_fix_rounds = 1  # 质量门禁不达标时额外补修1轮
+        total_round_budget = base_review_rounds + quality_fix_rounds
+        remaining_quality_fix_rounds = quality_fix_rounds
         final_issues = list(local_issues)
 
-        for review_round in range(max_review_rounds):
+        for review_round in range(total_round_budget):
             if session_id:
                 update_report_generation_status(
                     session_id,
                     "generating",
-                    message=f"正在执行报告一致性审稿（第{review_round + 1}/{max_review_rounds}轮）..."
+                    message=f"正在执行报告一致性审稿（第{review_round + 1}/{total_round_budget}轮）..."
                 )
 
             review_prompt = build_report_review_prompt_v3(session, evidence_pack, current_draft, review_issues)
@@ -5015,11 +5137,21 @@ def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None)
                 call_type=f"report_v3_review_round_{review_round + 1}",
             )
             if not review_raw:
-                return None
+                return {
+                    "status": "failed",
+                    "reason": "review_generation_failed",
+                    "evidence_pack": evidence_pack,
+                    "review_issues": final_issues,
+                }
 
             review_parsed = parse_report_review_response_v3(review_raw)
             if not review_parsed:
-                return None
+                return {
+                    "status": "failed",
+                    "reason": "review_parse_failed",
+                    "evidence_pack": evidence_pack,
+                    "review_issues": final_issues,
+                }
 
             if review_parsed.get("revised_draft"):
                 current_draft = review_parsed["revised_draft"]
@@ -5038,8 +5170,18 @@ def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None)
             passed = bool(review_parsed.get("passed", False)) and len(merged_issues) == 0
             if passed:
                 quality_meta = compute_report_quality_meta_v3(current_draft, evidence_pack, final_issues)
+                quality_gate_issues = build_quality_gate_issues_v3(quality_meta)
+                if quality_gate_issues:
+                    final_issues = quality_gate_issues
+                    if remaining_quality_fix_rounds <= 0:
+                        break
+                    remaining_quality_fix_rounds -= 1
+                    review_issues = quality_gate_issues
+                    continue
+
                 report_content = render_report_from_draft_v3(session, current_draft, quality_meta)
                 return {
+                    "status": "success",
                     "report_content": report_content,
                     "quality_meta": quality_meta,
                     "evidence_pack": evidence_pack,
@@ -5048,11 +5190,22 @@ def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None)
 
             review_issues = merged_issues
 
-        return None
+        return {
+            "status": "failed",
+            "reason": "review_not_passed_or_quality_gate_failed",
+            "evidence_pack": evidence_pack,
+            "review_issues": final_issues,
+        }
     except Exception as e:
         if ENABLE_DEBUG_LOG:
             print(f"⚠️ V3 报告流程失败: {e}")
-        return None
+        return {
+            "status": "failed",
+            "reason": "exception",
+            "error": str(e)[:200],
+            "evidence_pack": {},
+            "review_issues": [],
+        }
 
 
 async def call_claude_async(prompt: str, max_tokens: int = None) -> Optional[str]:
@@ -7026,6 +7179,14 @@ def generate_report(session_id):
                 report_content = v3_result["report_content"] + generate_interview_appendix(session)
                 quality_meta = v3_result.get("quality_meta", {})
                 session["last_report_quality_meta"] = quality_meta
+                session["last_report_v3_debug"] = {
+                    "generated_at": get_utc_now(),
+                    "status": "success",
+                    "reason": "v3_pipeline_passed",
+                    "quality_meta": quality_meta,
+                    "review_issues": (v3_result.get("review_issues", []) if isinstance(v3_result.get("review_issues", []), list) else [])[:60],
+                    "evidence_pack_summary": summarize_evidence_pack_for_debug(v3_result.get("evidence_pack", {})),
+                }
 
                 update_report_generation_status(session_id, "saving", message="正在保存 V3 审稿增强报告...")
                 report_file, filename = persist_report(report_content)
@@ -7039,6 +7200,15 @@ def generate_report(session_id):
                     "v3_enabled": True,
                     "report_quality_meta": quality_meta,
                 })
+
+            session["last_report_v3_debug"] = {
+                "generated_at": get_utc_now(),
+                "status": "failed",
+                "reason": (v3_result or {}).get("reason", "v3_pipeline_returned_empty") if isinstance(v3_result, dict) else "v3_pipeline_returned_empty",
+                "error": (v3_result or {}).get("error", "") if isinstance(v3_result, dict) else "",
+                "review_issues": ((v3_result or {}).get("review_issues", []) if isinstance((v3_result or {}).get("review_issues", []), list) else [])[:60] if isinstance(v3_result, dict) else [],
+                "evidence_pack_summary": summarize_evidence_pack_for_debug((v3_result or {}).get("evidence_pack", {})) if isinstance(v3_result, dict) else {},
+            }
 
             if ENABLE_DEBUG_LOG:
                 print("⚠️ V3 报告流程未通过，自动回退到标准报告生成流程")

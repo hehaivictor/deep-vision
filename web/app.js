@@ -2295,6 +2295,17 @@ function deepVision() {
             return null;
         },
 
+        ensureDimensionVisualComplete(dimensionKey) {
+            if (!dimensionKey || !this.currentSession?.dimensions?.[dimensionKey]) {
+                return;
+            }
+            const dimState = this.currentSession.dimensions[dimensionKey];
+            const coverage = Number(dimState.coverage) || 0;
+            if (coverage < 100) {
+                dimState.coverage = 100;
+            }
+        },
+
         async fetchNextQuestion() {
             if (this.loadingQuestion) return;
             const requestId = ++this.questionRequestId;
@@ -2386,10 +2397,8 @@ function deepVision() {
                         this.showToast('该维度已达上限保护完成，建议后续补充细节以提升结论可信度', 'warning');
                     }
 
-                    // 与后端 completed 判定保持一致，修正本地覆盖率，避免历史会话反复命中
-                    if (this.currentSession?.dimensions?.[completedDimension]) {
-                        this.currentSession.dimensions[completedDimension].coverage = 100;
-                    }
+                    // 与后端 completed 判定保持一致，切维度前确保视觉上完成
+                    this.ensureDimensionVisualComplete(completedDimension);
 
                     // 找下一个未完成的维度
                     const currentIdx = this.dimensionOrder.indexOf(this.currentDimension);
@@ -2938,6 +2947,8 @@ function deepVision() {
                 // 检查是否需要切换维度
                 const currentDim = this.currentSession.dimensions[this.currentDimension];
                 if (currentDim && currentDim.coverage >= 100) {
+                    const completedDimension = this.currentDimension;
+                    this.ensureDimensionVisualComplete(completedDimension);
                     const nextDim = this.getNextIncompleteDimension();
                     if (nextDim) {
                         this.currentDimension = nextDim;
@@ -3142,6 +3153,7 @@ function deepVision() {
                 // 切换到下一个未完成的维度
                 const nextDim = this.getNextIncompleteDimension();
                 if (nextDim) {
+                    this.ensureDimensionVisualComplete(this.currentDimension);
                     this.currentDimension = nextDim;
                     await this.fetchNextQuestion();
                 } else {
