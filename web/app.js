@@ -3461,6 +3461,63 @@ function deepVision() {
             return `width: ${this.getReportGenerationProgressText()};`;
         },
 
+        isRetriableReportGenerationError(error) {
+            const message = String(error?.message || '').toLowerCase();
+            if (!message) return false;
+            return (
+                message.includes('failed to fetch')
+                || message.includes('networkerror')
+                || message.includes('load failed')
+                || message.includes('http 502')
+                || message.includes('http 503')
+                || message.includes('http 504')
+            );
+        },
+
+        normalizeReportGenerationError(error) {
+            const raw = String(error?.detail || error?.message || '').trim();
+            if (!raw) return '访谈报告生成失败，请稍后重试';
+
+            const lower = raw.toLowerCase();
+            if (
+                lower.includes('failed to fetch')
+                || lower.includes('networkerror')
+                || lower.includes('load failed')
+            ) {
+                return '网络连接异常，报告生成请求未送达，请确认服务在线后重试';
+            }
+
+            if (
+                raw.startsWith('HTTP 502')
+                || raw.startsWith('HTTP 503')
+                || raw.startsWith('HTTP 504')
+            ) {
+                return '服务暂时不可用（网关或上游超时），请稍后重试';
+            }
+
+            return raw;
+        },
+
+        async requestGenerateReportWithRetry(sessionId, maxRetries = 1) {
+            let lastError = null;
+            for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                try {
+                    return await this.apiCall(`/sessions/${sessionId}/generate-report`, {
+                        method: 'POST'
+                    });
+                } catch (error) {
+                    lastError = error;
+                    const canRetry = attempt < maxRetries && this.isRetriableReportGenerationError(error);
+                    if (!canRetry) {
+                        throw error;
+                    }
+                    console.warn(`报告生成请求失败，正在自动重试（第 ${attempt + 1} 次）`, error);
+                    await new Promise(resolve => setTimeout(resolve, 700));
+                }
+            }
+            throw lastError || new Error('访谈报告生成失败');
+        },
+
         async generateReport(action = 'generate') {
             if (!this.currentSession || this.isGeneratingCurrentReport()) return;
 
@@ -3469,10 +3526,7 @@ function deepVision() {
             this.startReportGenerationFeedback(action);
 
             try {
-                const requestPromise = this.apiCall(
-                    `/sessions/${this.currentSession.session_id}/generate-report`,
-                    { method: 'POST' }
-                );
+                const requestPromise = this.requestGenerateReportWithRetry(this.currentSession.session_id, 1);
                 this.startReportGenerationPolling(this.generatingReportSessionId);
                 this.startWebSearchPolling();  // 开始轮询 Web Search 状态
 
@@ -3491,7 +3545,7 @@ function deepVision() {
                     throw new Error('访谈报告生成失败');
                 }
             } catch (error) {
-                const errorMsg = error.detail || error.message || '访谈报告生成失败';
+                const errorMsg = this.normalizeReportGenerationError(error);
                 this.showToast(errorMsg, 'error');
                 this.finishReportGenerationFeedback('error', errorMsg);
             } finally {
