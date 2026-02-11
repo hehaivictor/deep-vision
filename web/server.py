@@ -6150,9 +6150,24 @@ def get_next_question(session_id):
             all_dim_logs = [log for log in session.get("interview_log", []) if log.get("dimension") == dimension]
             formal_questions_count = len([log for log in all_dim_logs if not log.get("is_follow_up", False)])
             dim_follow_ups = len([log for log in all_dim_logs if log.get("is_follow_up", False)])
+            completion_reason = dim_data.get("completion_reason") or ("user_completed" if user_completed else "auto_completed")
+            quality_warning = bool(dim_data.get("quality_warning", False))
             return jsonify({
                 "dimension": dimension,
                 "completed": True,
+                "completion_reason": completion_reason,
+                "quality_warning": quality_warning,
+                "decision_meta": {
+                    "mode": get_mode_identifier(session),
+                    "follow_up_round": get_follow_up_round_for_dimension_logs(all_dim_logs),
+                    "remaining_question_follow_up_budget": max(
+                        0,
+                        get_interview_mode_config(session).get("max_questions_per_formal", 1)
+                        - get_follow_up_round_for_dimension_logs(all_dim_logs)
+                    ),
+                    "hard_triggered": False,
+                    "missing_aspects": get_dimension_missing_aspects(session, dimension),
+                },
                 "stats": {
                     "formal_questions": formal_questions_count,
                     "follow_ups": dim_follow_ups,
@@ -6218,14 +6233,16 @@ def get_next_question(session_id):
     dim_coverage = dim_data.get("coverage", 0)
     user_completed = dim_data.get("user_completed", False)
 
-    # 用户手动完成优先级最高
+    # 维度已完成（用户手动完成或自动完成）
     if dim_coverage >= 100 or user_completed:
         dim_follow_ups = len([log for log in all_dim_logs if log.get("is_follow_up", False)])
+        completion_reason = dim_data.get("completion_reason") or ("user_completed" if user_completed else "auto_completed")
+        quality_warning = bool(dim_data.get("quality_warning", False))
         return jsonify({
             "dimension": dimension,
             "completed": True,
-            "completion_reason": "user_completed",
-            "quality_warning": False,
+            "completion_reason": completion_reason,
+            "quality_warning": quality_warning,
             "decision_meta": {
                 "mode": get_mode_identifier(session),
                 "follow_up_round": get_follow_up_round_for_dimension_logs(all_dim_logs),
@@ -6242,13 +6259,23 @@ def get_next_question(session_id):
 
     completion = evaluate_dimension_completion_v2(session, dimension)
     if completion.get("can_complete"):
+        # 自动完成需持久化，否则后续读取会出现覆盖率回退
+        dim_state = session.setdefault("dimensions", {}).setdefault(dimension, {})
+        dim_state["coverage"] = 100
+        dim_state["auto_completed"] = True
+        dim_state["completion_reason"] = completion.get("reason") or "quality_gate_passed"
+        dim_state["quality_warning"] = bool(completion.get("quality_warning", False))
+
+        session["updated_at"] = get_utc_now()
+        session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+
         dim_follow_ups = len([log for log in all_dim_logs if log.get("is_follow_up", False)])
         snapshot = completion.get("snapshot", {})
         return jsonify({
             "dimension": dimension,
             "completed": True,
-            "completion_reason": completion.get("reason"),
-            "quality_warning": bool(completion.get("quality_warning", False)),
+            "completion_reason": dim_state.get("completion_reason"),
+            "quality_warning": bool(dim_state.get("quality_warning", False)),
             "decision_meta": {
                 "mode": get_mode_identifier(session),
                 "follow_up_round": snapshot.get("follow_up_round", get_follow_up_round_for_dimension_logs(all_dim_logs)),
@@ -6706,6 +6733,9 @@ def complete_dimension(session_id):
     # 将维度覆盖度设为 100%
     session["dimensions"][dimension]["coverage"] = 100
     session["dimensions"][dimension]["user_completed"] = True  # 标记为用户主动完成
+    session["dimensions"][dimension]["auto_completed"] = False
+    session["dimensions"][dimension]["completion_reason"] = "user_completed"
+    session["dimensions"][dimension]["quality_warning"] = False
 
     session["updated_at"] = get_utc_now()
     session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
