@@ -1160,9 +1160,9 @@ def set_report_owner_id(filename: str, owner_user_id: int) -> None:
 def ensure_report_owner(filename: str, owner_user_id: int) -> bool:
     owner = get_report_owner_id(filename)
     owner_id = int(owner_user_id)
+    # 禁止自动认领无归属历史数据，需通过迁移脚本显式迁移
     if owner <= 0:
-        set_report_owner_id(filename, owner_id)
-        return True
+        return False
     return owner == owner_id
 
 
@@ -1177,7 +1177,7 @@ def is_session_owned_by_user(session: dict, user_id: int) -> bool:
     return owner_id == int(user_id)
 
 
-def ensure_session_owner(session: dict, session_file: Path, user_id: int) -> bool:
+def ensure_session_owner(session: dict, user_id: int) -> bool:
     if not isinstance(session, dict):
         return False
 
@@ -1187,13 +1187,11 @@ def ensure_session_owner(session: dict, session_file: Path, user_id: int) -> boo
     except (TypeError, ValueError):
         owner_id = 0
 
-    user_id_int = int(user_id)
+    # 禁止自动认领无归属历史数据，需通过迁移脚本显式迁移
     if owner_id <= 0:
-        session["owner_user_id"] = user_id_int
-        session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
-        return True
+        return False
 
-    return owner_id == user_id_int
+    return owner_id == int(user_id)
 
 
 def get_current_user_id_or_none() -> Optional[int]:
@@ -1217,7 +1215,7 @@ def load_session_for_user(session_id: str, user_id: int, include_missing: bool =
     if session_data is None:
         return None, "会话数据损坏", 500
 
-    if not ensure_session_owner(session_data, session_file, user_id):
+    if not ensure_session_owner(session_data, user_id):
         return None, "会话不存在", 404
 
     if include_missing:
