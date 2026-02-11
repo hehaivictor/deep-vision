@@ -1,7 +1,36 @@
 {
-  "version": "1.36.0",
-  "releaseDate": "2026-02-10",
+  "version": "1.37.1",
+  "releaseDate": "2026-02-11",
   "changelog": [
+    {
+      "version": "1.37.1",
+      "date": "2026-02-11",
+      "type": "patch",
+      "title": "报告质量V3-MVP：接入证据包与审稿纠错流水线",
+      "changes": [
+        "后端流程",
+        "generate-report 接入 V3 四阶段流水线（证据包、结构化草案、审稿纠错、渲染定稿）",
+        "V3 任一阶段失败时自动回退到旧版 AI 报告流程，再失败则回退模板兜底",
+        "质量能力",
+        "新增 evidence_pack 构建、冲突/盲区识别、草案校验与审稿修复解析",
+        "新增 report_quality_meta 计算与回退质量估算，支持 evidence_coverage/consistency/actionability/overall",
+        "接口与版本",
+        "generate-report 返回新增 v3_enabled 与 report_quality_meta 字段，并写入会话 last_report_quality_meta",
+        "version.json 升级到 1.37.0 并补充 V3 发布记录"
+      ]
+    },
+    {
+      "version": "1.37.0",
+      "date": "2026-02-11",
+      "type": "minor",
+      "title": "报告质量V3-MVP：新增证据包与审稿纠错流水线",
+      "changes": [
+        "后端流程：generate-report 新增 V3 四阶段流水线（证据包、结构化草案、审稿纠错、渲染定稿），失败自动回退旧流程。",
+        "后端能力：新增 evidence_pack 构建、冲突/盲区识别、结构化草案校验与质量评分计算。",
+        "后端输出：生成接口新增 report_quality_meta 与 v3_enabled 字段，并写入会话 last_report_quality_meta。",
+        "兼容与稳定：保留原有 Prompt 生成与模板兜底路径，确保任一阶段异常仍可产出报告。"
+      ]
+    },
     {
       "version": "1.36.0",
       "date": "2026-02-10",
