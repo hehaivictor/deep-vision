@@ -5474,6 +5474,16 @@ def index():
     return send_from_directory('.', 'index.html')
 
 
+# ============ 前端路由回落（OIDC 回调等）============
+# 说明：
+# - 目前前端是 SPA（index.html + app.js）。
+# - 直接访问 /callback 会走 static_files 路由并尝试读取名为 "callback" 的静态文件，导致 404。
+# - 因此这里显式把 /callback 回落到 index.html，让前端在 JS 中解析 code/state 并完成登录。
+@app.route('/callback')
+def oidc_callback():
+    return send_from_directory('.', 'index.html')
+
+
 @app.route('/<path:filename>')
 def static_files(filename):
     return send_from_directory('.', filename)
