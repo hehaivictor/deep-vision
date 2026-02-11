@@ -3105,6 +3105,23 @@ function deepVision() {
                 return;
             }
 
+            const currentMode = this.currentSession?.interview_mode || 'standard';
+            const needConfirm = currentMode === 'deep'
+                && this.interviewDepthV2?.deep_mode_skip_followup_confirm === true;
+
+            if (needConfirm) {
+                const confirmed = await this.openActionConfirmDialog({
+                    title: '确认跳到下一维度',
+                    message: '提前结束当前维度会影响访谈质量，并降低该维度结论可信度，是否继续？',
+                    tone: 'warning',
+                    confirmText: '继续跳转',
+                    cancelText: '继续访谈'
+                });
+                if (!confirmed) {
+                    return;
+                }
+            }
+
             if (this.submitting) return;
             this.submitting = true;
 
