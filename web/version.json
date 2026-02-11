@@ -14,17 +14,6 @@
       ]
     },
     {
-      "version": "1.37.6",
-      "date": "2026-02-11",
-      "type": "patch",
-      "title": "优化报告生成网络失败重试与错误提示",
-      "changes": [
-        "前端稳定性：报告生成请求在网络抖动或网关超时场景下自动重试 1 次。",
-        "前端提示：将 Failed to fetch/NetworkError 映射为可读中文错误提示，降低排障成本。",
-        "体验一致性：保留原有生成流程与状态轮询逻辑，不影响成功链路。"
-      ]
-    },
-    {
       "version": "1.37.5",
       "date": "2026-02-11",
       "type": "patch",
@@ -34,17 +23,6 @@
         "接口一致性：已完成维度统一返回 completion_reason 与 quality_warning",
         "后端补齐：手动完成接口同步写入 completion 元信息字段",
         "版本发布：升级至 1.37.4 并补充变更记录"
-      ]
-    },
-    {
-      "version": "1.37.4",
-      "date": "2026-02-11",
-      "type": "patch",
-      "title": "修复维度自动完成后进度回退",
-      "changes": [
-        "后端状态：next-question 自动完成分支持久化 coverage=100 与完成元信息，避免切换维度后进度回退。",
-        "接口一致性：已完成维度统一返回 completion_reason 与 quality_warning，消除自动完成与手动完成语义不一致。",
-        "后端补齐：complete-dimension 接口同步写入 completion_reason/quality_warning/auto_completed 字段，保持状态结构稳定。"
       ]
     },
     {
@@ -84,18 +62,6 @@
         "接口与版本",
         "generate-report 返回新增 v3_enabled 与 report_quality_meta 字段，并写入会话 last_report_quality_meta",
         "version.json 升级到 1.37.0 并补充 V3 发布记录"
-      ]
-    },
-    {
-      "version": "1.37.0",
-      "date": "2026-02-11",
-      "type": "minor",
-      "title": "报告质量V3-MVP：新增证据包与审稿纠错流水线",
-      "changes": [
-        "后端流程：generate-report 新增 V3 四阶段流水线（证据包、结构化草案、审稿纠错、渲染定稿），失败自动回退旧流程。",
-        "后端能力：新增 evidence_pack 构建、冲突/盲区识别、结构化草案校验与质量评分计算。",
-        "后端输出：生成接口新增 report_quality_meta 与 v3_enabled 字段，并写入会话 last_report_quality_meta。",
-        "兼容与稳定：保留原有 Prompt 生成与模板兜底路径，确保任一阶段异常仍可产出报告。"
       ]
     },
     {
@@ -643,19 +609,6 @@
       ]
     },
     {
-      "version": "1.23.2",
-      "date": "2026-02-06",
-      "type": "patch",
-      "title": "新增批量管理与会话状态角标体验优化",
-      "changes": [
-        "版本判定：中版本升级（新增批量删除与批量管理入口，属于可感知功能增强；未改核心架构与数据格式）。",
-        "功能：新增会话/报告批量选择、全选与批量删除，并支持会话联动删除关联报告。",
-        "交互：调整批量入口位置与卡片操作显隐，统一会话与报告页的批量操作体验。",
-        "视觉：会话状态改为右上角胶囊角标；已完成状态圆点静态化并降低发光强度。",
-        "发布：同步版本文件与更新记录，当前版本为 1.23.2。"
-      ]
-    },
-    {
       "version": "1.23.1",
       "date": "2026-02-06",
       "type": "patch",
@@ -764,15 +717,6 @@
     },
     {
       "version": "1.22.29",
-      "date": "2026-02-05",
-      "type": "patch",
-      "title": "修复了一些问题",
-      "changes": [
-        "修复了一些问题"
-      ]
-    },
-    {
-      "version": "1.22.28",
       "date": "2026-02-05",
       "type": "patch",
       "title": "修复了一些问题",
