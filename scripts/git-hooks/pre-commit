@@ -1,0 +1,111 @@
+#!/bin/bash
+#
+# Git pre-commit hook - 防止 version.json 重复提交/近似重复提交
+#
+# 安装方法：
+#   ./scripts/install-hooks.sh
+#
+
+set -euo pipefail
+
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$HOOK_DIR/../.." && pwd)"
+VERSION_FILE="web/version.json"
+
+# 检查是否在 deep-vision 项目中
+if [[ ! -f "$PROJECT_ROOT/$VERSION_FILE" ]]; then
+    exit 0
+fi
+
+# 允许在 post-commit 的 amend 或显式场景跳过
+if [[ -n "${VERSION_SKIP:-}" ]] || [[ -n "${VERSION_GUARD_SKIP:-}" ]]; then
+    exit 0
+fi
+
+# 获取暂存区文件列表
+STAGED_FILES="$(git diff --cached --name-only --diff-filter=ACMR)"
+if [[ -z "$STAGED_FILES" ]]; then
+    exit 0
+fi
+
+HAS_VERSION_FILE=0
+ONLY_VERSION_FILE=1
+
+while IFS= read -r file; do
+    [[ -z "$file" ]] && continue
+    if [[ "$file" == "$VERSION_FILE" ]]; then
+        HAS_VERSION_FILE=1
+    else
+        ONLY_VERSION_FILE=0
+    fi
+done <<< "$STAGED_FILES"
+
+# 没有提交 version.json，直接放行
+if [[ "$HAS_VERSION_FILE" -eq 0 ]]; then
+    exit 0
+fi
+
+# 仅提交 version.json，默认拦截，避免产生“补丁式版本提交”
+if [[ "$ONLY_VERSION_FILE" -eq 1 ]] && [[ -z "${ALLOW_VERSION_ONLY_COMMIT:-}" ]]; then
+    echo "[version-guard] 已拦截：检测到本次仅提交 web/version.json。"
+    echo "[version-guard] 这类提交容易造成历史中大量近似重复的版本提交。"
+    echo "[version-guard] 建议把版本文件变更通过 --amend 合并到对应业务提交。"
+    echo "[version-guard] 如确需单独提交，请使用：ALLOW_VERSION_ONLY_COMMIT=1 git commit ..."
+    exit 1
+fi
+
+# 对比 HEAD 与暂存区版本号，版本未变化时默认拦截
+if ! python3 - "$PROJECT_ROOT" "$VERSION_FILE" <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+repo_root = sys.argv[1]
+version_file = sys.argv[2]
+
+if os.environ.get("ALLOW_SAME_VERSION_EDIT"):
+    sys.exit(0)
+
+has_head = subprocess.run(
+    ["git", "rev-parse", "--verify", "HEAD"],
+    cwd=repo_root,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+).returncode == 0
+
+if not has_head:
+    sys.exit(0)
+
+def read_json(ref: str):
+    try:
+        content = subprocess.check_output(
+            ["git", "show", ref],
+            cwd=repo_root,
+            text=True,
+        )
+        return json.loads(content)
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        return None
+
+head_data = read_json(f"HEAD:{version_file}")
+staged_data = read_json(f":{version_file}")
+
+if not head_data or not staged_data:
+    sys.exit(0)
+
+head_version = str(head_data.get("version", "")).strip()
+staged_version = str(staged_data.get("version", "")).strip()
+
+if head_version and staged_version and head_version == staged_version:
+    print("[version-guard] 已拦截：检测到 version.json 被修改但 version 未升级。")
+    print(f"[version-guard] 当前版本仍为 {staged_version}。")
+    print("[version-guard] 建议使用 --amend 合并到原业务提交，或显式升级版本号。")
+    print("[version-guard] 如确需保留同版本编辑，请使用：ALLOW_SAME_VERSION_EDIT=1 git commit ...")
+    sys.exit(2)
+PY
+then
+    exit 1
+fi
+
+exit 0
