@@ -4418,6 +4418,24 @@ function deepVision() {
             const existingToc = reportElement.querySelector('#report-toc-block');
             if (existingToc) existingToc.remove();
 
+            // 兼容历史报告：移除“报告质量指标”展示区块
+            const headingsForQuality = Array.from(reportElement.querySelectorAll('h2, h3'));
+            headingsForQuality.forEach(heading => {
+                const text = (heading.textContent || '').trim();
+                if (text !== '报告质量指标') return;
+
+                let cursor = heading.nextElementSibling;
+                while (cursor) {
+                    if (/^H[23]$/i.test(cursor.tagName)) {
+                        break;
+                    }
+                    const next = cursor.nextElementSibling;
+                    cursor.remove();
+                    cursor = next;
+                }
+                heading.remove();
+            });
+
             const headings = Array.from(reportElement.querySelectorAll('h2, h3'));
             if (headings.length === 0) return;
 
@@ -4426,34 +4444,6 @@ function deepVision() {
                     heading.id = `report-section-${index + 1}`;
                 }
             });
-
-            const firstHeading = headings[0];
-            let summaryItems = [];
-            let node = firstHeading.nextElementSibling;
-            while (node && !/^H[23]$/i.test(node.tagName) && summaryItems.length < 3) {
-                if (node.tagName === 'P') {
-                    const text = node.textContent.trim();
-                    if (text) summaryItems.push(text);
-                }
-                node = node.nextElementSibling;
-            }
-
-            if (summaryItems.length > 0) {
-                const summaryDetails = document.createElement('details');
-                summaryDetails.id = 'report-summary-block';
-                summaryDetails.className = 'border border-gray-200 rounded-xl p-4 mb-4';
-                summaryDetails.innerHTML = `
-                    <summary class="cursor-pointer text-sm font-semibold text-primary">摘要与关键发现</summary>
-                    <ul class="mt-3 space-y-2 text-sm text-secondary"></ul>
-                `;
-                const list = summaryDetails.querySelector('ul');
-                summaryItems.forEach(item => {
-                    const li = document.createElement('li');
-                    li.textContent = item;
-                    list.appendChild(li);
-                });
-                reportElement.prepend(summaryDetails);
-            }
 
             const tocItems = headings.filter(h => h.tagName === 'H2');
             if (tocItems.length > 0) {
@@ -4477,12 +4467,7 @@ function deepVision() {
                     list.appendChild(btn);
                 });
                 toc.appendChild(list);
-                const summaryBlock = reportElement.querySelector('#report-summary-block');
-                if (summaryBlock && summaryBlock.nextSibling) {
-                    summaryBlock.after(toc);
-                } else {
-                    reportElement.prepend(toc);
-                }
+                reportElement.prepend(toc);
             }
         },
 
@@ -4513,6 +4498,10 @@ function deepVision() {
             if (appendixIndex !== -1) {
                 content = content.slice(0, appendixIndex).trimEnd();
             }
+            // 导出时移除“报告质量指标”区块（兼容历史报告）
+            content = content.replace(/(^|\n)###\s*报告质量指标[\s\S]*?(?=\n##\s|\n###\s|$)/g, '\n');
+            // 导出时移除“生成方式”行（兼容历史报告）
+            content = content.replace(/^\s*\*\*生成方式\*\*:[^\n]*\n?/gm, '');
             return content.trim();
         },
 
@@ -4957,10 +4946,13 @@ function deepVision() {
 
         renderMarkdown(content) {
             if (!content) return '';
+            const sanitizedContent = String(content)
+                .replace(/^\s*\*\*生成方式\*\*:[^\n]*\n?/gm, '')
+                .trim();
 
             if (typeof marked !== 'undefined') {
                 // 使用 marked 渲染 Markdown
-                let html = marked.parse(content);
+                let html = marked.parse(sanitizedContent);
 
                 // 检测并转换 Mermaid 代码块
                 // 匹配 <pre><code class="language-mermaid">...</code></pre>
@@ -4992,7 +4984,7 @@ function deepVision() {
             }
 
             // 简单的 Markdown 渲染（无 marked.js 时的回退）
-            return content
+            return sanitizedContent
                 .replace(/^### (.*$)/gm, '<h3>$1</h3>')
                 .replace(/^## (.*$)/gm, '<h2>$1</h2>')
                 .replace(/^# (.*$)/gm, '<h1>$1</h1>')

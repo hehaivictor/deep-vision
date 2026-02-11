@@ -73,9 +73,9 @@ except ImportError:
     ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "")
     ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
     MODEL_NAME = os.environ.get("MODEL_NAME", "")
-    MAX_TOKENS_DEFAULT = 2000
-    MAX_TOKENS_QUESTION = 800
-    MAX_TOKENS_REPORT = 4000
+    MAX_TOKENS_DEFAULT = 6000
+    MAX_TOKENS_QUESTION = 2000
+    MAX_TOKENS_REPORT = 12000
     SERVER_HOST = "0.0.0.0"
     SERVER_PORT = 5001
     DEBUG_MODE = True
@@ -4845,27 +4845,12 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
     risks = draft.get("risks", []) if isinstance(draft.get("risks", []), list) else []
     actions = draft.get("actions", []) if isinstance(draft.get("actions", []), list) else []
     open_questions = draft.get("open_questions", []) if isinstance(draft.get("open_questions", []), list) else []
-    evidence_index = draft.get("evidence_index", []) if isinstance(draft.get("evidence_index", []), list) else []
     analysis = draft.get("analysis", {}) if isinstance(draft.get("analysis", {}), dict) else {}
     visuals = draft.get("visualizations", {}) if isinstance(draft.get("visualizations", {}), dict) else {}
 
     def clean_mermaid(raw_value: str, fallback: str) -> str:
         value = str(raw_value or "").replace("```mermaid", "").replace("```", "").strip()
         return value or fallback
-
-    quadrant_mermaid = clean_mermaid(
-        visuals.get("priority_quadrant_mermaid", ""),
-        """quadrantChart
-    title Priority Matrix
-    x-axis Low Urgency --> High Urgency
-    y-axis Low Importance --> High Importance
-    quadrant-1 Do First
-    quadrant-2 Schedule
-    quadrant-3 Delegate
-    quadrant-4 Eliminate
-    Requirement1: [0.75, 0.85]
-    Requirement2: [0.45, 0.65]"""
-    )
 
     flow_mermaid = clean_mermaid(
         visuals.get("business_flow_mermaid", ""),
@@ -4895,12 +4880,11 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
 
     needs_table = []
     if needs:
-        needs_table.append("| 优先级 | 需求项 | 描述 | 证据 |")
-        needs_table.append("|:---:|:---|:---|:---|")
+        needs_table.append("| 优先级 | 需求项 | 描述 |")
+        needs_table.append("|:---:|:---|:---|")
         for item in needs:
-            refs = "、".join(_normalize_evidence_refs(item.get("evidence_refs", []))) or "-"
             needs_table.append(
-                f"| {item.get('priority', 'P1')} | {item.get('name', '')} | {item.get('description', '')} | {refs} |"
+                f"| {item.get('priority', 'P1')} | {item.get('name', '')} | {item.get('description', '')} |"
             )
     else:
         needs_table.append("暂无结构化核心需求。")
@@ -4925,7 +4909,6 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
         "",
         f"**访谈日期**: {now.strftime('%Y-%m-%d')}",
         f"**报告编号**: {report_id}",
-        "**生成方式**: V3 结构化草案 + 审稿纠错",
         "",
         "---",
         "",
@@ -4938,12 +4921,6 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
         "### 核心需求列表",
         "",
         *needs_table,
-        "",
-        "### 优先级矩阵（Mermaid）",
-        "",
-        "```mermaid",
-        quadrant_mermaid,
-        "```",
         "",
         "### 优先级清单",
         "",
@@ -4986,14 +4963,12 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
 
     if solutions:
         for idx, item in enumerate(solutions, 1):
-            refs = "、".join(_normalize_evidence_refs(item.get("evidence_refs", []))) or "-"
             lines.extend([
                 f"### 建议 {idx}: {item.get('title', '未命名建议')}",
                 f"- 说明：{item.get('description', '')}",
                 f"- Owner：{item.get('owner', '') or '待定'}",
                 f"- 时间：{item.get('timeline', '') or '待定'}",
                 f"- 指标：{item.get('metric', '') or '待定'}",
-                f"- 证据：{refs}",
                 "",
             ])
     else:
@@ -5006,12 +4981,10 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
     ])
     if risks:
         for idx, item in enumerate(risks, 1):
-            refs = "、".join(_normalize_evidence_refs(item.get("evidence_refs", []))) or "-"
             lines.extend([
                 f"### 风险 {idx}: {item.get('risk', '未命名风险')}",
                 f"- 影响：{item.get('impact', '')}",
                 f"- 应对：{item.get('mitigation', '')}",
-                f"- 证据：{refs}",
                 "",
             ])
     else:
@@ -5024,13 +4997,11 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
     ])
     if actions:
         for idx, item in enumerate(actions, 1):
-            refs = "、".join(_normalize_evidence_refs(item.get("evidence_refs", []))) or "-"
             lines.extend([
                 f"### 行动 {idx}: {item.get('action', '未命名行动')}",
                 f"- Owner：{item.get('owner', '') or '待定'}",
                 f"- 时间：{item.get('timeline', '') or '待定'}",
                 f"- 指标：{item.get('metric', '') or '待定'}",
-                f"- 证据：{refs}",
                 "",
             ])
     else:
@@ -5041,13 +5012,11 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
     lines.append("")
     if open_questions:
         for idx, item in enumerate(open_questions, 1):
-            refs = "、".join(_normalize_evidence_refs(item.get("evidence_refs", []))) or "-"
             lines.extend([
                 f"{idx}. **问题**：{item.get('question', '')}",
                 f"   - 原因：{item.get('reason', '')}",
                 f"   - 影响：{item.get('impact', '')}",
                 f"   - 建议补问：{item.get('suggested_follow_up', '')}",
-                f"   - 证据：{refs}",
                 "",
             ])
     else:
@@ -5055,27 +5024,6 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
         lines.append("")
 
     lines.extend([
-        "### 证据索引（摘要）",
-        "",
-    ])
-    if evidence_index:
-        for idx, item in enumerate(evidence_index[:12], 1):
-            refs = "、".join(_normalize_evidence_refs(item.get("evidence_refs", []))) or "-"
-            confidence = str(item.get("confidence", "medium")).lower()
-            lines.append(f"{idx}. {item.get('claim', '')}（置信度: {confidence}，证据: {refs}）")
-        lines.append("")
-    else:
-        lines.append("暂无证据索引。")
-        lines.append("")
-
-    lines.extend([
-        "### 报告质量指标",
-        "",
-        f"- 证据覆盖率：{quality_meta.get('evidence_coverage', 0):.1%}",
-        f"- 一致性得分：{quality_meta.get('consistency', 0):.1%}",
-        f"- 可执行性得分：{quality_meta.get('actionability', 0):.1%}",
-        f"- 综合得分：{quality_meta.get('overall', 0):.1%}",
-        "",
         "*此报告由 Deep Vision 深瞳生成*",
         "",
     ])
