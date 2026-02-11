@@ -1,7 +1,30 @@
 {
-  "version": "1.37.3",
+  "version": "1.37.5",
   "releaseDate": "2026-02-11",
   "changelog": [
+    {
+      "version": "1.37.5",
+      "date": "2026-02-11",
+      "type": "patch",
+      "title": "修复访谈维度自动完成后进度回退",
+      "changes": [
+        "后端状态：自动完成分支持久化 coverage 与完成元信息，避免切换维度后回退",
+        "接口一致性：已完成维度统一返回 completion_reason 与 quality_warning",
+        "后端补齐：手动完成接口同步写入 completion 元信息字段",
+        "版本发布：升级至 1.37.4 并补充变更记录"
+      ]
+    },
+    {
+      "version": "1.37.4",
+      "date": "2026-02-11",
+      "type": "patch",
+      "title": "修复维度自动完成后进度回退",
+      "changes": [
+        "后端状态：next-question 自动完成分支持久化 coverage=100 与完成元信息，避免切换维度后进度回退。",
+        "接口一致性：已完成维度统一返回 completion_reason 与 quality_warning，消除自动完成与手动完成语义不一致。",
+        "后端补齐：complete-dimension 接口同步写入 completion_reason/quality_warning/auto_completed 字段，保持状态结构稳定。"
+      ]
+    },
     {
       "version": "1.37.3",
       "date": "2026-02-11",
