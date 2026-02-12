@@ -1,7 +1,19 @@
 {
-  "version": "1.39.1",
+  "version": "1.40.0",
   "releaseDate": "2026-02-12",
   "changelog": [
+    {
+      "version": "1.40.0",
+      "date": "2026-02-12",
+      "type": "minor",
+      "title": "支持问答与报告独立网关路由",
+      "changes": [
+        "后端网关路由：新增问题与报告独立 API Key/Base URL 配置解析。",
+        "后端调用策略：按调用类型选择客户端，并在单路不可用时自动回退。",
+        "调用链路统一：问答、报告、摘要、搜索决策与场景相关调用统一接入路由。",
+        "配置示例：config.example.py 增加 QUESTION_API_KEY、QUESTION_BASE_URL、REPORT_API_KEY、REPORT_BASE_URL。"
+      ]
+    },
     {
       "version": "1.39.1",
       "date": "2026-02-12",

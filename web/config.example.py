@@ -22,6 +22,13 @@ MODEL_NAME = "claude-sonnet-4-20250514"  # 可选: claude-3-opus, claude-3-sonne
 QUESTION_MODEL_NAME = MODEL_NAME
 REPORT_MODEL_NAME = MODEL_NAME
 
+# 可选：将问题与报告拆分到不同网关（未配置时回落到 ANTHROPIC_API_KEY/ANTHROPIC_BASE_URL）
+# 例如：问答走 GLM Anthropic 兼容，报告走 Claude 官方或代理
+QUESTION_API_KEY = ""
+QUESTION_BASE_URL = ""
+REPORT_API_KEY = ""
+REPORT_BASE_URL = ""
+
 # Token 限制配置（与 server.py 默认值保持一致）
 MAX_TOKENS_DEFAULT = 5000      # 默认最大 token 数
 MAX_TOKENS_QUESTION = 2000     # 生成问题时的最大 token 数

@@ -141,6 +141,46 @@ if not _cfg_report_model:
 QUESTION_MODEL_NAME = _cfg_question_model or _base_model_name
 REPORT_MODEL_NAME = _cfg_report_model or QUESTION_MODEL_NAME
 
+
+def _first_non_empty(*values: str) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+# 网关路由配置：支持问题/报告分别使用不同 API Key 和 Base URL
+_cfg_question_api_key = _first_non_empty(
+    getattr(runtime_config, "QUESTION_API_KEY", "") if runtime_config else "",
+    getattr(runtime_config, "QUESTION_ANTHROPIC_API_KEY", "") if runtime_config else "",
+    os.environ.get("QUESTION_API_KEY", ""),
+    os.environ.get("QUESTION_ANTHROPIC_API_KEY", ""),
+)
+_cfg_question_base_url = _first_non_empty(
+    getattr(runtime_config, "QUESTION_BASE_URL", "") if runtime_config else "",
+    getattr(runtime_config, "QUESTION_ANTHROPIC_BASE_URL", "") if runtime_config else "",
+    os.environ.get("QUESTION_BASE_URL", ""),
+    os.environ.get("QUESTION_ANTHROPIC_BASE_URL", ""),
+)
+_cfg_report_api_key = _first_non_empty(
+    getattr(runtime_config, "REPORT_API_KEY", "") if runtime_config else "",
+    getattr(runtime_config, "REPORT_ANTHROPIC_API_KEY", "") if runtime_config else "",
+    os.environ.get("REPORT_API_KEY", ""),
+    os.environ.get("REPORT_ANTHROPIC_API_KEY", ""),
+)
+_cfg_report_base_url = _first_non_empty(
+    getattr(runtime_config, "REPORT_BASE_URL", "") if runtime_config else "",
+    getattr(runtime_config, "REPORT_ANTHROPIC_BASE_URL", "") if runtime_config else "",
+    os.environ.get("REPORT_BASE_URL", ""),
+    os.environ.get("REPORT_ANTHROPIC_BASE_URL", ""),
+)
+
+QUESTION_API_KEY = _cfg_question_api_key or str(ANTHROPIC_API_KEY or "").strip()
+QUESTION_BASE_URL = _cfg_question_base_url or str(ANTHROPIC_BASE_URL or "").strip()
+REPORT_API_KEY = _cfg_report_api_key or QUESTION_API_KEY
+REPORT_BASE_URL = _cfg_report_base_url or QUESTION_BASE_URL
+
 # 兼容历史代码中直接引用 MODEL_NAME 的位置：默认指向问题模型
 MODEL_NAME = QUESTION_MODEL_NAME
 
@@ -155,6 +195,19 @@ def resolve_model_name(call_type: str = "", model_name: str = "") -> str:
     if "report" in lowered:
         return REPORT_MODEL_NAME
     return QUESTION_MODEL_NAME
+
+
+def resolve_call_lane(call_type: str = "", model_name: str = "") -> str:
+    """根据调用类型判断应该优先使用的问题/报告网关。"""
+    lowered = (call_type or "").lower()
+    if "report" in lowered:
+        return "report"
+
+    explicit = str(model_name or "").strip()
+    if explicit and explicit == REPORT_MODEL_NAME and explicit != QUESTION_MODEL_NAME:
+        return "report"
+
+    return "question"
 
 
 # 访谈深度增强 V2 已升级为正式版（全模式固定启用）
@@ -1146,8 +1199,10 @@ class MetricsCollector:
 # 初始化指标收集器
 metrics_collector = MetricsCollector(METRICS_DIR / "api_metrics.json")
 
-# Claude 客户端初始化
-claude_client = None
+# AI 客户端初始化（支持问题/报告分网关）
+claude_client = None  # 历史兼容：默认指向可用的主客户端
+question_ai_client = None
+report_ai_client = None
 
 # 检查 API Key 是否有效
 def is_valid_api_key(api_key: str) -> bool:
@@ -1164,56 +1219,85 @@ def is_valid_api_key(api_key: str) -> bool:
             return False
     return True
 
-# 检查配置
-api_key_valid = is_valid_api_key(ANTHROPIC_API_KEY)
-base_url_valid = ANTHROPIC_BASE_URL and ANTHROPIC_BASE_URL != "https://api.anthropic.com" or api_key_valid
 
-if not api_key_valid:
-    print("⚠️  ANTHROPIC_API_KEY 未配置或使用默认值")
-    print("   请在 config.py 中填入有效的 API Key")
-    ENABLE_AI = False
+def _create_anthropic_client(api_key: str, base_url: str):
+    kwargs = {"api_key": api_key}
+    if base_url:
+        kwargs["base_url"] = base_url
+    return anthropic.Anthropic(**kwargs)
 
-if not base_url_valid and not ANTHROPIC_BASE_URL:
-    print("⚠️  ANTHROPIC_BASE_URL 未配置")
-    print("   请在 config.py 中填入有效的 Base URL")
 
-if ENABLE_AI and HAS_ANTHROPIC and api_key_valid:
+def _init_lane_client(lane_name: str, api_key: str, base_url: str, test_model: str):
+    if not is_valid_api_key(api_key):
+        print(f"⚠️  {lane_name} 网关 API Key 未配置或为占位值，跳过初始化")
+        return None
+
     try:
-        claude_client = anthropic.Anthropic(
-            api_key=ANTHROPIC_API_KEY,
-            base_url=ANTHROPIC_BASE_URL
-        )
-        print(f"✅ Claude 客户端已初始化")
-        if QUESTION_MODEL_NAME == REPORT_MODEL_NAME:
-            print(f"   模型: {QUESTION_MODEL_NAME}")
-        else:
-            print(f"   问题模型: {QUESTION_MODEL_NAME}")
-            print(f"   报告模型: {REPORT_MODEL_NAME}")
-        print(f"   Base URL: {ANTHROPIC_BASE_URL}")
+        client = _create_anthropic_client(api_key=api_key, base_url=base_url)
+        endpoint = base_url or "(Anthropic 官方默认地址)"
+        print(f"✅ {lane_name} 网关客户端已初始化")
+        print(f"   模型: {test_model}")
+        print(f"   Base URL: {endpoint}")
 
-        # 测试 API 连接
+        # 连接测试失败不阻断服务，保留客户端以便后续重试
         try:
-            test_response = claude_client.messages.create(
-                model=QUESTION_MODEL_NAME,
+            client.messages.create(
+                model=test_model,
                 max_tokens=5,
                 messages=[{"role": "user", "content": "Hi"}]
             )
-            print(f"✅ API 连接测试成功")
+            print(f"✅ {lane_name} 网关连接测试成功")
         except Exception as e:
-            print(f"⚠️  API 连接测试失败: {e}")
-            print("   请检查 API Key 和 Base URL；客户端将保留，后续请求会继续尝试")
+            print(f"⚠️  {lane_name} 网关连接测试失败: {e}")
+            print("   客户端已保留，运行时会继续尝试请求")
+
+        return client
     except Exception as e:
-        print(f"❌ Claude 客户端初始化失败: {e}")
-        claude_client = None
-    except Exception as e:
-        print(f"❌ Claude 客户端初始化失败: {e}")
+        print(f"❌ {lane_name} 网关客户端初始化失败: {e}")
+        return None
+
+
+if ENABLE_AI and HAS_ANTHROPIC:
+    question_signature = (QUESTION_API_KEY, QUESTION_BASE_URL)
+    report_signature = (REPORT_API_KEY, REPORT_BASE_URL)
+
+    question_ai_client = _init_lane_client(
+        lane_name="问题",
+        api_key=QUESTION_API_KEY,
+        base_url=QUESTION_BASE_URL,
+        test_model=QUESTION_MODEL_NAME
+    )
+
+    if report_signature == question_signature:
+        report_ai_client = question_ai_client
+        if report_ai_client:
+            print("ℹ️  报告网关复用问题网关客户端（相同 Key/Base URL）")
+    else:
+        report_ai_client = _init_lane_client(
+            lane_name="报告",
+            api_key=REPORT_API_KEY,
+            base_url=REPORT_BASE_URL,
+            test_model=REPORT_MODEL_NAME
+        )
+
+    claude_client = question_ai_client or report_ai_client
+    if not claude_client:
+        print("❌ AI 客户端初始化失败：问题/报告网关均不可用")
 else:
     if not ENABLE_AI:
         print("ℹ️  AI 功能已禁用（ENABLE_AI=False）")
     elif not HAS_ANTHROPIC:
         print("❌ anthropic 库未安装")
-    elif not ANTHROPIC_API_KEY:
-        print("❌ 未配置 ANTHROPIC_API_KEY")
+    else:
+        print("❌ AI 客户端初始化前置条件不满足")
+
+
+def resolve_ai_client(call_type: str = "", model_name: str = ""):
+    """按调用类型选择客户端；目标客户端不可用时回退到另一侧。"""
+    lane = resolve_call_lane(call_type=call_type, model_name=model_name)
+    if lane == "report":
+        return report_ai_client or question_ai_client
+    return question_ai_client or report_ai_client
 
 
 def _content_block_field(block, field: str):
@@ -1997,9 +2081,8 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
     AI 自主判断：让 AI 评估是否需要联网搜索
     返回: { "need_search": bool, "reason": str, "search_query": str }
     """
-    global claude_client
-
-    if not ENABLE_WEB_SEARCH or not claude_client:
+    ai_client = resolve_ai_client(call_type="search_decision")
+    if not ENABLE_WEB_SEARCH or not ai_client:
         return {"need_search": False, "reason": "搜索功能未启用", "search_query": ""}
 
     search_dim_info = get_dimension_info_for_session(context) if context else DIMENSION_INFO
@@ -2060,7 +2143,7 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
                 if attempt["extra_instruction"]:
                     attempt_prompt = f"{prompt}\n\n【额外要求】{attempt['extra_instruction']}"
 
-                response = claude_client.messages.create(
+                response = ai_client.messages.create(
                     model=resolve_model_name(call_type="search_decision"),
                     max_tokens=attempt["max_tokens"],
                     timeout=attempt["timeout"],
@@ -2358,8 +2441,10 @@ def summarize_document(content: str, doc_name: str = "文档", topic: str = "") 
     if original_length <= SMART_SUMMARY_THRESHOLD:
         return content, False
 
+    summary_client = resolve_ai_client(call_type="summary")
+
     # 如果未启用智能摘要或没有AI客户端，使用简单截断
-    if not ENABLE_SMART_SUMMARY or not claude_client:
+    if not ENABLE_SMART_SUMMARY or not summary_client:
         truncated = content[:MAX_DOC_LENGTH]
         if ENABLE_DEBUG_LOG:
             print(f"📄 文档 {doc_name} 使用简单截断: {original_length} -> {MAX_DOC_LENGTH} 字符")
@@ -2398,7 +2483,7 @@ def summarize_document(content: str, doc_name: str = "文档", topic: str = "") 
         import time
         start_time = time.time()
 
-        response = claude_client.messages.create(
+        response = summary_client.messages.create(
             model=resolve_model_name(call_type="summary"),
             max_tokens=MAX_TOKENS_SUMMARY,
             timeout=60.0,  # 摘要生成用较短超时
@@ -2524,7 +2609,7 @@ def generate_history_summary(session: dict, exclude_recent: int = 5) -> Optional
         return cached_summary["text"]
 
     # 需要生成新摘要
-    if not claude_client:
+    if not resolve_ai_client(call_type="summary"):
         # 无 AI 时使用简单摘要
         return _generate_simple_summary(history_logs, session)
 
@@ -2630,7 +2715,7 @@ def update_context_summary(session: dict, session_file) -> None:
     # 生成新摘要
     history_logs = interview_log[:history_count]
 
-    if claude_client:
+    if resolve_ai_client(call_type="summary"):
         summary_prompt = _build_summary_prompt(session.get("topic", ""), history_logs, session)
         try:
             summary_text = call_claude(summary_prompt, max_tokens=300, call_type="summary")
@@ -3425,7 +3510,8 @@ def score_assessment_answer(session: dict, dimension: str, question: str, answer
     Returns:
         float: 1.0-5.0 的分数，失败返回 None
     """
-    if not claude_client:
+    ai_client = resolve_ai_client(call_type="assessment_score")
+    if not ai_client:
         return None
 
     # 获取维度配置
@@ -3470,7 +3556,7 @@ def score_assessment_answer(session: dict, dimension: str, question: str, answer
 请严格按照评分标准打分，只返回一个数字（1-5之间的整数或小数，如 3.5），不要有任何其他文字："""
 
     try:
-        response = claude_client.messages.create(
+        response = ai_client.messages.create(
             model=resolve_model_name(call_type="assessment_score"),
             max_tokens=96,  # MiniMax 在低 token 下容易只返回 thinking，适当提高稳定性
             timeout=15.0,
@@ -5626,7 +5712,8 @@ def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None)
 async def call_claude_async(prompt: str, max_tokens: int = None,
                             call_type: str = "async", model_name: str = "") -> Optional[str]:
     """异步调用 Claude API，带超时控制"""
-    if not claude_client:
+    client = resolve_ai_client(call_type=call_type, model_name=model_name)
+    if not client:
         return None
 
     if max_tokens is None:
@@ -5638,7 +5725,7 @@ async def call_claude_async(prompt: str, max_tokens: int = None,
             print(f"🤖 异步调用 Claude API，model={effective_model}，max_tokens={max_tokens}，timeout={API_TIMEOUT}s")
 
         # 使用配置的超时时间
-        message = claude_client.messages.create(
+        message = client.messages.create(
             model=effective_model,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
@@ -5780,7 +5867,8 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
     """同步调用 Claude API，带超时控制和容错机制"""
     import time
 
-    if not claude_client:
+    effective_client = resolve_ai_client(call_type=call_type, model_name=model_name)
+    if not effective_client:
         return None
 
     if max_tokens is None:
@@ -5800,7 +5888,7 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
             print(f"🤖 调用 Claude API，model={effective_model}，max_tokens={max_tokens}，timeout={effective_timeout}s")
 
         # 使用配置的超时时间
-        message = claude_client.messages.create(
+        message = effective_client.messages.create(
             model=effective_model,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
@@ -5930,7 +6018,8 @@ def get_scenario(scenario_id):
 @app.route('/api/scenarios/generate', methods=['POST'])
 def generate_scenario_with_ai():
     """AI 自动生成场景配置"""
-    if not claude_client:
+    ai_client = resolve_ai_client(call_type="scenario_generate")
+    if not ai_client:
         return jsonify({"error": "AI 服务不可用"}), 503
 
     data = request.get_json()
@@ -5995,7 +6084,7 @@ def generate_scenario_with_ai():
 ```'''
 
     try:
-        response = claude_client.messages.create(
+        response = ai_client.messages.create(
             model=resolve_model_name(call_type="scenario_generate"),
             max_tokens=1500,
             timeout=30.0,
@@ -6147,7 +6236,8 @@ def recognize_scenario():
     # 优先使用 AI 识别，失败时回退到关键词匹配
     ai_result = None
     ai_last_error = None
-    if claude_client:
+    scenario_client = resolve_ai_client(call_type="scenario_recognize")
+    if scenario_client:
         attempts = [
             {
                 "max_tokens": 220,
@@ -6167,7 +6257,7 @@ def recognize_scenario():
                 if attempt["extra_instruction"]:
                     attempt_prompt = f"{prompt}\n\n【额外要求】{attempt['extra_instruction']}"
 
-                response = claude_client.messages.create(
+                response = scenario_client.messages.create(
                     model=resolve_model_name(call_type="scenario_recognize"),
                     max_tokens=attempt["max_tokens"],
                     timeout=attempt["timeout"],
@@ -6855,7 +6945,7 @@ def get_next_question(session_id):
         return jsonify(prefetched)
 
     # 检查是否有 Claude API
-    if not claude_client:
+    if not resolve_ai_client(call_type="question"):
         return jsonify({
             "error": "AI 服务未启用",
             "detail": "请联系管理员配置 ANTHROPIC_API_KEY 环境变量"
@@ -7669,7 +7759,7 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
             return report_file, filename
 
         # 检查是否有 Claude API
-        if claude_client:
+        if resolve_ai_client(call_type="report"):
             update_report_generation_status(session_id, "building_prompt", message="正在执行 V3 证据包构建与结构化草案...")
             v3_result = generate_report_v3_pipeline(session, session_id=session_id)
 
@@ -9056,6 +9146,9 @@ def batch_delete_reports():
 @app.route('/api/status', methods=['GET'])
 def get_status():
     """获取服务状态"""
+    question_available = resolve_ai_client(call_type="question") is not None
+    report_available = resolve_ai_client(call_type="report") is not None
+    ai_available = question_available or report_available
     mode_names = ["quick", "standard", "deep"]
     mode_configs_effective = {
         mode: get_interview_mode_display_config(mode)
@@ -9063,10 +9156,12 @@ def get_status():
     }
     return jsonify({
         "status": "running",
-        "ai_available": claude_client is not None,
-        "model": QUESTION_MODEL_NAME if claude_client else None,
-        "question_model": QUESTION_MODEL_NAME if claude_client else None,
-        "report_model": REPORT_MODEL_NAME if claude_client else None,
+        "ai_available": ai_available,
+        "model": QUESTION_MODEL_NAME if ai_available else None,
+        "question_model": QUESTION_MODEL_NAME if question_available else None,
+        "report_model": REPORT_MODEL_NAME if report_available else None,
+        "question_ai_available": question_ai_client is not None,
+        "report_ai_available": report_ai_client is not None,
         "sessions_dir": str(SESSIONS_DIR),
         "reports_dir": str(REPORTS_DIR),
         "interview_depth_v2": {
@@ -9214,11 +9309,12 @@ if __name__ == '__main__':
     print(f"Reports: {REPORTS_DIR}")
     print(f"AI 状态: {'已启用' if claude_client else '未启用'}")
     if claude_client:
-        if QUESTION_MODEL_NAME == REPORT_MODEL_NAME:
-            print(f"模型: {QUESTION_MODEL_NAME}")
-        else:
-            print(f"问题模型: {QUESTION_MODEL_NAME}")
-            print(f"报告模型: {REPORT_MODEL_NAME}")
+        question_endpoint = QUESTION_BASE_URL or "(Anthropic 官方默认地址)"
+        report_endpoint = REPORT_BASE_URL or "(Anthropic 官方默认地址)"
+        print(f"问题模型: {QUESTION_MODEL_NAME}")
+        print(f"问题网关: {'可用' if question_ai_client else '不可用'} @ {question_endpoint}")
+        print(f"报告模型: {REPORT_MODEL_NAME}")
+        print(f"报告网关: {'可用' if report_ai_client else '不可用'} @ {report_endpoint}")
 
     # 搜索功能状态
     search_enabled = ENABLE_WEB_SEARCH and ZHIPU_API_KEY and ZHIPU_API_KEY != "your-zhipu-api-key-here"
