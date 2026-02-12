@@ -1008,7 +1008,7 @@
                                                         <span class="session-status-dot"
                                                               :class="getSessionStatusDotClass(getEffectiveSessionStatus(session))"
                                                               aria-hidden="true"></span>
-                                                        <span x-text="getStatusText(getEffectiveSessionStatus(session))"></span>
+                                                        <span x-text="getSessionStatusBadgeText(session)"></span>
                                                     </span>
                                                 </div>
                                                 <div class="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_230px] gap-x-3 gap-y-2 h-full items-center">
@@ -2010,28 +2010,30 @@
                                         </div>
                                     </template>
                                     <template x-if="currentSession.status !== 'completed'">
-                                        <button @click="generateReport('generate')"
-                                                :disabled="isGeneratingCurrentReport()"
-                                                :class="isGeneratingCurrentReport() ? 'report-action-progressing cursor-wait' : 'report-action-generate cursor-pointer'"
-                                                class="report-action-progress-shell px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 w-full sm:w-auto relative overflow-hidden">
-                                            <template x-if="isGeneratingCurrentReport()">
-                                                <span class="report-action-progress-fill" :style="getReportGenerationButtonProgressStyle()" aria-hidden="true"></span>
-                                            </template>
-                                                <span class="report-action-progress-content report-action-progress-text flex items-center justify-center gap-2">
+                                        <div class="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+                                            <button @click="generateReport('generate')"
+                                                    :disabled="isGeneratingCurrentReport()"
+                                                    :class="isGeneratingCurrentReport() ? 'report-action-progressing cursor-wait' : 'report-action-generate cursor-pointer'"
+                                                    class="report-action-progress-shell px-8 py-2.5 rounded-lg font-medium transition-colors duration-200 w-full sm:w-auto relative overflow-hidden">
                                                 <template x-if="isGeneratingCurrentReport()">
-                                                    <svg class="w-5 h-5 animate-spin motion-reduce:animate-none" fill="none" viewBox="0 0 24 24">
-                                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-                                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                                                    </svg>
+                                                    <span class="report-action-progress-fill" :style="getReportGenerationButtonProgressStyle()" aria-hidden="true"></span>
                                                 </template>
-                                                <template x-if="!isGeneratingCurrentReport()">
-                                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-                                                    </svg>
-                                                </template>
-                                                <span x-text="getReportGenerationButtonText('generate')"></span>
-                                            </span>
-                                        </button>
+                                                <span class="report-action-progress-content report-action-progress-text flex items-center justify-center gap-2">
+                                                    <template x-if="isGeneratingCurrentReport()">
+                                                        <svg class="w-5 h-5 animate-spin motion-reduce:animate-none" fill="none" viewBox="0 0 24 24">
+                                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                                                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                                        </svg>
+                                                    </template>
+                                                    <template x-if="!isGeneratingCurrentReport()">
+                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                                        </svg>
+                                                    </template>
+                                                    <span x-text="getReportGenerationButtonText('generate')"></span>
+                                                </span>
+                                            </button>
+                                        </div>
                                     </template>
                                 </div>
                             </div>

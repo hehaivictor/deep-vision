@@ -48,7 +48,10 @@ function deepVision() {
         reportGenerationTransitionTimer: null,
         reportGenerationResetTimer: null,
         reportGenerationPollInterval: null,
+        reportGenerationPollingSessionId: '',
         reportGenerationSmoothTimer: null,
+        sessionsAutoRefreshInterval: null,
+        sessionsAutoRefreshInFlight: false,
         reportGenerationProgress: 0,
         reportGenerationRawProgress: 0,
         reportGenerationPhaseStartedAt: 0,
@@ -57,6 +60,7 @@ function deepVision() {
         reportGenerationServerState: 'queued',
         reportGenerationServerMessage: '',
         reportGenerationLastError: '',
+        reportGenerationTerminalHandledKey: '',
         generatingSlides: false,
         generatingSlidesReportName: '',
         presentationPolling: false,
@@ -522,6 +526,7 @@ function deepVision() {
             this.stopThinkingPolling();
             this.stopWebSearchPolling();
             this.stopReportGenerationPolling();
+            this.stopSessionsAutoRefresh();
             this.stopPresentationPolling();
             this.resetPresentationProgressFeedback();
             this.resetReportGenerationFeedback();
@@ -1628,19 +1633,97 @@ function deepVision() {
         },
 
         // ============ 会话管理 ============
-        async loadSessions() {
-            this.loading = true;
+        async loadSessions(options = {}) {
+            const {
+                silent = false,
+                preserveListState = false,
+                suppressErrorToast = false
+            } = options;
+
+            if (!silent) {
+                this.loading = true;
+            }
             try {
                 this.sessions = await this.apiCall('/sessions');
-                this.filterSessions();  // 加载完成后执行筛选
+                this.filterSessions({
+                    preservePage: preserveListState
+                });  // 加载完成后执行筛选
                 if (Array.isArray(this.reports) && this.reports.length > 0) {
                     this.filterReports();
                 }
             } catch (error) {
-                this.showToast('加载会话列表失败', 'error');
+                if (!suppressErrorToast) {
+                    this.showToast('加载会话列表失败', 'error');
+                }
             } finally {
-                this.loading = false;
+                if (!silent) {
+                    this.loading = false;
+                }
+                this.startSessionsAutoRefreshIfNeeded();
             }
+        },
+
+        hasActiveReportGenerationInSessions() {
+            if (!Array.isArray(this.sessions) || this.sessions.length === 0) {
+                return false;
+            }
+            return this.sessions.some(session => Boolean(this.getSessionReportGeneration(session)));
+        },
+
+        getSessionsAutoRefreshInterval() {
+            const configuredInterval = Number(
+                (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.api?.sessionListPollInterval)
+                    ? SITE_CONFIG.api.sessionListPollInterval
+                    : 0
+            );
+            if (Number.isFinite(configuredInterval) && configuredInterval >= 1000) {
+                return Math.floor(configuredInterval);
+            }
+            return 3000;
+        },
+
+        startSessionsAutoRefreshIfNeeded() {
+            const shouldAutoRefresh = this.authReady
+                && this.currentView === 'sessions'
+                && this.hasActiveReportGenerationInSessions();
+
+            if (!shouldAutoRefresh) {
+                this.stopSessionsAutoRefresh();
+                return;
+            }
+
+            if (this.sessionsAutoRefreshInterval) {
+                return;
+            }
+
+            const pollInterval = this.getSessionsAutoRefreshInterval();
+            this.sessionsAutoRefreshInterval = setInterval(async () => {
+                if (this.sessionsAutoRefreshInFlight) return;
+
+                if (!this.authReady || this.currentView !== 'sessions') {
+                    this.stopSessionsAutoRefresh();
+                    return;
+                }
+
+                this.sessionsAutoRefreshInFlight = true;
+                try {
+                    await this.loadSessions({
+                        silent: true,
+                        preserveListState: true,
+                        suppressErrorToast: true
+                    });
+                } finally {
+                    this.sessionsAutoRefreshInFlight = false;
+                }
+            }, pollInterval);
+        },
+
+        stopSessionsAutoRefresh() {
+            if (this.sessionsAutoRefreshInterval) {
+                clearInterval(this.sessionsAutoRefreshInterval);
+                this.sessionsAutoRefreshInterval = null;
+            }
+            this.sessionsAutoRefreshInFlight = false;
         },
 
         async createNewSession() {
@@ -1690,6 +1773,7 @@ function deepVision() {
                 this.selectedScenario = null;  // 重置场景选择
                 this.showScenarioSelector = false;  // 重置场景选择器
                 this.scenarioSearchQuery = '';  // 重置搜索关键词
+                this.stopSessionsAutoRefresh();
                 this.currentStep = 0;
                 this.currentView = 'interview';
                 this.showToast('会话创建成功', 'success');
@@ -1722,6 +1806,7 @@ function deepVision() {
                 this.currentSession = await this.apiCall(`/sessions/${sessionId}`);
                 this.resetReportGenerationFeedback();
                 this.updateDimensionsFromSession(this.currentSession);
+                this.stopSessionsAutoRefresh();
                 this.currentView = 'interview';
 
                 // 检查所有维度是否已完成
@@ -1744,6 +1829,8 @@ function deepVision() {
                     this.currentStep = 0;
                     this.currentDimension = this.dimensionOrder[0] || 'customer_needs';
                 }
+
+                await this.restoreReportGenerationState(this.currentSession?.session_id || '');
             } catch (error) {
                 this.showToast('加载会话失败', 'error');
             }
@@ -3242,6 +3329,7 @@ function deepVision() {
             this.reportGenerationServerState = 'queued';
             this.reportGenerationServerMessage = '';
             this.reportGenerationLastError = '';
+            this.reportGenerationTerminalHandledKey = '';
 
             this.startReportGenerationSmoothing();
 
@@ -3292,6 +3380,9 @@ function deepVision() {
             this.clearReportGenerationResetTimer();
             this.stopReportGenerationPolling();
             this.stopReportGenerationSmoothing();
+            this.stopWebSearchPolling();
+            this.generatingReport = false;
+            this.generatingReportSessionId = '';
             this.reportGenerationState = 'idle';
             this.reportGenerationAction = 'generate';
             this.reportGenerationSessionId = '';
@@ -3305,21 +3396,171 @@ function deepVision() {
             this.reportGenerationServerState = 'queued';
             this.reportGenerationServerMessage = '';
             this.reportGenerationLastError = '';
+            this.reportGenerationPollingSessionId = '';
+            this.reportGenerationTerminalHandledKey = '';
         },
 
         isReportGenerationProcessing() {
             return this.reportGenerationState === 'submitting' || this.reportGenerationState === 'running';
         },
 
+        applyReportGenerationStatusSnapshot(data, sessionId = '') {
+            if (!data || typeof data !== 'object') return;
+
+            const nextSessionId = String(sessionId || this.reportGenerationSessionId || '').trim();
+            const state = String(data.state || this.reportGenerationServerState || 'queued').trim() || 'queued';
+            const normalizedProgress = Math.max(0, Math.min(100, Number(data.progress) || 0));
+            const statusUpdatedAt = this.parseValidTimestamp(data.updated_at) || Date.now();
+
+            if (state !== this.reportGenerationServerState) {
+                this.reportGenerationPhaseStartedAt = Date.now();
+            }
+
+            this.reportGenerationSessionId = nextSessionId;
+            this.reportGenerationServerState = state;
+            this.reportGenerationState = state === 'queued' ? 'submitting' : 'running';
+            this.reportGenerationRawProgress = Math.max(
+                this.reportGenerationRawProgress || 0,
+                normalizedProgress
+            );
+            this.reportGenerationProgress = Math.max(
+                this.reportGenerationProgress || 0,
+                this.reportGenerationRawProgress
+            );
+            this.reportGenerationStageIndex = Number.isFinite(Number(data.stage_index))
+                ? Number(data.stage_index)
+                : this.reportGenerationStageIndex;
+            this.reportGenerationTotalStages = Number.isFinite(Number(data.total_stages))
+                ? Number(data.total_stages)
+                : this.reportGenerationTotalStages;
+            this.reportGenerationStatusUpdatedAt = statusUpdatedAt;
+
+            if (data.message) {
+                this.reportGenerationServerMessage = data.message;
+                if (state !== 'failed') {
+                    this.reportGenerationLastError = '';
+                }
+            }
+
+            const errorText = String(data.error || '').trim();
+            if (errorText) {
+                this.reportGenerationLastError = errorText;
+            }
+        },
+
+        async handleReportGenerationTerminalState(sessionId, data = {}) {
+            const state = String(data?.state || '').trim();
+            if (!sessionId || (state !== 'completed' && state !== 'failed')) {
+                return;
+            }
+
+            const terminalKey = [
+                sessionId,
+                state,
+                data?.updated_at || '',
+                data?.report_name || '',
+                data?.error || ''
+            ].join('|');
+            if (terminalKey && this.reportGenerationTerminalHandledKey === terminalKey) {
+                return;
+            }
+            this.reportGenerationTerminalHandledKey = terminalKey;
+
+            const isCurrentSession = this.currentSession?.session_id === sessionId;
+            const wasTracking = this.generatingReportSessionId === sessionId
+                || this.reportGenerationSessionId === sessionId;
+
+            this.generatingReport = false;
+            if (this.generatingReportSessionId === sessionId) {
+                this.generatingReportSessionId = '';
+            }
+            this.stopWebSearchPolling();
+
+            if (state === 'completed') {
+                this.finishReportGenerationFeedback('success');
+                if (isCurrentSession && this.currentSession) {
+                    this.currentSession.status = 'completed';
+                }
+
+                await this.loadReports();
+                const reportName = String(data?.report_name || '').trim();
+                const aiGenerated = data?.ai_generated;
+                const aiLabel = aiGenerated === true ? '（AI 生成）' : (aiGenerated === false ? '（模板生成）' : '');
+                if (wasTracking) {
+                    this.showToast(`访谈报告生成成功 ${aiLabel}`.trim(), 'success');
+                }
+
+                if (isCurrentSession && reportName) {
+                    this.currentView = 'reports';
+                    await this.viewReport(reportName);
+                }
+                return;
+            }
+
+            const message = this.normalizeReportGenerationError({
+                message: data?.error || data?.message || '访谈报告生成失败'
+            });
+            this.finishReportGenerationFeedback('error', message);
+            if (wasTracking) {
+                this.showToast(message, 'error');
+            }
+        },
+
+        async restoreReportGenerationState(sessionId) {
+            const targetSessionId = String(sessionId || '').trim();
+            if (!targetSessionId) return;
+
+            try {
+                const data = await this.apiCall(`/status/report-generation/${targetSessionId}`);
+                const state = String(data?.state || '').trim();
+                const isActive = data?.active === true;
+                if (!isActive || (state === 'completed' || state === 'failed')) {
+                    return;
+                }
+
+                this.clearReportGenerationTransitionTimer();
+                this.clearReportGenerationResetTimer();
+                this.reportGenerationAction = data?.action === 'regenerate' ? 'regenerate' : 'generate';
+                this.reportGenerationRequestStartedAt = this.parseValidTimestamp(data?.started_at) || Date.now();
+                this.reportGenerationStatusUpdatedAt = this.parseValidTimestamp(data?.updated_at) || Date.now();
+                this.reportGenerationPhaseStartedAt = Date.now();
+                this.reportGenerationProgress = Math.max(5, Math.min(99, Number(data?.progress) || 5));
+                this.reportGenerationRawProgress = Math.max(5, Math.min(99, Number(data?.progress) || 5));
+                this.reportGenerationStageIndex = Number.isFinite(Number(data?.stage_index))
+                    ? Number(data.stage_index)
+                    : 0;
+                this.reportGenerationTotalStages = Number.isFinite(Number(data?.total_stages))
+                    ? Number(data.total_stages)
+                    : 6;
+                this.reportGenerationServerState = state || 'queued';
+                this.reportGenerationServerMessage = String(data?.message || '').trim();
+                this.reportGenerationLastError = String(data?.error || '').trim();
+                this.generatingReport = true;
+                this.generatingReportSessionId = targetSessionId;
+                this.reportGenerationSessionId = targetSessionId;
+                this.reportGenerationState = (state || 'queued') === 'queued' ? 'submitting' : 'running';
+                this.startReportGenerationSmoothing();
+                this.startReportGenerationPolling(targetSessionId);
+                this.startWebSearchPolling();
+                this.showToast('检测到报告仍在生成，已自动恢复进度', 'info');
+            } catch (error) {
+                // 恢复失败不打断会话打开流程
+            }
+        },
+
         startReportGenerationPolling(sessionId) {
             this.stopReportGenerationPolling();
             if (!sessionId) return;
+            this.reportGenerationPollingSessionId = sessionId;
 
             const pollInterval = (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.api?.reportStatusPollInterval)
                 ? SITE_CONFIG.api.reportStatusPollInterval
                 : 600;
 
-            this.reportGenerationPollInterval = setInterval(async () => {
+            let polling = false;
+            const pollOnce = async () => {
+                if (polling || this.reportGenerationPollingSessionId !== sessionId) return;
+                polling = true;
                 try {
                     const response = await fetch(`${API_BASE}/status/report-generation/${sessionId}`);
                     if (!response.ok) return;
@@ -3336,37 +3577,36 @@ function deepVision() {
                         return;
                     }
 
-                    if (state !== this.reportGenerationServerState) {
-                        this.reportGenerationPhaseStartedAt = Date.now();
-                    }
-                    this.reportGenerationServerState = state;
-                    this.reportGenerationState = state === 'queued' ? 'submitting' : 'running';
-                    this.reportGenerationRawProgress = Math.max(
-                        this.reportGenerationRawProgress || 0,
-                        Math.max(0, Math.min(100, Number(data.progress) || 0))
-                    );
-                    this.reportGenerationProgress = Math.max(
-                        this.reportGenerationProgress || 0,
-                        this.reportGenerationRawProgress
-                    );
-                    this.reportGenerationStageIndex = Number.isFinite(Number(data.stage_index))
-                        ? Number(data.stage_index)
-                        : this.reportGenerationStageIndex;
-                    this.reportGenerationTotalStages = Number.isFinite(Number(data.total_stages))
-                        ? Number(data.total_stages)
-                        : this.reportGenerationTotalStages;
-                    this.reportGenerationStatusUpdatedAt = statusUpdatedAt || Date.now();
-                    if (data.message) {
-                        this.reportGenerationLastError = '';
-                        this.reportGenerationServerMessage = data.message;
+                    if (data.active === true) {
+                        if (!this.generatingReport || this.generatingReportSessionId !== sessionId) {
+                            this.generatingReport = true;
+                            this.generatingReportSessionId = sessionId;
+                        }
+                        this.applyReportGenerationStatusSnapshot(data, sessionId);
+                        if (!this.reportGenerationSmoothTimer) {
+                            this.startReportGenerationSmoothing();
+                        }
+                        return;
                     }
 
-                    if (data.active === false && (state === 'completed' || state === 'failed')) {
+                    if (state === 'completed' || state === 'failed') {
+                        this.applyReportGenerationStatusSnapshot({
+                            ...data,
+                            progress: 100
+                        }, sessionId);
                         this.stopReportGenerationPolling();
+                        await this.handleReportGenerationTerminalState(sessionId, data);
                     }
                 } catch (error) {
                     // 轮询失败静默处理
+                } finally {
+                    polling = false;
                 }
+            };
+
+            pollOnce();
+            this.reportGenerationPollInterval = setInterval(() => {
+                pollOnce();
             }, pollInterval);
         },
 
@@ -3375,6 +3615,7 @@ function deepVision() {
                 clearInterval(this.reportGenerationPollInterval);
                 this.reportGenerationPollInterval = null;
             }
+            this.reportGenerationPollingSessionId = '';
         },
 
         getReportGenerationExpectedDuration(state = '') {
@@ -3510,12 +3751,15 @@ function deepVision() {
             return raw;
         },
 
-        async requestGenerateReportWithRetry(sessionId, maxRetries = 1) {
+        async requestGenerateReportWithRetry(sessionId, action = 'generate', maxRetries = 1) {
             let lastError = null;
             for (let attempt = 0; attempt <= maxRetries; attempt++) {
                 try {
                     return await this.apiCall(`/sessions/${sessionId}/generate-report`, {
-                        method: 'POST'
+                        method: 'POST',
+                        body: JSON.stringify({
+                            action: action === 'regenerate' ? 'regenerate' : 'generate'
+                        })
                     });
                 } catch (error) {
                     lastError = error;
@@ -3532,35 +3776,49 @@ function deepVision() {
 
         async generateReport(action = 'generate') {
             if (!this.currentSession || this.isGeneratingCurrentReport()) return;
+            const sessionId = this.currentSession?.session_id || '';
+            if (!sessionId) return;
 
             this.generatingReport = true;
-            this.generatingReportSessionId = this.currentSession?.session_id || '';
+            this.generatingReportSessionId = sessionId;
             this.startReportGenerationFeedback(action);
+            this.startReportGenerationPolling(sessionId);
+            this.startWebSearchPolling();  // 开始轮询 Web Search 状态
 
             try {
-                const requestPromise = this.requestGenerateReportWithRetry(this.currentSession.session_id, 1);
-                this.startReportGenerationPolling(this.generatingReportSessionId);
-                this.startWebSearchPolling();  // 开始轮询 Web Search 状态
+                const result = await this.requestGenerateReportWithRetry(sessionId, action, 1);
 
-                const result = await requestPromise;
-
-                if (result.success) {
+                // 兼容旧同步返回：如果后端直接返回最终报告，则沿用旧逻辑。
+                if (result?.success && !result?.processing && result?.report_name) {
                     const aiMsg = result.ai_generated ? '（AI 生成）' : '（模板生成）';
                     this.showToast(`访谈报告生成成功 ${aiMsg}`, 'success');
                     this.finishReportGenerationFeedback('success');
                     this.currentSession.status = 'completed';
                     await this.loadReports();
                     this.currentView = 'reports';
-                    // 自动打开新生成的报告
                     await this.viewReport(result.report_name);
+                    this.generatingReport = false;
+                    this.generatingReportSessionId = '';
+                    this.stopReportGenerationPolling();
+                    this.stopWebSearchPolling();
+                    return;
+                }
+
+                this.applyReportGenerationStatusSnapshot(result, sessionId);
+                if (result?.active === false && (result?.state === 'completed' || result?.state === 'failed')) {
+                    await this.handleReportGenerationTerminalState(sessionId, result);
+                    return;
+                }
+
+                if (result?.already_running) {
+                    this.showToast('报告正在后台生成，已恢复进度', 'info');
                 } else {
-                    throw new Error('访谈报告生成失败');
+                    this.showToast('已提交报告生成任务，刷新或离开后重新进入也会继续', 'success');
                 }
             } catch (error) {
                 const errorMsg = this.normalizeReportGenerationError(error);
                 this.showToast(errorMsg, 'error');
                 this.finishReportGenerationFeedback('error', errorMsg);
-            } finally {
                 this.generatingReport = false;
                 this.generatingReportSessionId = '';
                 this.stopReportGenerationPolling();
@@ -5189,6 +5447,9 @@ function deepVision() {
         // ============ 工具方法 ============
         switchView(view) {
             if (!this.authReady) return;
+            if (view !== 'sessions') {
+                this.stopSessionsAutoRefresh();
+            }
             this.currentView = view;
             this.selectedReport = null;
             this.presentationPdfUrl = '';
@@ -5388,7 +5649,9 @@ function deepVision() {
         },
 
         // 筛选和排序会话
-        filterSessions() {
+        filterSessions(options = {}) {
+            const { preservePage = false } = options;
+            const previousPage = this.currentPage;
             let result = [...this.sessions];
 
             // 按搜索关键词筛选
@@ -5418,7 +5681,12 @@ function deepVision() {
 
             this.filteredSessions = result;
             this.pruneSelectedSessions();
-            this.currentPage = 1;  // 重置到第一页
+            if (preservePage) {
+                const totalPages = Math.max(1, Math.ceil(this.filteredSessions.length / this.pageSize));
+                this.currentPage = Math.min(Math.max(1, previousPage || 1), totalPages);
+            } else {
+                this.currentPage = 1;  // 重置到第一页
+            }
             if (this.useVirtualList) {
                 this.$nextTick(() => {
                     this.resetVirtualScroll();
@@ -6543,6 +6811,27 @@ function deepVision() {
                 return scenario?.name || session.scenario_id;
             }
             return '产品需求';
+        },
+
+        getSessionReportGeneration(session) {
+            const info = session?.report_generation;
+            if (!info || typeof info !== 'object') return null;
+            if (info.active !== true) return null;
+            return info;
+        },
+
+        getSessionReportGenerationBadgeText(session) {
+            const info = this.getSessionReportGeneration(session);
+            if (!info) return '';
+            const progress = Math.max(0, Math.min(99, Math.round(Number(info.progress) || 0)));
+            return `报告生成中 ${progress}%`;
+        },
+
+        getSessionStatusBadgeText(session) {
+            const statusText = this.getStatusText(this.getEffectiveSessionStatus(session));
+            const generatingText = this.getSessionReportGenerationBadgeText(session);
+            if (!generatingText) return statusText;
+            return `${statusText}｜${generatingText}`;
         },
 
         getSessionStatusBadgeClass(status) {

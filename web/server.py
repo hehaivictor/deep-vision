@@ -248,7 +248,6 @@ REPORT_GENERATION_STAGES = {
     "fallback": {"index": 3, "progress": 78, "message": "AI 响应较慢，正在切换模板生成..."},
     "saving": {"index": 4, "progress": 90, "message": "正在保存报告并更新会话状态..."},
     "completed": {"index": 5, "progress": 100, "message": "报告生成完成"},
-    "cancelled": {"index": 5, "progress": 100, "message": "报告生成已停止"},
     "failed": {"index": 5, "progress": 100, "message": "报告生成失败"},
 }
 
@@ -6318,8 +6317,27 @@ def list_sessions():
             data = json.loads(f.read_text(encoding="utf-8"))
             if not is_session_owned_by_user(data, user_id):
                 continue
+            session_id = data.get("session_id")
+            report_generation = None
+            if session_id:
+                status_record = get_report_generation_record(session_id)
+                if status_record and not bool(status_record.get("active")) and is_report_generation_worker_alive(session_id):
+                    status_state = str(status_record.get("state") or "").strip()
+                    if status_state not in {"completed", "failed", "cancelled"}:
+                        update_report_generation_status(session_id, "queued", message="报告任务正在处理中...")
+                        status_record = get_report_generation_record(session_id)
+                payload = build_report_generation_payload(status_record)
+                if payload.get("active"):
+                    report_generation = {
+                        "active": True,
+                        "state": payload.get("state", "queued"),
+                        "progress": payload.get("progress", 0),
+                        "message": payload.get("message", ""),
+                        "updated_at": payload.get("updated_at"),
+                        "action": payload.get("action", "generate"),
+                    }
             sessions.append({
-                "session_id": data.get("session_id"),
+                "session_id": session_id,
                 "topic": data.get("topic"),
                 "status": data.get("status"),
                 "created_at": data.get("created_at"),
@@ -6327,7 +6345,8 @@ def list_sessions():
                 "dimensions": data.get("dimensions", {}),
                 "interview_count": len(data.get("interview_log", [])),
                 "scenario_id": data.get("scenario_id"),
-                "scenario_config": data.get("scenario_config")
+                "scenario_config": data.get("scenario_config"),
+                "report_generation": report_generation,
             })
         except Exception as e:
             print(f"读取会话失败 {f}: {e}")
@@ -7781,8 +7800,10 @@ def generate_report(session_id):
     worker_alive = is_report_generation_worker_alive(session_id)
     if bool(current_record.get("active")) or worker_alive:
         if worker_alive and not bool(current_record.get("active")):
-            update_report_generation_status(session_id, "queued", message="报告任务正在处理中...")
-            current_record = get_report_generation_record(session_id) or {}
+            current_state = str(current_record.get("state") or "").strip()
+            if current_state not in {"completed", "failed", "cancelled"}:
+                update_report_generation_status(session_id, "queued", message="报告任务正在处理中...")
+                current_record = get_report_generation_record(session_id) or {}
         payload = build_report_generation_payload(current_record)
         payload.update({
             "success": True,
@@ -9104,8 +9125,10 @@ def get_report_generation_status(session_id):
 
     status = get_report_generation_record(session_id)
     if status and not bool(status.get("active")) and is_report_generation_worker_alive(session_id):
-        update_report_generation_status(session_id, "queued", message="报告任务正在处理中...")
-        status = get_report_generation_record(session_id)
+        state = str(status.get("state") or "").strip()
+        if state not in {"completed", "failed", "cancelled"}:
+            update_report_generation_status(session_id, "queued", message="报告任务正在处理中...")
+            status = get_report_generation_record(session_id)
 
     if status:
         return jsonify(build_report_generation_payload(status))
