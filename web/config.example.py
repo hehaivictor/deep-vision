@@ -38,6 +38,14 @@ MAX_TOKENS_SUMMARY = 500       # 文档摘要生成最大 token 数
 # AI 运行策略配置（建议统一在此调整）
 API_TIMEOUT = 90.0             # 通用 API 超时（秒）
 REPORT_API_TIMEOUT = 210.0     # 报告生成专用超时（秒）
+REPORT_DRAFT_API_TIMEOUT = 180.0              # 报告草案阶段专用超时（秒，建议 <= REPORT_API_TIMEOUT）
+REPORT_V3_DRAFT_MAX_TOKENS = 5500             # 报告 V3 草案单次输出 token 上限
+REPORT_V3_DRAFT_FACTS_LIMIT = 48              # 报告 V3 草案引用的证据问答上限
+REPORT_V3_DRAFT_MIN_FACTS_LIMIT = 24          # 降载重试时最少保留的证据问答数
+REPORT_V3_DRAFT_RETRY_COUNT = 2               # 报告 V3 草案失败后的额外重试次数
+REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS = 1.5   # 报告 V3 草案重试退避时间（秒）
+REPORT_V3_FAILOVER_ENABLED = True             # V3 主网关失败后是否切备用网关再试一次
+REPORT_V3_FAILOVER_LANE = "question"          # 备用网关 lane: question/report
 CONTEXT_WINDOW_SIZE = 5        # 保留最近 N 条问答
 SUMMARY_THRESHOLD = 8          # 超过此数量触发历史摘要
 MAX_DOC_LENGTH = 2000          # 单个文档最大截断长度（字符）

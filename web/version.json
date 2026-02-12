@@ -1,7 +1,31 @@
 {
-  "version": "1.40.0",
+  "version": "1.40.2",
   "releaseDate": "2026-02-12",
   "changelog": [
+    {
+      "version": "1.40.2",
+      "date": "2026-02-12",
+      "type": "patch",
+      "title": "增强报告V3草案稳态与备用网关重试",
+      "changes": [
+        "后端：新增报告草案独立超时、证据限载与分级降载重试，降低长请求失败率",
+        "后端：新增V3主网关失败后的备用lane重试流程，并补充failover调试留痕",
+        "配置：补充REPORT_DRAFT_API_TIMEOUT、REPORT_V3_DRAFT_*、REPORT_V3_FAILOVER_*示例项",
+        "版本：更新web/version.json至1.40.1并追加变更记录"
+      ]
+    },
+    {
+      "version": "1.40.1",
+      "date": "2026-02-12",
+      "type": "patch",
+      "title": "增强报告V3草案稳态与备用网关重试",
+      "changes": [
+        "报告草案：新增独立超时、证据限载、分级降载重试与退避配置，降低长请求失败率。",
+        "网关容错：V3 主网关失败后自动切换备用 lane 再试一次，成功后直接保存 V3 报告。",
+        "可观测性：补充 failover 成败留痕与失败元信息，便于排查回退原因。",
+        "配置示例：新增 REPORT_DRAFT_API_TIMEOUT、REPORT_V3_DRAFT_* 与 REPORT_V3_FAILOVER_* 参数。"
+      ]
+    },
     {
       "version": "1.40.0",
       "date": "2026-02-12",

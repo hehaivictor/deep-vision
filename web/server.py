@@ -1292,8 +1292,14 @@ else:
         print("❌ AI 客户端初始化前置条件不满足")
 
 
-def resolve_ai_client(call_type: str = "", model_name: str = ""):
-    """按调用类型选择客户端；目标客户端不可用时回退到另一侧。"""
+def resolve_ai_client(call_type: str = "", model_name: str = "", preferred_lane: str = ""):
+    """按调用类型选择客户端；支持显式指定 lane，目标客户端不可用时回退到另一侧。"""
+    forced_lane = str(preferred_lane or "").strip().lower()
+    if forced_lane == "report":
+        return report_ai_client or question_ai_client
+    if forced_lane == "question":
+        return question_ai_client or report_ai_client
+
     lane = resolve_call_lane(call_type=call_type, model_name=model_name)
     if lane == "report":
         return report_ai_client or question_ai_client
@@ -2371,6 +2377,23 @@ API_TIMEOUT = _runtime_cfg_float("API_TIMEOUT", 90.0)             # 通用 API �
 REPORT_API_TIMEOUT = _runtime_cfg_float("REPORT_API_TIMEOUT", 210.0)
 if REPORT_API_TIMEOUT < API_TIMEOUT:
     REPORT_API_TIMEOUT = API_TIMEOUT
+# 报告草案阶段更易受网关波动影响，支持单独限载和分级重试
+REPORT_DRAFT_API_TIMEOUT = _runtime_cfg_float("REPORT_DRAFT_API_TIMEOUT", min(REPORT_API_TIMEOUT, 180.0))
+REPORT_DRAFT_API_TIMEOUT = max(30.0, min(REPORT_DRAFT_API_TIMEOUT, REPORT_API_TIMEOUT))
+REPORT_V3_DRAFT_MAX_TOKENS = _runtime_cfg_int("REPORT_V3_DRAFT_MAX_TOKENS", 5500)
+REPORT_V3_DRAFT_MAX_TOKENS = max(2500, REPORT_V3_DRAFT_MAX_TOKENS)
+REPORT_V3_DRAFT_FACTS_LIMIT = _runtime_cfg_int("REPORT_V3_DRAFT_FACTS_LIMIT", 48)
+REPORT_V3_DRAFT_FACTS_LIMIT = max(20, REPORT_V3_DRAFT_FACTS_LIMIT)
+REPORT_V3_DRAFT_MIN_FACTS_LIMIT = _runtime_cfg_int("REPORT_V3_DRAFT_MIN_FACTS_LIMIT", 24)
+REPORT_V3_DRAFT_MIN_FACTS_LIMIT = max(10, min(REPORT_V3_DRAFT_MIN_FACTS_LIMIT, REPORT_V3_DRAFT_FACTS_LIMIT))
+REPORT_V3_DRAFT_RETRY_COUNT = _runtime_cfg_int("REPORT_V3_DRAFT_RETRY_COUNT", 2)
+REPORT_V3_DRAFT_RETRY_COUNT = max(0, REPORT_V3_DRAFT_RETRY_COUNT)
+REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS = _runtime_cfg_float("REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS", 1.5)
+REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS = max(0.0, REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS)
+REPORT_V3_FAILOVER_ENABLED = _runtime_cfg_bool("REPORT_V3_FAILOVER_ENABLED", True)
+REPORT_V3_FAILOVER_LANE = str(_runtime_cfg("REPORT_V3_FAILOVER_LANE", "question") or "question").strip().lower()
+if REPORT_V3_FAILOVER_LANE not in {"question", "report"}:
+    REPORT_V3_FAILOVER_LANE = "question"
 
 # ============ 智能文档摘要配置（第三阶段优化） ============
 ENABLE_SMART_SUMMARY = _runtime_cfg_bool("ENABLE_SMART_SUMMARY", True)        # 启用智能文档摘要
@@ -4764,7 +4787,14 @@ def summarize_evidence_pack_for_debug(evidence_pack: dict) -> dict:
     }
 
 
-def build_report_draft_prompt_v3(session: dict, evidence_pack: dict) -> str:
+def build_report_draft_prompt_v3(
+    session: dict,
+    evidence_pack: dict,
+    facts_limit: int = 60,
+    contradiction_limit: int = 20,
+    unknown_limit: int = 20,
+    blindspot_limit: int = 20,
+) -> str:
     """构建 V3 报告草案生成 Prompt（结构化 JSON）。"""
     topic = session.get("topic", "未知主题")
     description = session.get("description", "")
@@ -4780,8 +4810,13 @@ def build_report_draft_prompt_v3(session: dict, evidence_pack: dict) -> str:
         )
     dimension_text = "\n".join(dimension_lines) if dimension_lines else "- 暂无维度覆盖数据"
 
+    facts_limit = max(10, int(facts_limit or 10))
+    contradiction_limit = max(5, int(contradiction_limit or 5))
+    unknown_limit = max(5, int(unknown_limit or 5))
+    blindspot_limit = max(5, int(blindspot_limit or 5))
+
     facts_lines = []
-    for fact in evidence_pack.get("facts", [])[:60]:
+    for fact in evidence_pack.get("facts", [])[:facts_limit]:
         question_text = (fact.get("question", "") or "").replace("\n", " ").strip()[:90]
         answer_text = (fact.get("answer", "") or "").replace("\n", " ").strip()[:150]
         facts_lines.append(
@@ -4793,21 +4828,21 @@ def build_report_draft_prompt_v3(session: dict, evidence_pack: dict) -> str:
     contradictions = evidence_pack.get("contradictions", [])
     contradiction_lines = [
         f"- {item.get('detail')}（证据: {', '.join(item.get('evidence_refs', []))}）"
-        for item in contradictions[:20]
+        for item in contradictions[:contradiction_limit]
     ]
     contradiction_text = "\n".join(contradiction_lines) if contradiction_lines else "- 未发现明显冲突"
 
     unknowns = evidence_pack.get("unknowns", [])
     unknown_lines = [
         f"- {item.get('q_id')} [{item.get('dimension')}] {item.get('reason')}"
-        for item in unknowns[:20]
+        for item in unknowns[:unknown_limit]
     ]
     unknown_text = "\n".join(unknown_lines) if unknown_lines else "- 未发现明显模糊回答"
 
     blindspots = evidence_pack.get("blindspots", [])
     blindspot_lines = [
         f"- {item.get('dimension')}: {item.get('aspect')}"
-        for item in blindspots[:20]
+        for item in blindspots[:blindspot_limit]
     ]
     blindspot_text = "\n".join(blindspot_lines) if blindspot_lines else "- 暂无盲区"
 
@@ -5579,10 +5614,15 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
     return "\n".join(lines)
 
 
-def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None) -> Optional[dict]:
+def generate_report_v3_pipeline(
+    session: dict,
+    session_id: Optional[str] = None,
+    preferred_lane: str = "",
+    call_type_suffix: str = "",
+) -> Optional[dict]:
     """执行 V3 报告生成流水线。失败时返回包含 reason 的调试结构。"""
     try:
-        report_draft_max_tokens = min(MAX_TOKENS_REPORT, 7000)
+        report_draft_max_tokens = min(MAX_TOKENS_REPORT, REPORT_V3_DRAFT_MAX_TOKENS)
         report_review_max_tokens = min(MAX_TOKENS_REPORT, 6000)
 
         evidence_pack = build_report_evidence_pack(session)
@@ -5590,26 +5630,81 @@ def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None)
         if session_id:
             update_report_generation_status(session_id, "building_prompt", message="正在构建证据包并生成结构化草案...")
 
-        draft_prompt = build_report_draft_prompt_v3(session, evidence_pack)
-        draft_raw = call_claude(
-            draft_prompt,
-            max_tokens=report_draft_max_tokens,
-            call_type="report_v3_draft",
-            timeout=REPORT_API_TIMEOUT,
-        )
-        if not draft_raw:
-            return {
-                "status": "failed",
-                "reason": "draft_generation_failed",
-                "evidence_pack": evidence_pack,
-                "review_issues": [],
-            }
+        draft_attempt_total = REPORT_V3_DRAFT_RETRY_COUNT + 1
+        draft_parsed = None
+        last_draft_reason = "draft_generation_failed"
+        last_draft_raw = ""
+        last_draft_call_type = "report_v3_draft"
+        last_facts_limit = REPORT_V3_DRAFT_FACTS_LIMIT
+        last_draft_tokens = report_draft_max_tokens
 
-        draft_parsed = parse_structured_json_response(draft_raw, required_keys=["overview", "needs", "analysis"])
+        for attempt_index in range(draft_attempt_total):
+            round_no = attempt_index + 1
+            is_first_attempt = attempt_index == 0
+            current_facts_limit = max(
+                REPORT_V3_DRAFT_MIN_FACTS_LIMIT,
+                REPORT_V3_DRAFT_FACTS_LIMIT - (attempt_index * 12),
+            )
+            current_contradiction_limit = max(8, 20 - (attempt_index * 5))
+            current_unknown_limit = max(8, 20 - (attempt_index * 5))
+            current_blindspot_limit = max(8, 20 - (attempt_index * 5))
+            current_max_tokens = max(2800, int(report_draft_max_tokens * (0.82 ** attempt_index)))
+            current_call_type = "report_v3_draft" if is_first_attempt else f"report_v3_draft_retry_{round_no}"
+            current_call_type = f"{current_call_type}{call_type_suffix}"
+
+            if session_id and not is_first_attempt:
+                update_report_generation_status(
+                    session_id,
+                    "generating",
+                    message=f"草案生成失败，正在降载重试（第{round_no}/{draft_attempt_total}轮）...",
+                )
+
+            draft_prompt = build_report_draft_prompt_v3(
+                session,
+                evidence_pack,
+                facts_limit=current_facts_limit,
+                contradiction_limit=current_contradiction_limit,
+                unknown_limit=current_unknown_limit,
+                blindspot_limit=current_blindspot_limit,
+            )
+            draft_raw = call_claude(
+                draft_prompt,
+                max_tokens=current_max_tokens,
+                call_type=current_call_type,
+                timeout=REPORT_DRAFT_API_TIMEOUT,
+                preferred_lane=preferred_lane,
+            )
+
+            last_draft_call_type = current_call_type
+            last_facts_limit = current_facts_limit
+            last_draft_tokens = current_max_tokens
+            last_draft_raw = draft_raw or ""
+
+            if not draft_raw:
+                last_draft_reason = "draft_generation_failed"
+            else:
+                draft_parsed = parse_structured_json_response(
+                    draft_raw,
+                    required_keys=["overview", "needs", "analysis"],
+                )
+                if draft_parsed:
+                    break
+                last_draft_reason = "draft_parse_failed"
+
+            if attempt_index < (draft_attempt_total - 1) and REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS > 0:
+                _time.sleep(min(5.0, REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS * round_no))
+
         if not draft_parsed:
             return {
                 "status": "failed",
-                "reason": "draft_parse_failed",
+                "reason": last_draft_reason,
+                "error": (
+                    f"draft_attempts_exhausted({draft_attempt_total}),"
+                    f"last_call_type={last_draft_call_type},"
+                    f"facts_limit={last_facts_limit},"
+                    f"max_tokens={last_draft_tokens},"
+                    f"raw_length={len(last_draft_raw)}"
+                ),
                 "evidence_pack": evidence_pack,
                 "review_issues": [],
             }
@@ -5634,8 +5729,9 @@ def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None)
             review_raw = call_claude(
                 review_prompt,
                 max_tokens=report_review_max_tokens,
-                call_type=f"report_v3_review_round_{review_round + 1}",
+                call_type=f"report_v3_review_round_{review_round + 1}{call_type_suffix}",
                 timeout=REPORT_API_TIMEOUT,
+                preferred_lane=preferred_lane,
             )
             if not review_raw:
                 return {
@@ -5710,9 +5806,10 @@ def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None)
 
 
 async def call_claude_async(prompt: str, max_tokens: int = None,
-                            call_type: str = "async", model_name: str = "") -> Optional[str]:
+                            call_type: str = "async", model_name: str = "",
+                            preferred_lane: str = "") -> Optional[str]:
     """异步调用 Claude API，带超时控制"""
-    client = resolve_ai_client(call_type=call_type, model_name=model_name)
+    client = resolve_ai_client(call_type=call_type, model_name=model_name, preferred_lane=preferred_lane)
     if not client:
         return None
 
@@ -5863,11 +5960,11 @@ def describe_image_with_vision(image_path: Path, filename: str) -> str:
 
 def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = True,
                 call_type: str = "unknown", truncated_docs: list = None,
-                timeout: float = None, model_name: str = "") -> Optional[str]:
+                timeout: float = None, model_name: str = "", preferred_lane: str = "") -> Optional[str]:
     """同步调用 Claude API，带超时控制和容错机制"""
     import time
 
-    effective_client = resolve_ai_client(call_type=call_type, model_name=model_name)
+    effective_client = resolve_ai_client(call_type=call_type, model_name=model_name, preferred_lane=preferred_lane)
     if not effective_client:
         return None
 
@@ -5936,7 +6033,8 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
                     call_type=call_type + "_retry",
                     truncated_docs=truncated_docs,
                     timeout=retry_timeout,
-                    model_name=effective_model
+                    model_name=effective_model,
+                    preferred_lane=preferred_lane,
                 )
 
                 if response_text:
@@ -7718,6 +7816,53 @@ def restart_interview(session_id):
 
 # ============ 报告生成 API ============
 
+def should_retry_v3_with_failover(v3_result: Optional[dict]) -> bool:
+    """判断 V3 失败后是否值得切备用网关再试一次。"""
+    if not isinstance(v3_result, dict):
+        return True
+
+    reason = str(v3_result.get("reason", "") or "").strip().lower()
+    error = str(v3_result.get("error", "") or "").strip().lower()
+
+    # 质量门禁未通过属于内容质量问题，切网关通常无收益
+    if reason == "review_not_passed_or_quality_gate_failed":
+        return False
+
+    if reason in {"draft_generation_failed", "review_generation_failed", "exception", "v3_pipeline_returned_empty"}:
+        return True
+
+    network_hints = (
+        "timeout",
+        "timed out",
+        "connection",
+        "gateway",
+        "504",
+        "502",
+        "503",
+        "429",
+        "rate limit",
+    )
+    if any(hint in error for hint in network_hints):
+        return True
+
+    return reason == "draft_parse_failed" and "raw_length=0" in error
+
+
+def can_use_v3_failover_lane() -> bool:
+    """是否具备可用且独立的备用网关 lane。"""
+    if REPORT_V3_FAILOVER_LANE == "question":
+        target_client = question_ai_client
+    else:
+        target_client = report_ai_client
+
+    primary_client = report_ai_client or question_ai_client
+    if not target_client or not primary_client:
+        return False
+
+    # 两侧复用同一客户端时，切换 lane 没有意义
+    return target_client is not primary_client
+
+
 def run_report_generation_job(session_id: str, user_id: int, request_id: str) -> None:
     """后台生成报告任务。"""
     worker_ref = threading.current_thread()
@@ -7758,10 +7903,25 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
 
             return report_file, filename
 
+        def build_v3_failure_debug(result: Optional[dict]) -> dict:
+            if isinstance(result, dict):
+                return {
+                    "reason": result.get("reason", "v3_pipeline_returned_empty"),
+                    "error": result.get("error", ""),
+                    "review_issues": (result.get("review_issues", []) if isinstance(result.get("review_issues", []), list) else [])[:60],
+                    "evidence_pack_summary": summarize_evidence_pack_for_debug(result.get("evidence_pack", {})),
+                }
+            return {
+                "reason": "v3_pipeline_returned_empty",
+                "error": "",
+                "review_issues": [],
+                "evidence_pack_summary": {},
+            }
+
         # 检查是否有 Claude API
         if resolve_ai_client(call_type="report"):
             update_report_generation_status(session_id, "building_prompt", message="正在执行 V3 证据包构建与结构化草案...")
-            v3_result = generate_report_v3_pipeline(session, session_id=session_id)
+            v3_result = generate_report_v3_pipeline(session, session_id=session_id, preferred_lane="report")
 
             if v3_result and v3_result.get("report_content"):
                 report_content = v3_result["report_content"] + generate_interview_appendix(session)
@@ -7791,13 +7951,73 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
                 })
                 return
 
+            primary_failure = build_v3_failure_debug(v3_result)
+            failover_attempted = False
+            failover_success = False
+            failover_failure = None
+
+            if REPORT_V3_FAILOVER_ENABLED and can_use_v3_failover_lane() and should_retry_v3_with_failover(v3_result):
+                failover_attempted = True
+                if ENABLE_DEBUG_LOG:
+                    print(f"⚠️ V3 主网关失败，尝试切换备用网关 lane={REPORT_V3_FAILOVER_LANE} 重试")
+                update_report_generation_status(
+                    session_id,
+                    "generating",
+                    message=f"V3 主网关失败，正在切换备用网关（{REPORT_V3_FAILOVER_LANE}）重试...",
+                )
+                failover_suffix = f"_failover_{REPORT_V3_FAILOVER_LANE}"
+                failover_result = generate_report_v3_pipeline(
+                    session,
+                    session_id=session_id,
+                    preferred_lane=REPORT_V3_FAILOVER_LANE,
+                    call_type_suffix=failover_suffix,
+                )
+                if failover_result and failover_result.get("report_content"):
+                    failover_success = True
+                    report_content = failover_result["report_content"] + generate_interview_appendix(session)
+                    quality_meta = failover_result.get("quality_meta", {})
+                    session["last_report_quality_meta"] = quality_meta
+                    session["last_report_v3_debug"] = {
+                        "generated_at": get_utc_now(),
+                        "status": "success",
+                        "reason": "v3_pipeline_passed_after_failover",
+                        "failover_lane": REPORT_V3_FAILOVER_LANE,
+                        "primary_failure_reason": primary_failure.get("reason", ""),
+                        "primary_failure_error": primary_failure.get("error", ""),
+                        "quality_meta": quality_meta,
+                        "review_issues": (failover_result.get("review_issues", []) if isinstance(failover_result.get("review_issues", []), list) else [])[:60],
+                        "evidence_pack_summary": summarize_evidence_pack_for_debug(failover_result.get("evidence_pack", {})),
+                    }
+
+                    update_report_generation_status(session_id, "saving", message="备用网关重试成功，正在保存 V3 审稿增强报告...")
+                    report_file, filename = persist_report(report_content, quality_meta=quality_meta)
+                    update_report_generation_status(session_id, "completed", active=False)
+                    set_report_generation_metadata(session_id, {
+                        "request_id": request_id,
+                        "report_name": filename,
+                        "report_path": str(report_file),
+                        "ai_generated": True,
+                        "v3_enabled": True,
+                        "report_quality_meta": quality_meta if isinstance(quality_meta, dict) else {},
+                        "error": "",
+                        "completed_at": get_utc_now(),
+                    })
+                    return
+
+                failover_failure = build_v3_failure_debug(failover_result)
+
             session["last_report_v3_debug"] = {
                 "generated_at": get_utc_now(),
                 "status": "failed",
-                "reason": (v3_result or {}).get("reason", "v3_pipeline_returned_empty") if isinstance(v3_result, dict) else "v3_pipeline_returned_empty",
-                "error": (v3_result or {}).get("error", "") if isinstance(v3_result, dict) else "",
-                "review_issues": ((v3_result or {}).get("review_issues", []) if isinstance((v3_result or {}).get("review_issues", []), list) else [])[:60] if isinstance(v3_result, dict) else [],
-                "evidence_pack_summary": summarize_evidence_pack_for_debug((v3_result or {}).get("evidence_pack", {})) if isinstance(v3_result, dict) else {},
+                "reason": primary_failure.get("reason", "v3_pipeline_returned_empty"),
+                "error": primary_failure.get("error", ""),
+                "review_issues": primary_failure.get("review_issues", []),
+                "evidence_pack_summary": primary_failure.get("evidence_pack_summary", {}),
+                "failover_attempted": failover_attempted,
+                "failover_lane": REPORT_V3_FAILOVER_LANE if failover_attempted else "",
+                "failover_success": failover_success,
+                "failover_reason": failover_failure.get("reason", "") if failover_failure else "",
+                "failover_error": failover_failure.get("error", "") if failover_failure else "",
             }
 
             if ENABLE_DEBUG_LOG:
