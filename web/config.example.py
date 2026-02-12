@@ -18,11 +18,27 @@ ANTHROPIC_BASE_URL = "https://api.anthropic.com"  # 或使用代理地址
 
 # 模型配置
 MODEL_NAME = "claude-sonnet-4-20250514"  # 可选: claude-3-opus, claude-3-sonnet, claude-3-haiku
+# 可选：将问题生成与报告生成拆分为不同模型（默认均使用 MODEL_NAME）
+QUESTION_MODEL_NAME = MODEL_NAME
+REPORT_MODEL_NAME = MODEL_NAME
 
 # Token 限制配置（与 server.py 默认值保持一致）
 MAX_TOKENS_DEFAULT = 5000      # 默认最大 token 数
 MAX_TOKENS_QUESTION = 2000     # 生成问题时的最大 token 数
 MAX_TOKENS_REPORT = 10000      # 生成报告时的最大 token 数
+MAX_TOKENS_SUMMARY = 500       # 文档摘要生成最大 token 数
+
+# AI 运行策略配置（建议统一在此调整）
+API_TIMEOUT = 90.0             # 通用 API 超时（秒）
+REPORT_API_TIMEOUT = 210.0     # 报告生成专用超时（秒）
+CONTEXT_WINDOW_SIZE = 5        # 保留最近 N 条问答
+SUMMARY_THRESHOLD = 8          # 超过此数量触发历史摘要
+MAX_DOC_LENGTH = 2000          # 单个文档最大截断长度（字符）
+MAX_TOTAL_DOCS = 5000          # 所有文档总长度限制（字符）
+ENABLE_SMART_SUMMARY = True    # 是否启用智能摘要
+SMART_SUMMARY_THRESHOLD = 1500 # 文档长度超过该值时触发智能摘要
+SMART_SUMMARY_TARGET = 800     # 智能摘要目标长度（字符）
+SUMMARY_CACHE_ENABLED = True   # 是否启用摘要缓存
 
 # ============ 服务器配置 ============
 

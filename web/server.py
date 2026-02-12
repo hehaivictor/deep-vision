@@ -128,6 +128,35 @@ try:
 except Exception:
     runtime_config = None
 
+# 模型路由配置：支持问题/报告分离，未配置时向后兼容 MODEL_NAME
+_base_model_name = str(MODEL_NAME or "").strip()
+_cfg_question_model = str(getattr(runtime_config, "QUESTION_MODEL_NAME", "")).strip() if runtime_config else ""
+if not _cfg_question_model:
+    _cfg_question_model = str(os.environ.get("QUESTION_MODEL_NAME", "")).strip()
+
+_cfg_report_model = str(getattr(runtime_config, "REPORT_MODEL_NAME", "")).strip() if runtime_config else ""
+if not _cfg_report_model:
+    _cfg_report_model = str(os.environ.get("REPORT_MODEL_NAME", "")).strip()
+
+QUESTION_MODEL_NAME = _cfg_question_model or _base_model_name
+REPORT_MODEL_NAME = _cfg_report_model or QUESTION_MODEL_NAME
+
+# 兼容历史代码中直接引用 MODEL_NAME 的位置：默认指向问题模型
+MODEL_NAME = QUESTION_MODEL_NAME
+
+
+def resolve_model_name(call_type: str = "", model_name: str = "") -> str:
+    """根据调用类型选择模型；显式传入 model_name 时优先使用。"""
+    explicit = str(model_name or "").strip()
+    if explicit:
+        return explicit
+
+    lowered = (call_type or "").lower()
+    if "report" in lowered:
+        return REPORT_MODEL_NAME
+    return QUESTION_MODEL_NAME
+
+
 # 访谈深度增强 V2 已升级为正式版（全模式固定启用）
 DEEP_MODE_SKIP_FOLLOWUP_CONFIRM = bool(getattr(runtime_config, "DEEP_MODE_SKIP_FOLLOWUP_CONFIRM", True)) if runtime_config else True
 
@@ -209,6 +238,8 @@ THINKING_STAGES = {
 # ============ 报告生成进度状态追踪 ============
 report_generation_status = {}   # { session_id: { state, stage_index, total_stages, progress, message, updated_at, active } }
 report_generation_status_lock = threading.Lock()
+report_generation_workers = {}  # { session_id: threading.Thread }
+report_generation_workers_lock = threading.Lock()
 
 REPORT_GENERATION_STAGES = {
     "queued": {"index": 0, "progress": 5, "message": "已提交请求，准备生成报告..."},
@@ -217,6 +248,7 @@ REPORT_GENERATION_STAGES = {
     "fallback": {"index": 3, "progress": 78, "message": "AI 响应较慢，正在切换模板生成..."},
     "saving": {"index": 4, "progress": 90, "message": "正在保存报告并更新会话状态..."},
     "completed": {"index": 5, "progress": 100, "message": "报告生成完成"},
+    "cancelled": {"index": 5, "progress": 100, "message": "报告生成已停止"},
     "failed": {"index": 5, "progress": 100, "message": "报告生成失败"},
 }
 
@@ -624,7 +656,9 @@ def update_report_generation_status(session_id: str, stage: str, message: Option
         return
 
     with report_generation_status_lock:
-        report_generation_status[session_id] = {
+        existing = report_generation_status.get(session_id)
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        merged.update({
             "active": active,
             "state": stage,
             "stage_index": stage_info["index"],
@@ -632,13 +666,104 @@ def update_report_generation_status(session_id: str, stage: str, message: Option
             "progress": stage_info["progress"],
             "message": message or stage_info["message"],
             "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
+        })
+        report_generation_status[session_id] = merged
+
+
+def set_report_generation_metadata(session_id: str, updates: Optional[dict] = None):
+    """写入报告生成的扩展元信息（线程安全）。"""
+    if not session_id or not isinstance(updates, dict):
+        return
+
+    with report_generation_status_lock:
+        existing = report_generation_status.get(session_id)
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        merged.update(updates)
+        merged["updated_at"] = datetime.now(timezone.utc).isoformat()
+        report_generation_status[session_id] = merged
+
+
+def get_report_generation_record(session_id: str) -> Optional[dict]:
+    if not session_id:
+        return None
+    with report_generation_status_lock:
+        status = report_generation_status.get(session_id)
+        if not isinstance(status, dict):
+            return None
+        return dict(status)
+
+
+def build_report_generation_payload(record: Optional[dict]) -> dict:
+    if not isinstance(record, dict):
+        return {"active": False}
+
+    def _safe_int(value, default):
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    payload = {
+        "active": bool(record.get("active", False)),
+        "processing": bool(record.get("active", False)),
+        "state": record.get("state", "queued"),
+        "stage_index": _safe_int(record.get("stage_index", 0), 0),
+        "total_stages": _safe_int(record.get("total_stages", 6), 6),
+        "progress": _safe_int(record.get("progress", 0), 0),
+        "message": record.get("message", "正在生成报告..."),
+        "updated_at": record.get("updated_at"),
+        "request_id": record.get("request_id", ""),
+        "action": record.get("action", "generate"),
+        "started_at": record.get("started_at", ""),
+        "completed_at": record.get("completed_at", ""),
+        "report_name": record.get("report_name", ""),
+        "report_path": record.get("report_path", ""),
+        "ai_generated": record.get("ai_generated"),
+        "v3_enabled": record.get("v3_enabled"),
+        "error": record.get("error", ""),
+    }
+
+    quality_meta = record.get("report_quality_meta")
+    if isinstance(quality_meta, dict):
+        payload["report_quality_meta"] = quality_meta
+
+    return payload
+
+
+def is_report_generation_worker_alive(session_id: str) -> bool:
+    if not session_id:
+        return False
+    with report_generation_workers_lock:
+        worker = report_generation_workers.get(session_id)
+        if worker and worker.is_alive():
+            return True
+        if worker and not worker.is_alive():
+            report_generation_workers.pop(session_id, None)
+    return False
+
+
+def register_report_generation_worker(session_id: str, worker: threading.Thread) -> None:
+    if not session_id or worker is None:
+        return
+    with report_generation_workers_lock:
+        report_generation_workers[session_id] = worker
+
+
+def cleanup_report_generation_worker(session_id: str, worker: Optional[threading.Thread] = None) -> None:
+    if not session_id:
+        return
+    with report_generation_workers_lock:
+        current = report_generation_workers.get(session_id)
+        if worker is not None and current is not worker:
+            return
+        report_generation_workers.pop(session_id, None)
 
 
 def clear_report_generation_status(session_id: str):
     """清除报告生成进度状态"""
     with report_generation_status_lock:
         report_generation_status.pop(session_id, None)
+    cleanup_report_generation_worker(session_id)
 
 
 # ============ 预生成缓存函数 ============
@@ -1060,21 +1185,24 @@ if ENABLE_AI and HAS_ANTHROPIC and api_key_valid:
             base_url=ANTHROPIC_BASE_URL
         )
         print(f"✅ Claude 客户端已初始化")
-        print(f"   模型: {MODEL_NAME}")
+        if QUESTION_MODEL_NAME == REPORT_MODEL_NAME:
+            print(f"   模型: {QUESTION_MODEL_NAME}")
+        else:
+            print(f"   问题模型: {QUESTION_MODEL_NAME}")
+            print(f"   报告模型: {REPORT_MODEL_NAME}")
         print(f"   Base URL: {ANTHROPIC_BASE_URL}")
 
         # 测试 API 连接
         try:
             test_response = claude_client.messages.create(
-                model=MODEL_NAME,
+                model=QUESTION_MODEL_NAME,
                 max_tokens=5,
                 messages=[{"role": "user", "content": "Hi"}]
             )
             print(f"✅ API 连接测试成功")
         except Exception as e:
             print(f"⚠️  API 连接测试失败: {e}")
-            print("   请检查 API Key 和 Base URL 是否正确")
-            claude_client = None
+            print("   请检查 API Key 和 Base URL；客户端将保留，后续请求会继续尝试")
     except Exception as e:
         print(f"❌ Claude 客户端初始化失败: {e}")
         claude_client = None
@@ -1087,6 +1215,185 @@ else:
         print("❌ anthropic 库未安装")
     elif not ANTHROPIC_API_KEY:
         print("❌ 未配置 ANTHROPIC_API_KEY")
+
+
+def _content_block_field(block, field: str):
+    """兼容对象/字典两种内容块结构读取字段。"""
+    if isinstance(block, dict):
+        return block.get(field)
+    return getattr(block, field, None)
+
+
+def extract_message_text(message, allow_non_text_fallback: bool = False) -> str:
+    """从模型响应中提取文本内容，优先提取 type=text。"""
+    content = getattr(message, "content", None) or []
+    if not content:
+        return ""
+
+    # 优先提取 type=text 的内容块，避免拿到 thinking 块导致空文本
+    text_parts = []
+    for block in content:
+        if _content_block_field(block, "type") != "text":
+            continue
+        block_text = _content_block_field(block, "text")
+        if isinstance(block_text, str) and block_text.strip():
+            text_parts.append(block_text.strip())
+
+    if text_parts:
+        return "\n".join(text_parts).strip()
+
+    # 默认不回退到非 text 块，避免把 thinking 当作最终输出
+    if not allow_non_text_fallback:
+        return ""
+
+    # 兜底：极少数兼容实现可能未标记 type，但有 text 字段
+    fallback_parts = []
+    for block in content:
+        block_text = _content_block_field(block, "text")
+        if isinstance(block_text, str) and block_text.strip():
+            fallback_parts.append(block_text.strip())
+
+    return "\n".join(fallback_parts).strip()
+
+
+def _collect_json_candidates(raw_text: str) -> list:
+    """提取可能的 JSON 候选字符串（直出、代码块、花括号配对）。"""
+    candidates = []
+    text = (raw_text or "").strip()
+    if not text:
+        return candidates
+
+    candidates.append(text)
+
+    # 代码块候选
+    for match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE):
+        block = (match.group(1) or "").strip()
+        if block:
+            candidates.append(block)
+
+    # 花括号配对提取第一个完整 JSON 对象
+    json_start = text.find("{")
+    if json_start >= 0:
+        brace_count = 0
+        in_string = False
+        escape_next = False
+        json_end = -1
+
+        for idx in range(json_start, len(text)):
+            char = text[idx]
+            if escape_next:
+                escape_next = False
+                continue
+            if char == "\\":
+                escape_next = True
+                continue
+            if char == "\"":
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if char == "{":
+                brace_count += 1
+            elif char == "}":
+                brace_count -= 1
+                if brace_count == 0:
+                    json_end = idx + 1
+                    break
+
+        if json_end > json_start:
+            candidates.append(text[json_start:json_end].strip())
+
+    # 去重（保序）+ 处理 ```json 提取后残留的 json 前缀
+    normalized = []
+    seen = set()
+    for candidate in candidates:
+        item = candidate.strip()
+        if item.lower().startswith("json"):
+            item = item[4:].strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+    return normalized
+
+
+def parse_json_object_response(raw_text: str, required_keys: list = None) -> Optional[dict]:
+    """从模型文本中容错解析 JSON 对象。"""
+    required_keys = required_keys or []
+    last_error = None
+
+    for candidate in _collect_json_candidates(raw_text):
+        try:
+            parsed = json.loads(candidate)
+        except Exception as exc:
+            last_error = exc
+            continue
+
+        if not isinstance(parsed, dict):
+            last_error = ValueError("JSON 不是对象")
+            continue
+
+        if any(key not in parsed for key in required_keys):
+            last_error = ValueError(f"JSON 缺少必要字段: {required_keys}")
+            continue
+
+        return parsed
+
+    if last_error:
+        raise ValueError(f"JSON解析失败: {last_error}")
+    raise ValueError("未找到可解析的 JSON 对象")
+
+
+def parse_scenario_recognition_response(raw_text: str, valid_scenario_ids: set) -> Optional[dict]:
+    """解析场景识别结果，支持 JSON 与半结构化兜底提取。"""
+    try:
+        parsed = parse_json_object_response(raw_text, required_keys=["scenario_id"])
+        scenario_id = str(parsed.get("scenario_id", "")).strip()
+        if scenario_id not in valid_scenario_ids:
+            return None
+        confidence = parsed.get("confidence", 0.8)
+        try:
+            confidence = float(confidence)
+        except Exception:
+            confidence = 0.8
+        confidence = min(1.0, max(0.0, confidence))
+        reason = str(parsed.get("reason", "") or "").strip()
+        return {
+            "scenario_id": scenario_id,
+            "confidence": confidence,
+            "reason": reason
+        }
+    except Exception:
+        pass
+
+    # 兜底：常见截断场景（如 reason 未闭合）时，尽量提取 scenario_id/confidence
+    sid_match = re.search(r'"scenario_id"\s*:\s*"([^"]+)"', raw_text or "")
+    if not sid_match:
+        return None
+
+    scenario_id = sid_match.group(1).strip()
+    if scenario_id not in valid_scenario_ids:
+        return None
+
+    confidence = 0.8
+    conf_match = re.search(r'"confidence"\s*:\s*([0-9]+(?:\.[0-9]+)?)', raw_text or "")
+    if conf_match:
+        try:
+            confidence = float(conf_match.group(1))
+        except Exception:
+            confidence = 0.8
+    confidence = min(1.0, max(0.0, confidence))
+
+    reason = ""
+    reason_match = re.search(r'"reason"\s*:\s*"([^"]*)"', raw_text or "")
+    if reason_match:
+        reason = reason_match.group(1).strip()
+
+    return {
+        "scenario_id": scenario_id,
+        "confidence": confidence,
+        "reason": reason
+    }
 
 
 def get_utc_now() -> str:
@@ -1734,31 +2041,60 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
 }}"""
 
     try:
-        response = claude_client.messages.create(
-            model=MODEL_NAME,
-            max_tokens=200,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        result = None
+        attempts = [
+            {
+                "max_tokens": 220,
+                "timeout": 10.0,
+                "extra_instruction": "",
+            },
+            {
+                "max_tokens": 420,
+                "timeout": 18.0,
+                "extra_instruction": "只输出一行 JSON，不要 markdown 代码块，不要额外解释，不要换行。",
+            },
+        ]
 
-        result_text = response.content[0].text.strip()
+        for idx, attempt in enumerate(attempts, start=1):
+            try:
+                attempt_prompt = prompt
+                if attempt["extra_instruction"]:
+                    attempt_prompt = f"{prompt}\n\n【额外要求】{attempt['extra_instruction']}"
 
-        # 尝试解析 JSON
-        import json
-        # 处理可能的 markdown 代码块
-        if "```json" in result_text:
-            result_text = result_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in result_text:
-            result_text = result_text.split("```")[1].split("```")[0].strip()
+                response = claude_client.messages.create(
+                    model=resolve_model_name(call_type="search_decision"),
+                    max_tokens=attempt["max_tokens"],
+                    timeout=attempt["timeout"],
+                    messages=[{"role": "user", "content": attempt_prompt}]
+                )
 
-        result = json.loads(result_text)
+                result_text = extract_message_text(response)
+                if not result_text:
+                    raise ValueError("模型响应中未包含可用文本内容")
+
+                result = parse_json_object_response(
+                    result_text,
+                    required_keys=["need_search", "reason", "search_query"]
+                )
+                break
+            except Exception as retry_error:
+                if ENABLE_DEBUG_LOG:
+                    print(f"⚠️  AI搜索决策第{idx}次解析失败: {retry_error}")
+
+        if result is None:
+            raise ValueError("AI 搜索决策结果解析失败")
 
         if ENABLE_DEBUG_LOG:
             print(f"🤖 AI搜索决策: need_search={result.get('need_search')}, reason={result.get('reason')}")
 
+        need_search = result.get("need_search", False)
+        if isinstance(need_search, str):
+            need_search = need_search.strip().lower() in ["true", "1", "yes", "y"]
+
         return {
-            "need_search": result.get("need_search", False),
-            "reason": result.get("reason", ""),
-            "search_query": result.get("search_query", "")
+            "need_search": bool(need_search),
+            "reason": str(result.get("reason", "") or ""),
+            "search_query": str(result.get("search_query", "") or "")
         }
 
     except Exception as e:
@@ -1904,19 +2240,62 @@ def get_dimension_order_for_session(session: dict) -> list:
 
 # ============ 滑动窗口上下文管理 ============
 
+# 运行策略配置：优先读取 config.py（或同名环境变量），缺失时使用默认值
+def _runtime_cfg(name: str, default):
+    if runtime_config and hasattr(runtime_config, name):
+        return getattr(runtime_config, name)
+    env_val = os.environ.get(name)
+    if env_val is not None:
+        return env_val
+    return default
+
+
+def _runtime_cfg_int(name: str, default: int) -> int:
+    try:
+        return int(_runtime_cfg(name, default))
+    except Exception:
+        return default
+
+
+def _runtime_cfg_float(name: str, default: float) -> float:
+    try:
+        return float(_runtime_cfg(name, default))
+    except Exception:
+        return default
+
+
+def _runtime_cfg_bool(name: str, default: bool) -> bool:
+    value = _runtime_cfg(name, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"1", "true", "yes", "on", "y"}:
+            return True
+        if v in {"0", "false", "no", "off", "n"}:
+            return False
+    return default
+
+
 # 配置参数
-CONTEXT_WINDOW_SIZE = 5  # 保留最近N条完整问答
-SUMMARY_THRESHOLD = 8    # 超过此数量时触发摘要生成
-MAX_DOC_LENGTH = 2000    # 单个文档最大长度（约650汉字，增加33%）
-MAX_TOTAL_DOCS = 5000    # 所有文档总长度限制（约1600汉字，增加67%）
-API_TIMEOUT = 90.0       # API 调用超时时间（秒），从60秒增加到90秒
+CONTEXT_WINDOW_SIZE = _runtime_cfg_int("CONTEXT_WINDOW_SIZE", 5)  # 保留最近N条完整问答
+SUMMARY_THRESHOLD = _runtime_cfg_int("SUMMARY_THRESHOLD", 8)      # 超过此数量时触发摘要生成
+MAX_DOC_LENGTH = _runtime_cfg_int("MAX_DOC_LENGTH", 2000)         # 单个文档最大长度（字符）
+MAX_TOTAL_DOCS = _runtime_cfg_int("MAX_TOTAL_DOCS", 5000)         # 所有文档总长度限制（字符）
+API_TIMEOUT = _runtime_cfg_float("API_TIMEOUT", 90.0)             # 通用 API 超时时间（秒）
+# 报告生成通常比问答更耗时，单独放宽超时以提升稳定性
+REPORT_API_TIMEOUT = _runtime_cfg_float("REPORT_API_TIMEOUT", 210.0)
+if REPORT_API_TIMEOUT < API_TIMEOUT:
+    REPORT_API_TIMEOUT = API_TIMEOUT
 
 # ============ 智能文档摘要配置（第三阶段优化） ============
-ENABLE_SMART_SUMMARY = True       # 启用智能文档摘要（替代简单截断）
-SMART_SUMMARY_THRESHOLD = 1500    # 触发智能摘要的文档长度阈值（字符）
-SMART_SUMMARY_TARGET = 800        # 摘要目标长度（字符）
-SUMMARY_CACHE_ENABLED = True      # 启用摘要缓存（避免重复生成）
-MAX_TOKENS_SUMMARY = 500          # 摘要生成的最大token数
+ENABLE_SMART_SUMMARY = _runtime_cfg_bool("ENABLE_SMART_SUMMARY", True)        # 启用智能文档摘要
+SMART_SUMMARY_THRESHOLD = _runtime_cfg_int("SMART_SUMMARY_THRESHOLD", 1500)    # 触发智能摘要阈值（字符）
+SMART_SUMMARY_TARGET = _runtime_cfg_int("SMART_SUMMARY_TARGET", 800)           # 摘要目标长度（字符）
+SUMMARY_CACHE_ENABLED = _runtime_cfg_bool("SUMMARY_CACHE_ENABLED", True)       # 启用摘要缓存
+MAX_TOKENS_SUMMARY = _runtime_cfg_int("MAX_TOKENS_SUMMARY", 500)               # 摘要生成最大 token
 
 
 # ============ 智能文档摘要实现 ============
@@ -2021,14 +2400,16 @@ def summarize_document(content: str, doc_name: str = "文档", topic: str = "") 
         start_time = time.time()
 
         response = claude_client.messages.create(
-            model=MODEL_NAME,
+            model=resolve_model_name(call_type="summary"),
             max_tokens=MAX_TOKENS_SUMMARY,
             timeout=60.0,  # 摘要生成用较短超时
             messages=[{"role": "user", "content": summary_prompt}]
         )
 
         response_time = time.time() - start_time
-        summary = response.content[0].text.strip()
+        summary = extract_message_text(response)
+        if not summary:
+            raise ValueError("模型响应中未包含摘要文本")
 
         # 记录metrics
         metrics_collector.record_api_call(
@@ -3091,12 +3472,14 @@ def score_assessment_answer(session: dict, dimension: str, question: str, answer
 
     try:
         response = claude_client.messages.create(
-            model=MODEL_NAME,
-            max_tokens=10,
+            model=resolve_model_name(call_type="assessment_score"),
+            max_tokens=96,  # MiniMax 在低 token 下容易只返回 thinking，适当提高稳定性
             timeout=15.0,
             messages=[{"role": "user", "content": prompt}]
         )
-        raw = response.content[0].text.strip()
+        raw = extract_message_text(response)
+        if not raw:
+            raise ValueError("模型响应中未包含评分文本")
         # 提取数字
         import re
         match = re.search(r'(\d+\.?\d*)', raw)
@@ -5114,6 +5497,9 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
 def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None) -> Optional[dict]:
     """执行 V3 报告生成流水线。失败时返回包含 reason 的调试结构。"""
     try:
+        report_draft_max_tokens = min(MAX_TOKENS_REPORT, 7000)
+        report_review_max_tokens = min(MAX_TOKENS_REPORT, 6000)
+
         evidence_pack = build_report_evidence_pack(session)
 
         if session_id:
@@ -5122,8 +5508,9 @@ def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None)
         draft_prompt = build_report_draft_prompt_v3(session, evidence_pack)
         draft_raw = call_claude(
             draft_prompt,
-            max_tokens=MAX_TOKENS_REPORT,
+            max_tokens=report_draft_max_tokens,
             call_type="report_v3_draft",
+            timeout=REPORT_API_TIMEOUT,
         )
         if not draft_raw:
             return {
@@ -5161,8 +5548,9 @@ def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None)
             review_prompt = build_report_review_prompt_v3(session, evidence_pack, current_draft, review_issues)
             review_raw = call_claude(
                 review_prompt,
-                max_tokens=min(MAX_TOKENS_REPORT, 20000),
+                max_tokens=report_review_max_tokens,
                 call_type=f"report_v3_review_round_{review_round + 1}",
+                timeout=REPORT_API_TIMEOUT,
             )
             if not review_raw:
                 return {
@@ -5236,27 +5624,31 @@ def generate_report_v3_pipeline(session: dict, session_id: Optional[str] = None)
         }
 
 
-async def call_claude_async(prompt: str, max_tokens: int = None) -> Optional[str]:
+async def call_claude_async(prompt: str, max_tokens: int = None,
+                            call_type: str = "async", model_name: str = "") -> Optional[str]:
     """异步调用 Claude API，带超时控制"""
     if not claude_client:
         return None
 
     if max_tokens is None:
         max_tokens = MAX_TOKENS_DEFAULT
+    effective_model = resolve_model_name(call_type=call_type, model_name=model_name)
 
     try:
         if ENABLE_DEBUG_LOG:
-            print(f"🤖 异步调用 Claude API，max_tokens={max_tokens}，timeout={API_TIMEOUT}s")
+            print(f"🤖 异步调用 Claude API，model={effective_model}，max_tokens={max_tokens}，timeout={API_TIMEOUT}s")
 
         # 使用配置的超时时间
         message = claude_client.messages.create(
-            model=MODEL_NAME,
+            model=effective_model,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
             timeout=API_TIMEOUT
         )
 
-        response_text = message.content[0].text
+        response_text = extract_message_text(message)
+        if not response_text:
+            raise ValueError("模型响应中未包含可用文本内容")
 
         if ENABLE_DEBUG_LOG:
             print(f"✅ API 异步响应成功，长度: {len(response_text)} 字符")
@@ -5384,7 +5776,8 @@ def describe_image_with_vision(image_path: Path, filename: str) -> str:
 
 
 def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = True,
-                call_type: str = "unknown", truncated_docs: list = None) -> Optional[str]:
+                call_type: str = "unknown", truncated_docs: list = None,
+                timeout: float = None, model_name: str = "") -> Optional[str]:
     """同步调用 Claude API，带超时控制和容错机制"""
     import time
 
@@ -5394,6 +5787,9 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
     if max_tokens is None:
         max_tokens = MAX_TOKENS_DEFAULT
 
+    effective_timeout = timeout if timeout is not None else API_TIMEOUT
+    effective_model = resolve_model_name(call_type=call_type, model_name=model_name)
+
     start_time = time.time()
     success = False
     timeout_occurred = False
@@ -5402,17 +5798,19 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
 
     try:
         if ENABLE_DEBUG_LOG:
-            print(f"🤖 调用 Claude API，max_tokens={max_tokens}，timeout={API_TIMEOUT}s")
+            print(f"🤖 调用 Claude API，model={effective_model}，max_tokens={max_tokens}，timeout={effective_timeout}s")
 
         # 使用配置的超时时间
         message = claude_client.messages.create(
-            model=MODEL_NAME,
+            model=effective_model,
             max_tokens=max_tokens,
             messages=[{"role": "user", "content": prompt}],
-            timeout=API_TIMEOUT
+            timeout=effective_timeout
         )
 
-        response_text = message.content[0].text
+        response_text = extract_message_text(message)
+        if not response_text:
+            raise ValueError("模型响应中未包含可用文本内容")
         success = True
 
         if ENABLE_DEBUG_LOG:
@@ -5425,7 +5823,7 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
         # 详细的错误分类和容错处理
         if "timeout" in error_message.lower():
             timeout_occurred = True
-            print(f"   原因: API 调用超时（超过{API_TIMEOUT}秒）")
+            print(f"   原因: API 调用超时（超过{effective_timeout}秒）")
 
             # 超时容错：如果允许重试，尝试减少 prompt 长度
             if retry_on_timeout and len(prompt) > 5000:
@@ -5434,12 +5832,24 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
                 truncated_prompt = prompt[:int(len(prompt) * 0.7)]
                 truncated_prompt += "\n\n[注意：由于内容过长，部分上下文已被截断，请基于已有信息进行回答]"
 
+                # 报告生成更容易触发长响应超时，重试时同步收敛输出长度并放宽超时
+                is_report_call = "report" in (call_type or "").lower()
+                retry_max_tokens = max_tokens
+                retry_timeout = effective_timeout
+                if is_report_call:
+                    retry_max_tokens = max(3000, int(max_tokens * 0.65))
+                    retry_timeout = max(effective_timeout, REPORT_API_TIMEOUT)
+                else:
+                    retry_max_tokens = max(1000, int(max_tokens * 0.8))
+
                 # 递归重试（禁止再次重试）
                 response_text = call_claude(
-                    truncated_prompt, max_tokens,
+                    truncated_prompt, retry_max_tokens,
                     retry_on_timeout=False,
                     call_type=call_type + "_retry",
-                    truncated_docs=truncated_docs
+                    truncated_docs=truncated_docs,
+                    timeout=retry_timeout,
+                    model_name=effective_model
                 )
 
                 if response_text:
@@ -5587,13 +5997,15 @@ def generate_scenario_with_ai():
 
     try:
         response = claude_client.messages.create(
-            model=MODEL_NAME,
+            model=resolve_model_name(call_type="scenario_generate"),
             max_tokens=1500,
             timeout=30.0,
             messages=[{"role": "user", "content": prompt}]
         )
 
-        raw_text = response.content[0].text.strip()
+        raw_text = extract_message_text(response)
+        if not raw_text:
+            raise ValueError("模型响应中未包含场景配置文本")
 
         # 提取 JSON（兼容模型返回 markdown 代码块）
         if "```json" in raw_text:
@@ -5731,28 +6143,57 @@ def recognize_scenario():
 请严格按照以下 JSON 格式返回（不要包含其他文字）：
 {{"scenario_id": "最匹配的场景id", "confidence": 0.0到1.0的置信度, "reason": "一句话理由"}}"""
 
+    valid_scenario_ids = {s["id"] for s in all_scenarios}
+
     # 优先使用 AI 识别，失败时回退到关键词匹配
     ai_result = None
+    ai_last_error = None
     if claude_client:
-        try:
-            response = claude_client.messages.create(
-                model=MODEL_NAME,
-                max_tokens=200,
-                timeout=10.0,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            raw = response.content[0].text.strip()
-            # 提取 JSON（兼容模型返回 markdown 代码块）
-            if "```" in raw:
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-                raw = raw.strip()
-            ai_result = json.loads(raw)
-        except Exception as e:
-            print(f"⚠️  AI 场景识别失败，回退到关键词匹配: {e}")
+        attempts = [
+            {
+                "max_tokens": 220,
+                "timeout": 10.0,
+                "extra_instruction": "",
+            },
+            {
+                "max_tokens": 480,
+                "timeout": 18.0,
+                "extra_instruction": "只输出一行 JSON，不要 markdown 代码块，不要额外解释，不要换行。",
+            },
+        ]
 
-    if ai_result and ai_result.get("scenario_id") in [s["id"] for s in all_scenarios]:
+        for idx, attempt in enumerate(attempts, start=1):
+            try:
+                attempt_prompt = prompt
+                if attempt["extra_instruction"]:
+                    attempt_prompt = f"{prompt}\n\n【额外要求】{attempt['extra_instruction']}"
+
+                response = claude_client.messages.create(
+                    model=resolve_model_name(call_type="scenario_recognize"),
+                    max_tokens=attempt["max_tokens"],
+                    timeout=attempt["timeout"],
+                    messages=[{"role": "user", "content": attempt_prompt}]
+                )
+
+                raw = extract_message_text(response)
+                if not raw:
+                    raise ValueError("模型响应中未包含场景识别文本")
+
+                parsed = parse_scenario_recognition_response(raw, valid_scenario_ids)
+                if parsed:
+                    ai_result = parsed
+                    break
+
+                raise ValueError(f"无法从响应提取有效场景结果，响应前120字: {raw[:120]}")
+            except Exception as e:
+                ai_last_error = e
+                if ENABLE_DEBUG_LOG:
+                    print(f"⚠️  AI 场景识别第{idx}次失败: {e}")
+
+        if not ai_result and ai_last_error:
+            print(f"⚠️  AI 场景识别失败，回退到关键词匹配: {ai_last_error}")
+
+    if ai_result and ai_result.get("scenario_id") in valid_scenario_ids:
         best_id = ai_result["scenario_id"]
         confidence = min(1.0, max(0.0, float(ai_result.get("confidence", 0.8))))
         reason = ai_result.get("reason", "")
@@ -6050,6 +6491,7 @@ def delete_session(session_id):
     # ========== 步骤7: 清理缓存和状态 ==========
     invalidate_prefetch(session_id)
     clear_thinking_status(session_id)
+    clear_report_generation_status(session_id)
 
     return jsonify({"success": True})
 
@@ -7167,24 +7609,26 @@ def restart_interview(session_id):
 
 # ============ 报告生成 API ============
 
-@app.route('/api/sessions/<session_id>/generate-report', methods=['POST'])
-def generate_report(session_id):
-    """生成访谈报告（AI 生成）"""
-    user_id = get_current_user_id_or_none()
-    if not user_id:
-        return jsonify({"error": "请先登录"}), 401
-
-    loaded = load_session_for_user(session_id, user_id)
-    if len(loaded) == 3:
-        _file, error_msg, status_code = loaded
-        return jsonify({"error": error_msg}), status_code
-
-    session_file, session = loaded
-
-    update_report_generation_status(session_id, "queued")
-
+def run_report_generation_job(session_id: str, user_id: int, request_id: str) -> None:
+    """后台生成报告任务。"""
+    worker_ref = threading.current_thread()
     try:
-        def persist_report(content: str) -> tuple[Path, str]:
+        loaded = load_session_for_user(session_id, user_id, include_missing=True)
+        session_file, session, state = loaded
+        if state != "ok" or session_file is None or session is None:
+            error_msg = "会话不存在或无权限"
+            update_report_generation_status(session_id, "failed", message=f"报告生成失败：{error_msg}", active=False)
+            set_report_generation_metadata(session_id, {
+                "request_id": request_id,
+                "error": error_msg,
+                "completed_at": get_utc_now(),
+            })
+            return
+
+        # 数据迁移：兼容旧会话
+        session = migrate_session_docs(session)
+
+        def persist_report(content: str, quality_meta: Optional[dict] = None) -> tuple[Path, str]:
             """保存报告并更新会话状态。"""
             topic_slug = session.get("topic", "report").replace(" ", "-")[:30]
             date_str = datetime.now().strftime("%Y%m%d")
@@ -7193,9 +7637,16 @@ def generate_report(session_id):
             report_file.write_text(content, encoding="utf-8")
             set_report_owner_id(filename, user_id)
 
-            session["status"] = "completed"
-            session["updated_at"] = get_utc_now()
-            session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+            latest_session = safe_load_session(session_file)
+            if isinstance(latest_session, dict) and ensure_session_owner(latest_session, user_id):
+                latest_session["status"] = "completed"
+                latest_session["updated_at"] = get_utc_now()
+                if isinstance(quality_meta, dict):
+                    latest_session["last_report_quality_meta"] = quality_meta
+                if isinstance(session.get("last_report_v3_debug"), dict):
+                    latest_session["last_report_v3_debug"] = session["last_report_v3_debug"]
+                session_file.write_text(json.dumps(latest_session, ensure_ascii=False, indent=2), encoding="utf-8")
+
             return report_file, filename
 
         # 检查是否有 Claude API
@@ -7217,17 +7668,19 @@ def generate_report(session_id):
                 }
 
                 update_report_generation_status(session_id, "saving", message="正在保存 V3 审稿增强报告...")
-                report_file, filename = persist_report(report_content)
+                report_file, filename = persist_report(report_content, quality_meta=quality_meta)
                 update_report_generation_status(session_id, "completed", active=False)
-
-                return jsonify({
-                    "success": True,
-                    "report_path": str(report_file),
+                set_report_generation_metadata(session_id, {
+                    "request_id": request_id,
                     "report_name": filename,
+                    "report_path": str(report_file),
                     "ai_generated": True,
                     "v3_enabled": True,
-                    "report_quality_meta": quality_meta,
+                    "report_quality_meta": quality_meta if isinstance(quality_meta, dict) else {},
+                    "error": "",
+                    "completed_at": get_utc_now(),
                 })
+                return
 
             session["last_report_v3_debug"] = {
                 "generated_at": get_utc_now(),
@@ -7251,8 +7704,9 @@ def generate_report(session_id):
 
             report_content = call_claude(
                 prompt,
-                max_tokens=MAX_TOKENS_REPORT,
-                call_type="report_legacy_fallback"
+                max_tokens=min(MAX_TOKENS_REPORT, 7000),
+                call_type="report_legacy_fallback",
+                timeout=REPORT_API_TIMEOUT,
             )
 
             if report_content:
@@ -7261,17 +7715,19 @@ def generate_report(session_id):
                 session["last_report_quality_meta"] = quality_meta
 
                 update_report_generation_status(session_id, "saving", message="正在保存回退生成报告...")
-                report_file, filename = persist_report(report_content)
+                report_file, filename = persist_report(report_content, quality_meta=quality_meta)
                 update_report_generation_status(session_id, "completed", active=False)
-
-                return jsonify({
-                    "success": True,
-                    "report_path": str(report_file),
+                set_report_generation_metadata(session_id, {
+                    "request_id": request_id,
                     "report_name": filename,
+                    "report_path": str(report_file),
                     "ai_generated": True,
                     "v3_enabled": False,
-                    "report_quality_meta": quality_meta,
+                    "report_quality_meta": quality_meta if isinstance(quality_meta, dict) else {},
+                    "error": "",
+                    "completed_at": get_utc_now(),
                 })
+                return
 
         # 回退到简单报告生成
         update_report_generation_status(session_id, "fallback", message="AI 回退失败，正在使用模板报告兜底...")
@@ -7279,24 +7735,93 @@ def generate_report(session_id):
         quality_meta = build_report_quality_meta_fallback(session, mode="simple_template_fallback")
         session["last_report_quality_meta"] = quality_meta
         update_report_generation_status(session_id, "saving")
-        report_file, filename = persist_report(report_content)
+        report_file, filename = persist_report(report_content, quality_meta=quality_meta)
 
         update_report_generation_status(session_id, "completed", active=False)
-
-        return jsonify({
-            "success": True,
-            "report_path": str(report_file),
+        set_report_generation_metadata(session_id, {
+            "request_id": request_id,
             "report_name": filename,
+            "report_path": str(report_file),
             "ai_generated": False,
             "v3_enabled": False,
-            "report_quality_meta": quality_meta,
+            "report_quality_meta": quality_meta if isinstance(quality_meta, dict) else {},
+            "error": "",
+            "completed_at": get_utc_now(),
         })
     except Exception as exc:
         error_detail = str(exc)[:200] or "未知错误"
         update_report_generation_status(session_id, "failed", message=f"报告生成失败：{error_detail}", active=False)
+        set_report_generation_metadata(session_id, {
+            "request_id": request_id,
+            "error": error_detail,
+            "completed_at": get_utc_now(),
+        })
         if ENABLE_DEBUG_LOG:
             print(f"❌ 报告生成异常: {error_detail}")
-        return jsonify({"error": "访谈报告生成失败", "detail": error_detail}), 500
+    finally:
+        cleanup_report_generation_worker(session_id, worker=worker_ref)
+
+
+@app.route('/api/sessions/<session_id>/generate-report', methods=['POST'])
+def generate_report(session_id):
+    """异步生成访谈报告。"""
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        _file, error_msg, status_code = loaded
+        return jsonify({"error": error_msg}), status_code
+
+    data = request.get_json(silent=True) or {}
+    action = "regenerate" if data.get("action") == "regenerate" else "generate"
+
+    current_record = get_report_generation_record(session_id) or {}
+    worker_alive = is_report_generation_worker_alive(session_id)
+    if bool(current_record.get("active")) or worker_alive:
+        if worker_alive and not bool(current_record.get("active")):
+            update_report_generation_status(session_id, "queued", message="报告任务正在处理中...")
+            current_record = get_report_generation_record(session_id) or {}
+        payload = build_report_generation_payload(current_record)
+        payload.update({
+            "success": True,
+            "already_running": True,
+            "action": current_record.get("action", action),
+        })
+        return jsonify(payload), 202
+
+    request_id = secrets.token_hex(12)
+    set_report_generation_metadata(session_id, {
+        "request_id": request_id,
+        "action": action,
+        "started_at": get_utc_now(),
+        "completed_at": "",
+        "report_name": "",
+        "report_path": "",
+        "ai_generated": None,
+        "v3_enabled": None,
+        "report_quality_meta": {},
+        "error": "",
+    })
+    update_report_generation_status(session_id, "queued")
+
+    worker = threading.Thread(
+        target=run_report_generation_job,
+        args=(session_id, user_id, request_id),
+        daemon=True,
+        name=f"report-generator-{session_id[:8]}"
+    )
+    register_report_generation_worker(session_id, worker)
+    worker.start()
+
+    payload = build_report_generation_payload(get_report_generation_record(session_id))
+    payload.update({
+        "success": True,
+        "already_running": False,
+        "action": action,
+    })
+    return jsonify(payload), 202
 
 
 def generate_interview_appendix(session: dict) -> str:
@@ -8518,7 +9043,9 @@ def get_status():
     return jsonify({
         "status": "running",
         "ai_available": claude_client is not None,
-        "model": MODEL_NAME if claude_client else None,
+        "model": QUESTION_MODEL_NAME if claude_client else None,
+        "question_model": QUESTION_MODEL_NAME if claude_client else None,
+        "report_model": REPORT_MODEL_NAME if claude_client else None,
         "sessions_dir": str(SESSIONS_DIR),
         "reports_dir": str(REPORTS_DIR),
         "interview_depth_v2": {
@@ -8575,21 +9102,15 @@ def get_report_generation_status(session_id):
     if len(loaded) == 3:
         return jsonify({"active": False})
 
-    with report_generation_status_lock:
-        status = report_generation_status.get(session_id)
+    status = get_report_generation_record(session_id)
+    if status and not bool(status.get("active")) and is_report_generation_worker_alive(session_id):
+        update_report_generation_status(session_id, "queued", message="报告任务正在处理中...")
+        status = get_report_generation_record(session_id)
 
     if status:
-        return jsonify({
-            "active": bool(status.get("active", False)),
-            "state": status.get("state", "queued"),
-            "stage_index": int(status.get("stage_index", 0)),
-            "total_stages": int(status.get("total_stages", 6)),
-            "progress": int(status.get("progress", 0)),
-            "message": status.get("message", "正在生成报告..."),
-            "updated_at": status.get("updated_at"),
-        })
+        return jsonify(build_report_generation_payload(status))
 
-    return jsonify({"active": False})
+    return jsonify({"active": False, "processing": False})
 
 
 @app.route('/api/metrics', methods=['GET'])
@@ -8670,7 +9191,11 @@ if __name__ == '__main__':
     print(f"Reports: {REPORTS_DIR}")
     print(f"AI 状态: {'已启用' if claude_client else '未启用'}")
     if claude_client:
-        print(f"模型: {MODEL_NAME}")
+        if QUESTION_MODEL_NAME == REPORT_MODEL_NAME:
+            print(f"模型: {QUESTION_MODEL_NAME}")
+        else:
+            print(f"问题模型: {QUESTION_MODEL_NAME}")
+            print(f"报告模型: {REPORT_MODEL_NAME}")
 
     # 搜索功能状态
     search_enabled = ENABLE_WEB_SEARCH and ZHIPU_API_KEY and ZHIPU_API_KEY != "your-zhipu-api-key-here"
