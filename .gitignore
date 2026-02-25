@@ -34,6 +34,13 @@ venv/
 env/
 ENV/
 
+# 环境变量文件
+.env
+.env.*
+web/.env
+web/.env.*
+!web/.env.example
+
 # IDE
 .vscode/
 .idea/

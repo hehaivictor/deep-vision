@@ -34,6 +34,78 @@ from flask_cors import CORS
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
+
+def _parse_env_assignment(line: str) -> Optional[tuple[str, str]]:
+    text = str(line or "").strip()
+    if not text or text.startswith("#"):
+        return None
+
+    if text.startswith("export "):
+        text = text[len("export "):].strip()
+
+    match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$", text)
+    if not match:
+        return None
+
+    key = match.group(1).strip()
+    raw_value = match.group(2).strip()
+
+    if not raw_value:
+        return key, ""
+
+    if (raw_value.startswith('"') and raw_value.endswith('"')) or (raw_value.startswith("'") and raw_value.endswith("'")):
+        return key, raw_value[1:-1]
+
+    # 非引号值允许行尾注释：KEY=value # comment
+    if " #" in raw_value:
+        raw_value = raw_value.split(" #", 1)[0].rstrip()
+    return key, raw_value
+
+
+def load_env_files() -> None:
+    """加载 .env 文件到 os.environ（默认不覆盖已存在环境变量）。"""
+    current_dir = Path(__file__).resolve().parent
+    project_dir = current_dir.parent
+    explicit_env_file = os.environ.get("DEEPVISION_ENV_FILE", "").strip()
+    override_existing = str(os.environ.get("DEEPVISION_ENV_OVERRIDE", "")).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+    candidates: list[Path] = []
+    if explicit_env_file:
+        explicit_path = Path(explicit_env_file).expanduser()
+        if not explicit_path.is_absolute():
+            explicit_path = (project_dir / explicit_path).resolve()
+        candidates.append(explicit_path)
+    else:
+        candidates.extend([
+            current_dir / ".env",
+            project_dir / ".env",
+        ])
+
+    loaded_any = False
+    for env_path in candidates:
+        if not env_path.exists() or not env_path.is_file():
+            continue
+
+        try:
+            for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+                parsed = _parse_env_assignment(raw_line)
+                if not parsed:
+                    continue
+                key, value = parsed
+                if not override_existing and key in os.environ:
+                    continue
+                os.environ[key] = value
+            loaded_any = True
+            print(f"✅ 已加载环境变量文件: {env_path}")
+        except Exception as exc:
+            print(f"⚠️  读取环境变量文件失败: {env_path}, 错误: {exc}")
+
+    if explicit_env_file and not loaded_any:
+        print(f"⚠️  指定的环境变量文件不存在或不可读: {explicit_env_file}")
+
+
+load_env_files()
+
 try:
     import config as runtime_config
     print("✅ 配置文件加载成功")
@@ -51,11 +123,19 @@ except ImportError:
 
 # ============ 配置读取工具 ============
 def _cfg_get(name: str, default):
-    if runtime_config and hasattr(runtime_config, name):
-        return getattr(runtime_config, name)
+    # 生产环境可通过 DEEPVISION_ 前缀变量覆盖（优先级最高）
+    env_prefixed_val = os.environ.get(f"DEEPVISION_{name}")
+    if env_prefixed_val is not None:
+        return env_prefixed_val
+
+    # 兼容同名环境变量（次优先）
     env_val = os.environ.get(name)
     if env_val is not None:
         return env_val
+
+    # 本地开发默认从 config.py 读取
+    if runtime_config and hasattr(runtime_config, name):
+        return getattr(runtime_config, name)
     return default
 
 
