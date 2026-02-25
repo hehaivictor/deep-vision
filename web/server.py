@@ -34,88 +34,13 @@ from flask_cors import CORS
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
-# 加载配置文件
 try:
-    from config import (
-        ANTHROPIC_API_KEY,
-        ANTHROPIC_BASE_URL,
-        MODEL_NAME,
-        MAX_TOKENS_DEFAULT,
-        MAX_TOKENS_QUESTION,
-        MAX_TOKENS_REPORT,
-        SERVER_HOST,
-        SERVER_PORT,
-        DEBUG_MODE,
-        ENABLE_AI,
-        ENABLE_DEBUG_LOG,
-        ENABLE_WEB_SEARCH,
-        ZHIPU_API_KEY,
-        ZHIPU_SEARCH_ENGINE,
-        SEARCH_MAX_RESULTS,
-        SEARCH_TIMEOUT,
-        VISION_MODEL_NAME,
-        VISION_API_URL,
-        ENABLE_VISION,
-        MAX_IMAGE_SIZE_MB,
-        SUPPORTED_IMAGE_TYPES,
-        REFLY_API_URL,
-        REFLY_API_KEY,
-        REFLY_WORKFLOW_ID,
-        REFLY_INPUT_FIELD,
-        REFLY_FILES_FIELD,
-        REFLY_TIMEOUT,
-    )
+    import config as runtime_config
     print("✅ 配置文件加载成功")
-except ImportError:
+except Exception:
+    runtime_config = None
     print("⚠️  未找到 config.py，使用默认配置")
     print("   请复制 config.example.py 为 config.py 并填入实际配置")
-    # 默认配置（从环境变量获取）
-    ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-    ANTHROPIC_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "")
-    ZHIPU_API_KEY = os.environ.get("ZHIPU_API_KEY", "")
-    MODEL_NAME = os.environ.get("MODEL_NAME", "")
-    MAX_TOKENS_DEFAULT = 5000
-    MAX_TOKENS_QUESTION = 2000
-    MAX_TOKENS_REPORT = 10000
-    SERVER_HOST = "0.0.0.0"
-    SERVER_PORT = 5001
-    DEBUG_MODE = True
-    ENABLE_AI = True
-    ENABLE_DEBUG_LOG = True
-    ENABLE_WEB_SEARCH = False
-    ZHIPU_API_KEY = ""
-    ZHIPU_SEARCH_ENGINE = "search_pro"
-    SEARCH_MAX_RESULTS = 3
-    SEARCH_TIMEOUT = 10
-    # Vision 默认配置
-    VISION_MODEL_NAME = os.environ.get("VISION_MODEL_NAME", "")
-    VISION_API_URL = os.environ.get("VISION_API_URL", "")
-    ENABLE_VISION = True
-    MAX_IMAGE_SIZE_MB = 10
-    SUPPORTED_IMAGE_TYPES = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
-    REFLY_API_URL = os.environ.get("REFLY_API_URL", "")
-    REFLY_API_KEY = os.environ.get("REFLY_API_KEY", "")
-    REFLY_WORKFLOW_ID = os.environ.get("REFLY_WORKFLOW_ID", "")
-    REFLY_INPUT_FIELD = os.environ.get("REFLY_INPUT_FIELD", "report")
-    REFLY_FILES_FIELD = os.environ.get("REFLY_FILES_FIELD", "files")
-    REFLY_TIMEOUT = int(os.environ.get("REFLY_TIMEOUT", "30"))
-
-try:
-    REFLY_TIMEOUT = int(REFLY_TIMEOUT)
-except Exception:
-    REFLY_TIMEOUT = 30
-
-if "REFLY_FILES_FIELD" not in globals():
-    REFLY_FILES_FIELD = os.environ.get("REFLY_FILES_FIELD", "files")
-
-try:
-    REFLY_POLL_TIMEOUT = int(os.environ.get("REFLY_POLL_TIMEOUT", "600"))
-except Exception:
-    REFLY_POLL_TIMEOUT = 600
-try:
-    REFLY_POLL_INTERVAL = float(os.environ.get("REFLY_POLL_INTERVAL", "2"))
-except Exception:
-    REFLY_POLL_INTERVAL = 2.0
 
 try:
     import anthropic
@@ -124,23 +49,69 @@ except ImportError:
     HAS_ANTHROPIC = False
     print("警告: anthropic 库未安装，将无法使用 AI 功能")
 
-try:
-    import config as runtime_config
-except Exception:
-    runtime_config = None
+# ============ 配置读取工具 ============
+def _cfg_get(name: str, default):
+    if runtime_config and hasattr(runtime_config, name):
+        return getattr(runtime_config, name)
+    env_val = os.environ.get(name)
+    if env_val is not None:
+        return env_val
+    return default
 
-# 模型路由配置：支持问题/报告分离，未配置时向后兼容 MODEL_NAME
-_base_model_name = str(MODEL_NAME or "").strip()
-_cfg_question_model = str(getattr(runtime_config, "QUESTION_MODEL_NAME", "")).strip() if runtime_config else ""
-if not _cfg_question_model:
-    _cfg_question_model = str(os.environ.get("QUESTION_MODEL_NAME", "")).strip()
 
-_cfg_report_model = str(getattr(runtime_config, "REPORT_MODEL_NAME", "")).strip() if runtime_config else ""
-if not _cfg_report_model:
-    _cfg_report_model = str(os.environ.get("REPORT_MODEL_NAME", "")).strip()
+def _cfg_int(name: str, default: int) -> int:
+    try:
+        return int(_cfg_get(name, default))
+    except Exception:
+        return default
 
-QUESTION_MODEL_NAME = _cfg_question_model or _base_model_name
-REPORT_MODEL_NAME = _cfg_report_model or QUESTION_MODEL_NAME
+
+def _cfg_float(name: str, default: float) -> float:
+    try:
+        return float(_cfg_get(name, default))
+    except Exception:
+        return default
+
+
+def _cfg_bool(name: str, default: bool) -> bool:
+    value = _cfg_get(name, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"1", "true", "yes", "on", "y"}:
+            return True
+        if v in {"0", "false", "no", "off", "n"}:
+            return False
+    return default
+
+
+def _cfg_text(name: str, default: str = "") -> str:
+    return str(_cfg_get(name, default) or "").strip()
+
+
+def _cfg_text_list(name: str, default: list[str]) -> list[str]:
+    value = _cfg_get(name, default)
+    if isinstance(value, (list, tuple, set)):
+        cleaned = [str(item).strip() for item in value if str(item).strip()]
+        return cleaned or list(default)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return list(default)
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    cleaned = [str(item).strip() for item in parsed if str(item).strip()]
+                    return cleaned or list(default)
+            except Exception:
+                pass
+        cleaned = [item.strip() for item in text.split(",") if item.strip()]
+        return cleaned or list(default)
+    return list(default)
 
 
 def _first_non_empty(*values: str) -> str:
@@ -151,39 +122,150 @@ def _first_non_empty(*values: str) -> str:
     return ""
 
 
+# ============ 配置中心（集中管理） ============
+# 向后兼容：保留历史函数名，避免潜在外部引用断裂
+def _runtime_cfg(name: str, default):
+    return _cfg_get(name, default)
+
+
+def _runtime_cfg_int(name: str, default: int) -> int:
+    return _cfg_int(name, default)
+
+
+def _runtime_cfg_float(name: str, default: float) -> float:
+    return _cfg_float(name, default)
+
+
+def _runtime_cfg_bool(name: str, default: bool) -> bool:
+    return _cfg_bool(name, default)
+
+
+# 基础配置
+ANTHROPIC_API_KEY = _cfg_text("ANTHROPIC_API_KEY", "")
+ANTHROPIC_BASE_URL = _cfg_text("ANTHROPIC_BASE_URL", "")
+MODEL_NAME = _cfg_text("MODEL_NAME", "")
+MAX_TOKENS_DEFAULT = _cfg_int("MAX_TOKENS_DEFAULT", 5000)
+MAX_TOKENS_DEFAULT = max(1, MAX_TOKENS_DEFAULT)
+MAX_TOKENS_QUESTION = _cfg_int("MAX_TOKENS_QUESTION", 2000)
+MAX_TOKENS_QUESTION = max(1, MAX_TOKENS_QUESTION)
+MAX_TOKENS_REPORT = _cfg_int("MAX_TOKENS_REPORT", 10000)
+MAX_TOKENS_REPORT = max(1, MAX_TOKENS_REPORT)
+SERVER_HOST = _cfg_text("SERVER_HOST", "0.0.0.0") or "0.0.0.0"
+SERVER_PORT = _cfg_int("SERVER_PORT", 5001)
+SERVER_PORT = max(1, SERVER_PORT)
+DEBUG_MODE = _cfg_bool("DEBUG_MODE", True)
+ENABLE_AI = _cfg_bool("ENABLE_AI", True)
+ENABLE_DEBUG_LOG = _cfg_bool("ENABLE_DEBUG_LOG", True)
+ENABLE_WEB_SEARCH = _cfg_bool("ENABLE_WEB_SEARCH", False)
+ZHIPU_API_KEY = _cfg_text("ZHIPU_API_KEY", "")
+ZHIPU_SEARCH_ENGINE = _cfg_text("ZHIPU_SEARCH_ENGINE", "search_pro") or "search_pro"
+SEARCH_MAX_RESULTS = _cfg_int("SEARCH_MAX_RESULTS", 3)
+SEARCH_MAX_RESULTS = max(1, SEARCH_MAX_RESULTS)
+SEARCH_TIMEOUT = _cfg_int("SEARCH_TIMEOUT", 10)
+SEARCH_TIMEOUT = max(1, SEARCH_TIMEOUT)
+VISION_MODEL_NAME = _cfg_text("VISION_MODEL_NAME", "")
+VISION_API_URL = _cfg_text("VISION_API_URL", "")
+ENABLE_VISION = _cfg_bool("ENABLE_VISION", True)
+MAX_IMAGE_SIZE_MB = _cfg_int("MAX_IMAGE_SIZE_MB", 10)
+MAX_IMAGE_SIZE_MB = max(1, MAX_IMAGE_SIZE_MB)
+SUPPORTED_IMAGE_TYPES = _cfg_text_list("SUPPORTED_IMAGE_TYPES", [".jpg", ".jpeg", ".png", ".gif", ".webp"])
+REFLY_API_URL = _cfg_text("REFLY_API_URL", "")
+REFLY_API_KEY = _cfg_text("REFLY_API_KEY", "")
+REFLY_WORKFLOW_ID = _cfg_text("REFLY_WORKFLOW_ID", "")
+REFLY_INPUT_FIELD = _cfg_text("REFLY_INPUT_FIELD", "report") or "report"
+REFLY_FILES_FIELD = _cfg_text("REFLY_FILES_FIELD", "files") or "files"
+REFLY_TIMEOUT = _cfg_int("REFLY_TIMEOUT", 30)
+REFLY_TIMEOUT = max(1, REFLY_TIMEOUT)
+REFLY_POLL_TIMEOUT = _cfg_int("REFLY_POLL_TIMEOUT", 600)
+if REFLY_POLL_TIMEOUT < 30:
+    REFLY_POLL_TIMEOUT = 30
+REFLY_POLL_INTERVAL = _cfg_float("REFLY_POLL_INTERVAL", 2.0)
+if REFLY_POLL_INTERVAL <= 0:
+    REFLY_POLL_INTERVAL = 2.0
+
+# 模型路由配置：支持问题/报告分离，未配置时向后兼容 MODEL_NAME
+_base_model_name = _cfg_text("MODEL_NAME", str(MODEL_NAME or "").strip())
+QUESTION_MODEL_NAME = _cfg_text("QUESTION_MODEL_NAME", _base_model_name) or _base_model_name
+REPORT_MODEL_NAME = _cfg_text("REPORT_MODEL_NAME", QUESTION_MODEL_NAME) or QUESTION_MODEL_NAME
+
 # 网关路由配置：支持问题/报告分别使用不同 API Key 和 Base URL
 _cfg_question_api_key = _first_non_empty(
-    getattr(runtime_config, "QUESTION_API_KEY", "") if runtime_config else "",
-    getattr(runtime_config, "QUESTION_ANTHROPIC_API_KEY", "") if runtime_config else "",
-    os.environ.get("QUESTION_API_KEY", ""),
-    os.environ.get("QUESTION_ANTHROPIC_API_KEY", ""),
+    _cfg_text("QUESTION_API_KEY", ""),
+    _cfg_text("QUESTION_ANTHROPIC_API_KEY", ""),
 )
 _cfg_question_base_url = _first_non_empty(
-    getattr(runtime_config, "QUESTION_BASE_URL", "") if runtime_config else "",
-    getattr(runtime_config, "QUESTION_ANTHROPIC_BASE_URL", "") if runtime_config else "",
-    os.environ.get("QUESTION_BASE_URL", ""),
-    os.environ.get("QUESTION_ANTHROPIC_BASE_URL", ""),
+    _cfg_text("QUESTION_BASE_URL", ""),
+    _cfg_text("QUESTION_ANTHROPIC_BASE_URL", ""),
 )
 _cfg_report_api_key = _first_non_empty(
-    getattr(runtime_config, "REPORT_API_KEY", "") if runtime_config else "",
-    getattr(runtime_config, "REPORT_ANTHROPIC_API_KEY", "") if runtime_config else "",
-    os.environ.get("REPORT_API_KEY", ""),
-    os.environ.get("REPORT_ANTHROPIC_API_KEY", ""),
+    _cfg_text("REPORT_API_KEY", ""),
+    _cfg_text("REPORT_ANTHROPIC_API_KEY", ""),
 )
 _cfg_report_base_url = _first_non_empty(
-    getattr(runtime_config, "REPORT_BASE_URL", "") if runtime_config else "",
-    getattr(runtime_config, "REPORT_ANTHROPIC_BASE_URL", "") if runtime_config else "",
-    os.environ.get("REPORT_BASE_URL", ""),
-    os.environ.get("REPORT_ANTHROPIC_BASE_URL", ""),
+    _cfg_text("REPORT_BASE_URL", ""),
+    _cfg_text("REPORT_ANTHROPIC_BASE_URL", ""),
 )
 
-QUESTION_API_KEY = _cfg_question_api_key or str(ANTHROPIC_API_KEY or "").strip()
-QUESTION_BASE_URL = _cfg_question_base_url or str(ANTHROPIC_BASE_URL or "").strip()
+QUESTION_API_KEY = _cfg_question_api_key or _cfg_text("ANTHROPIC_API_KEY", str(ANTHROPIC_API_KEY or "").strip())
+QUESTION_BASE_URL = _cfg_question_base_url or _cfg_text("ANTHROPIC_BASE_URL", str(ANTHROPIC_BASE_URL or "").strip())
 REPORT_API_KEY = _cfg_report_api_key or QUESTION_API_KEY
 REPORT_BASE_URL = _cfg_report_base_url or QUESTION_BASE_URL
 
 # 兼容历史代码中直接引用 MODEL_NAME 的位置：默认指向问题模型
 MODEL_NAME = QUESTION_MODEL_NAME
+
+# 访谈深度增强 V2 已升级为正式版（全模式固定启用）
+DEEP_MODE_SKIP_FOLLOWUP_CONFIRM = _cfg_bool("DEEP_MODE_SKIP_FOLLOWUP_CONFIRM", True)
+
+# 运行策略配置
+CONTEXT_WINDOW_SIZE = _cfg_int("CONTEXT_WINDOW_SIZE", 5)  # 保留最近N条完整问答
+SUMMARY_THRESHOLD = _cfg_int("SUMMARY_THRESHOLD", 8)      # 超过此数量时触发摘要生成
+MAX_DOC_LENGTH = _cfg_int("MAX_DOC_LENGTH", 2000)         # 单个文档最大长度（字符）
+MAX_TOTAL_DOCS = _cfg_int("MAX_TOTAL_DOCS", 5000)         # 所有文档总长度限制（字符）
+API_TIMEOUT = _cfg_float("API_TIMEOUT", 90.0)             # 通用 API 超时时间（秒）
+REPORT_API_TIMEOUT = _cfg_float("REPORT_API_TIMEOUT", 210.0)  # 报告生成专用超时（秒）
+if REPORT_API_TIMEOUT < API_TIMEOUT:
+    REPORT_API_TIMEOUT = API_TIMEOUT
+REPORT_DRAFT_API_TIMEOUT = _cfg_float("REPORT_DRAFT_API_TIMEOUT", min(REPORT_API_TIMEOUT, 180.0))
+REPORT_DRAFT_API_TIMEOUT = max(30.0, min(REPORT_DRAFT_API_TIMEOUT, REPORT_API_TIMEOUT))
+REPORT_V3_DRAFT_MAX_TOKENS = _cfg_int("REPORT_V3_DRAFT_MAX_TOKENS", 5500)
+REPORT_V3_DRAFT_MAX_TOKENS = max(2500, REPORT_V3_DRAFT_MAX_TOKENS)
+REPORT_V3_DRAFT_FACTS_LIMIT = _cfg_int("REPORT_V3_DRAFT_FACTS_LIMIT", 48)
+REPORT_V3_DRAFT_FACTS_LIMIT = max(20, REPORT_V3_DRAFT_FACTS_LIMIT)
+REPORT_V3_DRAFT_MIN_FACTS_LIMIT = _cfg_int("REPORT_V3_DRAFT_MIN_FACTS_LIMIT", 24)
+REPORT_V3_DRAFT_MIN_FACTS_LIMIT = max(10, min(REPORT_V3_DRAFT_MIN_FACTS_LIMIT, REPORT_V3_DRAFT_FACTS_LIMIT))
+REPORT_V3_DRAFT_RETRY_COUNT = _cfg_int("REPORT_V3_DRAFT_RETRY_COUNT", 2)
+REPORT_V3_DRAFT_RETRY_COUNT = max(0, REPORT_V3_DRAFT_RETRY_COUNT)
+REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS = _cfg_float("REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS", 1.5)
+REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS = max(0.0, REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS)
+REPORT_V3_FAILOVER_ENABLED = _cfg_bool("REPORT_V3_FAILOVER_ENABLED", True)
+REPORT_V3_FAILOVER_LANE = _cfg_text("REPORT_V3_FAILOVER_LANE", "question").lower()
+if REPORT_V3_FAILOVER_LANE not in {"question", "report"}:
+    REPORT_V3_FAILOVER_LANE = "question"
+
+# 第三方登录配置（微信扫码登录）
+WECHAT_LOGIN_ENABLED = _cfg_bool("WECHAT_LOGIN_ENABLED", False)
+WECHAT_APP_ID = _cfg_text("WECHAT_APP_ID", "")
+WECHAT_APP_SECRET = _cfg_text("WECHAT_APP_SECRET", "")
+WECHAT_REDIRECT_URI = _cfg_text("WECHAT_REDIRECT_URI", "")
+WECHAT_OAUTH_SCOPE = _cfg_text("WECHAT_OAUTH_SCOPE", "snsapi_login")
+if not WECHAT_OAUTH_SCOPE:
+    WECHAT_OAUTH_SCOPE = "snsapi_login"
+WECHAT_OAUTH_TIMEOUT = _cfg_float("WECHAT_OAUTH_TIMEOUT", 8.0)
+WECHAT_OAUTH_TIMEOUT = max(3.0, min(WECHAT_OAUTH_TIMEOUT, 30.0))
+WECHAT_OAUTH_STATE_TTL_SECONDS = _cfg_int("WECHAT_OAUTH_STATE_TTL_SECONDS", 300)
+WECHAT_OAUTH_STATE_TTL_SECONDS = max(60, min(WECHAT_OAUTH_STATE_TTL_SECONDS, 1800))
+
+# 智能文档摘要配置
+ENABLE_SMART_SUMMARY = _cfg_bool("ENABLE_SMART_SUMMARY", True)
+SMART_SUMMARY_THRESHOLD = _cfg_int("SMART_SUMMARY_THRESHOLD", 1500)
+SMART_SUMMARY_TARGET = _cfg_int("SMART_SUMMARY_TARGET", 800)
+SUMMARY_CACHE_ENABLED = _cfg_bool("SUMMARY_CACHE_ENABLED", True)
+MAX_TOKENS_SUMMARY = _cfg_int("MAX_TOKENS_SUMMARY", 500)
+
+# 集中读取后复用
+CONFIG_SECRET_KEY = _cfg_text("SECRET_KEY", "")
+CONFIG_AUTH_DB_PATH = _cfg_text("AUTH_DB_PATH", "")
 
 
 def resolve_model_name(call_type: str = "", model_name: str = "") -> str:
@@ -211,14 +293,11 @@ def resolve_call_lane(call_type: str = "", model_name: str = "") -> str:
     return "question"
 
 
-# 访谈深度增强 V2 已升级为正式版（全模式固定启用）
-DEEP_MODE_SKIP_FOLLOWUP_CONFIRM = bool(getattr(runtime_config, "DEEP_MODE_SKIP_FOLLOWUP_CONFIRM", True)) if runtime_config else True
-
 app = Flask(__name__, static_folder='.')
 CORS(app)
 
 # Session 配置
-config_secret_key = getattr(runtime_config, "SECRET_KEY", "") if runtime_config else ""
+config_secret_key = CONFIG_SECRET_KEY
 env_secret_key = os.environ.get("DEEPVISION_SECRET_KEY", "") or os.environ.get("SECRET_KEY", "")
 if config_secret_key or env_secret_key:
     app_secret_key = config_secret_key or env_secret_key
@@ -260,7 +339,7 @@ ALLOWED_STATIC_EXTENSIONS = {
     ".woff", ".woff2", ".ttf", ".eot",
 }
 
-auth_db_from_config = getattr(runtime_config, "AUTH_DB_PATH", "") if runtime_config else ""
+auth_db_from_config = CONFIG_AUTH_DB_PATH
 auth_db_from_env = os.environ.get("DEEPVISION_AUTH_DB_PATH", "")
 raw_auth_db_path = auth_db_from_env or auth_db_from_config
 if raw_auth_db_path:
@@ -2764,93 +2843,7 @@ def get_dimension_order_for_session(session: dict) -> list:
 
 
 # ============ 滑动窗口上下文管理 ============
-
-# 运行策略配置：优先读取 config.py（或同名环境变量），缺失时使用默认值
-def _runtime_cfg(name: str, default):
-    if runtime_config and hasattr(runtime_config, name):
-        return getattr(runtime_config, name)
-    env_val = os.environ.get(name)
-    if env_val is not None:
-        return env_val
-    return default
-
-
-def _runtime_cfg_int(name: str, default: int) -> int:
-    try:
-        return int(_runtime_cfg(name, default))
-    except Exception:
-        return default
-
-
-def _runtime_cfg_float(name: str, default: float) -> float:
-    try:
-        return float(_runtime_cfg(name, default))
-    except Exception:
-        return default
-
-
-def _runtime_cfg_bool(name: str, default: bool) -> bool:
-    value = _runtime_cfg(name, default)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        v = value.strip().lower()
-        if v in {"1", "true", "yes", "on", "y"}:
-            return True
-        if v in {"0", "false", "no", "off", "n"}:
-            return False
-    return default
-
-
-# 配置参数
-CONTEXT_WINDOW_SIZE = _runtime_cfg_int("CONTEXT_WINDOW_SIZE", 5)  # 保留最近N条完整问答
-SUMMARY_THRESHOLD = _runtime_cfg_int("SUMMARY_THRESHOLD", 8)      # 超过此数量时触发摘要生成
-MAX_DOC_LENGTH = _runtime_cfg_int("MAX_DOC_LENGTH", 2000)         # 单个文档最大长度（字符）
-MAX_TOTAL_DOCS = _runtime_cfg_int("MAX_TOTAL_DOCS", 5000)         # 所有文档总长度限制（字符）
-API_TIMEOUT = _runtime_cfg_float("API_TIMEOUT", 90.0)             # 通用 API 超时时间（秒）
-# 报告生成通常比问答更耗时，单独放宽超时以提升稳定性
-REPORT_API_TIMEOUT = _runtime_cfg_float("REPORT_API_TIMEOUT", 210.0)
-if REPORT_API_TIMEOUT < API_TIMEOUT:
-    REPORT_API_TIMEOUT = API_TIMEOUT
-# 报告草案阶段更易受网关波动影响，支持单独限载和分级重试
-REPORT_DRAFT_API_TIMEOUT = _runtime_cfg_float("REPORT_DRAFT_API_TIMEOUT", min(REPORT_API_TIMEOUT, 180.0))
-REPORT_DRAFT_API_TIMEOUT = max(30.0, min(REPORT_DRAFT_API_TIMEOUT, REPORT_API_TIMEOUT))
-REPORT_V3_DRAFT_MAX_TOKENS = _runtime_cfg_int("REPORT_V3_DRAFT_MAX_TOKENS", 5500)
-REPORT_V3_DRAFT_MAX_TOKENS = max(2500, REPORT_V3_DRAFT_MAX_TOKENS)
-REPORT_V3_DRAFT_FACTS_LIMIT = _runtime_cfg_int("REPORT_V3_DRAFT_FACTS_LIMIT", 48)
-REPORT_V3_DRAFT_FACTS_LIMIT = max(20, REPORT_V3_DRAFT_FACTS_LIMIT)
-REPORT_V3_DRAFT_MIN_FACTS_LIMIT = _runtime_cfg_int("REPORT_V3_DRAFT_MIN_FACTS_LIMIT", 24)
-REPORT_V3_DRAFT_MIN_FACTS_LIMIT = max(10, min(REPORT_V3_DRAFT_MIN_FACTS_LIMIT, REPORT_V3_DRAFT_FACTS_LIMIT))
-REPORT_V3_DRAFT_RETRY_COUNT = _runtime_cfg_int("REPORT_V3_DRAFT_RETRY_COUNT", 2)
-REPORT_V3_DRAFT_RETRY_COUNT = max(0, REPORT_V3_DRAFT_RETRY_COUNT)
-REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS = _runtime_cfg_float("REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS", 1.5)
-REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS = max(0.0, REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS)
-REPORT_V3_FAILOVER_ENABLED = _runtime_cfg_bool("REPORT_V3_FAILOVER_ENABLED", True)
-REPORT_V3_FAILOVER_LANE = str(_runtime_cfg("REPORT_V3_FAILOVER_LANE", "question") or "question").strip().lower()
-if REPORT_V3_FAILOVER_LANE not in {"question", "report"}:
-    REPORT_V3_FAILOVER_LANE = "question"
-
-# 第三方登录配置（微信扫码登录）
-WECHAT_LOGIN_ENABLED = _runtime_cfg_bool("WECHAT_LOGIN_ENABLED", False)
-WECHAT_APP_ID = str(_runtime_cfg("WECHAT_APP_ID", "") or "").strip()
-WECHAT_APP_SECRET = str(_runtime_cfg("WECHAT_APP_SECRET", "") or "").strip()
-WECHAT_REDIRECT_URI = str(_runtime_cfg("WECHAT_REDIRECT_URI", "") or "").strip()
-WECHAT_OAUTH_SCOPE = str(_runtime_cfg("WECHAT_OAUTH_SCOPE", "snsapi_login") or "snsapi_login").strip()
-if not WECHAT_OAUTH_SCOPE:
-    WECHAT_OAUTH_SCOPE = "snsapi_login"
-WECHAT_OAUTH_TIMEOUT = _runtime_cfg_float("WECHAT_OAUTH_TIMEOUT", 8.0)
-WECHAT_OAUTH_TIMEOUT = max(3.0, min(WECHAT_OAUTH_TIMEOUT, 30.0))
-WECHAT_OAUTH_STATE_TTL_SECONDS = _runtime_cfg_int("WECHAT_OAUTH_STATE_TTL_SECONDS", 300)
-WECHAT_OAUTH_STATE_TTL_SECONDS = max(60, min(WECHAT_OAUTH_STATE_TTL_SECONDS, 1800))
-
-# ============ 智能文档摘要配置（第三阶段优化） ============
-ENABLE_SMART_SUMMARY = _runtime_cfg_bool("ENABLE_SMART_SUMMARY", True)        # 启用智能文档摘要
-SMART_SUMMARY_THRESHOLD = _runtime_cfg_int("SMART_SUMMARY_THRESHOLD", 1500)    # 触发智能摘要阈值（字符）
-SMART_SUMMARY_TARGET = _runtime_cfg_int("SMART_SUMMARY_TARGET", 800)           # 摘要目标长度（字符）
-SUMMARY_CACHE_ENABLED = _runtime_cfg_bool("SUMMARY_CACHE_ENABLED", True)       # 启用摘要缓存
-MAX_TOKENS_SUMMARY = _runtime_cfg_int("MAX_TOKENS_SUMMARY", 500)               # 摘要生成最大 token
+# 运行策略配置已在文件顶部「配置中心（集中管理）」统一定义
 
 
 # ============ 智能文档摘要实现 ============
