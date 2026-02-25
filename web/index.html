@@ -783,6 +783,28 @@
                             </svg>
                             <span x-text="authMode === 'register' ? (authLoading ? '注册中...' : '注册并开始使用') : (authLoading ? '登录中...' : '登录')"></span>
                         </button>
+
+                        <div x-show="wechatLoginEnabled" x-cloak class="pt-1 space-y-3">
+                            <div class="flex items-center gap-3">
+                                <span class="h-px flex-1 bg-gray-200"></span>
+                                <span class="text-xs text-muted">或</span>
+                                <span class="h-px flex-1 bg-gray-200"></span>
+                            </div>
+                            <button type="button"
+                                    @click="startWechatLogin()"
+                                    :disabled="authLoading || wechatLoginLoading"
+                                    class="w-full px-5 py-2.5 rounded-lg font-medium border border-gray-200 text-primary hover:bg-gray-50 transition-colors duration-200 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                                <svg class="w-5 h-5 flex-shrink-0" viewBox="0 0 28 28" aria-hidden="true" style="color: #07C160;">
+                                    <path fill="currentColor" fill-opacity="0.82" d="M18.9 10.2c4.5 0 8.1 2.9 8.1 6.5 0 2.1-1.2 4-3.1 5.2l.8 2.7c.1.4-.3.8-.7.6l-3.3-1.7c-.6.1-1.2.2-1.8.2-4.5 0-8.1-2.9-8.1-6.5s3.6-7 8.1-7Z"/>
+                                    <path fill="currentColor" d="M10.6 4C5.3 4 1 7.6 1 12.1c0 2.5 1.4 4.8 3.8 6.3l-.9 3.2c-.1.4.3.8.7.6l3.8-2c.7.2 1.4.3 2.2.3 5.3 0 9.6-3.6 9.6-8.1S15.9 4 10.6 4Z"/>
+                                    <circle cx="7.8" cy="11.8" r="1.05" fill="#FFFFFF"/>
+                                    <circle cx="12.9" cy="11.8" r="1.05" fill="#FFFFFF"/>
+                                    <circle cx="16.7" cy="16.4" r="0.95" fill="#FFFFFF"/>
+                                    <circle cx="21.1" cy="16.4" r="0.95" fill="#FFFFFF"/>
+                                </svg>
+                                <span x-text="wechatLoginLoading ? '正在跳转微信...' : '微信扫码登录'"></span>
+                            </button>
+                        </div>
                     </form>
                 </div>
             </main>

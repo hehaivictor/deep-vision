@@ -19,6 +19,9 @@ function deepVision() {
         authMode: 'login',
         authLoading: false,
         authChecking: true,
+        wechatLoginEnabled: false,
+        wechatLoginLoading: false,
+        authRedirectResult: null,
         authForm: {
             account: '',
             password: '',
@@ -447,17 +450,20 @@ function deepVision() {
             this.applyDesignTokens('system', this.resolveEffectiveTheme('system'));
             this.initTheme();
             this.loadAuthAccountHistory();
+            this.readAuthRedirectResult();
             this.registerDialogFocusWatchers();
             await this.loadVersionInfo();
             await this.checkServerStatus();
             await this.checkAuthStatus();
 
             if (!this.authReady) {
+                this.consumeAuthRedirectToast();
                 this.enforceAuthViewLightTheme();
                 this.authChecking = false;
                 return;
             }
 
+            this.consumeAuthRedirectToast();
             await this.loadScenarios();
             await this.loadSessions();
             await this.loadReports();
@@ -486,6 +492,48 @@ function deepVision() {
             }
         },
 
+        readAuthRedirectResult() {
+            if (typeof window === 'undefined') return;
+            const params = new URLSearchParams(window.location.search || '');
+            const result = params.get('auth_result');
+            if (!result) return;
+
+            const message = params.get('auth_message') || '';
+            this.authRedirectResult = {
+                result,
+                message
+            };
+
+            params.delete('auth_result');
+            params.delete('auth_message');
+            const nextQuery = params.toString();
+            const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash || ''}`;
+            window.history.replaceState({}, '', nextUrl);
+        },
+
+        consumeAuthRedirectToast() {
+            if (!this.authRedirectResult) return;
+
+            const result = String(this.authRedirectResult.result || '');
+            const rawMessage = String(this.authRedirectResult.message || '').trim();
+            let toastType = 'info';
+            let fallbackMessage = '登录状态已更新';
+
+            if (result === 'wechat_success') {
+                toastType = this.authReady ? 'success' : 'warning';
+                fallbackMessage = this.authReady ? '微信登录成功' : '微信登录未完成，请重试';
+            } else if (result === 'wechat_cancel') {
+                toastType = 'warning';
+                fallbackMessage = '已取消微信登录';
+            } else if (result === 'wechat_error') {
+                toastType = 'error';
+                fallbackMessage = '微信登录失败，请稍后重试';
+            }
+
+            this.showToast(rawMessage || fallbackMessage, toastType);
+            this.authRedirectResult = null;
+        },
+
         enterLoginState(options = {}) {
             const {
                 showToast = false,
@@ -497,6 +545,7 @@ function deepVision() {
             this.authReady = false;
             this.currentUser = null;
             this.authLoading = false;
+            this.wechatLoginLoading = false;
             this.currentView = 'sessions';
             this.currentSession = null;
             this.sessions = [];
@@ -727,6 +776,17 @@ function deepVision() {
             } finally {
                 this.authLoading = false;
             }
+        },
+
+        startWechatLogin() {
+            if (!this.wechatLoginEnabled || this.authLoading || this.wechatLoginLoading) return;
+            if (typeof window === 'undefined') return;
+
+            this.wechatLoginLoading = true;
+            const pathname = window.location.pathname === '/' ? '/index.html' : window.location.pathname;
+            const returnTo = `${pathname}${window.location.search || ''}${window.location.hash || ''}`;
+            const target = `${API_BASE}/auth/wechat/start?return_to=${encodeURIComponent(returnTo)}`;
+            window.location.assign(target);
         },
 
         async logout() {
@@ -1411,7 +1471,12 @@ function deepVision() {
                 const response = await fetch(`${API_BASE}/status`);
                 if (response.ok) {
                     this.serverStatus = await response.json();
-                    this.aiAvailable = this.serverStatus.ai_available;
+                    if (typeof this.serverStatus.ai_available === 'boolean') {
+                        this.aiAvailable = this.serverStatus.ai_available;
+                    }
+                    if (typeof this.serverStatus.wechat_login_enabled === 'boolean') {
+                        this.wechatLoginEnabled = this.serverStatus.wechat_login_enabled;
+                    }
                     const depthConfig = this.serverStatus?.interview_depth_v2 || {};
                     this.interviewDepthV2 = {
                         enabled: true,
@@ -1419,7 +1484,7 @@ function deepVision() {
                         deep_mode_skip_followup_confirm: depthConfig.deep_mode_skip_followup_confirm !== false,
                         mode_configs: depthConfig.mode_configs || null
                     };
-                    if (!this.aiAvailable) {
+                    if (typeof this.serverStatus.ai_available === 'boolean' && !this.aiAvailable) {
                         this.showToast('AI 功能未启用（需设置 ANTHROPIC_API_KEY）', 'warning');
                     }
                 }
@@ -5202,6 +5267,102 @@ function deepVision() {
             return runs;
         },
 
+        isSafeUrl(url) {
+            const raw = String(url || '').trim();
+            if (!raw) return false;
+            const compact = raw.replace(/[\u0000-\u001F\u007F\s]+/g, '');
+            if (!compact) return false;
+            if (compact.startsWith('#') || compact.startsWith('/')) return true;
+            return /^(https?:|mailto:)/i.test(compact);
+        },
+
+        sanitizeMarkdownHtml(rawHtml) {
+            const input = String(rawHtml || '');
+            if (!input) return '';
+
+            if (typeof DOMParser === 'undefined' || typeof document === 'undefined') {
+                return input
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;');
+            }
+
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(`<div id="md-root">${input}</div>`, 'text/html');
+            const root = doc.getElementById('md-root');
+            if (!root) return '';
+
+            const allowedTags = new Set([
+                'a', 'p', 'br', 'hr', 'strong', 'em', 'code', 'pre', 'blockquote',
+                'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+                'table', 'thead', 'tbody', 'tr', 'th', 'td',
+                'div', 'span', 'img'
+            ]);
+            const allowedAttrs = {
+                a: new Set(['href', 'title', 'target', 'rel']),
+                img: new Set(['src', 'alt', 'title']),
+                code: new Set(['class']),
+                pre: new Set(['class', 'id']),
+                div: new Set(['class']),
+                span: new Set(['class']),
+                th: new Set(['colspan', 'rowspan', 'align']),
+                td: new Set(['colspan', 'rowspan', 'align'])
+            };
+            const classAllowPattern = /^[a-zA-Z0-9_-]{1,64}$/;
+            const nodes = Array.from(root.querySelectorAll('*'));
+
+            for (const node of nodes) {
+                const tag = node.tagName.toLowerCase();
+                if (!allowedTags.has(tag)) {
+                    const textNode = doc.createTextNode(node.textContent || '');
+                    node.replaceWith(textNode);
+                    continue;
+                }
+
+                const attrs = Array.from(node.attributes);
+                for (const attr of attrs) {
+                    const attrName = attr.name.toLowerCase();
+                    const attrValue = String(attr.value || '');
+                    if (attrName.startsWith('on')) {
+                        node.removeAttribute(attr.name);
+                        continue;
+                    }
+
+                    const tagAllowedAttrs = allowedAttrs[tag] || new Set();
+                    if (!tagAllowedAttrs.has(attrName)) {
+                        node.removeAttribute(attr.name);
+                        continue;
+                    }
+
+                    if ((attrName === 'href' || attrName === 'src') && !this.isSafeUrl(attrValue)) {
+                        node.removeAttribute(attr.name);
+                        continue;
+                    }
+
+                    if (attrName === 'class') {
+                        const safeClasses = attrValue
+                            .split(/\s+/)
+                            .filter(token => classAllowPattern.test(token));
+                        if (safeClasses.length === 0) {
+                            node.removeAttribute(attr.name);
+                            continue;
+                        }
+                        node.setAttribute('class', safeClasses.join(' '));
+                    }
+                }
+
+                if (tag === 'a' && node.getAttribute('href')) {
+                    node.setAttribute('rel', 'noopener noreferrer');
+                    const target = node.getAttribute('target');
+                    if (target && target !== '_blank') {
+                        node.removeAttribute('target');
+                    }
+                }
+            }
+
+            return root.innerHTML;
+        },
+
         renderMarkdown(content) {
             if (!content) return '';
             const sanitizedContent = String(content)
@@ -5238,11 +5399,11 @@ function deepVision() {
                 // 因为在 x-html 绑定中，DOM 可能还没更新
                 // 应该在 viewReport() 中调用
 
-                return html;
+                return this.sanitizeMarkdownHtml(html);
             }
 
             // 简单的 Markdown 渲染（无 marked.js 时的回退）
-            return sanitizedContent
+            const fallbackHtml = sanitizedContent
                 .replace(/^### (.*$)/gm, '<h3>$1</h3>')
                 .replace(/^## (.*$)/gm, '<h2>$1</h2>')
                 .replace(/^# (.*$)/gm, '<h1>$1</h1>')
@@ -5250,6 +5411,7 @@ function deepVision() {
                 .replace(/\*(.*?)\*/g, '<em>$1</em>')
                 .replace(/^- (.*$)/gm, '<li>$1</li>')
                 .replace(/\n/g, '<br>');
+            return this.sanitizeMarkdownHtml(fallbackHtml);
         },
 
         // 渲染页面中的所有 Mermaid 图表

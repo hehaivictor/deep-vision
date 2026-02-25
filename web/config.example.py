@@ -68,6 +68,20 @@ SECRET_KEY = "replace-with-a-strong-random-secret"
 # 用户账号数据库路径（相对路径将按 Deep Vision 根目录解析）
 AUTH_DB_PATH = "data/auth/users.db"
 
+# 微信扫码登录配置（可选）
+# 关闭时将隐藏前端微信登录入口
+WECHAT_LOGIN_ENABLED = False
+WECHAT_APP_ID = ""
+WECHAT_APP_SECRET = ""
+# 建议填写完整 HTTPS 回调地址；为空时将自动使用当前服务域名拼接 /api/auth/wechat/callback
+WECHAT_REDIRECT_URI = ""
+# PC 网站扫码登录建议使用 snsapi_login
+WECHAT_OAUTH_SCOPE = "snsapi_login"
+# 微信 OAuth 网络请求超时（秒）
+WECHAT_OAUTH_TIMEOUT = 8.0
+# state 防重放有效期（秒）
+WECHAT_OAUTH_STATE_TTL_SECONDS = 300
+
 # ============ 功能开关 ============
 
 # 是否启用 AI 功能（如果为 False，将使用模拟数据）

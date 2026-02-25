@@ -27,11 +27,12 @@ from functools import wraps
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import quote, unquote, urlparse, parse_qsl, urlencode, urlunparse
 
 from flask import Flask, jsonify, request, send_from_directory, redirect, session
 from flask_cors import CORS
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
 
 # 加载配置文件
 try:
@@ -237,6 +238,7 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 
 # 路径配置
 SKILL_DIR = Path(__file__).parent.parent.resolve()
+WEB_DIR = Path(__file__).parent.resolve()
 DATA_DIR = SKILL_DIR / "data"
 SESSIONS_DIR = DATA_DIR / "sessions"
 REPORTS_DIR = DATA_DIR / "reports"
@@ -252,6 +254,11 @@ DELETED_REPORTS_FILE = REPORTS_DIR / ".deleted_reports.json"
 DELETED_DOCS_FILE = DATA_DIR / ".deleted_docs.json"  # 软删除记录文件
 REPORT_OWNERS_FILE = REPORTS_DIR / ".owners.json"
 REPORT_OWNERS_LOCK = threading.Lock()
+ALLOWED_STATIC_EXTENSIONS = {
+    ".html", ".css", ".js", ".map", ".json",
+    ".ico", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+    ".woff", ".woff2", ".ttf", ".eot",
+}
 
 auth_db_from_config = getattr(runtime_config, "AUTH_DB_PATH", "") if runtime_config else ""
 auth_db_from_env = os.environ.get("DEEPVISION_AUTH_DB_PATH", "")
@@ -345,6 +352,26 @@ def init_auth_db() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wechat_identities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                app_id TEXT NOT NULL,
+                openid TEXT NOT NULL,
+                unionid TEXT,
+                nickname TEXT NOT NULL DEFAULT '',
+                avatar_url TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (app_id, openid),
+                UNIQUE (unionid),
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_wechat_identities_user_id ON wechat_identities(user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_wechat_identities_unionid ON wechat_identities(unionid)")
         conn.commit()
 
 
@@ -407,6 +434,320 @@ def query_user_by_account(email: Optional[str], phone: Optional[str]) -> Optiona
     return None
 
 
+def sanitize_return_to_path(raw_return_to: str) -> str:
+    value = str(raw_return_to or "").strip()
+    if not value:
+        return "/index.html"
+    if any(ch in value for ch in ("\r", "\n")):
+        return "/index.html"
+
+    parsed = urlparse(value)
+    if parsed.scheme or parsed.netloc:
+        return "/index.html"
+    if not value.startswith("/") or value.startswith("//"):
+        return "/index.html"
+    return value
+
+
+def extract_return_to_from_oauth_state(raw_state: str) -> str:
+    state_text = str(raw_state or "").strip()
+    if not state_text:
+        return ""
+    if "." not in state_text:
+        return ""
+
+    encoded_part = state_text.split(".", 1)[1].strip()
+    if not encoded_part:
+        return ""
+
+    try:
+        padding = "=" * ((4 - len(encoded_part) % 4) % 4)
+        decoded = base64.urlsafe_b64decode((encoded_part + padding).encode("ascii")).decode("utf-8")
+    except Exception:
+        return ""
+    return sanitize_return_to_path(decoded)
+
+
+def append_auth_query_params(url: str, extra: dict[str, str]) -> str:
+    safe_url = sanitize_return_to_path(url)
+    parsed = urlparse(safe_url)
+    query_dict = dict(parse_qsl(parsed.query, keep_blank_values=True))
+
+    for key, value in extra.items():
+        if value is None:
+            query_dict.pop(key, None)
+        else:
+            query_dict[key] = str(value)
+
+    return urlunparse((
+        "",
+        "",
+        parsed.path or "/",
+        parsed.params,
+        urlencode(query_dict, doseq=True),
+        parsed.fragment,
+    ))
+
+
+def build_auth_redirect_url(return_to: str, result: str, message: str = "") -> str:
+    query_payload = {"auth_result": result}
+    if message:
+        query_payload["auth_message"] = message
+    return append_auth_query_params(return_to, query_payload)
+
+
+def get_wechat_oauth_callback_url() -> str:
+    configured = str(WECHAT_REDIRECT_URI or "").strip()
+    if configured:
+        return configured
+    root_url = (request.url_root or "").strip().rstrip("/")
+    if not root_url:
+        return ""
+    return f"{root_url}/api/auth/wechat/callback"
+
+
+def get_wechat_login_unavailable_reason() -> str:
+    if not WECHAT_LOGIN_ENABLED:
+        return "微信登录未启用"
+    if not WECHAT_APP_ID or not WECHAT_APP_SECRET:
+        return "微信登录配置不完整"
+
+    callback_url = get_wechat_oauth_callback_url()
+    if not callback_url.startswith("http://") and not callback_url.startswith("https://"):
+        return "微信登录回调地址无效"
+    return ""
+
+
+def is_wechat_login_available() -> bool:
+    return get_wechat_login_unavailable_reason() == ""
+
+
+def exchange_wechat_code_for_token(code: str) -> tuple[Optional[dict], str]:
+    code_value = str(code or "").strip()
+    if not code_value:
+        return None, "缺少微信授权 code"
+
+    params = {
+        "appid": WECHAT_APP_ID,
+        "secret": WECHAT_APP_SECRET,
+        "code": code_value,
+        "grant_type": "authorization_code",
+    }
+    try:
+        response = requests.get(
+            "https://api.weixin.qq.com/sns/oauth2/access_token",
+            params=params,
+            timeout=WECHAT_OAUTH_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return None, "微信授权服务异常"
+
+    if not isinstance(payload, dict):
+        return None, "微信授权响应格式异常"
+
+    errcode = payload.get("errcode")
+    if errcode:
+        errmsg = str(payload.get("errmsg") or "").strip()
+        detail = f"（{errcode}）"
+        if errmsg:
+            detail = f"{detail}{errmsg}"
+        return None, f"微信授权失败{detail}"
+
+    return payload, ""
+
+
+def fetch_wechat_user_profile(access_token: str, openid: str) -> tuple[Optional[dict], str]:
+    token_value = str(access_token or "").strip()
+    openid_value = str(openid or "").strip()
+    if not token_value or not openid_value:
+        return None, "微信用户信息参数不完整"
+
+    params = {
+        "access_token": token_value,
+        "openid": openid_value,
+        "lang": "zh_CN",
+    }
+    try:
+        response = requests.get(
+            "https://api.weixin.qq.com/sns/userinfo",
+            params=params,
+            timeout=WECHAT_OAUTH_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception:
+        return None, "微信用户信息服务异常"
+
+    if not isinstance(payload, dict):
+        return None, "微信用户信息响应格式异常"
+
+    errcode = payload.get("errcode")
+    if errcode:
+        errmsg = str(payload.get("errmsg") or "").strip()
+        detail = f"（{errcode}）"
+        if errmsg:
+            detail = f"{detail}{errmsg}"
+        return None, f"拉取微信用户信息失败{detail}"
+
+    return payload, ""
+
+
+def resolve_user_for_wechat_identity(
+    app_id: str,
+    openid: str,
+    unionid: str = "",
+    nickname: str = "",
+    avatar_url: str = "",
+) -> Optional[sqlite3.Row]:
+    app_id_value = str(app_id or "").strip()
+    openid_value = str(openid or "").strip()
+    unionid_value = str(unionid or "").strip()
+    nickname_value = str(nickname or "").strip()
+    avatar_url_value = str(avatar_url or "").strip()
+    if not app_id_value or not openid_value:
+        return None
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    user_id: Optional[int] = None
+
+    with get_auth_db_connection() as conn:
+        identity_row = None
+        if unionid_value:
+            identity_row = conn.execute(
+                """
+                SELECT id, user_id
+                FROM wechat_identities
+                WHERE unionid = ?
+                LIMIT 1
+                """,
+                (unionid_value,)
+            ).fetchone()
+
+        if not identity_row:
+            identity_row = conn.execute(
+                """
+                SELECT id, user_id
+                FROM wechat_identities
+                WHERE app_id = ? AND openid = ?
+                LIMIT 1
+                """,
+                (app_id_value, openid_value)
+            ).fetchone()
+
+        if identity_row:
+            candidate_user_id = int(identity_row["user_id"])
+            candidate_user = conn.execute(
+                """
+                SELECT id
+                FROM users
+                WHERE id = ?
+                LIMIT 1
+                """,
+                (candidate_user_id,)
+            ).fetchone()
+            if candidate_user:
+                user_id = candidate_user_id
+            else:
+                conn.execute("DELETE FROM wechat_identities WHERE id = ?", (int(identity_row["id"]),))
+                identity_row = None
+
+        if user_id is None:
+            import hashlib
+
+            identity_seed = f"{app_id_value}:{unionid_value or openid_value}"
+            identity_hash = hashlib.sha256(identity_seed.encode("utf-8")).hexdigest()[:24]
+            shadow_email = f"wx_{identity_hash}@wechat.local"
+
+            existing_shadow_user = conn.execute(
+                """
+                SELECT id
+                FROM users
+                WHERE email = ?
+                LIMIT 1
+                """,
+                (shadow_email,)
+            ).fetchone()
+            if existing_shadow_user:
+                user_id = int(existing_shadow_user["id"])
+            else:
+                random_password_hash = generate_password_hash(secrets.token_urlsafe(32), method="pbkdf2:sha256")
+                created = conn.execute(
+                    """
+                    INSERT INTO users (email, phone, password_hash, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (shadow_email, None, random_password_hash, now_iso, now_iso)
+                )
+                user_id = int(created.lastrowid)
+
+        if identity_row:
+            conn.execute(
+                """
+                UPDATE wechat_identities
+                SET user_id = ?, app_id = ?, openid = ?, unionid = ?, nickname = ?, avatar_url = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    user_id,
+                    app_id_value,
+                    openid_value,
+                    unionid_value or None,
+                    nickname_value,
+                    avatar_url_value,
+                    now_iso,
+                    int(identity_row["id"]),
+                )
+            )
+        else:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO wechat_identities
+                    (user_id, app_id, openid, unionid, nickname, avatar_url, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        app_id_value,
+                        openid_value,
+                        unionid_value or None,
+                        nickname_value,
+                        avatar_url_value,
+                        now_iso,
+                        now_iso,
+                    )
+                )
+            except sqlite3.IntegrityError:
+                recovered = None
+                if unionid_value:
+                    recovered = conn.execute(
+                        "SELECT id, user_id FROM wechat_identities WHERE unionid = ? LIMIT 1",
+                        (unionid_value,)
+                    ).fetchone()
+                if not recovered:
+                    recovered = conn.execute(
+                        "SELECT id, user_id FROM wechat_identities WHERE app_id = ? AND openid = ? LIMIT 1",
+                        (app_id_value, openid_value)
+                    ).fetchone()
+                if not recovered:
+                    raise
+                user_id = int(recovered["user_id"])
+                conn.execute(
+                    """
+                    UPDATE wechat_identities
+                    SET nickname = ?, avatar_url = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (nickname_value, avatar_url_value, now_iso, int(recovered["id"]))
+                )
+
+        conn.commit()
+
+    return query_user_by_id(user_id)
+
+
 def get_current_user() -> Optional[sqlite3.Row]:
     user_id = session.get("user_id")
     if not user_id:
@@ -443,15 +784,35 @@ def require_login(func):
     return wrapper
 
 
+PUBLIC_API_EXACT_PATHS = {
+    "/api/auth/register",
+    "/api/auth/login",
+    "/api/auth/logout",
+    "/api/auth/wechat/start",
+    "/api/auth/wechat/callback",
+    "/api/status",
+    "/api/status/web-search",
+}
+
+
 @app.before_request
 def enforce_auth_for_protected_routes():
     if request.method == "OPTIONS":
         return None
 
     path = request.path or ""
-    if path.startswith("/api/sessions") or path.startswith("/api/reports"):
-        if not get_current_user():
-            return jsonify({"error": "请先登录"}), 401
+    if not path.startswith("/api/"):
+        return None
+
+    if path in PUBLIC_API_EXACT_PATHS:
+        return None
+
+    # 场景列表与详情允许匿名读取；写接口需登录。
+    if request.method == "GET" and path.startswith("/api/scenarios"):
+        return None
+
+    if not get_current_user():
+        return jsonify({"error": "请先登录"}), 401
 
     return None
 
@@ -1102,27 +1463,74 @@ class MetricsCollector:
 
     def get_statistics(self, last_n: int = None) -> dict:
         """获取统计信息"""
+        empty_summary = {
+            "total_calls": 0,
+            "total_timeouts": 0,
+            "total_truncations": 0,
+            "avg_response_time": 0,
+            "avg_prompt_length": 0,
+        }
         try:
             data = json.loads(self.metrics_file.read_text(encoding="utf-8"))
-            calls = data["calls"]
+            if not isinstance(data, dict):
+                data = {}
+            summary_data = data.get("summary", empty_summary)
+            if not isinstance(summary_data, dict):
+                summary_data = empty_summary
+            calls_raw = data.get("calls", [])
+            if not isinstance(calls_raw, list):
+                calls_raw = []
+            calls = [c for c in calls_raw if isinstance(c, dict)]
 
             if last_n:
                 calls = calls[-last_n:]
 
             if not calls:
                 return {
+                    "period": f"最近 {last_n} 次调用" if last_n else "全部调用",
                     "total_calls": 0,
+                    "successful_calls": 0,
+                    "failed_calls": 0,
+                    "timeout_calls": 0,
+                    "timeout_rate": 0,
+                    "truncation_events": 0,
+                    "truncation_rate": 0,
+                    "avg_response_time_ms": 0,
+                    "max_response_time_ms": 0,
+                    "min_response_time_ms": 0,
+                    "avg_prompt_length": 0,
+                    "max_prompt_length": 0,
+                    "recommendations": [{
+                        "level": "info",
+                        "message": "暂无数据"
+                    }],
+                    "summary": {
+                        "total_calls": int(summary_data.get("total_calls", 0) or 0),
+                        "total_timeouts": int(summary_data.get("total_timeouts", 0) or 0),
+                        "total_truncations": int(summary_data.get("total_truncations", 0) or 0),
+                        "avg_response_time": float(summary_data.get("avg_response_time", 0) or 0),
+                        "avg_prompt_length": float(summary_data.get("avg_prompt_length", 0) or 0),
+                    },
+                    "calls": [],
                     "message": "暂无数据"
                 }
 
             # 计算统计信息
             total_calls = len(calls)
-            successful_calls = sum(1 for c in calls if c["success"])
+            successful_calls = sum(1 for c in calls if bool(c.get("success")))
             timeout_calls = sum(1 for c in calls if c.get("timeout", False))
             truncation_events = sum(len(c.get("truncated_docs", [])) for c in calls)
 
-            response_times = [c["response_time_ms"] for c in calls if c["success"]]
-            prompt_lengths = [c["prompt_length"] for c in calls]
+            response_times = [
+                float(c.get("response_time_ms", 0))
+                for c in calls
+                if bool(c.get("success")) and isinstance(c.get("response_time_ms", 0), (int, float))
+            ]
+            prompt_lengths = [
+                float(c.get("prompt_length", 0))
+                for c in calls
+                if isinstance(c.get("prompt_length", 0), (int, float))
+            ]
 
             stats = {
                 "period": f"最近 {last_n} 次调用" if last_n else "全部调用",
@@ -1142,11 +1550,40 @@ class MetricsCollector:
 
             # 生成优化建议
             stats["recommendations"] = self._generate_recommendations(stats)
+            stats["summary"] = {
+                "total_calls": int(summary_data.get("total_calls", 0) or 0),
+                "total_timeouts": int(summary_data.get("total_timeouts", 0) or 0),
+                "total_truncations": int(summary_data.get("total_truncations", 0) or 0),
+                "avg_response_time": float(summary_data.get("avg_response_time", 0) or 0),
+                "avg_prompt_length": float(summary_data.get("avg_prompt_length", 0) or 0),
+            }
+            stats["calls"] = calls
 
             return stats
 
         except Exception as e:
-            return {"error": f"获取统计信息失败: {e}"}
+            return {
+                "period": f"最近 {last_n} 次调用" if last_n else "全部调用",
+                "total_calls": 0,
+                "successful_calls": 0,
+                "failed_calls": 0,
+                "timeout_calls": 0,
+                "timeout_rate": 0,
+                "truncation_events": 0,
+                "truncation_rate": 0,
+                "avg_response_time_ms": 0,
+                "max_response_time_ms": 0,
+                "min_response_time_ms": 0,
+                "avg_prompt_length": 0,
+                "max_prompt_length": 0,
+                "recommendations": [{
+                    "level": "warning",
+                    "message": "指标文件异常，已返回空统计"
+                }],
+                "summary": empty_summary,
+                "calls": [],
+                "message": f"获取统计信息失败: {e}",
+            }
 
     def _generate_recommendations(self, stats: dict) -> list:
         """基于统计数据生成优化建议"""
@@ -2395,6 +2832,19 @@ REPORT_V3_FAILOVER_LANE = str(_runtime_cfg("REPORT_V3_FAILOVER_LANE", "question"
 if REPORT_V3_FAILOVER_LANE not in {"question", "report"}:
     REPORT_V3_FAILOVER_LANE = "question"
 
+# 第三方登录配置（微信扫码登录）
+WECHAT_LOGIN_ENABLED = _runtime_cfg_bool("WECHAT_LOGIN_ENABLED", False)
+WECHAT_APP_ID = str(_runtime_cfg("WECHAT_APP_ID", "") or "").strip()
+WECHAT_APP_SECRET = str(_runtime_cfg("WECHAT_APP_SECRET", "") or "").strip()
+WECHAT_REDIRECT_URI = str(_runtime_cfg("WECHAT_REDIRECT_URI", "") or "").strip()
+WECHAT_OAUTH_SCOPE = str(_runtime_cfg("WECHAT_OAUTH_SCOPE", "snsapi_login") or "snsapi_login").strip()
+if not WECHAT_OAUTH_SCOPE:
+    WECHAT_OAUTH_SCOPE = "snsapi_login"
+WECHAT_OAUTH_TIMEOUT = _runtime_cfg_float("WECHAT_OAUTH_TIMEOUT", 8.0)
+WECHAT_OAUTH_TIMEOUT = max(3.0, min(WECHAT_OAUTH_TIMEOUT, 30.0))
+WECHAT_OAUTH_STATE_TTL_SECONDS = _runtime_cfg_int("WECHAT_OAUTH_STATE_TTL_SECONDS", 300)
+WECHAT_OAUTH_STATE_TTL_SECONDS = max(60, min(WECHAT_OAUTH_STATE_TTL_SECONDS, 1800))
+
 # ============ 智能文档摘要配置（第三阶段优化） ============
 ENABLE_SMART_SUMMARY = _runtime_cfg_bool("ENABLE_SMART_SUMMARY", True)        # 启用智能文档摘要
 SMART_SUMMARY_THRESHOLD = _runtime_cfg_int("SMART_SUMMARY_THRESHOLD", 1500)    # 触发智能摘要阈值（字符）
@@ -2713,12 +3163,23 @@ def _generate_simple_summary(logs: list, session: dict = None) -> str:
     return " | ".join(parts)
 
 
-def update_context_summary(session: dict, session_file) -> None:
+def update_context_summary(session_id: str) -> None:
     """
     更新会话的上下文摘要（在提交回答后调用）
 
     只有当历史记录超过阈值时才生成摘要
     """
+    if not session_id:
+        return
+
+    session_file = SESSIONS_DIR / f"{session_id}.json"
+    if not session_file.exists():
+        return
+
+    session = safe_load_session(session_file)
+    if not isinstance(session, dict):
+        return
+
     interview_log = session.get("interview_log", [])
 
     # 未超过阈值，不需要摘要
@@ -2737,31 +3198,49 @@ def update_context_summary(session: dict, session_file) -> None:
 
     # 生成新摘要
     history_logs = interview_log[:history_count]
+    summary_text = ""
 
     if resolve_ai_client(call_type="summary"):
         summary_prompt = _build_summary_prompt(session.get("topic", ""), history_logs, session)
         try:
-            summary_text = call_claude(summary_prompt, max_tokens=300, call_type="summary")
-            if summary_text:
-                session["context_summary"] = {
-                    "text": summary_text,
-                    "log_count": history_count,
-                    "updated_at": get_utc_now()
-                }
-                # 保存更新
-                session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
-                if ENABLE_DEBUG_LOG:
-                    print(f"📝 已更新上下文摘要（覆盖 {history_count} 条历史记录）")
+            summary_text = call_claude(summary_prompt, max_tokens=300, call_type="summary") or ""
         except Exception as e:
             print(f"⚠️ 更新上下文摘要失败: {e}")
+
+    if not summary_text:
+        summary_text = _generate_simple_summary(history_logs, session)
+    if not summary_text:
+        return
+
+    # 写回前重新读取最新会话，避免异步线程覆盖新回答
+    latest_session = safe_load_session(session_file)
+    if not isinstance(latest_session, dict):
+        return
+
+    latest_logs = latest_session.get("interview_log", [])
+    latest_history_count = len(latest_logs) - CONTEXT_WINDOW_SIZE
+    if latest_history_count <= 0:
+        return
+
+    # 生成期间若有新回答，改用最新快照做本地摘要，避免写入过期内容
+    if len(latest_logs) != len(interview_log):
+        summary_text = _generate_simple_summary(latest_logs[:latest_history_count], latest_session)
+        history_count = latest_history_count
     else:
-        # 无 AI 时使用简单摘要
-        session["context_summary"] = {
-            "text": _generate_simple_summary(history_logs, session),
-            "log_count": history_count,
-            "updated_at": get_utc_now()
-        }
-        session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+        history_count = min(history_count, latest_history_count)
+
+    latest_cached = latest_session.get("context_summary", {})
+    if latest_cached.get("log_count", 0) >= history_count:
+        return
+
+    latest_session["context_summary"] = {
+        "text": summary_text,
+        "log_count": history_count,
+        "updated_at": get_utc_now()
+    }
+    session_file.write_text(json.dumps(latest_session, ensure_ascii=False, indent=2), encoding="utf-8")
+    if ENABLE_DEBUG_LOG:
+        print(f"📝 已更新上下文摘要: session={session_id}, 覆盖={history_count}条")
 
 
 # ============ 智能追问评估 ============
@@ -6066,12 +6545,31 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
 
 @app.route('/')
 def index():
-    return send_from_directory('.', 'index.html')
+    return send_from_directory(str(WEB_DIR), 'index.html')
 
 
 @app.route('/<path:filename>')
 def static_files(filename):
-    return send_from_directory('.', filename)
+    safe_name = str(filename or "").strip()
+    if not safe_name:
+        return "", 404
+
+    path_obj = Path(safe_name)
+    if path_obj.is_absolute() or ".." in path_obj.parts:
+        return "", 404
+    if any(part.startswith(".") for part in path_obj.parts):
+        return "", 404
+
+    requested = (WEB_DIR / path_obj).resolve()
+    if not is_path_under(requested, WEB_DIR):
+        return "", 404
+    if not requested.is_file():
+        return "", 404
+    if requested.suffix.lower() not in ALLOWED_STATIC_EXTENSIONS:
+        return "", 404
+
+    relative_path = str(requested.relative_to(WEB_DIR))
+    return send_from_directory(str(WEB_DIR), relative_path)
 
 
 # ============ 场景 API ============
@@ -6476,6 +6974,125 @@ def auth_login():
     return jsonify({"user": build_user_payload(user_row)})
 
 
+@app.route('/api/auth/wechat/start', methods=['GET'])
+def auth_wechat_start():
+    unavailable_reason = get_wechat_login_unavailable_reason()
+    if unavailable_reason:
+        return jsonify({"error": unavailable_reason}), 503
+
+    return_to = sanitize_return_to_path(request.args.get("return_to", "/index.html"))
+    encoded_return_to = base64.urlsafe_b64encode(return_to.encode("utf-8")).decode("ascii").rstrip("=")
+    oauth_state = f"{secrets.token_urlsafe(20)}.{encoded_return_to}"
+
+    session["wechat_oauth_state"] = oauth_state
+    session["wechat_oauth_state_expires_at"] = int(_time.time()) + int(WECHAT_OAUTH_STATE_TTL_SECONDS)
+    session["wechat_oauth_return_to"] = return_to
+
+    callback_url = get_wechat_oauth_callback_url()
+    auth_url = (
+        "https://open.weixin.qq.com/connect/qrconnect"
+        f"?appid={quote(WECHAT_APP_ID)}"
+        f"&redirect_uri={quote(callback_url, safe='')}"
+        "&response_type=code"
+        f"&scope={quote(WECHAT_OAUTH_SCOPE)}"
+        f"&state={quote(oauth_state)}"
+        "#wechat_redirect"
+    )
+    return redirect(auth_url, code=302)
+
+
+@app.route('/api/auth/wechat/callback', methods=['GET'])
+def auth_wechat_callback():
+    state_from_query = str(request.args.get("state", "")).strip()
+    return_to_from_state = extract_return_to_from_oauth_state(state_from_query)
+    fallback_return_to = sanitize_return_to_path(
+        session.get("wechat_oauth_return_to", return_to_from_state or "/index.html")
+    )
+
+    unavailable_reason = get_wechat_login_unavailable_reason()
+    if unavailable_reason:
+        return redirect(
+            build_auth_redirect_url(fallback_return_to, "wechat_error", unavailable_reason),
+            code=302,
+        )
+
+    code = str(request.args.get("code", "")).strip()
+    state = state_from_query
+
+    expected_state = str(session.pop("wechat_oauth_state", "")).strip()
+    expires_at_raw = session.pop("wechat_oauth_state_expires_at", 0)
+    return_to = sanitize_return_to_path(session.pop("wechat_oauth_return_to", return_to_from_state or fallback_return_to))
+
+    try:
+        expires_at = int(expires_at_raw or 0)
+    except Exception:
+        expires_at = 0
+
+    if not expected_state or not state or state != expected_state:
+        return redirect(
+            build_auth_redirect_url(return_to, "wechat_error", "微信登录状态校验失败，请重试"),
+            code=302,
+        )
+
+    if expires_at <= int(_time.time()):
+        return redirect(
+            build_auth_redirect_url(return_to, "wechat_error", "微信登录已过期，请重新扫码"),
+            code=302,
+        )
+
+    if not code:
+        return redirect(
+            build_auth_redirect_url(return_to, "wechat_cancel", "已取消微信登录"),
+            code=302,
+        )
+
+    token_payload, token_error = exchange_wechat_code_for_token(code)
+    if token_error or not token_payload:
+        return redirect(
+            build_auth_redirect_url(return_to, "wechat_error", token_error or "微信授权失败"),
+            code=302,
+        )
+
+    openid = str(token_payload.get("openid", "")).strip()
+    access_token = str(token_payload.get("access_token", "")).strip()
+    unionid = str(token_payload.get("unionid", "")).strip()
+    if not openid or not access_token:
+        return redirect(
+            build_auth_redirect_url(return_to, "wechat_error", "微信授权响应不完整"),
+            code=302,
+        )
+
+    profile_payload, profile_error = fetch_wechat_user_profile(access_token, openid)
+    if profile_error or not profile_payload:
+        return redirect(
+            build_auth_redirect_url(return_to, "wechat_error", profile_error or "拉取微信用户信息失败"),
+            code=302,
+        )
+
+    profile_unionid = str(profile_payload.get("unionid", "")).strip()
+    if profile_unionid:
+        unionid = profile_unionid
+
+    nickname = str(profile_payload.get("nickname", "")).strip()
+    avatar_url = str(profile_payload.get("headimgurl", "")).strip()
+
+    user_row = resolve_user_for_wechat_identity(
+        app_id=WECHAT_APP_ID,
+        openid=openid,
+        unionid=unionid,
+        nickname=nickname,
+        avatar_url=avatar_url,
+    )
+    if not user_row:
+        return redirect(
+            build_auth_redirect_url(return_to, "wechat_error", "微信登录失败，请稍后再试"),
+            code=302,
+        )
+
+    login_user(user_row)
+    return redirect(build_auth_redirect_url(return_to, "wechat_success", "微信登录成功"), code=302)
+
+
 @app.route('/api/auth/logout', methods=['POST'])
 def auth_logout():
     session.clear()
@@ -6690,7 +7307,7 @@ def delete_session(session_id):
     loaded = load_session_for_user(session_id, user_id, include_missing=True)
     session_file, _session, state = loaded
 
-    if state == "not_found":
+    if state != "ok" or session_file is None:
         return jsonify({"error": "会话不存在"}), 404
 
     session_file.unlink()
@@ -7044,10 +7661,10 @@ def get_next_question(session_id):
 
     # 检查是否有 Claude API
     if not resolve_ai_client(call_type="question"):
-        return jsonify({
-            "error": "AI 服务未启用",
-            "detail": "请联系管理员配置 ANTHROPIC_API_KEY 环境变量"
-        }), 503
+        if ENABLE_DEBUG_LOG:
+            print(f"ℹ️ AI 未启用，使用 fallback 题库: session={session_id}, dimension={dimension}")
+        fallback = get_fallback_question(session, dimension)
+        return jsonify(fallback)
 
     # 获取当前维度的所有记录
     all_dim_logs = [log for log in session.get("interview_log", []) if log.get("dimension") == dimension]
@@ -7430,7 +8047,7 @@ def submit_answer(session_id):
     import threading
     def async_update_summary():
         try:
-            update_context_summary(session, session_file)
+            update_context_summary(session_id)
         except Exception as e:
             print(f"⚠️ 异步更新摘要失败: {e}")
     threading.Thread(target=async_update_summary, daemon=True).start()
@@ -7609,17 +8226,36 @@ def upload_document(session_id):
     if file_size > MAX_FILE_SIZE:
         return jsonify({"error": f"文件大小超过限制（最大{MAX_FILE_SIZE // 1024 // 1024}MB）"}), 400
 
-    filename = file.filename
-    filepath = TEMP_DIR / filename
-    file.save(filepath)
+    original_filename = Path(file.filename or "").name.strip()
+    if not original_filename:
+        return jsonify({"error": "文件名无效"}), 400
+
+    safe_filename = secure_filename(original_filename)
+    if not safe_filename:
+        fallback_ext = Path(original_filename).suffix.lower()
+        safe_filename = f"upload{fallback_ext or '.txt'}"
+
+    ext = Path(safe_filename).suffix.lower()
+    supported_image_types = {str(item).lower() for item in SUPPORTED_IMAGE_TYPES}
+    allowed_upload_types = supported_image_types | {'.md', '.txt', '.pdf', '.docx', '.xlsx', '.pptx'}
+    if ext not in allowed_upload_types:
+        return jsonify({"error": f"不支持的文件类型: {ext or '未知'}"}), 400
+
+    temp_stem = Path(safe_filename).stem[:80] or "upload"
+    temp_filename = f"{temp_stem}-{secrets.token_hex(8)}{ext}"
+    filepath = (TEMP_DIR / temp_filename).resolve()
+    if not is_path_under(filepath, TEMP_DIR):
+        return jsonify({"error": "文件保存路径无效"}), 400
+
+    file.save(str(filepath))
+    filename = safe_filename
 
     # 读取文件内容
-    ext = Path(filename).suffix.lower()
     content = ""
 
     try:
         # 图片处理
-        if ext in SUPPORTED_IMAGE_TYPES:
+        if ext in supported_image_types:
             content = describe_image_with_vision(filepath, filename)
         elif ext in ['.md', '.txt']:
             content = filepath.read_text(encoding="utf-8")
@@ -7636,7 +8272,7 @@ def upload_document(session_id):
                         capture_output=True, text=True, cwd=str(SKILL_DIR)
                     )
                     if result.returncode == 0:
-                        converted_file = CONVERTED_DIR / f"{Path(filename).stem}.md"
+                        converted_file = CONVERTED_DIR / f"{filepath.stem}.md"
                         if converted_file.exists():
                             content = converted_file.read_text(encoding="utf-8")
                         else:
@@ -9366,6 +10002,14 @@ def batch_delete_reports():
 @app.route('/api/status', methods=['GET'])
 def get_status():
     """获取服务状态"""
+    wechat_enabled = bool(WECHAT_LOGIN_ENABLED and WECHAT_APP_ID and WECHAT_APP_SECRET)
+    if not get_current_user():
+        return jsonify({
+            "status": "running",
+            "authenticated": False,
+            "wechat_login_enabled": wechat_enabled,
+        })
+
     question_available = resolve_ai_client(call_type="question") is not None
     report_available = resolve_ai_client(call_type="report") is not None
     ai_available = question_available or report_available
@@ -9376,14 +10020,11 @@ def get_status():
     }
     return jsonify({
         "status": "running",
+        "authenticated": True,
+        "wechat_login_enabled": wechat_enabled,
         "ai_available": ai_available,
-        "model": QUESTION_MODEL_NAME if ai_available else None,
-        "question_model": QUESTION_MODEL_NAME if question_available else None,
-        "report_model": REPORT_MODEL_NAME if report_available else None,
         "question_ai_available": question_ai_client is not None,
         "report_ai_available": report_ai_client is not None,
-        "sessions_dir": str(SESSIONS_DIR),
-        "reports_dir": str(REPORTS_DIR),
         "interview_depth_v2": {
             "enabled": True,
             "modes": mode_names,
@@ -9493,7 +10134,6 @@ def get_summaries_info():
             "cached_count": len(cache_files),
             "cache_size_bytes": total_size,
             "cache_size_kb": round(total_size / 1024, 2),
-            "cache_directory": str(SUMMARIES_DIR)
         })
     except Exception as e:
         return jsonify({"error": f"获取摘要信息失败: {e}"}), 500
