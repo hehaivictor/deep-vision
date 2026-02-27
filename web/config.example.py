@@ -68,6 +68,12 @@ SECRET_KEY = "replace-with-a-strong-random-secret"
 # 用户账号数据库路径（相对路径将按 Deep Vision 根目录解析）
 AUTH_DB_PATH = "data/auth/users.db"
 
+# 场景目录配置（可选）
+# 内置场景建议随代码发布，默认在 resources/scenarios/builtin
+BUILTIN_SCENARIOS_DIR = "resources/scenarios/builtin"
+# 自定义场景建议使用用户目录（容器可改为 /var/lib/deepvision/scenarios/custom）
+CUSTOM_SCENARIOS_DIR = "~/.deepvision/scenarios/custom"
+
 # 微信扫码登录配置（可选）
 # 关闭时将隐藏前端微信登录入口
 WECHAT_LOGIN_ENABLED = False

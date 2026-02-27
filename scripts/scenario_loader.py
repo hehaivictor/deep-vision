@@ -10,6 +10,13 @@ import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+import shutil
+
+
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+DEFAULT_LEGACY_SCENARIOS_DIR = PROJECT_ROOT / "data" / "scenarios"
+DEFAULT_BUILTIN_SCENARIOS_DIR = PROJECT_ROOT / "resources" / "scenarios" / "builtin"
+DEFAULT_CUSTOM_SCENARIOS_DIR = Path.home() / ".deepvision" / "scenarios" / "custom"
 
 
 class ScenarioLoader:
@@ -41,19 +48,99 @@ class ScenarioLoader:
 
     DEFAULT_SCENARIO_ID = "product-requirement"
 
-    def __init__(self, scenarios_dir: Path):
+    def __init__(
+        self,
+        scenarios_dir: Optional[Path] = None,
+        *,
+        builtin_dir: Optional[Path] = None,
+        custom_dir: Optional[Path] = None,
+        migrate_legacy_custom_dir: Optional[Path] = None,
+    ):
         """
         初始化场景加载器
 
         Args:
-            scenarios_dir: 场景配置目录路径
+            scenarios_dir: 兼容旧版的场景根目录（包含 builtin/custom 子目录）
+            builtin_dir: 内置场景目录（推荐）
+            custom_dir: 用户自定义场景目录（推荐）
+            migrate_legacy_custom_dir: 历史自定义场景目录，用于一次性迁移
         """
-        self.scenarios_dir = Path(scenarios_dir)
-        self.builtin_dir = self.scenarios_dir / "builtin"
-        self.custom_dir = self.scenarios_dir / "custom"
+        legacy_root = Path(scenarios_dir).expanduser() if scenarios_dir is not None else None
+
+        if builtin_dir is None and custom_dir is None:
+            # 旧调用方式：ScenarioLoader(scenarios_dir)；保留兼容
+            if legacy_root is not None:
+                self.scenarios_dir = legacy_root
+                self.builtin_dir = self.scenarios_dir / "builtin"
+                self.custom_dir = self.scenarios_dir / "custom"
+            else:
+                # 新默认：内置场景走 resources，自定义场景走用户目录
+                default_builtin = DEFAULT_BUILTIN_SCENARIOS_DIR
+                if not default_builtin.exists():
+                    default_builtin = DEFAULT_LEGACY_SCENARIOS_DIR / "builtin"
+                self.scenarios_dir = default_builtin.parent
+                self.builtin_dir = default_builtin
+                self.custom_dir = DEFAULT_CUSTOM_SCENARIOS_DIR
+        else:
+            base_root = legacy_root or DEFAULT_LEGACY_SCENARIOS_DIR
+            self.scenarios_dir = base_root
+            self.builtin_dir = Path(builtin_dir).expanduser() if builtin_dir is not None else (base_root / "builtin")
+            self.custom_dir = Path(custom_dir).expanduser() if custom_dir is not None else (base_root / "custom")
+
+        if migrate_legacy_custom_dir is not None:
+            self.legacy_custom_dir = Path(migrate_legacy_custom_dir).expanduser()
+        elif legacy_root is not None:
+            self.legacy_custom_dir = legacy_root / "custom"
+        else:
+            self.legacy_custom_dir = DEFAULT_LEGACY_SCENARIOS_DIR / "custom"
+
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._keywords_index: Dict[str, List[str]] = {}  # keyword -> [scenario_ids]
+        self._migrate_legacy_custom_scenarios()
         self._load_all_scenarios()
+
+    def _migrate_legacy_custom_scenarios(self) -> None:
+        """将历史 data/scenarios/custom 下的 JSON 自动迁移到新自定义目录。"""
+        legacy_dir = self.legacy_custom_dir
+        target_dir = self.custom_dir
+
+        try:
+            same_dir = legacy_dir.resolve() == target_dir.resolve()
+        except Exception:
+            same_dir = False
+        if same_dir:
+            return
+
+        if not legacy_dir.exists() or not legacy_dir.is_dir():
+            return
+
+        legacy_files = sorted(legacy_dir.glob("*.json"))
+        if not legacy_files:
+            return
+
+        migrated = 0
+        skipped = 0
+        failed = 0
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for src in legacy_files:
+            dst = target_dir / src.name
+            if dst.exists():
+                skipped += 1
+                continue
+            try:
+                shutil.copy2(src, dst)
+                migrated += 1
+            except Exception as e:
+                failed += 1
+                print(f"[ScenarioLoader] 迁移场景失败: {src} -> {dst}, 错误: {e}")
+
+        if migrated:
+            print(f"[ScenarioLoader] 已迁移 {migrated} 个历史自定义场景到: {target_dir}")
+        if skipped:
+            print(f"[ScenarioLoader] 发现同名场景，跳过 {skipped} 个文件")
+        if failed:
+            print(f"[ScenarioLoader] 迁移失败 {failed} 个文件，请检查目录权限")
 
     def _load_all_scenarios(self) -> None:
         """加载所有场景配置到缓存"""
@@ -439,12 +526,21 @@ class ScenarioLoader:
 _scenario_loader: Optional[ScenarioLoader] = None
 
 
-def get_scenario_loader(scenarios_dir: Optional[Path] = None) -> ScenarioLoader:
+def get_scenario_loader(
+    scenarios_dir: Optional[Path] = None,
+    *,
+    builtin_dir: Optional[Path] = None,
+    custom_dir: Optional[Path] = None,
+    migrate_legacy_custom_dir: Optional[Path] = None,
+) -> ScenarioLoader:
     """
     获取场景加载器单例
 
     Args:
-        scenarios_dir: 场景配置目录（首次调用时必须提供）
+        scenarios_dir: 兼容旧版的场景根目录（包含 builtin/custom 子目录）
+        builtin_dir: 内置场景目录（推荐）
+        custom_dir: 用户自定义场景目录（推荐）
+        migrate_legacy_custom_dir: 历史自定义场景目录，用于迁移
 
     Returns:
         ScenarioLoader 实例
@@ -452,10 +548,12 @@ def get_scenario_loader(scenarios_dir: Optional[Path] = None) -> ScenarioLoader:
     global _scenario_loader
 
     if _scenario_loader is None:
-        if scenarios_dir is None:
-            # 默认路径
-            scenarios_dir = Path(__file__).parent.parent / "data" / "scenarios"
-        _scenario_loader = ScenarioLoader(scenarios_dir)
+        _scenario_loader = ScenarioLoader(
+            scenarios_dir=scenarios_dir,
+            builtin_dir=builtin_dir,
+            custom_dir=custom_dir,
+            migrate_legacy_custom_dir=migrate_legacy_custom_dir,
+        )
 
     return _scenario_loader
 

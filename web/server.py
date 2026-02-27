@@ -346,6 +346,9 @@ MAX_TOKENS_SUMMARY = _cfg_int("MAX_TOKENS_SUMMARY", 500)
 # 集中读取后复用
 CONFIG_SECRET_KEY = _cfg_text("SECRET_KEY", "")
 CONFIG_AUTH_DB_PATH = _cfg_text("AUTH_DB_PATH", "")
+CONFIG_SCENARIOS_DIR = _cfg_text("SCENARIOS_DIR", "")
+CONFIG_BUILTIN_SCENARIOS_DIR = _cfg_text("BUILTIN_SCENARIOS_DIR", "")
+CONFIG_CUSTOM_SCENARIOS_DIR = _cfg_text("CUSTOM_SCENARIOS_DIR", "")
 
 
 def resolve_model_name(call_type: str = "", model_name: str = "") -> str:
@@ -398,6 +401,7 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 # 路径配置
 SKILL_DIR = Path(__file__).parent.parent.resolve()
 WEB_DIR = Path(__file__).parent.resolve()
+RESOURCES_DIR = SKILL_DIR / "resources"
 DATA_DIR = SKILL_DIR / "data"
 SESSIONS_DIR = DATA_DIR / "sessions"
 REPORTS_DIR = DATA_DIR / "reports"
@@ -419,6 +423,46 @@ ALLOWED_STATIC_EXTENSIONS = {
     ".woff", ".woff2", ".ttf", ".eot",
 }
 
+
+def _resolve_runtime_path(raw_path: str, default_path: Path) -> Path:
+    text = str(raw_path or "").strip()
+    if not text:
+        return default_path
+
+    parsed = Path(text).expanduser()
+    if parsed.is_absolute():
+        return parsed
+    return (SKILL_DIR / parsed).resolve()
+
+
+LEGACY_SCENARIOS_DIR = DATA_DIR / "scenarios"
+LEGACY_SCENARIOS_BUILTIN_DIR = LEGACY_SCENARIOS_DIR / "builtin"
+LEGACY_SCENARIOS_CUSTOM_DIR = LEGACY_SCENARIOS_DIR / "custom"
+configured_scenarios_root = (
+    _resolve_runtime_path(CONFIG_SCENARIOS_DIR, LEGACY_SCENARIOS_DIR)
+    if CONFIG_SCENARIOS_DIR
+    else None
+)
+
+default_builtin_scenarios_dir = RESOURCES_DIR / "scenarios" / "builtin"
+if not default_builtin_scenarios_dir.exists() and LEGACY_SCENARIOS_BUILTIN_DIR.exists():
+    default_builtin_scenarios_dir = LEGACY_SCENARIOS_BUILTIN_DIR
+
+if CONFIG_BUILTIN_SCENARIOS_DIR:
+    BUILTIN_SCENARIOS_DIR = _resolve_runtime_path(CONFIG_BUILTIN_SCENARIOS_DIR, default_builtin_scenarios_dir)
+elif configured_scenarios_root is not None:
+    BUILTIN_SCENARIOS_DIR = configured_scenarios_root / "builtin"
+else:
+    BUILTIN_SCENARIOS_DIR = default_builtin_scenarios_dir
+
+default_custom_scenarios_dir = Path.home() / ".deepvision" / "scenarios" / "custom"
+if CONFIG_CUSTOM_SCENARIOS_DIR:
+    CUSTOM_SCENARIOS_DIR = _resolve_runtime_path(CONFIG_CUSTOM_SCENARIOS_DIR, default_custom_scenarios_dir)
+elif configured_scenarios_root is not None:
+    CUSTOM_SCENARIOS_DIR = configured_scenarios_root / "custom"
+else:
+    CUSTOM_SCENARIOS_DIR = default_custom_scenarios_dir
+
 auth_db_from_config = CONFIG_AUTH_DB_PATH
 auth_db_from_env = os.environ.get("DEEPVISION_AUTH_DB_PATH", "")
 raw_auth_db_path = auth_db_from_env or auth_db_from_config
@@ -439,7 +483,11 @@ AUTH_PHONE_PATTERN = re.compile(r"^1\d{10}$")
 import sys
 sys.path.insert(0, str(SKILL_DIR))
 from scripts.scenario_loader import get_scenario_loader
-scenario_loader = get_scenario_loader(DATA_DIR / "scenarios")
+scenario_loader = get_scenario_loader(
+    builtin_dir=BUILTIN_SCENARIOS_DIR,
+    custom_dir=CUSTOM_SCENARIOS_DIR,
+    migrate_legacy_custom_dir=LEGACY_SCENARIOS_CUSTOM_DIR,
+)
 
 # Web Search 状态追踪（用于前端呼吸灯效果）
 web_search_active = False

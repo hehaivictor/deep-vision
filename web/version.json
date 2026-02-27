@@ -1,7 +1,18 @@
 {
-  "version": "1.42.1",
+  "version": "1.43.0",
   "releaseDate": "2026-02-27",
   "changelog": [
+    {
+      "version": "1.43.0",
+      "date": "2026-02-27",
+      "type": "minor",
+      "title": "重构场景目录并支持自动迁移",
+      "changes": [
+        "feat(场景): 内置场景迁移至 resources/scenarios/builtin，自定义场景默认写入 ~/.deepvision/scenarios/custom",
+        "refactor(配置): 新增 SCENARIOS_DIR/BUILTIN_SCENARIOS_DIR/CUSTOM_SCENARIOS_DIR 并兼容旧配置",
+        "chore(兼容): 场景加载器支持双目录与旧 custom 目录迁移，更新 .gitignore 与配置示例"
+      ]
+    },
     {
       "version": "1.42.1",
       "date": "2026-02-27",
