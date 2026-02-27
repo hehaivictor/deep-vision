@@ -1,7 +1,16 @@
 {
-  "version": "2.0.0",
+  "version": "2.0.1",
   "releaseDate": "2026-02-27",
   "changelog": [
+    {
+      "version": "2.0.1",
+      "date": "2026-02-27",
+      "type": "patch",
+      "title": "文档: 新增 DeepVision AI 可执行全量升级清单",
+      "changes": [
+        "规划: 补充 P0/P1/P2 任务依赖、验收门禁与执行指令"
+      ]
+    },
     {
       "version": "2.0.0",
       "date": "2026-02-27",
