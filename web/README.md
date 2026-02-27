@@ -188,6 +188,78 @@ AI 冲突提示: ⚠️ 发现潜在冲突
 | `/api/sessions/<id>/generate-report` | POST | **AI 生成访谈报告** |
 | `/api/reports` | GET | 获取所有报告 |
 | `/api/reports/<name>` | GET | 获取报告内容 |
+| `/api/metrics` | GET | 获取性能指标（结构化统计） |
+| `/api/metrics/reset` | POST | 重置性能指标 |
+| `/api/summaries` | GET | 获取摘要缓存统计 |
+| `/api/summaries/clear` | POST | 清空摘要缓存 |
+
+### API 返回约定（2026-02 更新）
+
+#### 1) `/api/sessions/<id>/next-question` 的 fallback 行为
+
+- 当 AI 可用时：按原逻辑返回 `ai_generated: true` 的动态问题。
+- 当 AI 不可用时：接口不再返回 `503`，而是自动回退到内置题库，返回 `ai_generated: false` 的可继续访谈问题。
+
+fallback 响应示例：
+
+```json
+{
+  "question": "您希望通过这个项目解决哪些核心问题？",
+  "options": [
+    "提升工作效率",
+    "降低运营成本",
+    "改善用户体验",
+    "增强数据分析能力"
+  ],
+  "multi_select": true,
+  "dimension": "customer_needs",
+  "ai_generated": false,
+  "is_follow_up": false,
+  "ai_recommendation": null
+}
+```
+
+#### 2) `/api/metrics` 统一响应结构
+
+无论是否有调用数据，`/api/metrics` 都返回统一字段结构，便于前端稳定解析：
+
+```json
+{
+  "period": "全部调用",
+  "total_calls": 0,
+  "successful_calls": 0,
+  "failed_calls": 0,
+  "timeout_calls": 0,
+  "timeout_rate": 0,
+  "truncation_events": 0,
+  "truncation_rate": 0,
+  "avg_response_time_ms": 0,
+  "max_response_time_ms": 0,
+  "min_response_time_ms": 0,
+  "avg_prompt_length": 0,
+  "max_prompt_length": 0,
+  "recommendations": [
+    {
+      "level": "info",
+      "message": "暂无数据"
+    }
+  ],
+  "summary": {
+    "total_calls": 0,
+    "total_timeouts": 0,
+    "total_truncations": 0,
+    "avg_response_time": 0,
+    "avg_prompt_length": 0
+  },
+  "calls": [],
+  "message": "暂无数据"
+}
+```
+
+说明：
+- `summary`：长期累计统计（指标文件汇总）。
+- `calls`：按 `last_n` 过滤后的明细调用列表。
+- `message`：空数据或异常时的可读提示，业务方可直接展示。
 
 ## 登录认证（MVP）
 
@@ -213,6 +285,7 @@ AI 冲突提示: ⚠️ 发现潜在冲突
 | `/api/auth/login` | POST | 登录 |
 | `/api/auth/logout` | POST | 退出登录 |
 | `/api/auth/me` | GET | 获取当前登录用户 |
+| `/api/status` | GET | 服务状态（匿名最小返回，登录后返回完整状态） |
 
 注册/登录请求示例：
 
@@ -310,6 +383,19 @@ curl -X POST http://localhost:5001/api/sessions/dv-20260123-abc123/next-question
   "is_follow_up": false,
   "conflict_detected": false,
   "ai_generated": true
+}
+```
+
+AI 不可用时（fallback）：
+
+```json
+{
+  "question": "您希望通过这个项目解决哪些核心问题？",
+  "options": ["提升工作效率", "降低运营成本", "改善用户体验", "增强数据分析能力"],
+  "dimension": "customer_needs",
+  "multi_select": true,
+  "is_follow_up": false,
+  "ai_generated": false
 }
 ```
 
