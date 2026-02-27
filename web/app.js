@@ -5296,7 +5296,7 @@ function deepVision() {
                 'a', 'p', 'br', 'hr', 'strong', 'em', 'code', 'pre', 'blockquote',
                 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
                 'table', 'thead', 'tbody', 'tr', 'th', 'td',
-                'div', 'span', 'img'
+                'div', 'span', 'img', 'details', 'summary'
             ]);
             const allowedAttrs = {
                 a: new Set(['href', 'title', 'target', 'rel']),
@@ -5305,6 +5305,7 @@ function deepVision() {
                 pre: new Set(['class', 'id']),
                 div: new Set(['class']),
                 span: new Set(['class']),
+                details: new Set(['open']),
                 th: new Set(['colspan', 'rowspan', 'align']),
                 td: new Set(['colspan', 'rowspan', 'align'])
             };

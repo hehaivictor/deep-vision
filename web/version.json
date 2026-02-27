@@ -1,7 +1,17 @@
 {
-  "version": "1.43.0",
+  "version": "1.43.1",
   "releaseDate": "2026-02-27",
   "changelog": [
+    {
+      "version": "1.43.1",
+      "date": "2026-02-27",
+      "type": "patch",
+      "title": "恢复访谈附录折叠展示",
+      "changes": [
+        "fix(前端渲染): Markdown 安全白名单允许 details/summary 标签",
+        "fix(兼容): 放开 details 的 open 属性，避免折叠状态被清洗"
+      ]
+    },
     {
       "version": "1.43.0",
       "date": "2026-02-27",
