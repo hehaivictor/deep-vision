@@ -661,7 +661,6 @@
                             <div class="px-2.5 py-2 space-y-1">
                                 <p class="text-xs font-semibold text-primary tracking-wide">当前账号</p>
                                 <p class="text-xs text-muted break-all" x-text="currentUser?.account || '未登录'"></p>
-                                <p class="text-[11px] text-muted">主题：<span x-text="themeModeLabel()"></span></p>
                             </div>
                             <div class="account-menu-divider my-2"></div>
                             <button @click="openSettingsModal('account')"
@@ -3314,10 +3313,10 @@
                     </div>
                     <button @click="closeSettingsModal()"
                             data-dialog-autofocus
-                            class="settings-close-btn w-9 h-9 rounded-lg border border-gray-200 text-muted hover:text-primary hover:border-primary/40 inline-flex items-center justify-center transition-colors duration-150"
+                            class="settings-close-btn"
                             aria-label="关闭设置中心">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        <svg class="settings-close-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6 18L18 6M6 6l12 12"/>
                         </svg>
                     </button>
                 </div>
@@ -3364,10 +3363,6 @@
                             <div class="settings-group">
                                 <h4 class="text-sm font-semibold text-primary mb-2">账号信息</h4>
                                 <div class="settings-info-grid text-sm">
-                                    <div class="settings-info-row">
-                                        <span class="settings-info-label">账号</span>
-                                        <span class="settings-info-value break-all" x-text="currentUser?.account || '-'"></span>
-                                    </div>
                                     <div class="settings-info-row">
                                         <span class="settings-info-label">手机号</span>
                                         <span class="settings-info-value" x-text="currentUser?.phone || '未绑定'"></span>

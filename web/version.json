@@ -1,7 +1,17 @@
 {
-  "version": "2.0.1",
+  "version": "2.1.0",
   "releaseDate": "2026-02-27",
   "changelog": [
+    {
+      "version": "2.1.0",
+      "date": "2026-02-27",
+      "type": "minor",
+      "title": "精简设置中心账号信息展示与关闭按钮结构",
+      "changes": [
+        "style: 调整设置侧栏标签与操作按钮在明暗主题下的视觉样式",
+        "docs: 新增 DeepVision 深瞳产品介绍文档"
+      ]
+    },
     {
       "version": "2.0.1",
       "date": "2026-02-27",
