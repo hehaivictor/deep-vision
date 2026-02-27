@@ -6,9 +6,9 @@
       "version": "1.42.1",
       "date": "2026-02-27",
       "type": "patch",
-      "title": "解释环境变量配置方式是谁的？} ensure within 18-36,",
+      "title": "优化环境变量配置方式",
       "changes": [
-        "解释环境变量配置方式是谁的？} ensure within 18-36,"
+        "优化环境变量配置方式"
       ]
     },
     {
