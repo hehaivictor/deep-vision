@@ -657,27 +657,23 @@
                              x-transition:leave-start="opacity-100 translate-y-0 scale-100"
                              x-transition:leave-end="opacity-0 -translate-y-1 scale-95"
                              @click.outside="showAccountMenu = false"
-                             class="theme-menu account-menu dv-popover-panel absolute right-0 mt-2 w-52 rounded-xl border border-gray-200 bg-white p-1.5 shadow-lg z-50">
-                            <div class="account-menu-section-title px-2.5 py-1.5 text-xs font-semibold tracking-wide">外观</div>
-                            <button @click="setThemeMode('light')"
-                                    :class="getThemeOptionClass('light')"
-                                    class="theme-menu-item w-full text-left px-2.5 py-2 text-sm rounded-lg border transition-colors duration-150">
-                                浅色
-                            </button>
-                            <button @click="setThemeMode('dark')"
-                                    :class="getThemeOptionClass('dark')"
-                                    class="theme-menu-item w-full text-left px-2.5 py-2 text-sm rounded-lg border transition-colors duration-150 mt-1">
-                                深色
-                            </button>
-                            <button @click="setThemeMode('system')"
-                                    :class="getThemeOptionClass('system')"
-                                    class="theme-menu-item w-full text-left px-2.5 py-2 text-sm rounded-lg border transition-colors duration-150 mt-1">
-                                跟随系统
-                            </button>
+                             class="theme-menu account-menu dv-popover-panel absolute right-0 mt-2 w-56 rounded-xl border border-gray-200 bg-white p-2 shadow-lg z-50">
+                            <div class="px-2.5 py-2 space-y-1">
+                                <p class="text-xs font-semibold text-primary tracking-wide">当前账号</p>
+                                <p class="text-xs text-muted break-all" x-text="currentUser?.account || '未登录'"></p>
+                                <p class="text-[11px] text-muted">主题：<span x-text="themeModeLabel()"></span></p>
+                            </div>
                             <div class="account-menu-divider my-2"></div>
-                            <div class="account-menu-section-title px-2.5 py-1.5 text-xs font-semibold tracking-wide">账号</div>
+                            <button @click="openSettingsModal('account')"
+                                    class="theme-menu-item w-full text-left px-2.5 py-2 text-sm rounded-lg border border-transparent hover:bg-gray-100 hover:text-primary transition-colors duration-150">
+                                账号与绑定
+                            </button>
+                            <button @click="openSettingsModal('appearance')"
+                                    class="theme-menu-item w-full text-left px-2.5 py-2 text-sm rounded-lg border border-transparent hover:bg-gray-100 hover:text-primary transition-colors duration-150 mt-1">
+                                外观设置
+                            </button>
                             <button @click="requestLogout()"
-                                    class="account-menu-logout-btn w-full text-left px-2.5 py-2 text-sm rounded-lg border border-transparent transition-colors duration-150">
+                                    class="account-menu-logout-btn w-full text-left px-2.5 py-2 text-sm rounded-lg border border-transparent transition-colors duration-150 mt-1">
                                 退出登录
                             </button>
                         </div>
@@ -718,15 +714,15 @@
 
                     <form class="space-y-4" @submit.prevent="submitAuth()" novalidate>
                         <div>
-                            <label for="auth-account" class="block text-sm font-medium text-primary mb-1">邮箱或手机号</label>
+                            <label for="auth-account" class="block text-sm font-medium text-primary mb-1">手机号</label>
                             <input id="auth-account"
                                    data-auth-autofocus
                                    x-model.trim="authForm.account"
                                    @input="authErrors.account = ''"
                                    :type="getAuthInputType(authForm.account)"
-                                   inputmode="text"
-                                   autocomplete="username"
-                                   placeholder="请输入邮箱或手机号"
+                                   inputmode="numeric"
+                                   autocomplete="tel"
+                                   placeholder="请输入手机号（11位）"
                                    class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
                                    :aria-invalid="authErrors.account ? 'true' : 'false'"
                                    required>
@@ -3287,6 +3283,205 @@
                         </button>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <!-- ========== 设置中心弹窗 ========== -->
+        <div x-show="showSettingsModal"
+             data-dialog-key="showSettingsModal"
+             x-bind="getDialogAttrs('showSettingsModal')"
+             x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0"
+             x-transition:enter-end="opacity-100"
+             x-transition:leave="transition ease-in duration-150"
+             x-transition:leave-start="opacity-100"
+             x-transition:leave-end="opacity-0"
+             class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
+             @click.self="closeSettingsModal()"
+             @keydown.escape.window="closeSettingsModal()">
+            <div x-bind="getDialogPanelAttrs('showSettingsModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-3xl w-full overflow-hidden"
+                 x-transition:enter="transition ease-out duration-200"
+                 x-transition:enter-start="opacity-0 scale-95 translate-y-1"
+                 x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+                 x-transition:leave="transition ease-in duration-150"
+                 x-transition:leave-start="opacity-100 scale-100 translate-y-0"
+                 x-transition:leave-end="opacity-0 scale-95 translate-y-1">
+                <div class="settings-modal-header px-5 py-4 border-b border-border flex items-center justify-between">
+                    <div>
+                        <h3 id="dv-dialog-settings-title" class="dv-modal-title">设置中心</h3>
+                        <p id="dv-dialog-settings-desc" class="dv-modal-body text-sm mt-1">管理外观偏好与账号绑定关系</p>
+                    </div>
+                    <button @click="closeSettingsModal()"
+                            data-dialog-autofocus
+                            class="settings-close-btn w-9 h-9 rounded-lg border border-gray-200 text-muted hover:text-primary hover:border-primary/40 inline-flex items-center justify-center transition-colors duration-150"
+                            aria-label="关闭设置中心">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="settings-layout flex flex-col md:flex-row min-h-[24rem]">
+                    <aside class="settings-sidebar w-full md:w-52 border-b md:border-b-0 md:border-r border-border p-3 space-y-2">
+                        <button id="dv-settings-tab-appearance"
+                                @click="settingsTab = 'appearance'"
+                                :class="settingsTab === 'appearance' ? 'settings-tab-btn settings-tab-btn--active' : 'settings-tab-btn'"
+                                class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium">
+                            外观设置
+                        </button>
+                        <button id="dv-settings-tab-account"
+                                @click="settingsTab = 'account'"
+                                :class="settingsTab === 'account' ? 'settings-tab-btn settings-tab-btn--active' : 'settings-tab-btn'"
+                                class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium">
+                            账号与绑定
+                        </button>
+                    </aside>
+                    <section class="settings-content flex-1 p-4 md:p-5 space-y-5">
+                        <div x-show="settingsTab === 'appearance'" x-cloak class="space-y-4">
+                            <div class="settings-group">
+                                <h4 class="text-sm font-semibold text-primary mb-2">主题模式</h4>
+                                <p class="text-xs text-muted mb-3">当前模式：<span x-text="themeModeLabel()"></span></p>
+                                <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                    <button @click="setThemeMode('light')"
+                                            :class="getThemeOptionClass('light')"
+                                            class="theme-menu-item px-3 py-2 text-sm rounded-lg border text-left">
+                                        浅色
+                                    </button>
+                                    <button @click="setThemeMode('dark')"
+                                            :class="getThemeOptionClass('dark')"
+                                            class="theme-menu-item px-3 py-2 text-sm rounded-lg border text-left">
+                                        深色
+                                    </button>
+                                    <button @click="setThemeMode('system')"
+                                            :class="getThemeOptionClass('system')"
+                                            class="theme-menu-item px-3 py-2 text-sm rounded-lg border text-left">
+                                        跟随系统
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <div x-show="settingsTab === 'account'" x-cloak class="space-y-4">
+                            <div class="settings-group">
+                                <h4 class="text-sm font-semibold text-primary mb-2">账号信息</h4>
+                                <div class="settings-info-grid text-sm">
+                                    <div class="settings-info-row">
+                                        <span class="settings-info-label">账号</span>
+                                        <span class="settings-info-value break-all" x-text="currentUser?.account || '-'"></span>
+                                    </div>
+                                    <div class="settings-info-row">
+                                        <span class="settings-info-label">手机号</span>
+                                        <span class="settings-info-value" x-text="currentUser?.phone || '未绑定'"></span>
+                                    </div>
+                                    <div class="settings-info-row">
+                                        <span class="settings-info-label">微信</span>
+                                        <span class="settings-info-value"
+                                              x-text="currentUser?.wechat_bound ? (currentUser?.wechat_nickname ? `已绑定（${currentUser.wechat_nickname}）` : '已绑定') : '未绑定'"></span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="settings-group space-y-2">
+                                <h4 class="text-sm font-semibold text-primary">绑定操作</h4>
+                                <button @click="startWechatBind()"
+                                        x-show="!currentUser?.wechat_bound"
+                                        :disabled="wechatBindLoading"
+                                        class="settings-action-btn w-full text-left px-3 py-2.5 rounded-lg border text-sm font-medium">
+                                    <span x-text="wechatBindLoading ? '正在跳转微信...' : '绑定微信'"></span>
+                                </button>
+                                <button @click="openBindPhoneModal()"
+                                        x-show="!currentUser?.phone"
+                                        :disabled="bindPhoneLoading"
+                                        class="settings-action-btn w-full text-left px-3 py-2.5 rounded-lg border text-sm font-medium">
+                                    绑定手机号
+                                </button>
+                                <p x-show="currentUser?.wechat_bound && currentUser?.phone" x-cloak class="text-xs text-muted">
+                                    当前账号已完成微信与手机号绑定。
+                                </p>
+                            </div>
+                            <div class="pt-1">
+                                <button @click="requestLogout()"
+                                        class="account-menu-logout-btn w-full text-left px-3 py-2.5 text-sm rounded-lg border border-transparent font-medium">
+                                    退出登录
+                                </button>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== 绑定手机号弹窗 ========== -->
+        <div x-show="showBindPhoneModal"
+             data-dialog-key="showBindPhoneModal"
+             x-bind="getDialogAttrs('showBindPhoneModal')"
+             x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0"
+             x-transition:enter-end="opacity-100"
+             x-transition:leave="transition ease-in duration-150"
+             x-transition:leave-start="opacity-100"
+             x-transition:leave-end="opacity-0"
+             class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
+             @click.self="closeBindPhoneModal()"
+             @keydown.escape.window="closeBindPhoneModal()">
+            <div x-bind="getDialogPanelAttrs('showBindPhoneModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6"
+                 x-transition:enter="transition ease-out duration-200"
+                 x-transition:enter-start="opacity-0 scale-95 translate-y-1"
+                 x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+                 x-transition:leave="transition ease-in duration-150"
+                 x-transition:leave-start="opacity-100 scale-100 translate-y-0"
+                 x-transition:leave-end="opacity-0 scale-95 translate-y-1">
+                <h3 id="dv-dialog-bind-phone-title" class="dv-modal-title mb-2">绑定手机号</h3>
+                <p id="dv-dialog-bind-phone-desc" class="dv-modal-body mb-5">绑定后可使用手机号+密码登录同一账号。</p>
+                <form class="space-y-4" @submit.prevent="submitBindPhone()">
+                    <div>
+                        <label for="bind-phone-input" class="block text-sm font-medium text-primary mb-1">手机号</label>
+                        <input id="bind-phone-input"
+                               data-bind-phone-input
+                               data-dialog-autofocus
+                               type="tel"
+                               inputmode="numeric"
+                               autocomplete="tel"
+                               x-model.trim="bindPhoneForm.phone"
+                               @input="bindPhoneErrors.phone = ''"
+                               placeholder="请输入 11 位手机号"
+                               class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                        <p x-show="bindPhoneErrors.phone" x-text="bindPhoneErrors.phone" class="mt-1 text-xs text-red-500"></p>
+                    </div>
+                    <div x-show="currentUser?.is_wechat_shadow_account" x-cloak>
+                        <label for="bind-phone-password" class="block text-sm font-medium text-primary mb-1">设置登录密码</label>
+                        <input id="bind-phone-password"
+                               type="password"
+                               autocomplete="new-password"
+                               x-model="bindPhoneForm.password"
+                               @input="bindPhoneErrors.password = ''; bindPhoneErrors.confirmPassword = ''"
+                               placeholder="请设置 8-64 位密码"
+                               class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                        <p x-show="bindPhoneErrors.password" x-text="bindPhoneErrors.password" class="mt-1 text-xs text-red-500"></p>
+                    </div>
+                    <div x-show="currentUser?.is_wechat_shadow_account" x-cloak>
+                        <label for="bind-phone-confirm-password" class="block text-sm font-medium text-primary mb-1">确认密码</label>
+                        <input id="bind-phone-confirm-password"
+                               type="password"
+                               autocomplete="new-password"
+                               x-model="bindPhoneForm.confirmPassword"
+                               @input="bindPhoneErrors.confirmPassword = ''"
+                               placeholder="请再次输入密码"
+                               class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                        <p x-show="bindPhoneErrors.confirmPassword" x-text="bindPhoneErrors.confirmPassword" class="mt-1 text-xs text-red-500"></p>
+                    </div>
+                    <div class="dv-modal-actions">
+                        <button type="button"
+                                @click="closeBindPhoneModal()"
+                                class="dv-modal-btn-secondary px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer">
+                            取消
+                        </button>
+                        <button type="submit"
+                                :disabled="bindPhoneLoading"
+                                class="dv-modal-btn-primary px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
+                            <span x-text="bindPhoneLoading ? '绑定中...' : '确认绑定'"></span>
+                        </button>
+                    </div>
+                </form>
             </div>
         </div>
 

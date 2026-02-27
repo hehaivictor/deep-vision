@@ -21,6 +21,7 @@ function deepVision() {
         authChecking: true,
         wechatLoginEnabled: false,
         wechatLoginLoading: false,
+        wechatBindLoading: false,
         authRedirectResult: null,
         authForm: {
             account: '',
@@ -36,6 +37,20 @@ function deepVision() {
         authAccountHistoryMaxItems: 5,
         authAccountHistory: [],
         currentUser: null,
+        showSettingsModal: false,
+        settingsTab: 'appearance',
+        showBindPhoneModal: false,
+        bindPhoneLoading: false,
+        bindPhoneForm: {
+            phone: '',
+            password: '',
+            confirmPassword: ''
+        },
+        bindPhoneErrors: {
+            phone: '',
+            password: '',
+            confirmPassword: ''
+        },
         loading: false,
         loadingQuestion: false,
         questionRequestId: 0,
@@ -106,6 +121,8 @@ function deepVision() {
             'showRestartModal',
             'showDeleteDocModal',
             'showDeleteReportModal',
+            'showSettingsModal',
+            'showBindPhoneModal',
             'showActionConfirmModal',
             'showBatchDeleteModal',
             'showChangelogModal'
@@ -528,6 +545,12 @@ function deepVision() {
             } else if (result === 'wechat_error') {
                 toastType = 'error';
                 fallbackMessage = '微信登录失败，请稍后重试';
+            } else if (result === 'wechat_bind_success') {
+                toastType = this.authReady ? 'success' : 'warning';
+                fallbackMessage = this.authReady ? '微信绑定成功' : '微信绑定未完成，请重试';
+            } else if (result === 'wechat_bind_error') {
+                toastType = 'error';
+                fallbackMessage = '微信绑定失败，请稍后重试';
             }
 
             this.showToast(rawMessage || fallbackMessage, toastType);
@@ -546,6 +569,7 @@ function deepVision() {
             this.currentUser = null;
             this.authLoading = false;
             this.wechatLoginLoading = false;
+            this.wechatBindLoading = false;
             this.currentView = 'sessions';
             this.currentSession = null;
             this.sessions = [];
@@ -559,15 +583,20 @@ function deepVision() {
             this.showDeleteModal = false;
             this.showLogoutConfirmModal = false;
             this.showDeleteReportModal = false;
+            this.showSettingsModal = false;
             this.showBatchDeleteModal = false;
             this.showRestartModal = false;
             this.showDeleteDocModal = false;
+            this.showBindPhoneModal = false;
             this.showActionConfirmModal = false;
             if (typeof this.actionConfirmResolve === 'function') {
                 this.actionConfirmResolve(false);
             }
             this.actionConfirmResolve = null;
             this.showAccountMenu = false;
+            this.bindPhoneLoading = false;
+            this.bindPhoneForm = { phone: '', password: '', confirmPassword: '' };
+            this.bindPhoneErrors = { phone: '', password: '', confirmPassword: '' };
             this.sessionBatchMode = false;
             this.reportBatchMode = false;
             this.selectedSessionIds = [];
@@ -627,7 +656,7 @@ function deepVision() {
 
                 const deduped = [];
                 parsed.forEach((item) => {
-                    const value = String(item || '').trim();
+                    const value = this.normalizeAuthPhone(String(item || '').trim());
                     if (!value || deduped.includes(value)) return;
                     deduped.push(value);
                 });
@@ -650,7 +679,7 @@ function deepVision() {
         },
 
         rememberAuthAccount(account = '') {
-            const value = String(account || '').trim();
+            const value = this.normalizeAuthPhone(account);
             if (!value) return;
 
             this.authAccountHistory = [value, ...this.authAccountHistory.filter((item) => item !== value)]
@@ -665,6 +694,14 @@ function deepVision() {
             this.authForm.account = value;
             this.authErrors.account = '';
             this.$nextTick(() => this.focusAuthPasswordInput());
+        },
+
+        normalizeAuthPhone(account = '') {
+            return String(account || '')
+                .trim()
+                .replace(/[\s-]/g, '')
+                .replace(/^\+86/, '')
+                .replace(/^86(?=1\d{10}$)/, '');
         },
 
         handleAuthPasswordEnter(event) {
@@ -697,28 +734,18 @@ function deepVision() {
         },
 
         getAuthInputType(account = '') {
-            const value = String(account || '').trim();
-            if (value.includes('@')) return 'email';
             return 'tel';
         },
 
         validateAuthForm() {
             const errors = { account: '', password: '', confirmPassword: '' };
-            const account = String(this.authForm.account || '').trim();
+            const account = this.normalizeAuthPhone(this.authForm.account);
             const password = String(this.authForm.password || '');
 
             if (!account) {
-                errors.account = '请输入邮箱或手机号';
-            } else if (account.includes('@')) {
-                const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-                if (!emailPattern.test(account)) {
-                    errors.account = '请输入有效邮箱';
-                }
-            } else {
-                const normalizedPhone = account.replace(/[\s-]/g, '').replace(/^\+86/, '').replace(/^86(?=1\d{10}$)/, '');
-                if (!/^1\d{10}$/.test(normalizedPhone)) {
-                    errors.account = '请输入有效手机号（11位）';
-                }
+                errors.account = '请输入手机号';
+            } else if (!/^1\d{10}$/.test(account)) {
+                errors.account = '请输入有效手机号（11位）';
             }
 
             if (password.length < 8 || password.length > 64) {
@@ -741,7 +768,7 @@ function deepVision() {
                 return;
             }
 
-            const account = String(this.authForm.account || '').trim();
+            const account = this.normalizeAuthPhone(this.authForm.account);
             this.authLoading = true;
             try {
                 const endpoint = this.authMode === 'register' ? '/auth/register' : '/auth/login';
@@ -789,6 +816,130 @@ function deepVision() {
             window.location.assign(target);
         },
 
+        startWechatBind() {
+            if (!this.authReady) return;
+            if (!this.wechatLoginEnabled) {
+                this.showToast('当前未启用微信登录，无法绑定微信', 'warning');
+                return;
+            }
+            if (this.authLoading || this.wechatBindLoading) return;
+            if (typeof window === 'undefined') return;
+
+            this.showAccountMenu = false;
+            this.showSettingsModal = false;
+            this.wechatBindLoading = true;
+            const pathname = window.location.pathname === '/' ? '/index.html' : window.location.pathname;
+            const returnTo = `${pathname}${window.location.search || ''}${window.location.hash || ''}`;
+            const target = `${API_BASE}/auth/bind/wechat/start?return_to=${encodeURIComponent(returnTo)}`;
+            window.location.assign(target);
+        },
+
+        openSettingsModal(tab = 'appearance') {
+            if (!this.authReady) return;
+            const normalizedTab = tab === 'account' ? 'account' : 'appearance';
+            this.settingsTab = normalizedTab;
+            this.showAccountMenu = false;
+            this.showSettingsModal = true;
+        },
+
+        closeSettingsModal() {
+            this.showSettingsModal = false;
+        },
+
+        openBindPhoneModal() {
+            if (!this.authReady || this.bindPhoneLoading) return;
+            this.showAccountMenu = false;
+            this.showSettingsModal = false;
+            this.bindPhoneErrors = { phone: '', password: '', confirmPassword: '' };
+            this.bindPhoneForm.phone = String(this.currentUser?.phone || '').trim();
+            this.bindPhoneForm.password = '';
+            this.bindPhoneForm.confirmPassword = '';
+            this.showBindPhoneModal = true;
+            this.$nextTick(() => {
+                const input = document.querySelector('[data-bind-phone-input]');
+                if (input && typeof input.focus === 'function') {
+                    input.focus({ preventScroll: true });
+                }
+            });
+        },
+
+        closeBindPhoneModal() {
+            if (this.bindPhoneLoading) return;
+            this.showBindPhoneModal = false;
+        },
+
+        validateBindPhoneForm() {
+            const phone = String(this.bindPhoneForm.phone || '')
+                .trim()
+                .replace(/[\s-]/g, '')
+                .replace(/^\+86/, '')
+                .replace(/^86(?=1\d{10}$)/, '');
+            if (!/^1\d{10}$/.test(phone)) {
+                this.bindPhoneErrors.phone = '请输入有效手机号（11位）';
+            } else {
+                this.bindPhoneErrors.phone = '';
+            }
+
+            const password = String(this.bindPhoneForm.password || '');
+            const confirmPassword = String(this.bindPhoneForm.confirmPassword || '');
+            const needSetPassword = Boolean(this.currentUser?.is_wechat_shadow_account);
+            if (needSetPassword) {
+                if (password.length < 8 || password.length > 64) {
+                    this.bindPhoneErrors.password = '请设置 8-64 位登录密码';
+                } else {
+                    this.bindPhoneErrors.password = '';
+                }
+                if (password !== confirmPassword) {
+                    this.bindPhoneErrors.confirmPassword = '两次输入的密码不一致';
+                } else {
+                    this.bindPhoneErrors.confirmPassword = '';
+                }
+            } else {
+                this.bindPhoneErrors.password = '';
+                this.bindPhoneErrors.confirmPassword = '';
+            }
+
+            if (this.bindPhoneErrors.phone || this.bindPhoneErrors.password || this.bindPhoneErrors.confirmPassword) {
+                return null;
+            }
+            return {
+                phone,
+                password: needSetPassword ? password : ''
+            };
+        },
+
+        async submitBindPhone() {
+            if (this.bindPhoneLoading) return;
+            const payload = this.validateBindPhoneForm();
+            if (!payload) return;
+
+            this.bindPhoneLoading = true;
+            try {
+                const result = await this.apiCall('/auth/bind/phone', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        phone: payload.phone,
+                        password: payload.password
+                    })
+                });
+                this.currentUser = result?.user || this.currentUser;
+                this.showBindPhoneModal = false;
+                this.showToast('手机号绑定成功', 'success');
+            } catch (error) {
+                const message = error?.message || '手机号绑定失败，请稍后重试';
+                if (message.includes('密码')) {
+                    this.bindPhoneErrors.password = message;
+                } else if (message.includes('手机号') || message.includes('手机')) {
+                    this.bindPhoneErrors.phone = message;
+                } else {
+                    this.bindPhoneErrors.phone = '';
+                }
+                this.showToast(message, 'error');
+            } finally {
+                this.bindPhoneLoading = false;
+            }
+        },
+
         async logout() {
             if (this.authLoading) return;
             this.showAccountMenu = false;
@@ -809,6 +960,7 @@ function deepVision() {
 
         requestLogout() {
             this.showAccountMenu = false;
+            this.showSettingsModal = false;
             this.showLogoutConfirmModal = true;
         },
 

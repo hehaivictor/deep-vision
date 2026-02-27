@@ -476,7 +476,6 @@ else:
 for d in [SESSIONS_DIR, REPORTS_DIR, CONVERTED_DIR, TEMP_DIR, METRICS_DIR, SUMMARIES_DIR, PRESENTATIONS_DIR, AUTH_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-AUTH_EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 AUTH_PHONE_PATTERN = re.compile(r"^1\d{10}$")
 
 # ============ 场景配置加载器 ============
@@ -591,30 +590,32 @@ def normalize_phone_number(raw_phone: str) -> str:
     return normalized
 
 
-def normalize_account(account: str) -> tuple[Optional[str], Optional[str], str]:
+def normalize_account(account: str) -> tuple[str, str]:
     account_text = str(account or "").strip()
     if not account_text:
-        return None, None, "账号不能为空"
-
-    if "@" in account_text:
-        email = account_text.lower()
-        if not AUTH_EMAIL_PATTERN.match(email):
-            return None, None, "请输入有效的邮箱地址"
-        return email, None, ""
+        return "", "手机号不能为空"
 
     phone = normalize_phone_number(account_text)
     if not AUTH_PHONE_PATTERN.match(phone):
-        return None, None, "请输入有效的手机号（中国大陆 11 位）"
-    return None, phone, ""
+        return "", "请输入有效的手机号（中国大陆 11 位）"
+    return phone, ""
 
 
 def build_user_payload(row: sqlite3.Row) -> dict:
+    user_id = int(row["id"])
+    wechat_identity = query_wechat_identity_by_user_id(user_id)
+    email = row["email"] or ""
+    phone = row["phone"] or ""
     return {
-        "id": int(row["id"]),
-        "email": row["email"] or "",
-        "phone": row["phone"] or "",
-        "account": row["email"] or row["phone"] or "",
-        "created_at": row["created_at"]
+        "id": user_id,
+        "email": email,
+        "phone": phone,
+        "account": email or phone or "",
+        "created_at": row["created_at"],
+        "wechat_bound": bool(wechat_identity),
+        "wechat_nickname": str((wechat_identity or {}).get("nickname") or "").strip(),
+        "wechat_avatar_url": str((wechat_identity or {}).get("avatar_url") or "").strip(),
+        "is_wechat_shadow_account": bool(email.endswith("@wechat.local")),
     }
 
 
@@ -626,19 +627,29 @@ def query_user_by_id(user_id: int) -> Optional[sqlite3.Row]:
         ).fetchone()
 
 
-def query_user_by_account(email: Optional[str], phone: Optional[str]) -> Optional[sqlite3.Row]:
+def query_user_by_account(phone: str) -> Optional[sqlite3.Row]:
     with get_auth_db_connection() as conn:
-        if email:
-            return conn.execute(
-                "SELECT id, email, phone, password_hash, created_at, updated_at FROM users WHERE email = ? LIMIT 1",
-                (email,)
-            ).fetchone()
         if phone:
             return conn.execute(
                 "SELECT id, email, phone, password_hash, created_at, updated_at FROM users WHERE phone = ? LIMIT 1",
                 (phone,)
             ).fetchone()
     return None
+
+
+def query_wechat_identity_by_user_id(user_id: int) -> Optional[dict]:
+    with get_auth_db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id, user_id, app_id, openid, unionid, nickname, avatar_url, created_at, updated_at
+            FROM wechat_identities
+            WHERE user_id = ?
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (int(user_id),)
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def sanitize_return_to_path(raw_return_to: str) -> str:
@@ -953,6 +964,187 @@ def resolve_user_for_wechat_identity(
         conn.commit()
 
     return query_user_by_id(user_id)
+
+
+def bind_phone_to_user(user_id: int, phone: str, new_password: str = "") -> tuple[Optional[sqlite3.Row], str]:
+    target_user_id = int(user_id)
+    normalized_phone = normalize_phone_number(phone)
+    if not AUTH_PHONE_PATTERN.match(normalized_phone):
+        return None, "请输入有效的手机号（中国大陆 11 位）"
+    new_password_text = str(new_password or "")
+    if new_password_text and (len(new_password_text) < 8 or len(new_password_text) > 64):
+        return None, "密码长度需为 8-64 位"
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_auth_db_connection() as conn:
+        current_user = conn.execute(
+            """
+            SELECT id, email, phone, password_hash, created_at, updated_at
+            FROM users
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (target_user_id,)
+        ).fetchone()
+        if not current_user:
+            return None, "当前登录用户不存在"
+        current_email = str(current_user["email"] or "").strip().lower()
+        is_shadow_wechat_user = current_email.endswith("@wechat.local")
+        if is_shadow_wechat_user and not new_password_text:
+            return None, "请设置登录密码（8-64位）"
+
+        current_phone = str(current_user["phone"] or "").strip()
+        if current_phone and current_phone == normalized_phone:
+            return current_user, ""
+        if current_phone and current_phone != normalized_phone:
+            return None, "当前账号已绑定其他手机号，暂不支持直接更换"
+
+        conflict_user = conn.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE phone = ?
+            LIMIT 1
+            """,
+            (normalized_phone,)
+        ).fetchone()
+        if conflict_user and int(conflict_user["id"]) != target_user_id:
+            return None, "该手机号已绑定到其他账号"
+
+        update_password_hash = generate_password_hash(new_password_text, method="pbkdf2:sha256") if new_password_text else None
+        conn.execute(
+            """
+            UPDATE users
+            SET phone = ?, password_hash = COALESCE(?, password_hash), updated_at = ?
+            WHERE id = ?
+            """,
+            (normalized_phone, update_password_hash, now_iso, target_user_id)
+        )
+        conn.commit()
+
+    updated_user = query_user_by_id(target_user_id)
+    if not updated_user:
+        return None, "绑定手机号失败，请稍后重试"
+    return updated_user, ""
+
+
+def bind_wechat_identity_to_user(
+    user_id: int,
+    app_id: str,
+    openid: str,
+    unionid: str = "",
+    nickname: str = "",
+    avatar_url: str = "",
+) -> tuple[Optional[sqlite3.Row], str]:
+    target_user_id = int(user_id)
+    app_id_value = str(app_id or "").strip()
+    openid_value = str(openid or "").strip()
+    unionid_value = str(unionid or "").strip()
+    nickname_value = str(nickname or "").strip()
+    avatar_url_value = str(avatar_url or "").strip()
+
+    if not app_id_value or not openid_value:
+        return None, "微信身份信息不完整"
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_auth_db_connection() as conn:
+        current_user = conn.execute(
+            "SELECT id FROM users WHERE id = ? LIMIT 1",
+            (target_user_id,)
+        ).fetchone()
+        if not current_user:
+            return None, "当前登录用户不存在"
+
+        bound_for_user = conn.execute(
+            """
+            SELECT id, app_id, openid, unionid
+            FROM wechat_identities
+            WHERE user_id = ?
+            LIMIT 1
+            """,
+            (target_user_id,)
+        ).fetchone()
+        if bound_for_user:
+            same_openid = (
+                str(bound_for_user["app_id"] or "") == app_id_value
+                and str(bound_for_user["openid"] or "") == openid_value
+            )
+            same_unionid = (
+                unionid_value
+                and str(bound_for_user["unionid"] or "").strip()
+                and str(bound_for_user["unionid"] or "").strip() == unionid_value
+            )
+            if not (same_openid or same_unionid):
+                return None, "当前账号已绑定其他微信，请先解绑后再绑定"
+
+        identity_row = None
+        if unionid_value:
+            identity_row = conn.execute(
+                """
+                SELECT id, user_id
+                FROM wechat_identities
+                WHERE unionid = ?
+                LIMIT 1
+                """,
+                (unionid_value,)
+            ).fetchone()
+        if not identity_row:
+            identity_row = conn.execute(
+                """
+                SELECT id, user_id
+                FROM wechat_identities
+                WHERE app_id = ? AND openid = ?
+                LIMIT 1
+                """,
+                (app_id_value, openid_value)
+            ).fetchone()
+
+        if identity_row and int(identity_row["user_id"]) != target_user_id:
+            return None, "该微信已绑定到其他账号"
+
+        if identity_row:
+            conn.execute(
+                """
+                UPDATE wechat_identities
+                SET nickname = ?, avatar_url = ?, updated_at = ?, unionid = ?
+                WHERE id = ?
+                """,
+                (
+                    nickname_value,
+                    avatar_url_value,
+                    now_iso,
+                    unionid_value or None,
+                    int(identity_row["id"]),
+                )
+            )
+            conn.commit()
+        else:
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO wechat_identities
+                    (user_id, app_id, openid, unionid, nickname, avatar_url, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        target_user_id,
+                        app_id_value,
+                        openid_value,
+                        unionid_value or None,
+                        nickname_value,
+                        avatar_url_value,
+                        now_iso,
+                        now_iso,
+                    )
+                )
+                conn.commit()
+            except sqlite3.IntegrityError:
+                return None, "该微信已绑定到其他账号"
+
+    updated_user = query_user_by_id(target_user_id)
+    if not updated_user:
+        return None, "绑定微信失败，请稍后重试"
+    return updated_user, ""
 
 
 def get_current_user() -> Optional[sqlite3.Row]:
@@ -7036,14 +7228,14 @@ def auth_register():
     account = str(data.get("account", "")).strip()
     password = str(data.get("password", ""))
 
-    email, phone, account_error = normalize_account(account)
+    phone, account_error = normalize_account(account)
     if account_error:
         return jsonify({"error": account_error}), 400
 
     if len(password) < 8 or len(password) > 64:
         return jsonify({"error": "密码长度需为 8-64 位"}), 400
 
-    if query_user_by_account(email, phone):
+    if query_user_by_account(phone):
         return jsonify({"error": "该账号已注册"}), 409
 
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -7056,7 +7248,7 @@ def auth_register():
                 INSERT INTO users (email, phone, password_hash, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (email, phone, password_hash, now_iso, now_iso)
+                (None, phone, password_hash, now_iso, now_iso)
             )
             conn.commit()
             user_id = cursor.lastrowid
@@ -7081,13 +7273,13 @@ def auth_login():
     password = str(data.get("password", ""))
 
     if not account or not password:
-        return jsonify({"error": "账号和密码不能为空"}), 400
+        return jsonify({"error": "手机号和密码不能为空"}), 400
 
-    email, phone, account_error = normalize_account(account)
+    phone, account_error = normalize_account(account)
     if account_error:
         return jsonify({"error": account_error}), 400
 
-    user_row = query_user_by_account(email, phone)
+    user_row = query_user_by_account(phone)
     if not user_row or not check_password_hash(user_row["password_hash"], password):
         return jsonify({"error": "账号或密码错误"}), 401
 
@@ -7122,27 +7314,80 @@ def auth_wechat_start():
     return redirect(auth_url, code=302)
 
 
+@app.route('/api/auth/bind/wechat/start', methods=['GET'])
+@require_login
+def auth_bind_wechat_start():
+    unavailable_reason = get_wechat_login_unavailable_reason()
+    if unavailable_reason:
+        return jsonify({"error": unavailable_reason}), 503
+
+    current_user = get_current_user()
+    if not current_user:
+        return jsonify({"error": "请先登录"}), 401
+
+    return_to = sanitize_return_to_path(request.args.get("return_to", "/index.html"))
+    encoded_return_to = base64.urlsafe_b64encode(return_to.encode("utf-8")).decode("ascii").rstrip("=")
+    bind_state = f"{secrets.token_urlsafe(20)}.{encoded_return_to}"
+
+    session["wechat_bind_state"] = bind_state
+    session["wechat_bind_state_expires_at"] = int(_time.time()) + int(WECHAT_OAUTH_STATE_TTL_SECONDS)
+    session["wechat_bind_return_to"] = return_to
+    session["wechat_bind_user_id"] = int(current_user["id"])
+
+    callback_url = get_wechat_oauth_callback_url()
+    auth_url = (
+        "https://open.weixin.qq.com/connect/qrconnect"
+        f"?appid={quote(WECHAT_APP_ID)}"
+        f"&redirect_uri={quote(callback_url, safe='')}"
+        "&response_type=code"
+        f"&scope={quote(WECHAT_OAUTH_SCOPE)}"
+        f"&state={quote(bind_state)}"
+        "#wechat_redirect"
+    )
+    return redirect(auth_url, code=302)
+
+
 @app.route('/api/auth/wechat/callback', methods=['GET'])
 def auth_wechat_callback():
     state_from_query = str(request.args.get("state", "")).strip()
     return_to_from_state = extract_return_to_from_oauth_state(state_from_query)
+    is_bind_flow = bool(str(session.get("wechat_bind_state", "")).strip())
     fallback_return_to = sanitize_return_to_path(
-        session.get("wechat_oauth_return_to", return_to_from_state or "/index.html")
+        session.get(
+            "wechat_bind_return_to" if is_bind_flow else "wechat_oauth_return_to",
+            return_to_from_state or "/index.html"
+        )
     )
 
     unavailable_reason = get_wechat_login_unavailable_reason()
     if unavailable_reason:
         return redirect(
-            build_auth_redirect_url(fallback_return_to, "wechat_error", unavailable_reason),
+            build_auth_redirect_url(
+                fallback_return_to,
+                "wechat_bind_error" if is_bind_flow else "wechat_error",
+                unavailable_reason
+            ),
             code=302,
         )
 
     code = str(request.args.get("code", "")).strip()
     state = state_from_query
 
-    expected_state = str(session.pop("wechat_oauth_state", "")).strip()
-    expires_at_raw = session.pop("wechat_oauth_state_expires_at", 0)
-    return_to = sanitize_return_to_path(session.pop("wechat_oauth_return_to", return_to_from_state or fallback_return_to))
+    if is_bind_flow:
+        expected_state = str(session.pop("wechat_bind_state", "")).strip()
+        expires_at_raw = session.pop("wechat_bind_state_expires_at", 0)
+        return_to = sanitize_return_to_path(session.pop("wechat_bind_return_to", return_to_from_state or fallback_return_to))
+        bind_user_id_raw = session.pop("wechat_bind_user_id", 0)
+        try:
+            bind_user_id = int(bind_user_id_raw or 0)
+        except Exception:
+            bind_user_id = 0
+        bind_user_row = query_user_by_id(bind_user_id) if bind_user_id > 0 else None
+    else:
+        expected_state = str(session.pop("wechat_oauth_state", "")).strip()
+        expires_at_raw = session.pop("wechat_oauth_state_expires_at", 0)
+        return_to = sanitize_return_to_path(session.pop("wechat_oauth_return_to", return_to_from_state or fallback_return_to))
+        bind_user_row = None
 
     try:
         expires_at = int(expires_at_raw or 0)
@@ -7151,26 +7396,55 @@ def auth_wechat_callback():
 
     if not expected_state or not state or state != expected_state:
         return redirect(
-            build_auth_redirect_url(return_to, "wechat_error", "微信登录状态校验失败，请重试"),
+            build_auth_redirect_url(
+                return_to,
+                "wechat_bind_error" if is_bind_flow else "wechat_error",
+                "微信登录状态校验失败，请重试",
+            ),
             code=302,
         )
 
     if expires_at <= int(_time.time()):
         return redirect(
-            build_auth_redirect_url(return_to, "wechat_error", "微信登录已过期，请重新扫码"),
+            build_auth_redirect_url(
+                return_to,
+                "wechat_bind_error" if is_bind_flow else "wechat_error",
+                "微信登录已过期，请重新扫码",
+            ),
             code=302,
         )
 
+    if is_bind_flow and not bind_user_row:
+        return redirect(
+            build_auth_redirect_url(return_to, "wechat_bind_error", "绑定已失效，请登录后重试"),
+            code=302,
+        )
+    if is_bind_flow:
+        active_user = get_current_user()
+        if not active_user or int(active_user["id"]) != int(bind_user_row["id"]):
+            return redirect(
+                build_auth_redirect_url(return_to, "wechat_bind_error", "绑定已失效，请登录后重试"),
+                code=302,
+            )
+
     if not code:
         return redirect(
-            build_auth_redirect_url(return_to, "wechat_cancel", "已取消微信登录"),
+            build_auth_redirect_url(
+                return_to,
+                "wechat_bind_error" if is_bind_flow else "wechat_cancel",
+                "已取消微信登录",
+            ),
             code=302,
         )
 
     token_payload, token_error = exchange_wechat_code_for_token(code)
     if token_error or not token_payload:
         return redirect(
-            build_auth_redirect_url(return_to, "wechat_error", token_error or "微信授权失败"),
+            build_auth_redirect_url(
+                return_to,
+                "wechat_bind_error" if is_bind_flow else "wechat_error",
+                token_error or "微信授权失败",
+            ),
             code=302,
         )
 
@@ -7179,14 +7453,22 @@ def auth_wechat_callback():
     unionid = str(token_payload.get("unionid", "")).strip()
     if not openid or not access_token:
         return redirect(
-            build_auth_redirect_url(return_to, "wechat_error", "微信授权响应不完整"),
+            build_auth_redirect_url(
+                return_to,
+                "wechat_bind_error" if is_bind_flow else "wechat_error",
+                "微信授权响应不完整",
+            ),
             code=302,
         )
 
     profile_payload, profile_error = fetch_wechat_user_profile(access_token, openid)
     if profile_error or not profile_payload:
         return redirect(
-            build_auth_redirect_url(return_to, "wechat_error", profile_error or "拉取微信用户信息失败"),
+            build_auth_redirect_url(
+                return_to,
+                "wechat_bind_error" if is_bind_flow else "wechat_error",
+                profile_error or "拉取微信用户信息失败",
+            ),
             code=302,
         )
 
@@ -7196,6 +7478,24 @@ def auth_wechat_callback():
 
     nickname = str(profile_payload.get("nickname", "")).strip()
     avatar_url = str(profile_payload.get("headimgurl", "")).strip()
+
+    if is_bind_flow:
+        user_row, bind_error = bind_wechat_identity_to_user(
+            user_id=int(bind_user_row["id"]),
+            app_id=WECHAT_APP_ID,
+            openid=openid,
+            unionid=unionid,
+            nickname=nickname,
+            avatar_url=avatar_url,
+        )
+        if bind_error or not user_row:
+            return redirect(
+                build_auth_redirect_url(return_to, "wechat_bind_error", bind_error or "微信绑定失败，请稍后重试"),
+                code=302,
+            )
+
+        login_user(user_row)
+        return redirect(build_auth_redirect_url(return_to, "wechat_bind_success", "微信绑定成功"), code=302)
 
     user_row = resolve_user_for_wechat_identity(
         app_id=WECHAT_APP_ID,
@@ -7226,6 +7526,37 @@ def auth_me():
     if not user_row:
         return jsonify({"error": "请先登录"}), 401
     return jsonify({"user": build_user_payload(user_row)})
+
+
+@app.route('/api/auth/bind/status', methods=['GET'])
+@require_login
+def auth_bind_status():
+    user_row = get_current_user()
+    if not user_row:
+        return jsonify({"error": "请先登录"}), 401
+    return jsonify({"user": build_user_payload(user_row)})
+
+
+@app.route('/api/auth/bind/phone', methods=['POST'])
+@require_login
+def auth_bind_phone():
+    user_row = get_current_user()
+    if not user_row:
+        return jsonify({"error": "请先登录"}), 401
+
+    data = request.get_json() or {}
+    phone = str(data.get("phone") or data.get("account") or "").strip()
+    new_password = str(data.get("password") or "").strip()
+    if not phone:
+        return jsonify({"error": "请输入要绑定的手机号"}), 400
+
+    updated_user, bind_error = bind_phone_to_user(int(user_row["id"]), phone, new_password=new_password)
+    if bind_error or not updated_user:
+        status_code = 409 if "已绑定" in (bind_error or "") else 400
+        return jsonify({"error": bind_error or "绑定手机号失败"}), status_code
+
+    login_user(updated_user)
+    return jsonify({"success": True, "user": build_user_payload(updated_user)})
 
 
 # ============ 会话 API ============

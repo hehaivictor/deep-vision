@@ -117,7 +117,7 @@ class SecurityRegressionTests(unittest.TestCase):
         self.client = self.server.app.test_client()
 
     def _register_user(self):
-        account = f"security-{uuid.uuid4().hex[:10]}@example.com"
+        account = f"1{uuid.uuid4().int % 10**10:010d}"
         response = self.client.post(
             "/api/auth/register",
             json={"account": account, "password": "Password123!"},

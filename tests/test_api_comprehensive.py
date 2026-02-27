@@ -144,7 +144,7 @@ class ComprehensiveApiTests(unittest.TestCase):
 
     def _register(self, client=None):
         target = client or self.client
-        account = f"api-{uuid.uuid4().hex[:12]}@example.com"
+        account = f"1{uuid.uuid4().int % 10**10:010d}"
         response = target.post(
             "/api/auth/register",
             json={"account": account, "password": "Password123!"},

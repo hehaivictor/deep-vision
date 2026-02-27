@@ -281,6 +281,18 @@ const SITE_CONFIG = {
         titleId: "dv-dialog-delete-report-title",
         descId: "dv-dialog-delete-report-desc",
       },
+      showSettingsModal: {
+        dialogId: "dv-dialog-settings",
+        titleId: "dv-dialog-settings-title",
+        descId: "dv-dialog-settings-desc",
+        initialFocus: "#dv-settings-tab-appearance",
+      },
+      showBindPhoneModal: {
+        dialogId: "dv-dialog-bind-phone",
+        titleId: "dv-dialog-bind-phone-title",
+        descId: "dv-dialog-bind-phone-desc",
+        initialFocus: "#bind-phone-input",
+      },
       showActionConfirmModal: {
         dialogId: "dv-dialog-action-confirm",
         titleId: "dv-dialog-action-confirm-title",

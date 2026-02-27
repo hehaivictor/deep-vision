@@ -315,6 +315,9 @@
     .theme-toggle-trigger,
     .theme-menu-item,
     .account-menu-logout-btn,
+    .settings-tab-btn,
+    .settings-action-btn,
+    .settings-close-btn,
     .sort-dropdown-trigger,
     .btn-sage-blue,
     .dv-modal-btn-secondary,
@@ -348,6 +351,9 @@
 .theme-toggle-trigger,
 .theme-menu-item,
 .account-menu-logout-btn,
+.settings-tab-btn,
+.settings-action-btn,
+.settings-close-btn,
 .batch-select-toggle-btn,
 .batch-cancel-btn,
 .batch-delete-btn,
@@ -366,6 +372,7 @@
 
 .theme-menu-item:active,
 .account-menu-logout-btn:active,
+.settings-action-btn:active,
 .btn-sage-blue:active {
     transform: translateY(0.5px);
 }
@@ -401,6 +408,106 @@
     background: #fef2f2;
     color: #991b1b;
     border-color: #fecaca;
+}
+
+.settings-modal-header {
+    background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+}
+
+.settings-layout {
+    background: #ffffff;
+}
+
+.settings-sidebar {
+    background: #f8fafc;
+}
+
+.settings-content {
+    background: #ffffff;
+}
+
+.settings-group {
+    border: 1px solid #e5eaf1;
+    border-radius: 12px;
+    padding: 12px;
+    background: #fdfefe;
+}
+
+.settings-tab-btn {
+    color: #4b5563;
+    border: 1px solid transparent;
+    background: transparent;
+}
+
+.settings-tab-btn:hover {
+    background: #eef3ff;
+    color: #1d4ed8;
+    border-color: #dbeafe;
+}
+
+.settings-tab-btn--active {
+    background: #eaf2ff;
+    color: #1d4ed8;
+    border-color: #bfd8ff;
+    box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.22);
+}
+
+.settings-info-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.settings-info-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid #e8edf3;
+}
+
+.settings-info-row:last-child {
+    border-bottom: none;
+    padding-bottom: 0;
+}
+
+.settings-info-label {
+    color: #6b7280;
+    flex: 0 0 auto;
+}
+
+.settings-info-value {
+    color: #111827;
+    text-align: right;
+}
+
+.settings-action-btn {
+    background: #eff6ff;
+    color: #1d4ed8;
+    border-color: #bfdbfe;
+    box-shadow: 0 1px 2px rgba(29, 78, 216, 0.12);
+}
+
+.settings-action-btn:hover {
+    background: #dbeafe;
+    border-color: #93c5fd;
+}
+
+.settings-action-btn:disabled {
+    background: #f3f4f6;
+    color: #9ca3af;
+    border-color: #e5e7eb;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+.settings-close-btn {
+    background: #ffffff;
+}
+
+.settings-close-btn:hover {
+    background: #f8fafc;
 }
 
 .report-action-primary {
@@ -1500,6 +1607,9 @@ html[data-theme="dark"] .sort-dropdown-option--active {
     .theme-toggle-trigger,
     .theme-menu-item,
     .account-menu-logout-btn,
+    .settings-tab-btn,
+    .settings-action-btn,
+    .settings-close-btn,
     .report-card-glow,
     .session-card-glow,
     .batch-select-toggle-btn,
@@ -1689,6 +1799,90 @@ html[data-theme="dark"] .account-menu-logout-btn:hover {
     background: #3a1f28;
     color: #fecdd3;
     border-color: #7f1d1d;
+}
+
+html[data-theme="dark"] .settings-modal-header {
+    background: linear-gradient(180deg, #222a35 0%, #1d242d 100%);
+    border-color: #364250 !important;
+}
+
+html[data-theme="dark"] .settings-layout {
+    background: #202730;
+}
+
+html[data-theme="dark"] .settings-sidebar {
+    background: #1b222b;
+    border-color: #364250 !important;
+}
+
+html[data-theme="dark"] .settings-content {
+    background: #202730;
+}
+
+html[data-theme="dark"] .settings-group {
+    background: #1d252f;
+    border-color: #364250;
+}
+
+html[data-theme="dark"] .settings-tab-btn {
+    color: #b8c5d5;
+}
+
+html[data-theme="dark"] .settings-tab-btn:hover {
+    background: #2c3642;
+    color: #e6edf5;
+    border-color: #415064;
+}
+
+html[data-theme="dark"] .settings-tab-btn--active {
+    background: #344154;
+    color: #dce9ff;
+    border-color: rgba(92, 152, 255, 0.75);
+    box-shadow: inset 0 0 0 1px rgba(92, 152, 255, 0.22);
+}
+
+html[data-theme="dark"] .settings-info-row {
+    border-bottom-color: #364250;
+}
+
+html[data-theme="dark"] .settings-info-label {
+    color: #97a4b4;
+}
+
+html[data-theme="dark"] .settings-info-value {
+    color: #e6edf5;
+}
+
+html[data-theme="dark"] .settings-action-btn {
+    background: rgba(76, 141, 255, 0.14);
+    color: #cfe0ff;
+    border-color: rgba(124, 174, 255, 0.5);
+    box-shadow: 0 3px 10px rgba(3, 10, 20, 0.28);
+}
+
+html[data-theme="dark"] .settings-action-btn:hover {
+    background: rgba(76, 141, 255, 0.24);
+    color: #e6efff;
+    border-color: rgba(160, 200, 255, 0.7);
+}
+
+html[data-theme="dark"] .settings-action-btn:disabled {
+    background: #303947;
+    color: #7f8a99;
+    border-color: #425062;
+    box-shadow: none;
+}
+
+html[data-theme="dark"] .settings-close-btn {
+    background: #252d37;
+    border-color: #3b4756 !important;
+    color: #aeb7c2 !important;
+}
+
+html[data-theme="dark"] .settings-close-btn:hover {
+    background: #2e3743;
+    border-color: #5c98ff !important;
+    color: #f0f6ff !important;
 }
 
 html[data-theme="dark"] .theme-toggle-trigger {
