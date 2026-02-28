@@ -15,6 +15,7 @@ Deep Vision Web Server - AI 驱动版本
 """
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -31,7 +32,7 @@ from urllib.parse import quote, unquote, urlparse, parse_qsl, urlencode, urlunpa
 
 from flask import Flask, jsonify, request, send_from_directory, redirect, session
 from flask_cors import CORS
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.security import generate_password_hash
 from werkzeug.utils import secure_filename
 
 
@@ -120,6 +121,19 @@ try:
 except ImportError:
     HAS_ANTHROPIC = False
     print("警告: anthropic 库未安装，将无法使用 AI 功能")
+
+try:
+    from jdcloud_sdk.core.credential import Credential as JdCredential
+    from jdcloud_sdk.core.config import Config as JdConfig
+    from jdcloud_sdk.services.sms.client.SmsClient import SmsClient as JdSmsClient
+    from jdcloud_sdk.services.sms.apis.BatchSendRequest import BatchSendRequest as JdBatchSendRequest
+    JD_SMS_SDK_AVAILABLE = True
+except Exception:
+    JdCredential = None
+    JdConfig = None
+    JdSmsClient = None
+    JdBatchSendRequest = None
+    JD_SMS_SDK_AVAILABLE = False
 
 # ============ 配置读取工具 ============
 def _cfg_get(name: str, default):
@@ -322,6 +336,32 @@ REPORT_V3_FAILOVER_ENABLED = _cfg_bool("REPORT_V3_FAILOVER_ENABLED", True)
 REPORT_V3_FAILOVER_LANE = _cfg_text("REPORT_V3_FAILOVER_LANE", "question").lower()
 if REPORT_V3_FAILOVER_LANE not in {"question", "report"}:
     REPORT_V3_FAILOVER_LANE = "question"
+
+# 手机验证码登录配置
+SMS_PROVIDER = _cfg_text("SMS_PROVIDER", "mock").lower()
+if SMS_PROVIDER not in {"mock", "jdcloud"}:
+    SMS_PROVIDER = "mock"
+SMS_CODE_LENGTH = _cfg_int("SMS_CODE_LENGTH", 6)
+SMS_CODE_LENGTH = max(4, min(SMS_CODE_LENGTH, 8))
+SMS_CODE_TTL_SECONDS = _cfg_int("SMS_CODE_TTL_SECONDS", 300)
+SMS_CODE_TTL_SECONDS = max(60, min(SMS_CODE_TTL_SECONDS, 1800))
+SMS_SEND_COOLDOWN_SECONDS = _cfg_int("SMS_SEND_COOLDOWN_SECONDS", 60)
+SMS_SEND_COOLDOWN_SECONDS = max(10, min(SMS_SEND_COOLDOWN_SECONDS, 600))
+SMS_MAX_SEND_PER_PHONE_PER_DAY = _cfg_int("SMS_MAX_SEND_PER_PHONE_PER_DAY", 10)
+SMS_MAX_SEND_PER_PHONE_PER_DAY = max(1, min(SMS_MAX_SEND_PER_PHONE_PER_DAY, 200))
+SMS_MAX_VERIFY_ATTEMPTS = _cfg_int("SMS_MAX_VERIFY_ATTEMPTS", 5)
+SMS_MAX_VERIFY_ATTEMPTS = max(1, min(SMS_MAX_VERIFY_ATTEMPTS, 20))
+SMS_TEST_CODE = _cfg_text("SMS_TEST_CODE", "")
+
+JD_SMS_ACCESS_KEY_ID = _cfg_text("JD_SMS_ACCESS_KEY_ID", "")
+JD_SMS_ACCESS_KEY_SECRET = _cfg_text("JD_SMS_ACCESS_KEY_SECRET", "")
+JD_SMS_REGION_ID = _cfg_text("JD_SMS_REGION_ID", "cn-north-1") or "cn-north-1"
+JD_SMS_SIGN_ID = _cfg_text("JD_SMS_SIGN_ID", "")
+JD_SMS_TEMPLATE_ID_LOGIN = _cfg_text("JD_SMS_TEMPLATE_ID_LOGIN", "")
+JD_SMS_TEMPLATE_ID_BIND = _cfg_text("JD_SMS_TEMPLATE_ID_BIND", JD_SMS_TEMPLATE_ID_LOGIN)
+JD_SMS_TEMPLATE_ID_RECOVER = _cfg_text("JD_SMS_TEMPLATE_ID_RECOVER", JD_SMS_TEMPLATE_ID_LOGIN)
+JD_SMS_TIMEOUT = _cfg_float("JD_SMS_TIMEOUT", 8.0)
+JD_SMS_TIMEOUT = max(3.0, min(JD_SMS_TIMEOUT, 30.0))
 
 # 第三方登录配置（微信扫码登录）
 WECHAT_LOGIN_ENABLED = _cfg_bool("WECHAT_LOGIN_ENABLED", False)
@@ -578,6 +618,24 @@ def init_auth_db() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wechat_identities_user_id ON wechat_identities(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_wechat_identities_unionid ON wechat_identities(unionid)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_sms_codes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT NOT NULL,
+                scene TEXT NOT NULL,
+                code_hash TEXT NOT NULL,
+                request_ip TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                consumed_at TEXT,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 5
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sms_codes_phone_scene ON auth_sms_codes(phone, scene)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sms_codes_created_at ON auth_sms_codes(created_at)")
         conn.commit()
 
 
@@ -601,6 +659,272 @@ def normalize_account(account: str) -> tuple[str, str]:
     return phone, ""
 
 
+AUTH_SMS_SCENES = {"login", "bind", "recover"}
+
+
+def normalize_sms_scene(scene: str) -> str:
+    value = str(scene or "").strip().lower()
+    if value not in AUTH_SMS_SCENES:
+        return "login"
+    return value
+
+
+def get_request_ip() -> str:
+    forwarded_for = str(request.headers.get("X-Forwarded-For", "")).strip()
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    return str(request.remote_addr or "").strip()
+
+
+def _parse_iso_datetime(text: str) -> Optional[datetime]:
+    value = str(text or "").strip()
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _sms_signing_secret() -> str:
+    configured = _first_non_empty(
+        _cfg_text("SMS_CODE_SIGNING_SECRET", ""),
+        CONFIG_SECRET_KEY,
+        str(app.secret_key or ""),
+        "deepvision-dev-sms-secret",
+    )
+    return configured
+
+
+def hash_sms_code(phone: str, scene: str, code: str) -> str:
+    payload = f"{normalize_phone_number(phone)}|{normalize_sms_scene(scene)}|{str(code or '').strip()}|{_sms_signing_secret()}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def generate_sms_code() -> str:
+    lower = 10 ** (SMS_CODE_LENGTH - 1)
+    upper = (10 ** SMS_CODE_LENGTH) - 1
+    return str(secrets.randbelow(upper - lower + 1) + lower)
+
+
+def resolve_sms_code_for_issue() -> str:
+    configured = str(SMS_TEST_CODE or "").strip()
+    if configured and re.fullmatch(rf"\d{{{SMS_CODE_LENGTH}}}", configured):
+        return configured
+    return generate_sms_code()
+
+
+def resolve_sms_template_id(scene: str) -> str:
+    scene_value = normalize_sms_scene(scene)
+    if scene_value == "bind":
+        return JD_SMS_TEMPLATE_ID_BIND or JD_SMS_TEMPLATE_ID_LOGIN
+    if scene_value == "recover":
+        return JD_SMS_TEMPLATE_ID_RECOVER or JD_SMS_TEMPLATE_ID_LOGIN
+    return JD_SMS_TEMPLATE_ID_LOGIN
+
+
+def is_jd_sms_configured(scene: str = "login") -> tuple[bool, str]:
+    if SMS_PROVIDER != "jdcloud":
+        return False, "短信服务未配置为京东云"
+    if not JD_SMS_ACCESS_KEY_ID or not JD_SMS_ACCESS_KEY_SECRET:
+        return False, "京东云短信 AK/SK 未配置"
+    if not JD_SMS_SIGN_ID:
+        return False, "京东云短信 signId 未配置"
+    if not resolve_sms_template_id(scene):
+        return False, "京东云短信模板未配置"
+    if not JD_SMS_SDK_AVAILABLE:
+        return False, "未安装 jdcloud-sdk，请先安装后再启用京东云发码"
+    return True, ""
+
+
+def send_sms_code_via_jdcloud(phone: str, code: str, scene: str) -> tuple[bool, str]:
+    configured, reason = is_jd_sms_configured(scene)
+    if not configured:
+        return False, reason
+
+    template_id = resolve_sms_template_id(scene)
+    try:
+        credential = JdCredential(JD_SMS_ACCESS_KEY_ID, JD_SMS_ACCESS_KEY_SECRET)
+        config = JdConfig({"timeout": JD_SMS_TIMEOUT})
+        sms_client = JdSmsClient(credential=credential, config=config)
+        request_params = {
+            "regionId": JD_SMS_REGION_ID,
+            "signId": JD_SMS_SIGN_ID,
+            "templateId": template_id,
+            "phoneList": [phone],
+            "params": [code],
+        }
+        response = sms_client.batchSend(JdBatchSendRequest(request_params, JD_SMS_REGION_ID))
+        if getattr(response, "error", None):
+            error_obj = getattr(response, "error")
+            message = str(getattr(error_obj, "message", "") or "京东云短信发送失败")
+            return False, message
+        return True, ""
+    except Exception as exc:
+        return False, f"京东云短信发送异常: {exc}"
+
+
+def dispatch_sms_code(phone: str, code: str, scene: str) -> tuple[bool, str]:
+    if SMS_PROVIDER == "mock":
+        if ENABLE_DEBUG_LOG or app.config.get("TESTING"):
+            print(f"[SMS][mock] scene={scene} phone={phone} code={code}")
+        return True, ""
+    if SMS_PROVIDER == "jdcloud":
+        return send_sms_code_via_jdcloud(phone, code, scene)
+    return False, "未支持的短信服务提供商"
+
+
+def _count_sms_sent_today(conn: sqlite3.Connection, phone: str, scene: str) -> int:
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    row = conn.execute(
+        """
+        SELECT COUNT(1) AS total
+        FROM auth_sms_codes
+        WHERE phone = ? AND scene = ? AND created_at >= ?
+        """,
+        (phone, scene, day_start),
+    ).fetchone()
+    return int(row["total"]) if row else 0
+
+
+def _latest_sms_record(conn: sqlite3.Connection, phone: str, scene: str) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT id, created_at, expires_at, consumed_at, attempts, max_attempts
+        FROM auth_sms_codes
+        WHERE phone = ? AND scene = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (phone, scene),
+    ).fetchone()
+
+
+def issue_sms_code(phone: str, scene: str, request_ip: str = "") -> tuple[bool, str, Optional[dict]]:
+    normalized_phone = normalize_phone_number(phone)
+    if not AUTH_PHONE_PATTERN.match(normalized_phone):
+        return False, "请输入有效的手机号（中国大陆 11 位）", None
+
+    scene_value = normalize_sms_scene(scene)
+    now = datetime.now(timezone.utc)
+
+    with get_auth_db_connection() as conn:
+        latest = _latest_sms_record(conn, normalized_phone, scene_value)
+        if latest:
+            latest_created_at = _parse_iso_datetime(latest["created_at"])
+            if latest_created_at:
+                elapsed = (now - latest_created_at).total_seconds()
+                if elapsed < SMS_SEND_COOLDOWN_SECONDS:
+                    retry_after = int(max(1, SMS_SEND_COOLDOWN_SECONDS - elapsed))
+                    return False, f"请求过于频繁，请 {retry_after}s 后重试", {
+                        "retry_after": retry_after,
+                        "cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
+                    }
+
+        sent_today = _count_sms_sent_today(conn, normalized_phone, scene_value)
+        if sent_today >= SMS_MAX_SEND_PER_PHONE_PER_DAY:
+            return False, "今日验证码发送次数已达上限，请明日再试", {
+                "retry_after": 86400,
+                "cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
+            }
+
+    code = resolve_sms_code_for_issue()
+    sent_ok, send_error = dispatch_sms_code(normalized_phone, code, scene_value)
+    if not sent_ok:
+        return False, send_error or "验证码发送失败，请稍后重试", None
+
+    created_at = now.isoformat()
+    expires_at = (now + timedelta(seconds=SMS_CODE_TTL_SECONDS)).isoformat()
+    with get_auth_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO auth_sms_codes
+            (phone, scene, code_hash, request_ip, created_at, expires_at, consumed_at, attempts, max_attempts)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?)
+            """,
+            (
+                normalized_phone,
+                scene_value,
+                hash_sms_code(normalized_phone, scene_value, code),
+                str(request_ip or "").strip(),
+                created_at,
+                expires_at,
+                SMS_MAX_VERIFY_ATTEMPTS,
+            ),
+        )
+        conn.commit()
+
+    payload = {
+        "cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
+        "retry_after": SMS_SEND_COOLDOWN_SECONDS,
+        "expires_in": SMS_CODE_TTL_SECONDS,
+        "scene": scene_value,
+    }
+    if app.config.get("TESTING"):
+        payload["test_code"] = code
+    return True, "", payload
+
+
+def verify_sms_code(phone: str, scene: str, code: str, consume: bool = True) -> tuple[bool, str]:
+    normalized_phone = normalize_phone_number(phone)
+    if not AUTH_PHONE_PATTERN.match(normalized_phone):
+        return False, "请输入有效的手机号（中国大陆 11 位）"
+
+    scene_value = normalize_sms_scene(scene)
+    code_text = str(code or "").strip()
+    if not re.fullmatch(r"\d{4,8}", code_text):
+        return False, "请输入有效验证码"
+
+    now = datetime.now(timezone.utc)
+    with get_auth_db_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id, code_hash, expires_at, consumed_at, attempts, max_attempts
+            FROM auth_sms_codes
+            WHERE phone = ? AND scene = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (normalized_phone, scene_value),
+        ).fetchone()
+        if not row:
+            return False, "请先获取验证码"
+
+        expires_at = _parse_iso_datetime(row["expires_at"])
+        if not expires_at or now > expires_at:
+            return False, "验证码已过期，请重新获取"
+
+        if row["consumed_at"]:
+            return False, "验证码已失效，请重新获取"
+
+        attempts = int(row["attempts"] or 0)
+        max_attempts = int(row["max_attempts"] or SMS_MAX_VERIFY_ATTEMPTS)
+        if attempts >= max_attempts:
+            return False, "验证码错误次数过多，请重新获取"
+
+        expected_hash = str(row["code_hash"] or "")
+        provided_hash = hash_sms_code(normalized_phone, scene_value, code_text)
+        if expected_hash != provided_hash:
+            conn.execute(
+                "UPDATE auth_sms_codes SET attempts = attempts + 1 WHERE id = ?",
+                (int(row["id"]),),
+            )
+            conn.commit()
+            return False, "验证码错误"
+
+        if consume:
+            conn.execute(
+                "UPDATE auth_sms_codes SET consumed_at = ? WHERE id = ?",
+                (now.isoformat(), int(row["id"])),
+            )
+            conn.commit()
+    return True, ""
+
+
 def build_user_payload(row: sqlite3.Row) -> dict:
     user_id = int(row["id"])
     wechat_identity = query_wechat_identity_by_user_id(user_id)
@@ -615,7 +939,7 @@ def build_user_payload(row: sqlite3.Row) -> dict:
         "wechat_bound": bool(wechat_identity),
         "wechat_nickname": str((wechat_identity or {}).get("nickname") or "").strip(),
         "wechat_avatar_url": str((wechat_identity or {}).get("avatar_url") or "").strip(),
-        "is_wechat_shadow_account": bool(email.endswith("@wechat.local")),
+        "is_wechat_shadow_account": bool(email.endswith("@wechat.local") and not phone),
     }
 
 
@@ -966,14 +1290,11 @@ def resolve_user_for_wechat_identity(
     return query_user_by_id(user_id)
 
 
-def bind_phone_to_user(user_id: int, phone: str, new_password: str = "") -> tuple[Optional[sqlite3.Row], str]:
+def bind_phone_to_user(user_id: int, phone: str) -> tuple[Optional[sqlite3.Row], str]:
     target_user_id = int(user_id)
     normalized_phone = normalize_phone_number(phone)
     if not AUTH_PHONE_PATTERN.match(normalized_phone):
         return None, "请输入有效的手机号（中国大陆 11 位）"
-    new_password_text = str(new_password or "")
-    if new_password_text and (len(new_password_text) < 8 or len(new_password_text) > 64):
-        return None, "密码长度需为 8-64 位"
 
     now_iso = datetime.now(timezone.utc).isoformat()
     with get_auth_db_connection() as conn:
@@ -988,10 +1309,6 @@ def bind_phone_to_user(user_id: int, phone: str, new_password: str = "") -> tupl
         ).fetchone()
         if not current_user:
             return None, "当前登录用户不存在"
-        current_email = str(current_user["email"] or "").strip().lower()
-        is_shadow_wechat_user = current_email.endswith("@wechat.local")
-        if is_shadow_wechat_user and not new_password_text:
-            return None, "请设置登录密码（8-64位）"
 
         current_phone = str(current_user["phone"] or "").strip()
         if current_phone and current_phone == normalized_phone:
@@ -1011,14 +1328,13 @@ def bind_phone_to_user(user_id: int, phone: str, new_password: str = "") -> tupl
         if conflict_user and int(conflict_user["id"]) != target_user_id:
             return None, "该手机号已绑定到其他账号"
 
-        update_password_hash = generate_password_hash(new_password_text, method="pbkdf2:sha256") if new_password_text else None
         conn.execute(
             """
             UPDATE users
-            SET phone = ?, password_hash = COALESCE(?, password_hash), updated_at = ?
+            SET phone = ?, updated_at = ?
             WHERE id = ?
             """,
-            (normalized_phone, update_password_hash, now_iso, target_user_id)
+            (normalized_phone, now_iso, target_user_id)
         )
         conn.commit()
 
@@ -1184,6 +1500,10 @@ def require_login(func):
 
 
 PUBLIC_API_EXACT_PATHS = {
+    "/api/auth/sms/send-code",
+    "/api/auth/login/code",
+    "/api/auth/recover/send-code",
+    "/api/auth/recover/login",
     "/api/auth/register",
     "/api/auth/login",
     "/api/auth/logout",
@@ -7219,28 +7539,14 @@ def recognize_scenario():
 
 # ============ 认证 API ============
 
-@app.route('/api/auth/register', methods=['POST'])
-def auth_register():
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "无效的请求数据"}), 400
-
-    account = str(data.get("account", "")).strip()
-    password = str(data.get("password", ""))
-
-    phone, account_error = normalize_account(account)
-    if account_error:
-        return jsonify({"error": account_error}), 400
-
-    if len(password) < 8 or len(password) > 64:
-        return jsonify({"error": "密码长度需为 8-64 位"}), 400
-
-    if query_user_by_account(phone):
-        return jsonify({"error": "该账号已注册"}), 409
+def ensure_user_for_phone(phone: str) -> tuple[Optional[sqlite3.Row], bool]:
+    normalized_phone = normalize_phone_number(phone)
+    existing = query_user_by_account(normalized_phone)
+    if existing:
+        return existing, False
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    password_hash = generate_password_hash(password, method="pbkdf2:sha256")
-
+    random_password_hash = generate_password_hash(secrets.token_urlsafe(32), method="pbkdf2:sha256")
     try:
         with get_auth_db_connection() as conn:
             cursor = conn.execute(
@@ -7248,43 +7554,117 @@ def auth_register():
                 INSERT INTO users (email, phone, password_hash, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (None, phone, password_hash, now_iso, now_iso)
+                (None, normalized_phone, random_password_hash, now_iso, now_iso),
             )
             conn.commit()
-            user_id = cursor.lastrowid
+            user_id = int(cursor.lastrowid)
     except sqlite3.IntegrityError:
-        return jsonify({"error": "该账号已注册"}), 409
+        existing_after_conflict = query_user_by_account(normalized_phone)
+        return existing_after_conflict, False
 
-    user_row = query_user_by_id(user_id)
+    return query_user_by_id(user_id), True
+
+
+@app.route('/api/auth/sms/send-code', methods=['POST'])
+def auth_send_sms_code():
+    data = request.get_json() or {}
+    raw_phone = str(data.get("phone") or data.get("account") or "").strip()
+    scene = normalize_sms_scene(data.get("scene") or "login")
+
+    phone, phone_error = normalize_account(raw_phone)
+    if phone_error:
+        return jsonify({"error": phone_error}), 400
+
+    if scene == "bind":
+        current_user = get_current_user()
+        if not current_user:
+            return jsonify({"error": "请先登录"}), 401
+
+    ok, error_message, payload = issue_sms_code(phone, scene, request_ip=get_request_ip())
+    if not ok:
+        status_code = 429 if (payload and payload.get("retry_after")) else 400
+        response_body = {"error": error_message or "验证码发送失败"}
+        if payload:
+            response_body.update(payload)
+        return jsonify(response_body), status_code
+
+    response_body = {
+        "success": True,
+        "message": "验证码已发送",
+    }
+    if payload:
+        response_body.update(payload)
+    return jsonify(response_body)
+
+
+@app.route('/api/auth/login/code', methods=['POST'])
+@app.route('/api/auth/recover/login', methods=['POST'])
+def auth_login_with_code():
+    data = request.get_json() or {}
+    raw_phone = str(data.get("phone") or data.get("account") or "").strip()
+    code = str(data.get("code") or data.get("sms_code") or "").strip()
+    scene = normalize_sms_scene(data.get("scene") or "login")
+    if scene not in {"login", "recover"}:
+        scene = "login"
+
+    phone, phone_error = normalize_account(raw_phone)
+    if phone_error:
+        return jsonify({"error": phone_error}), 400
+    if not code:
+        return jsonify({"error": "请输入验证码"}), 400
+
+    verified, verify_error = verify_sms_code(phone, scene, code, consume=True)
+    if not verified:
+        status_code = 401 if "错误" in verify_error else 400
+        if "次数过多" in verify_error:
+            status_code = 429
+        return jsonify({"error": verify_error or "验证码校验失败"}), status_code
+
+    user_row, created = ensure_user_for_phone(phone)
     if not user_row:
-        return jsonify({"error": "注册失败，请重试"}), 500
+        return jsonify({"error": "登录失败，请稍后重试"}), 500
 
     login_user(user_row)
-    return jsonify({"user": build_user_payload(user_row)}), 201
+    return jsonify({
+        "success": True,
+        "created": bool(created),
+        "user": build_user_payload(user_row),
+    })
+
+
+@app.route('/api/auth/recover/send-code', methods=['POST'])
+def auth_recover_send_code():
+    data = request.get_json() or {}
+    raw_phone = str(data.get("phone") or data.get("account") or "").strip()
+    phone, phone_error = normalize_account(raw_phone)
+    if phone_error:
+        return jsonify({"error": phone_error}), 400
+
+    ok, error_message, payload = issue_sms_code(phone, "recover", request_ip=get_request_ip())
+    if not ok:
+        status_code = 429 if (payload and payload.get("retry_after")) else 400
+        response_body = {"error": error_message or "验证码发送失败"}
+        if payload:
+            response_body.update(payload)
+        return jsonify(response_body), status_code
+
+    response_body = {
+        "success": True,
+        "message": "验证码已发送",
+    }
+    if payload:
+        response_body.update(payload)
+    return jsonify(response_body)
+
+
+@app.route('/api/auth/register', methods=['POST'])
+def auth_register_legacy():
+    return jsonify({"error": "手机号+密码注册已下线，请使用手机号验证码登录"}), 410
 
 
 @app.route('/api/auth/login', methods=['POST'])
-def auth_login():
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "无效的请求数据"}), 400
-
-    account = str(data.get("account", "")).strip()
-    password = str(data.get("password", ""))
-
-    if not account or not password:
-        return jsonify({"error": "手机号和密码不能为空"}), 400
-
-    phone, account_error = normalize_account(account)
-    if account_error:
-        return jsonify({"error": account_error}), 400
-
-    user_row = query_user_by_account(phone)
-    if not user_row or not check_password_hash(user_row["password_hash"], password):
-        return jsonify({"error": "账号或密码错误"}), 401
-
-    login_user(user_row)
-    return jsonify({"user": build_user_payload(user_row)})
+def auth_login_legacy():
+    return jsonify({"error": "手机号+密码登录已下线，请使用手机号验证码登录"}), 410
 
 
 @app.route('/api/auth/wechat/start', methods=['GET'])
@@ -7546,11 +7926,20 @@ def auth_bind_phone():
 
     data = request.get_json() or {}
     phone = str(data.get("phone") or data.get("account") or "").strip()
-    new_password = str(data.get("password") or "").strip()
+    sms_code = str(data.get("code") or data.get("sms_code") or "").strip()
     if not phone:
         return jsonify({"error": "请输入要绑定的手机号"}), 400
+    if not sms_code:
+        return jsonify({"error": "请输入验证码"}), 400
 
-    updated_user, bind_error = bind_phone_to_user(int(user_row["id"]), phone, new_password=new_password)
+    verified, verify_error = verify_sms_code(phone, "bind", sms_code, consume=True)
+    if not verified:
+        status_code = 401 if "错误" in verify_error else 400
+        if "次数过多" in verify_error:
+            status_code = 429
+        return jsonify({"error": verify_error or "验证码校验失败"}), status_code
+
+    updated_user, bind_error = bind_phone_to_user(int(user_row["id"]), phone)
     if bind_error or not updated_user:
         status_code = 409 if "已绑定" in (bind_error or "") else 400
         return jsonify({"error": bind_error or "绑定手机号失败"}), status_code
@@ -10455,11 +10844,16 @@ def batch_delete_reports():
 def get_status():
     """获取服务状态"""
     wechat_enabled = bool(WECHAT_LOGIN_ENABLED and WECHAT_APP_ID and WECHAT_APP_SECRET)
+    sms_enabled = bool(SMS_PROVIDER in {"mock", "jdcloud"})
     if not get_current_user():
         return jsonify({
             "status": "running",
             "authenticated": False,
             "wechat_login_enabled": wechat_enabled,
+            "sms_login_enabled": sms_enabled,
+            "sms_provider": SMS_PROVIDER,
+            "sms_code_length": SMS_CODE_LENGTH,
+            "sms_cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
         })
 
     question_available = resolve_ai_client(call_type="question") is not None
@@ -10474,6 +10868,10 @@ def get_status():
         "status": "running",
         "authenticated": True,
         "wechat_login_enabled": wechat_enabled,
+        "sms_login_enabled": sms_enabled,
+        "sms_provider": SMS_PROVIDER,
+        "sms_code_length": SMS_CODE_LENGTH,
+        "sms_cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
         "ai_available": ai_available,
         "question_ai_available": question_ai_client is not None,
         "report_ai_available": report_ai_client is not None,

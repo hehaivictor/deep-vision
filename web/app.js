@@ -16,40 +16,46 @@ function deepVision() {
         // ============ 状态 ============
         currentView: 'sessions',
         authReady: false,
-        authMode: 'login',
         authLoading: false,
         authChecking: true,
+        smsLoginEnabled: true,
+        smsCodeLength: 6,
+        smsCooldownSeconds: 60,
+        authCodeSending: false,
+        authCodeCountdown: 0,
+        authCodeTimer: null,
         wechatLoginEnabled: false,
         wechatLoginLoading: false,
         wechatBindLoading: false,
         authRedirectResult: null,
         authForm: {
             account: '',
-            password: '',
-            confirmPassword: ''
+            code: ''
         },
         authErrors: {
             account: '',
-            password: '',
-            confirmPassword: ''
+            code: ''
         },
         authAccountHistoryStorageKey: 'deepvision_auth_account_history',
         authAccountHistoryMaxItems: 5,
         authAccountHistory: [],
+        authAccountSuggestionsOpen: false,
+        authAccountSuggestionsCloseTimer: null,
         currentUser: null,
         showSettingsModal: false,
         settingsTab: 'appearance',
         showBindPhoneModal: false,
         bindPhoneLoading: false,
+        bindCodeSending: false,
+        bindCodeCountdown: 0,
+        bindCodeTimer: null,
         bindPhoneForm: {
             phone: '',
-            password: '',
-            confirmPassword: ''
+            code: ''
         },
         bindPhoneErrors: {
             phone: '',
-            password: '',
-            confirmPassword: ''
+            code: ''
         },
         loading: false,
         loadingQuestion: false,
@@ -594,9 +600,13 @@ function deepVision() {
             }
             this.actionConfirmResolve = null;
             this.showAccountMenu = false;
+            this.closeAuthAccountSuggestions();
+            this.stopAuthCodeCountdown('auth');
             this.bindPhoneLoading = false;
-            this.bindPhoneForm = { phone: '', password: '', confirmPassword: '' };
-            this.bindPhoneErrors = { phone: '', password: '', confirmPassword: '' };
+            this.bindCodeSending = false;
+            this.stopAuthCodeCountdown('bind');
+            this.bindPhoneForm = { phone: '', code: '' };
+            this.bindPhoneErrors = { phone: '', code: '' };
             this.sessionBatchMode = false;
             this.reportBatchMode = false;
             this.selectedSessionIds = [];
@@ -616,14 +626,6 @@ function deepVision() {
             this.$nextTick(() => this.focusAuthAccountInput());
         },
 
-        setAuthMode(mode = 'login') {
-            this.authMode = mode === 'register' ? 'register' : 'login';
-            this.authErrors = { account: '', password: '', confirmPassword: '' };
-            this.authForm.password = '';
-            this.authForm.confirmPassword = '';
-            this.$nextTick(() => this.focusAuthAccountInput());
-        },
-
         focusAuthAccountInput() {
             const input = document.querySelector('[data-auth-autofocus]');
             if (input && typeof input.focus === 'function') {
@@ -631,8 +633,8 @@ function deepVision() {
             }
         },
 
-        focusAuthPasswordInput() {
-            const input = document.querySelector('[data-auth-password]');
+        focusAuthCodeInput() {
+            const input = document.querySelector('[data-auth-code]');
             if (input && typeof input.focus === 'function') {
                 input.focus({ preventScroll: true });
             }
@@ -687,13 +689,66 @@ function deepVision() {
             this.persistAuthAccountHistory();
         },
 
+        getFilteredAuthAccountHistory() {
+            const history = Array.isArray(this.authAccountHistory) ? this.authAccountHistory : [];
+            if (!history.length) return [];
+
+            const keyword = this.normalizeAuthPhone(this.authForm.account);
+            if (!keyword) return history.slice(0, this.authAccountHistoryMaxItems);
+
+            const prefixMatches = history.filter((item) => item.startsWith(keyword));
+            const fuzzyMatches = history.filter((item) => !item.startsWith(keyword) && item.includes(keyword));
+            return [...prefixMatches, ...fuzzyMatches].slice(0, this.authAccountHistoryMaxItems);
+        },
+
+        cancelAuthAccountSuggestionsClose() {
+            if (!this.authAccountSuggestionsCloseTimer) return;
+            clearTimeout(this.authAccountSuggestionsCloseTimer);
+            this.authAccountSuggestionsCloseTimer = null;
+        },
+
+        openAuthAccountSuggestions() {
+            this.cancelAuthAccountSuggestionsClose();
+            if (!this.authAccountHistory.length) {
+                this.authAccountSuggestionsOpen = false;
+                return;
+            }
+            this.authAccountSuggestionsOpen = true;
+        },
+
+        scheduleAuthAccountSuggestionsClose(delay = 120) {
+            this.cancelAuthAccountSuggestionsClose();
+            this.authAccountSuggestionsCloseTimer = setTimeout(() => {
+                this.authAccountSuggestionsOpen = false;
+                this.authAccountSuggestionsCloseTimer = null;
+            }, delay);
+        },
+
+        closeAuthAccountSuggestions() {
+            this.cancelAuthAccountSuggestionsClose();
+            this.authAccountSuggestionsOpen = false;
+        },
+
+        focusFirstAuthHistoryItem() {
+            if (!this.authAccountSuggestionsOpen) {
+                this.openAuthAccountSuggestions();
+            }
+            this.$nextTick(() => {
+                const first = document.querySelector('[data-auth-history-item]');
+                if (first && typeof first.focus === 'function') {
+                    first.focus({ preventScroll: true });
+                }
+            });
+        },
+
         selectAuthHistoryAccount(account = '') {
             const value = String(account || '').trim();
             if (!value) return;
 
             this.authForm.account = value;
             this.authErrors.account = '';
-            this.$nextTick(() => this.focusAuthPasswordInput());
+            this.closeAuthAccountSuggestions();
+            this.$nextTick(() => this.focusAuthCodeInput());
         },
 
         normalizeAuthPhone(account = '') {
@@ -704,14 +759,14 @@ function deepVision() {
                 .replace(/^86(?=1\d{10}$)/, '');
         },
 
-        handleAuthPasswordEnter(event) {
-            if (event?.isComposing || this.authMode !== 'login') return;
+        handleAuthCodeEnter(event) {
+            if (event?.isComposing) return;
             event.preventDefault();
             this.submitAuth();
         },
 
         clearAuthErrors() {
-            this.authErrors = { account: '', password: '', confirmPassword: '' };
+            this.authErrors = { account: '', code: '' };
         },
 
         enforceAuthViewLightTheme() {
@@ -737,10 +792,77 @@ function deepVision() {
             return 'tel';
         },
 
+        stopAuthCodeCountdown(scope = 'auth') {
+            const timerKey = scope === 'bind' ? 'bindCodeTimer' : 'authCodeTimer';
+            const countdownKey = scope === 'bind' ? 'bindCodeCountdown' : 'authCodeCountdown';
+            if (this[timerKey]) {
+                clearInterval(this[timerKey]);
+                this[timerKey] = null;
+            }
+            this[countdownKey] = 0;
+        },
+
+        startAuthCodeCountdown(seconds = 60, scope = 'auth') {
+            const timerKey = scope === 'bind' ? 'bindCodeTimer' : 'authCodeTimer';
+            const countdownKey = scope === 'bind' ? 'bindCodeCountdown' : 'authCodeCountdown';
+            this.stopAuthCodeCountdown(scope);
+            this[countdownKey] = Math.max(0, Number(seconds) || 0);
+            if (this[countdownKey] <= 0) return;
+            this[timerKey] = setInterval(() => {
+                const next = Math.max(0, this[countdownKey] - 1);
+                this[countdownKey] = next;
+                if (next <= 0 && this[timerKey]) {
+                    clearInterval(this[timerKey]);
+                    this[timerKey] = null;
+                }
+            }, 1000);
+        },
+
+        canSendAuthCode() {
+            const phone = this.normalizeAuthPhone(this.authForm.account);
+            return this.smsLoginEnabled && /^1\d{10}$/.test(phone) && !this.authCodeSending && this.authCodeCountdown <= 0;
+        },
+
+        async sendAuthCode() {
+            if (!this.smsLoginEnabled) {
+                this.showToast('短信登录暂未启用，请稍后再试', 'warning');
+                return;
+            }
+            if (!this.canSendAuthCode()) return;
+            const phone = this.normalizeAuthPhone(this.authForm.account);
+            this.authCodeSending = true;
+            try {
+                const result = await this.apiCall('/auth/sms/send-code', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        phone,
+                        scene: 'login'
+                    }),
+                    skipAuthRedirect: true
+                });
+                const cooldown = Number(result?.cooldown_seconds || result?.retry_after || this.smsCooldownSeconds || 60);
+                this.startAuthCodeCountdown(cooldown, 'auth');
+                this.showToast('验证码已发送，请注意查收', 'success');
+                this.$nextTick(() => this.focusAuthCodeInput());
+            } catch (error) {
+                const message = error?.message || '验证码发送失败，请稍后重试';
+                this.showToast(message, 'error');
+            } finally {
+                this.authCodeSending = false;
+            }
+        },
+
+        getAuthCodeLength() {
+            const length = Number(this.smsCodeLength || 6);
+            if (!Number.isFinite(length)) return 6;
+            return Math.max(4, Math.min(8, Math.floor(length)));
+        },
+
         validateAuthForm() {
-            const errors = { account: '', password: '', confirmPassword: '' };
+            const errors = { account: '', code: '' };
             const account = this.normalizeAuthPhone(this.authForm.account);
-            const password = String(this.authForm.password || '');
+            const code = String(this.authForm.code || '').trim();
+            const expectedCodeLength = this.getAuthCodeLength();
 
             if (!account) {
                 errors.account = '请输入手机号';
@@ -748,16 +870,12 @@ function deepVision() {
                 errors.account = '请输入有效手机号（11位）';
             }
 
-            if (password.length < 8 || password.length > 64) {
-                errors.password = '密码长度需为 8-64 位';
-            }
-
-            if (this.authMode === 'register' && password !== this.authForm.confirmPassword) {
-                errors.confirmPassword = '两次输入的密码不一致';
+            if (!new RegExp(`^\\d{${expectedCodeLength}}$`).test(code)) {
+                errors.code = `请输入 ${expectedCodeLength} 位数字验证码`;
             }
 
             this.authErrors = errors;
-            return !errors.account && !errors.password && !errors.confirmPassword;
+            return !errors.account && !errors.code;
         },
 
         async submitAuth() {
@@ -771,26 +889,23 @@ function deepVision() {
             const account = this.normalizeAuthPhone(this.authForm.account);
             this.authLoading = true;
             try {
-                const endpoint = this.authMode === 'register' ? '/auth/register' : '/auth/login';
-                const result = await this.apiCall(endpoint, {
+                const result = await this.apiCall('/auth/login/code', {
                     method: 'POST',
                     body: JSON.stringify({
                         account,
-                        password: this.authForm.password
+                        code: String(this.authForm.code || '').trim(),
+                        scene: 'login'
                     }),
                     skipAuthRedirect: true
                 });
 
                 this.currentUser = result?.user || null;
                 this.authReady = Boolean(this.currentUser);
-                if (this.authMode === 'login') {
-                    this.rememberAuthAccount(account);
-                }
-                this.authForm.password = '';
-                this.authForm.confirmPassword = '';
+                this.rememberAuthAccount(account);
+                this.authForm.code = '';
                 this.clearAuthErrors();
                 this.restoreThemeAfterAuth();
-                this.showToast(this.authMode === 'register' ? '注册成功，已自动登录' : '登录成功', 'success');
+                this.showToast(result?.created ? '注册成功，已自动登录' : '登录成功', 'success');
 
                 await this.loadScenarios();
                 await this.loadSessions();
@@ -850,10 +965,11 @@ function deepVision() {
             if (!this.authReady || this.bindPhoneLoading) return;
             this.showAccountMenu = false;
             this.showSettingsModal = false;
-            this.bindPhoneErrors = { phone: '', password: '', confirmPassword: '' };
+            this.bindCodeSending = false;
+            this.stopAuthCodeCountdown('bind');
+            this.bindPhoneErrors = { phone: '', code: '' };
             this.bindPhoneForm.phone = String(this.currentUser?.phone || '').trim();
-            this.bindPhoneForm.password = '';
-            this.bindPhoneForm.confirmPassword = '';
+            this.bindPhoneForm.code = '';
             this.showBindPhoneModal = true;
             this.$nextTick(() => {
                 const input = document.querySelector('[data-bind-phone-input]');
@@ -865,7 +981,57 @@ function deepVision() {
 
         closeBindPhoneModal() {
             if (this.bindPhoneLoading) return;
+            this.bindCodeSending = false;
+            this.stopAuthCodeCountdown('bind');
+            this.bindPhoneForm.code = '';
+            this.bindPhoneErrors.code = '';
             this.showBindPhoneModal = false;
+        },
+
+        focusBindCodeInput() {
+            const input = document.querySelector('[data-bind-phone-code]');
+            if (input && typeof input.focus === 'function') {
+                input.focus({ preventScroll: true });
+            }
+        },
+
+        canSendBindCode() {
+            const phone = this.normalizeAuthPhone(this.bindPhoneForm.phone);
+            return this.smsLoginEnabled && /^1\d{10}$/.test(phone) && !this.bindCodeSending && this.bindCodeCountdown <= 0;
+        },
+
+        async sendBindCode() {
+            if (!this.smsLoginEnabled) {
+                this.showToast('短信登录暂未启用，请稍后再试', 'warning');
+                return;
+            }
+            if (!this.canSendBindCode()) return;
+
+            const phone = this.normalizeAuthPhone(this.bindPhoneForm.phone);
+            this.bindCodeSending = true;
+            this.bindPhoneErrors.phone = '';
+            this.bindPhoneErrors.code = '';
+            try {
+                const result = await this.apiCall('/auth/sms/send-code', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        phone,
+                        scene: 'bind'
+                    })
+                });
+                const cooldown = Number(result?.cooldown_seconds || result?.retry_after || this.smsCooldownSeconds || 60);
+                this.startAuthCodeCountdown(cooldown, 'bind');
+                this.showToast('验证码已发送，请注意查收', 'success');
+                this.$nextTick(() => this.focusBindCodeInput());
+            } catch (error) {
+                const message = error?.message || '验证码发送失败，请稍后重试';
+                if (message.includes('手机号') || message.includes('手机')) {
+                    this.bindPhoneErrors.phone = message;
+                }
+                this.showToast(message, 'error');
+            } finally {
+                this.bindCodeSending = false;
+            }
         },
 
         validateBindPhoneForm() {
@@ -874,37 +1040,27 @@ function deepVision() {
                 .replace(/[\s-]/g, '')
                 .replace(/^\+86/, '')
                 .replace(/^86(?=1\d{10}$)/, '');
+            const code = String(this.bindPhoneForm.code || '').trim();
+            const expectedCodeLength = this.getAuthCodeLength();
+
             if (!/^1\d{10}$/.test(phone)) {
                 this.bindPhoneErrors.phone = '请输入有效手机号（11位）';
             } else {
                 this.bindPhoneErrors.phone = '';
             }
 
-            const password = String(this.bindPhoneForm.password || '');
-            const confirmPassword = String(this.bindPhoneForm.confirmPassword || '');
-            const needSetPassword = Boolean(this.currentUser?.is_wechat_shadow_account);
-            if (needSetPassword) {
-                if (password.length < 8 || password.length > 64) {
-                    this.bindPhoneErrors.password = '请设置 8-64 位登录密码';
-                } else {
-                    this.bindPhoneErrors.password = '';
-                }
-                if (password !== confirmPassword) {
-                    this.bindPhoneErrors.confirmPassword = '两次输入的密码不一致';
-                } else {
-                    this.bindPhoneErrors.confirmPassword = '';
-                }
+            if (!new RegExp(`^\\d{${expectedCodeLength}}$`).test(code)) {
+                this.bindPhoneErrors.code = `请输入 ${expectedCodeLength} 位数字验证码`;
             } else {
-                this.bindPhoneErrors.password = '';
-                this.bindPhoneErrors.confirmPassword = '';
+                this.bindPhoneErrors.code = '';
             }
 
-            if (this.bindPhoneErrors.phone || this.bindPhoneErrors.password || this.bindPhoneErrors.confirmPassword) {
+            if (this.bindPhoneErrors.phone || this.bindPhoneErrors.code) {
                 return null;
             }
             return {
                 phone,
-                password: needSetPassword ? password : ''
+                code
             };
         },
 
@@ -919,16 +1075,18 @@ function deepVision() {
                     method: 'POST',
                     body: JSON.stringify({
                         phone: payload.phone,
-                        password: payload.password
+                        code: payload.code
                     })
                 });
                 this.currentUser = result?.user || this.currentUser;
+                this.bindCodeSending = false;
+                this.stopAuthCodeCountdown('bind');
                 this.showBindPhoneModal = false;
                 this.showToast('手机号绑定成功', 'success');
             } catch (error) {
                 const message = error?.message || '手机号绑定失败，请稍后重试';
-                if (message.includes('密码')) {
-                    this.bindPhoneErrors.password = message;
+                if (message.includes('验证码')) {
+                    this.bindPhoneErrors.code = message;
                 } else if (message.includes('手机号') || message.includes('手机')) {
                     this.bindPhoneErrors.phone = message;
                 } else {
@@ -1628,6 +1786,15 @@ function deepVision() {
                     }
                     if (typeof this.serverStatus.wechat_login_enabled === 'boolean') {
                         this.wechatLoginEnabled = this.serverStatus.wechat_login_enabled;
+                    }
+                    if (typeof this.serverStatus.sms_login_enabled === 'boolean') {
+                        this.smsLoginEnabled = this.serverStatus.sms_login_enabled;
+                    }
+                    if (Number.isFinite(Number(this.serverStatus.sms_code_length))) {
+                        this.smsCodeLength = Math.max(4, Math.min(8, Math.floor(Number(this.serverStatus.sms_code_length))));
+                    }
+                    if (Number.isFinite(Number(this.serverStatus.sms_cooldown_seconds))) {
+                        this.smsCooldownSeconds = Math.max(1, Math.min(300, Number(this.serverStatus.sms_cooldown_seconds)));
                     }
                     const depthConfig = this.serverStatus?.interview_depth_v2 || {};
                     this.interviewDepthV2 = {

@@ -265,8 +265,10 @@ fallback 响应示例：
 
 当前版本已支持最小可用登录系统：
 
-- 注册：`手机号 + 密码`
-- 登录：`手机号 + 密码`
+- 登录：`手机号 + 验证码`
+- 未注册手机号自动注册并登录
+- 绑定手机号：`手机号 + 验证码`
+- 找回入口复用验证码能力（`recover` 场景）
 - 退出登录
 - 获取当前用户
 - 会话与报告接口统一鉴权（未登录返回 `401`）
@@ -281,24 +283,38 @@ fallback 响应示例：
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/auth/register` | POST | 注册并自动登录 |
-| `/api/auth/login` | POST | 登录 |
+| `/api/auth/sms/send-code` | POST | 发送验证码（`scene`: `login/bind/recover`） |
+| `/api/auth/login/code` | POST | 手机号验证码登录（可自动注册） |
+| `/api/auth/recover/send-code` | POST | 发送找回验证码（`recover` 场景） |
+| `/api/auth/recover/login` | POST | 使用找回验证码登录 |
+| `/api/auth/bind/phone` | POST | 登录后绑定手机号（需 `bind` 场景验证码） |
 | `/api/auth/logout` | POST | 退出登录 |
 | `/api/auth/me` | GET | 获取当前登录用户 |
 | `/api/status` | GET | 服务状态（匿名最小返回，登录后返回完整状态） |
 
-注册/登录请求示例：
+发送验证码请求示例：
 
 ```json
 {
   "account": "13800138000",
-  "password": "your-password"
+  "scene": "login"
+}
+```
+
+验证码登录请求示例：
+
+```json
+{
+  "account": "13800138000",
+  "code": "123456",
+  "scene": "login"
 }
 ```
 
 说明：
 - `account` 仅支持中国大陆 11 位手机号。
-- 密码长度要求 `8-64` 位。
+- `code` 默认 6 位数字验证码（长度由服务端配置决定）。
+- 旧接口 `/api/auth/register`、`/api/auth/login` 已下线，返回 `410`。
 
 ### 配置说明
 

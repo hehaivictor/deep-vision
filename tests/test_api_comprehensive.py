@@ -69,6 +69,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         cls.sandbox_root = Path(cls.temp_dir.name).resolve()
         cls._configure_sandbox_paths()
         cls.server.app.config["TESTING"] = True
+        cls.server.SMS_SEND_COOLDOWN_SECONDS = 0
 
     @classmethod
     def tearDownClass(cls):
@@ -145,12 +146,20 @@ class ComprehensiveApiTests(unittest.TestCase):
     def _register(self, client=None):
         target = client or self.client
         account = f"1{uuid.uuid4().int % 10**10:010d}"
-        response = target.post(
-            "/api/auth/register",
-            json={"account": account, "password": "Password123!"},
+        send_resp = target.post(
+            "/api/auth/sms/send-code",
+            json={"account": account, "scene": "login"},
         )
-        self.assertEqual(response.status_code, 201, response.get_data(as_text=True))
-        return response.get_json()["user"]
+        self.assertEqual(send_resp.status_code, 200, send_resp.get_data(as_text=True))
+        code = (send_resp.get_json() or {}).get("test_code")
+        self.assertTrue(code, "TESTING 模式应返回 test_code")
+
+        login_resp = target.post(
+            "/api/auth/login/code",
+            json={"account": account, "code": code, "scene": "login"},
+        )
+        self.assertEqual(login_resp.status_code, 200, login_resp.get_data(as_text=True))
+        return login_resp.get_json()["user"]
 
     def _create_session(self, topic="综合测试会话", description="测试描述"):
         response = self.client.post(
@@ -189,9 +198,17 @@ class ComprehensiveApiTests(unittest.TestCase):
         me_after_logout = self.client.get("/api/auth/me")
         self.assertEqual(me_after_logout.status_code, 401)
 
+        send_again = self.client.post(
+            "/api/auth/sms/send-code",
+            json={"account": me_resp.get_json()["user"]["account"], "scene": "login"},
+        )
+        self.assertEqual(send_again.status_code, 200, send_again.get_data(as_text=True))
+        code = (send_again.get_json() or {}).get("test_code")
+        self.assertTrue(code)
+
         login_resp = self.client.post(
-            "/api/auth/login",
-            json={"account": me_resp.get_json()["user"]["account"], "password": "Password123!"},
+            "/api/auth/login/code",
+            json={"account": me_resp.get_json()["user"]["account"], "code": code, "scene": "login"},
         )
         self.assertEqual(login_resp.status_code, 200)
 

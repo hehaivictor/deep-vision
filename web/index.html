@@ -698,86 +698,96 @@
                         <p class="text-sm text-muted">登录后即可使用访谈与报告功能</p>
                     </div>
 
-                    <div class="flex rounded-lg bg-surface-secondary border border-border p-1">
-                        <button @click="setAuthMode('login')"
-                                :class="authMode === 'login' ? 'bg-surface text-primary shadow-sm' : 'text-muted hover:text-primary'"
-                                class="flex-1 px-3 py-2 text-sm font-medium rounded-md transition-colors cursor-pointer">
-                            登录
-                        </button>
-                        <button @click="setAuthMode('register')"
-                                :class="authMode === 'register' ? 'bg-surface text-primary shadow-sm' : 'text-muted hover:text-primary'"
-                                class="flex-1 px-3 py-2 text-sm font-medium rounded-md transition-colors cursor-pointer">
-                            注册
-                        </button>
-                    </div>
-
                     <form class="space-y-4" @submit.prevent="submitAuth()" novalidate>
-                        <div>
+                        <div class="relative" @click.outside="closeAuthAccountSuggestions()">
                             <label for="auth-account" class="block text-sm font-medium text-primary mb-1">手机号</label>
                             <input id="auth-account"
                                    data-auth-autofocus
                                    x-model.trim="authForm.account"
-                                   @input="authErrors.account = ''"
+                                   @input="authErrors.account = ''; openAuthAccountSuggestions()"
+                                   @focus="openAuthAccountSuggestions()"
+                                   @blur="scheduleAuthAccountSuggestionsClose()"
+                                   @keydown.escape.prevent="closeAuthAccountSuggestions()"
+                                   @keydown.arrow-down.prevent="focusFirstAuthHistoryItem()"
                                    :type="getAuthInputType(authForm.account)"
                                    inputmode="numeric"
                                    autocomplete="tel"
                                    placeholder="请输入手机号（11位）"
                                    class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
                                    :aria-invalid="authErrors.account ? 'true' : 'false'"
+                                   :aria-expanded="(authAccountSuggestionsOpen && getFilteredAuthAccountHistory().length > 0) ? 'true' : 'false'"
+                                   aria-controls="auth-account-history-list"
                                    required>
-                            <div x-show="authMode === 'login' && authAccountHistory.length > 0"
+                            <div x-show="authAccountSuggestionsOpen && getFilteredAuthAccountHistory().length > 0"
                                  x-cloak
-                                 class="mt-2 flex flex-wrap gap-2">
-                                <template x-for="account in authAccountHistory" :key="account">
-                                    <button type="button"
-                                            @click="selectAuthHistoryAccount(account)"
-                                            class="px-2.5 py-1 text-xs rounded-full border border-gray-200 text-muted hover:text-primary hover:border-primary/40 transition-colors cursor-pointer">
-                                        <span x-text="account"></span>
-                                    </button>
-                                </template>
+                                 x-transition:enter="transition ease-out duration-150"
+                                 x-transition:enter-start="opacity-0 -translate-y-1"
+                                 x-transition:enter-end="opacity-100 translate-y-0"
+                                 x-transition:leave="transition ease-in duration-100"
+                                 x-transition:leave-start="opacity-100 translate-y-0"
+                                 x-transition:leave-end="opacity-0 -translate-y-1"
+                                 class="absolute left-0 right-0 mt-1 z-20">
+                                <div id="auth-account-history-list"
+                                     role="listbox"
+                                     class="rounded-lg border border-gray-200 bg-white shadow-md overflow-hidden">
+                                    <p class="px-3 pt-2 pb-1 text-[11px] font-medium text-muted">最近登录手机号</p>
+                                    <template x-for="account in getFilteredAuthAccountHistory()" :key="`auth-history-${account}`">
+                                        <button type="button"
+                                                data-auth-history-item
+                                                role="option"
+                                                @mousedown.prevent
+                                                @focus="openAuthAccountSuggestions()"
+                                                @blur="scheduleAuthAccountSuggestionsClose()"
+                                                @click="selectAuthHistoryAccount(account)"
+                                                class="w-full h-10 px-3 text-left text-sm text-primary hover:bg-gray-50 focus:outline-none focus:bg-gray-50 focus:ring-2 focus:ring-primary/20 transition-colors duration-150 cursor-pointer">
+                                            <span x-text="account"></span>
+                                        </button>
+                                    </template>
+                                </div>
                             </div>
-                            <p x-show="authErrors.account" x-text="authErrors.account" class="mt-1 text-xs text-red-500"></p>
+                            <p x-show="authErrors.account" x-text="authErrors.account" role="alert" class="mt-1 text-xs text-red-500"></p>
                         </div>
 
                         <div>
-                            <label for="auth-password" class="block text-sm font-medium text-primary mb-1">密码</label>
-                            <input id="auth-password"
-                                   data-auth-password
-                                   x-model="authForm.password"
-                                   @input="authErrors.password = ''"
-                                   @keydown.enter="handleAuthPasswordEnter($event)"
-                                   type="password"
-                                   :autocomplete="authMode === 'register' ? 'new-password' : 'current-password'"
-                                   placeholder="请输入密码（8-64位）"
-                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
-                                   :aria-invalid="authErrors.password ? 'true' : 'false'"
-                                   required>
-                            <p x-show="authErrors.password" x-text="authErrors.password" class="mt-1 text-xs text-red-500"></p>
-                        </div>
-
-                        <div x-show="authMode === 'register'" x-cloak>
-                            <label for="auth-confirm-password" class="block text-sm font-medium text-primary mb-1">确认密码</label>
-                            <input id="auth-confirm-password"
-                                   x-model="authForm.confirmPassword"
-                                   @input="authErrors.confirmPassword = ''"
-                                   type="password"
-                                   autocomplete="new-password"
-                                   placeholder="请再次输入密码"
-                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
-                                   :aria-invalid="authErrors.confirmPassword ? 'true' : 'false'"
-                                   required>
-                            <p x-show="authErrors.confirmPassword" x-text="authErrors.confirmPassword" class="mt-1 text-xs text-red-500"></p>
+                            <label for="auth-code" class="block text-sm font-medium text-primary mb-1">验证码</label>
+                            <div class="flex items-center gap-2">
+                                <input id="auth-code"
+                                       data-auth-code
+                                       x-model.trim="authForm.code"
+                                       @input="authErrors.code = ''"
+                                       @keydown.enter="handleAuthCodeEnter($event)"
+                                       type="text"
+                                       inputmode="numeric"
+                                       autocomplete="one-time-code"
+                                       :maxlength="smsCodeLength"
+                                       placeholder="请输入验证码"
+                                       class="flex-1 min-w-0 h-10 px-3 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                                       :aria-invalid="authErrors.code ? 'true' : 'false'"
+                                       required>
+                                <button type="button"
+                                        @click="sendAuthCode()"
+                                        :disabled="!canSendAuthCode()"
+                                        class="h-10 px-3 text-sm whitespace-nowrap rounded-lg border border-gray-200 text-primary hover:bg-gray-50 transition-colors duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-1.5">
+                                    <svg x-show="authCodeSending" class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke-width="4"></circle>
+                                        <path class="opacity-75" d="M4 12a8 8 0 018-8" stroke-width="4" stroke-linecap="round"></path>
+                                    </svg>
+                                    <span x-text="authCodeCountdown > 0 ? `${authCodeCountdown}s 后重发` : (authCodeSending ? '发送中...' : '获取验证码')"></span>
+                                </button>
+                            </div>
+                            <p x-show="authErrors.code" x-text="authErrors.code" role="alert" class="mt-1 text-xs text-red-500"></p>
                         </div>
 
                         <button type="submit"
-                                :disabled="authLoading"
+                                :disabled="authLoading || !smsLoginEnabled"
                                 class="btn-sage-blue w-full text-white px-5 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2">
                             <svg x-show="authLoading" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke-width="4"></circle>
                                 <path class="opacity-75" d="M4 12a8 8 0 018-8" stroke-width="4" stroke-linecap="round"></path>
                             </svg>
-                            <span x-text="authMode === 'register' ? (authLoading ? '注册中...' : '注册并开始使用') : (authLoading ? '登录中...' : '登录')"></span>
+                            <span x-text="authLoading ? '登录中...' : '登录'"></span>
                         </button>
+                        <p x-show="!smsLoginEnabled" x-cloak role="alert" class="text-xs text-danger">短信登录暂未启用，请联系管理员。</p>
 
                         <div x-show="wechatLoginEnabled" x-cloak class="pt-1 space-y-3">
                             <div class="flex items-center gap-3">
@@ -3426,7 +3436,7 @@
                  x-transition:leave-start="opacity-100 scale-100 translate-y-0"
                  x-transition:leave-end="opacity-0 scale-95 translate-y-1">
                 <h3 id="dv-dialog-bind-phone-title" class="dv-modal-title mb-2">绑定手机号</h3>
-                <p id="dv-dialog-bind-phone-desc" class="dv-modal-body mb-5">绑定后可使用手机号+密码登录同一账号。</p>
+                <p id="dv-dialog-bind-phone-desc" class="dv-modal-body mb-5">绑定后可使用手机号验证码登录同一账号。</p>
                 <form class="space-y-4" @submit.prevent="submitBindPhone()">
                     <div>
                         <label for="bind-phone-input" class="block text-sm font-medium text-primary mb-1">手机号</label>
@@ -3440,30 +3450,35 @@
                                @input="bindPhoneErrors.phone = ''"
                                placeholder="请输入 11 位手机号"
                                class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
-                        <p x-show="bindPhoneErrors.phone" x-text="bindPhoneErrors.phone" class="mt-1 text-xs text-red-500"></p>
+                        <p x-show="bindPhoneErrors.phone" x-text="bindPhoneErrors.phone" role="alert" class="mt-1 text-xs text-red-500"></p>
                     </div>
-                    <div x-show="currentUser?.is_wechat_shadow_account" x-cloak>
-                        <label for="bind-phone-password" class="block text-sm font-medium text-primary mb-1">设置登录密码</label>
-                        <input id="bind-phone-password"
-                               type="password"
-                               autocomplete="new-password"
-                               x-model="bindPhoneForm.password"
-                               @input="bindPhoneErrors.password = ''; bindPhoneErrors.confirmPassword = ''"
-                               placeholder="请设置 8-64 位密码"
-                               class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
-                        <p x-show="bindPhoneErrors.password" x-text="bindPhoneErrors.password" class="mt-1 text-xs text-red-500"></p>
+                    <div>
+                        <label for="bind-phone-code" class="block text-sm font-medium text-primary mb-1">验证码</label>
+                        <div class="flex items-center gap-2">
+                            <input id="bind-phone-code"
+                                   data-bind-phone-code
+                                   type="text"
+                                   inputmode="numeric"
+                                   autocomplete="one-time-code"
+                                   x-model.trim="bindPhoneForm.code"
+                                   @input="bindPhoneErrors.code = ''"
+                                   :maxlength="smsCodeLength"
+                                   placeholder="请输入验证码"
+                                   class="flex-1 min-w-0 h-10 px-3 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                            <button type="button"
+                                    @click="sendBindCode()"
+                                    :disabled="!canSendBindCode()"
+                                    class="h-10 px-3 text-sm whitespace-nowrap rounded-lg border border-gray-200 text-primary hover:bg-gray-50 transition-colors duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-1.5">
+                                <svg x-show="bindCodeSending" class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke-width="4"></circle>
+                                    <path class="opacity-75" d="M4 12a8 8 0 018-8" stroke-width="4" stroke-linecap="round"></path>
+                                </svg>
+                                <span x-text="bindCodeCountdown > 0 ? `${bindCodeCountdown}s 后重发` : (bindCodeSending ? '发送中...' : '获取验证码')"></span>
+                            </button>
+                        </div>
+                        <p x-show="bindPhoneErrors.code" x-text="bindPhoneErrors.code" role="alert" class="mt-1 text-xs text-red-500"></p>
                     </div>
-                    <div x-show="currentUser?.is_wechat_shadow_account" x-cloak>
-                        <label for="bind-phone-confirm-password" class="block text-sm font-medium text-primary mb-1">确认密码</label>
-                        <input id="bind-phone-confirm-password"
-                               type="password"
-                               autocomplete="new-password"
-                               x-model="bindPhoneForm.confirmPassword"
-                               @input="bindPhoneErrors.confirmPassword = ''"
-                               placeholder="请再次输入密码"
-                               class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
-                        <p x-show="bindPhoneErrors.confirmPassword" x-text="bindPhoneErrors.confirmPassword" class="mt-1 text-xs text-red-500"></p>
-                    </div>
+                    <p x-show="!smsLoginEnabled" x-cloak role="alert" class="text-xs text-danger">短信登录暂未启用，当前无法绑定手机号。</p>
                     <div class="dv-modal-actions">
                         <button type="button"
                                 @click="closeBindPhoneModal()"
@@ -3471,7 +3486,7 @@
                             取消
                         </button>
                         <button type="submit"
-                                :disabled="bindPhoneLoading"
+                                :disabled="bindPhoneLoading || !smsLoginEnabled"
                                 class="dv-modal-btn-primary px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
                             <span x-text="bindPhoneLoading ? '绑定中...' : '确认绑定'"></span>
                         </button>

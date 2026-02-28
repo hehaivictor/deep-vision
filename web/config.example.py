@@ -68,6 +68,31 @@ SECRET_KEY = "replace-with-a-strong-random-secret"
 # 用户账号数据库路径（相对路径将按 Deep Vision 根目录解析）
 AUTH_DB_PATH = "data/auth/users.db"
 
+# 手机号验证码登录配置
+# mock: 本地开发/测试模式（控制台输出验证码）
+# jdcloud: 京东云短信平台
+SMS_PROVIDER = "mock"
+SMS_CODE_LENGTH = 6
+SMS_CODE_TTL_SECONDS = 300
+SMS_SEND_COOLDOWN_SECONDS = 60
+SMS_MAX_SEND_PER_PHONE_PER_DAY = 10
+SMS_MAX_VERIFY_ATTEMPTS = 5
+
+# 测试环境可固定验证码，生产请置空
+SMS_TEST_CODE = ""
+# 验证码哈希签名密钥，未配置会复用 SECRET_KEY
+SMS_CODE_SIGNING_SECRET = ""
+
+# 京东云短信配置（SMS_PROVIDER=jdcloud 时必填）
+JD_SMS_ACCESS_KEY_ID = ""
+JD_SMS_ACCESS_KEY_SECRET = ""
+JD_SMS_REGION_ID = "cn-north-1"
+JD_SMS_SIGN_ID = ""
+JD_SMS_TEMPLATE_ID_LOGIN = ""
+JD_SMS_TEMPLATE_ID_BIND = ""
+JD_SMS_TEMPLATE_ID_RECOVER = ""
+JD_SMS_TIMEOUT = 8.0
+
 # 场景目录配置（可选）
 # 内置场景建议随代码发布，默认在 resources/scenarios/builtin
 BUILTIN_SCENARIOS_DIR = "resources/scenarios/builtin"

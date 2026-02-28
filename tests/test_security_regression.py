@@ -70,6 +70,7 @@ class SecurityRegressionTests(unittest.TestCase):
         cls._configure_sandbox_paths()
 
         cls.server.app.config["TESTING"] = True
+        cls.server.SMS_SEND_COOLDOWN_SECONDS = 0
 
     @classmethod
     def tearDownClass(cls):
@@ -118,12 +119,20 @@ class SecurityRegressionTests(unittest.TestCase):
 
     def _register_user(self):
         account = f"1{uuid.uuid4().int % 10**10:010d}"
-        response = self.client.post(
-            "/api/auth/register",
-            json={"account": account, "password": "Password123!"},
+        send_resp = self.client.post(
+            "/api/auth/sms/send-code",
+            json={"account": account, "scene": "login"},
         )
-        self.assertEqual(response.status_code, 201, response.get_data(as_text=True))
-        return response.get_json()["user"]
+        self.assertEqual(send_resp.status_code, 200, send_resp.get_data(as_text=True))
+        code = (send_resp.get_json() or {}).get("test_code")
+        self.assertTrue(code, "TESTING 模式应返回 test_code")
+
+        login_resp = self.client.post(
+            "/api/auth/login/code",
+            json={"account": account, "code": code, "scene": "login"},
+        )
+        self.assertEqual(login_resp.status_code, 200, login_resp.get_data(as_text=True))
+        return login_resp.get_json()["user"]
 
     def _create_session(self, topic="安全回归测试"):
         response = self.client.post("/api/sessions", json={"topic": topic})
