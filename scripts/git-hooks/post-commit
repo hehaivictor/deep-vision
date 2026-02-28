@@ -41,6 +41,12 @@ if [[ "$COMMIT_MSG" == Merge* ]]; then
     exit 0
 fi
 
+# 若当前提交已手动包含 version.json，则跳过自动升版，避免重复写入
+if git show --name-only --pretty="" HEAD | grep -Fxq "web/version.json"; then
+    echo "[version] 当前提交已包含 web/version.json，跳过自动版本更新"
+    exit 0
+fi
+
 # 运行版本管理器
 echo "[version] 正在检查版本更新..."
 python3 "$PROJECT_ROOT/scripts/version_manager.py" >/tmp/deepvision-version-hook.log 2>&1 || true
