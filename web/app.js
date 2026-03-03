@@ -3408,6 +3408,8 @@ function deepVision() {
                             dimension: this.currentDimension,
                             options: this.currentQuestion.options,
                             multi_select: this.currentQuestion.multiSelect,
+                            other_selected: this.otherSelected,
+                            other_answer_text: this.otherSelected ? this.otherAnswerText : '',
                             is_follow_up: this.currentQuestion.isFollowUp || false
                         })
                     }
@@ -6082,6 +6084,38 @@ function deepVision() {
 
         getDimensionName(key) {
             return this.dimensionNames[key] || key;
+        },
+
+        getCollectedAnswerText(log) {
+            const answerText = String(log?.answer || '').trim();
+            if (!log || typeof log !== 'object') {
+                return answerText;
+            }
+
+            if (!Boolean(log.other_selected)) {
+                return answerText;
+            }
+
+            const options = Array.isArray(log.options)
+                ? log.options.map(item => String(item || '').trim()).filter(Boolean)
+                : [];
+            const otherInput = String(log.other_answer_text || '').trim();
+
+            const details = [];
+            if (options.length > 0) {
+                const numberedOptions = options
+                    .map((opt, idx) => `${idx + 1}.${opt}`)
+                    .join('；');
+                details.push(`全部选项：${numberedOptions}`);
+            }
+            if (otherInput) {
+                details.push(`自由输入：${otherInput}`);
+            }
+
+            if (details.length === 0) {
+                return answerText;
+            }
+            return details.join(' | ');
         },
 
         // 获取指定会话的维度 key 列表

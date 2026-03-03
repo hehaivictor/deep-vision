@@ -1948,7 +1948,7 @@
                                                     <span class="tag-pill tag-pill--xs" x-text="getDimensionName(log.dimension)"></span>
                                                 </div>
                                                 <p class="text-sm text-muted mb-1" x-text="'Q: ' + log.question"></p>
-                                                <p class="font-medium text-primary" x-text="'A: ' + log.answer"></p>
+                                                <p class="font-medium text-primary" x-text="'A: ' + getCollectedAnswerText(log)"></p>
                                             </div>
                                         </template>
                                     </div>
@@ -1978,7 +1978,7 @@
                                                         <svg class="w-4 h-4 text-primary shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
                                                             <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
                                                         </svg>
-                                                        <span><strong x-text="log.answer"></strong> - <span class="text-muted" x-text="log.question"></span></span>
+                                                        <span><strong x-text="getCollectedAnswerText(log)"></strong> - <span class="text-muted" x-text="log.question"></span></span>
                                                     </div>
                                                 </template>
                                                 <template x-if="currentSession.interview_log.filter(l => l.dimension === dimKey).length === 0">

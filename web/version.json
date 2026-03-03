@@ -1,7 +1,16 @@
 {
-  "version": "2.4.0",
+  "version": "2.5.0",
   "releaseDate": "2026-03-03",
   "changelog": [
+    {
+      "version": "2.5.0",
+      "date": "2026-03-03",
+      "type": "minor",
+      "title": "支持记录并展示其他选项的原始输入明细",
+      "changes": [
+        "fix: 已收集回答移除其他前缀与解析答案文案"
+      ]
+    },
     {
       "version": "2.4.0",
       "date": "2026-03-03",

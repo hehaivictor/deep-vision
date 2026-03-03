@@ -8790,6 +8790,8 @@ def submit_answer(session_id):
     answer = data.get("answer")
     dimension = data.get("dimension")
     options = data.get("options", [])
+    other_selected = data.get("other_selected", False)
+    other_answer_text = data.get("other_answer_text", "")
     is_follow_up = data.get("is_follow_up", False)
 
     # 验证必需参数
@@ -8803,6 +8805,14 @@ def submit_answer(session_id):
         return jsonify({"error": "无效的维度"}), 400
     if not isinstance(options, list):
         return jsonify({"error": "选项必须是列表"}), 400
+    if not isinstance(other_selected, bool):
+        return jsonify({"error": "other_selected必须是布尔值"}), 400
+    if other_answer_text is None:
+        other_answer_text = ""
+    if not isinstance(other_answer_text, str):
+        return jsonify({"error": "other_answer_text必须是字符串"}), 400
+    if len(other_answer_text) > 2000:
+        return jsonify({"error": "自定义答案长度不能超过2000字符"}), 400
     if not isinstance(is_follow_up, bool):
         return jsonify({"error": "is_follow_up必须是布尔值"}), 400
 
@@ -8841,6 +8851,8 @@ def submit_answer(session_id):
         "answer": answer,
         "dimension": dimension,
         "options": options,
+        "other_selected": other_selected,
+        "other_answer_text": other_answer_text,
         "is_follow_up": is_follow_up,
         "needs_follow_up": needs_follow_up,
         "follow_up_signals": follow_up_signals,  # 记录检测到的信号
