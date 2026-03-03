@@ -494,7 +494,20 @@ class ComprehensiveApiTests(unittest.TestCase):
         created = self._create_session(topic="报告生成链路")
         session_id = created["session_id"]
         dimension = list(created["dimensions"].keys())[0]
-        self._submit_answer(session_id, dimension, question="需求是什么？", answer="希望提升自动化程度")
+        submit_resp = self.client.post(
+            f"/api/sessions/{session_id}/submit-answer",
+            json={
+                "question": "需求是什么？",
+                "answer": "可控的技术实现",
+                "dimension": dimension,
+                "options": ["细粒度权限控制", "敏感数据脱敏", "导出审计", "计算隔离"],
+                "multi_select": False,
+                "other_selected": True,
+                "other_answer_text": "可控的技术实现",
+                "is_follow_up": False,
+            },
+        )
+        self.assertEqual(submit_resp.status_code, 200, submit_resp.get_data(as_text=True))
 
         gen_resp = self.client.post(f"/api/sessions/{session_id}/generate-report", json={})
         self.assertEqual(gen_resp.status_code, 202, gen_resp.get_data(as_text=True))
@@ -520,6 +533,8 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(get_report_resp.status_code, 200)
         content = get_report_resp.get_json().get("content", "")
         self.assertIn("访谈报告", content)
+        self.assertIn("全部选项：1.细粒度权限控制；2.敏感数据脱敏；3.导出审计；4.计算隔离", content)
+        self.assertIn("自由输入：可控的技术实现", content)
 
         other_client = self.server.app.test_client()
         self._register(client=other_client)

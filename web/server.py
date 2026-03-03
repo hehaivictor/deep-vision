@@ -9644,6 +9644,34 @@ def generate_report(session_id):
     return jsonify(payload), 202
 
 
+def format_appendix_answer(log: dict) -> str:
+    """格式化附录中的回答展示，兼容“其他（自由输入）”明细。"""
+    if not isinstance(log, dict):
+        return str(log or "").strip()
+
+    answer_text = str(log.get("answer", "") or "").strip()
+    if not bool(log.get("other_selected")):
+        return answer_text
+
+    options = log.get("options")
+    option_list = []
+    if isinstance(options, list):
+        option_list = [str(item or "").strip() for item in options if str(item or "").strip()]
+
+    other_input = str(log.get("other_answer_text", "") or "").strip()
+
+    details = []
+    if option_list:
+        numbered_options = "；".join([f"{idx + 1}.{opt}" for idx, opt in enumerate(option_list)])
+        details.append(f"全部选项：{numbered_options}")
+    if other_input:
+        details.append(f"自由输入：{other_input}")
+
+    if details:
+        return " | ".join(details)
+    return answer_text
+
+
 def generate_interview_appendix(session: dict) -> str:
     """生成完整的访谈记录附录"""
     interview_log = session.get("interview_log", [])
@@ -9658,7 +9686,7 @@ def generate_interview_appendix(session: dict) -> str:
     for i, log in enumerate(interview_log, 1):
         dim_name = appendix_dim_info.get(log.get('dimension', ''), {}).get('name', '未分类')
         question = log.get('question', '')
-        answer = log.get('answer', '')
+        answer = format_appendix_answer(log)
         appendix += "<details>\n"
         appendix += f"<summary>Q{i}: {question}</summary>\n\n"
         appendix += f"**回答**: {answer}\n\n"

@@ -1,7 +1,16 @@
 {
-  "version": "2.5.0",
+  "version": "2.6.0",
   "releaseDate": "2026-03-03",
   "changelog": [
+    {
+      "version": "2.6.0",
+      "date": "2026-03-03",
+      "type": "minor",
+      "title": "报告附录支持展示其他选项与自由输入明细",
+      "changes": [
+        "test: 增加附录中其他输入展示的回归断言"
+      ]
+    },
     {
       "version": "2.5.0",
       "date": "2026-03-03",
