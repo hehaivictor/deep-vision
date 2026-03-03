@@ -1,7 +1,16 @@
 {
-  "version": "2.3.0",
-  "releaseDate": "2026-02-28",
+  "version": "2.4.0",
+  "releaseDate": "2026-03-03",
   "changelog": [
+    {
+      "version": "2.4.0",
+      "date": "2026-03-03",
+      "type": "minor",
+      "title": "新增站点标签页图标 favicon 资源",
+      "changes": [
+        "chore: 在首页介绍页帮助页统一接入 favicon 引用"
+      ]
+    },
     {
       "version": "2.3.0",
       "date": "2026-02-28",
