@@ -696,10 +696,11 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertIn("访谈报告", content)
         self.assertIn("问题 1：需求是什么？", content)
         self.assertNotIn("Q1:", content)
-        self.assertIn("- ☐ 细粒度权限控制", content)
-        self.assertIn("- ☑ 其他（自由输入）：可控的技术实现", content)
+        self.assertIn("☐ 细粒度权限控制", content)
+        self.assertIn("☑ 其他（自由输入）：可控的技术实现", content)
         self.assertIn("☐", content)
         self.assertIn("☑", content)
+        self.assertNotIn("- ☐", content)
         self.assertNotIn("记录时间", content)
         self.assertIn("本次访谈共手机了 1 个问题的回答（点击展开/收起）", content)
 

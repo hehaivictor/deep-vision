@@ -11056,7 +11056,7 @@ def render_appendix_answer_block(log: dict) -> str:
     """将附录回答渲染为“全选项 + 勾选态 + 其他输入”格式。"""
     if not isinstance(log, dict):
         text = str(log or "").strip()
-        return f"**回答**：\n- ☑ {text or '（未填写）'}"
+        return f"**回答**：\n☑ {text or '（未填写）'}"
 
     answer_text = str(log.get("answer", "") or "").strip()
     option_list = []
@@ -11066,20 +11066,24 @@ def render_appendix_answer_block(log: dict) -> str:
 
     selected_options = resolve_selected_options(log, option_list)
 
-    lines = ["**回答**："]
+    answer_lines = []
     if option_list:
         for option in option_list:
             mark = "☑" if option in selected_options else "☐"
-            lines.append(f"- {mark} {option}")
+            answer_lines.append(f"{mark} {option}")
     else:
-        lines.append(f"- ☑ {answer_text or '（未填写）'}")
+        answer_lines.append(f"☑ {answer_text or '（未填写）'}")
 
     other_selected = bool(log.get("other_selected"))
     other_input = str(log.get("other_answer_text", "") or "").strip()
     if other_selected and other_input:
-        lines.append(f"- ☑ 其他（自由输入）：{other_input}")
+        answer_lines.append(f"☑ 其他（自由输入）：{other_input}")
 
-    return "\n".join(lines)
+    # 使用 Markdown 硬换行，避免触发列表渲染产生额外黑点。
+    if answer_lines:
+        return "**回答**：\n" + "  \n".join(answer_lines)
+
+    return "**回答**：\n☑ （未填写）"
 
 
 def generate_interview_appendix(session: dict) -> str:
