@@ -1866,7 +1866,7 @@ def build_user_payload(row: sqlite3.Row) -> dict:
         "id": user_id,
         "email": email,
         "phone": phone,
-        "account": email or phone or "",
+        "account": phone or "",
         "created_at": row["created_at"],
         "wechat_bound": bool(wechat_identity),
         "wechat_nickname": str((wechat_identity or {}).get("nickname") or "").strip(),

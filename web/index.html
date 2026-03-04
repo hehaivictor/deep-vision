@@ -784,7 +784,7 @@
                              class="theme-menu account-menu dv-popover-panel absolute right-0 mt-2 w-56 rounded-xl border border-gray-200 bg-white p-2 shadow-lg z-50">
                             <div class="px-2.5 py-2 space-y-1">
                                 <p class="text-xs font-semibold text-primary tracking-wide">当前账号</p>
-                                <p class="text-xs text-muted break-all" x-text="currentUser?.account || '未登录'"></p>
+                                <p class="text-xs text-muted break-all" x-text="getCurrentAccountDisplay()"></p>
                             </div>
                             <div class="account-menu-divider my-2"></div>
                             <button @click="openSettingsModal('account')"

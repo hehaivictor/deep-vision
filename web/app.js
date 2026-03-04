@@ -793,6 +793,26 @@ function deepVision() {
             return 'tel';
         },
 
+        getCurrentAccountDisplay() {
+            if (!this.currentUser) return '未登录';
+
+            const nickname = String(this.currentUser?.wechat_nickname || '').trim();
+            if (this.currentUser?.wechat_bound && nickname) {
+                return nickname;
+            }
+
+            const phone = String(this.currentUser?.phone || '').trim();
+            if (phone) {
+                return phone;
+            }
+
+            if (this.currentUser?.wechat_bound) {
+                return '微信用户';
+            }
+
+            return '未登录';
+        },
+
         stopAuthCodeCountdown(scope = 'auth') {
             const timerKey = scope === 'bind' ? 'bindCodeTimer' : 'authCodeTimer';
             const countdownKey = scope === 'bind' ? 'bindCodeCountdown' : 'authCodeCountdown';
