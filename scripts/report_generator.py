@@ -91,8 +91,8 @@ def format_interview_log(interview_log: list) -> str:
 
     lines = []
     for i, entry in enumerate(interview_log, 1):
-        lines.append(f"**Q{i}**: {entry.get('question', '')}")
-        lines.append(f"**A{i}**: {entry.get('answer', '')}")
+        lines.append(f"**问题{i}**：{entry.get('question', '')}")
+        lines.append(f"**回答{i}**：{entry.get('answer', '')}")
         if entry.get('dimension'):
             lines.append(f"*维度: {entry['dimension']}*")
         lines.append("")

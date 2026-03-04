@@ -10590,8 +10590,8 @@ def restart_interview(session_id):
                 question = log.get('question', '').replace('**', '').replace('`', '')
                 answer = log.get('answer', '').replace('**', '').replace('`', '')
 
-                research_content += f"Q: {question}\n\n"
-                research_content += f"A: {answer}\n\n"
+                research_content += f"问题：{question}\n\n"
+                research_content += f"回答：{answer}\n\n"
 
                 if log.get('follow_up_question'):
                     follow_q = log['follow_up_question'].replace('**', '').replace('`', '')
