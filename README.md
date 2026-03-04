@@ -1,109 +1,106 @@
-# Deep-Vision
+# DeepVision
 
-> 智能访谈技能 - 让访谈变得简单
+DeepVision 是一个面向需求访谈场景的 AI Web 应用，支持从访谈提问、回答沉淀到报告生成与导出的完整链路。
 
-Deep-Vision 通过**选择式交互**深度挖掘被访谈人的真实需求，自动生成专业的需求文档。
+当前版本：`2.7.0`（见 [web/version.json](web/version.json)）
 
-## 核心理念
+## 核心能力
 
-**让被访谈者只需做选择** - 以选择代替输入，降低认知负担，提升访谈效率。
-
-```
-传统方式: 您有什么需求？ → 用户: "呃...我需要一个能..."（组织语言、回忆细节）
-Deep-Vision: 您的核心痛点是？ → □ 数据孤岛 □ 流程混乱 □ 效率低下 □ 其他
-```
-
-## 特性
-
-- **零配置启动** - 输入 `/deep-vision` 即刻开始
-- **选择式交互** - 每个问题 2-4 个动态选项 + "其他"自定义
-- **智能追问** - 自动识别表面需求，追问挖掘本质
-- **四维覆盖** - 系统化覆盖客户需求、业务流程、技术约束、项目约束
-- **实时进度** - 可视化展示访谈覆盖度
-- **专业报告** - 自动生成含 Mermaid 图表的需求文档
-
-## 快速开始
-
-```bash
-# 启动访谈
-/deep-vision CRM系统需求
-
-# 查看未完成会话
-uv run scripts/session_manager.py incomplete
-
-# 继续上次访谈
-uv run scripts/session_manager.py resume <session-id>
-
-# 生成报告
-uv run scripts/report_generator.py generate <session-id>
-```
-
-## 访谈流程
-
-```
-启动 → 选择场景 → 四维访谈 → 摘要确认 → 生成报告
-           ↓
-   ┌──────────────────────────────────┐
-   │ 📊 访谈进度                       │
-   │ ✅ 客户需求  [████████████] 100% │
-   │ 🔄 业务流程  [████████░░░░]  67% │
-   │ ⬜ 技术约束  [░░░░░░░░░░░░]   0% │
-   │ ⬜ 项目约束  [░░░░░░░░░░░░]   0% │
-   └──────────────────────────────────┘
-```
-
-## 支持场景
-
-| 场景 | 适用情况 |
-|-----|---------|
-| 新客户访谈 | 售前沟通、方案准备 |
-| 产品需求规划 | 版本迭代、功能设计 |
-| 技术选型访谈 | 架构设计、技术评估 |
-| 招投标方案 | 需求梳理、方案编写 |
-
-## 报告产出
-
-生成的报告包含：
-
-- **需求摘要** - 核心需求列表 + 优先级矩阵
-- **详细分析** - 四大维度的深入分析
-- **可视化图表** - 流程图、关联图、旅程图 (Mermaid)
-- **实现建议** - 技术方案 + 实施路径
-- **风险评估** - 潜在风险 + 应对策略
-- **完整记录** - 访谈全过程存档
-
-## 目录结构
-
-```
-deep-vision/
-├── SKILL.md              # 技能定义
-├── scripts/
-│   ├── session_manager.py    # 会话管理
-│   ├── convert_doc.py        # 文档转换
-│   └── report_generator.py   # 报告生成
-├── data/                 # 数据目录
-│   ├── sessions/         # 会话状态存储
-│   ├── reports/          # 生成的报告
-│   ├── converted/        # 转换后的文档
-│   └── temp/             # 临时文件
-└── docs/
-    ├── deep-vision-prd.md    # 产品需求文档
-    └── test-plan.md          # 测试方案
-```
-
-## 文档
-
-- [产品需求文档](docs/deep-vision-prd.md) - 详细功能规格与设计理念
-- [测试方案](docs/test-plan.md) - 测试用例与验收标准
-- [测试报告](docs/test-report.md) - 测试执行结果
+- 账号体系：手机号验证码登录（`mock` / 京东云短信），支持微信扫码登录（可选）
+- 智能访谈：按场景驱动多维度提问，支持追问、进度推进、会话持久化
+- 场景管理：内置场景 + 自定义场景，兼容历史目录迁移
+- 报告生成：支持异步队列化生成、状态轮询、过载保护
+- 报告导出：支持 Markdown、DOCX、附录 PDF 导出
+- 并发优化：列表分页、ETag/304、429 快速失败、元数据索引回退机制
 
 ## 技术栈
 
-- **运行环境**: Claude Code CLI
-- **脚本执行**: uv run (PEP 723)
-- **文档转换**: Pandoc (可选)
-- **图表渲染**: Mermaid
+- 后端：Flask（单文件主服务 [web/server.py](web/server.py)）
+- 前端：原生 HTML/CSS/JS（`web/index.html` + `web/app.js`）
+- 运行方式：`uv run`（开发）/ Gunicorn（生产）
 
----
+## 快速开始（开发）
 
-*以选择代替输入，让访谈回归本质*
+### 1) 准备环境
+
+- Python `>= 3.10`
+- 安装 [uv](https://docs.astral.sh/uv/)
+
+### 2) 配置
+
+```bash
+cp web/config.example.py web/config.py
+```
+
+按需修改 [web/config.py](web/config.py)（本地文件，不入库）。
+
+### 3) 启动
+
+```bash
+uv run web/server.py
+```
+
+默认访问：`http://localhost:5001`
+
+## 生产启动
+
+### 方式一：启动脚本
+
+```bash
+./scripts/start-production.sh
+```
+
+### 方式二：直接 Gunicorn
+
+```bash
+uv run --with gunicorn gunicorn -c web/gunicorn.conf.py web.wsgi:app
+```
+
+可参考 Nginx 示例配置：
+[deploy/nginx/deepvision.conf.example](deploy/nginx/deepvision.conf.example)
+
+## 关键配置项
+
+配置示例见 [web/config.example.py](web/config.example.py)。
+
+- AI 与模型：
+  - `ENABLE_AI`
+  - `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL`
+  - `QUESTION_MODEL_NAME` / `REPORT_MODEL_NAME`
+- 鉴权：
+  - `SECRET_KEY`
+  - `SMS_PROVIDER`（`mock`/`jdcloud`）
+  - `SMS_TEST_CODE`（仅测试环境）
+- 并发与性能：
+  - `LIST_API_DEFAULT_PAGE_SIZE` / `LIST_API_MAX_PAGE_SIZE`
+  - `SESSIONS_LIST_MAX_INFLIGHT` / `REPORTS_LIST_MAX_INFLIGHT`
+  - `REPORT_GENERATION_MAX_WORKERS` / `REPORT_GENERATION_MAX_PENDING`
+- 场景目录：
+  - `BUILTIN_SCENARIOS_DIR`
+  - `CUSTOM_SCENARIOS_DIR`
+
+## 测试
+
+```bash
+python3 -m unittest tests.test_api_comprehensive
+python3 -m unittest tests.test_security_regression
+python3 -m unittest tests.test_scripts_comprehensive
+```
+
+## 目录结构
+
+```text
+DeepVision/
+├── web/                 # 前后端主程序与静态资源
+├── scripts/             # 运维/迁移/压测等脚本
+├── resources/           # 内置场景资源
+├── tests/               # 回归测试
+├── deploy/              # 部署示例（Nginx）
+└── data/                # 运行时数据目录（已忽略，不入库）
+```
+
+## 常用脚本
+
+- [scripts/admin_migrate_ownership.py](scripts/admin_migrate_ownership.py)：账号归属迁移
+- [scripts/loadtest_list_endpoints.py](scripts/loadtest_list_endpoints.py)：列表接口压测
+- [scripts/version_manager.py](scripts/version_manager.py)：版本号与变更记录维护

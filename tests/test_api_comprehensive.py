@@ -346,6 +346,33 @@ class ComprehensiveApiTests(unittest.TestCase):
         get_deleted = self.client.get(f"/api/sessions/{session_id}")
         self.assertEqual(get_deleted.status_code, 404)
 
+    def test_create_session_falls_back_when_scenario_dimensions_malformed(self):
+        self._register()
+        broken_scenario_id = "custom-broken"
+        self.server.scenario_loader._cache[broken_scenario_id] = {
+            "id": broken_scenario_id,
+            "name": "异常场景",
+            "description": "历史脏数据",
+            "dimensions": [
+                "invalid-dimension",
+                {"name": "缺少ID"},
+                {"id": "   ", "name": "空ID"},
+            ],
+        }
+
+        try:
+            response = self.client.post(
+                "/api/sessions",
+                json={"topic": "异常场景创建", "scenario_id": broken_scenario_id},
+            )
+            self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+            payload = response.get_json()
+            self.assertEqual(payload.get("scenario_id"), "product-requirement")
+            self.assertIn("customer_needs", payload.get("dimensions", {}))
+            self.assertGreaterEqual(len(payload.get("dimensions", {})), 4)
+        finally:
+            self.server.scenario_loader._cache.pop(broken_scenario_id, None)
+
     def test_session_isolation_between_users(self):
         user_a = self._register()
         session_id = self._create_session(topic="隔离测试")["session_id"]

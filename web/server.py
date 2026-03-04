@@ -4499,6 +4499,57 @@ DIMENSION_INFO = {
 }
 
 
+def normalize_scenario_dimensions(raw_dimensions) -> list[dict]:
+    """规范化场景维度，过滤无效项，避免历史脏数据导致接口 500。"""
+    normalized: list[dict] = []
+    seen_ids: set[str] = set()
+
+    if not isinstance(raw_dimensions, list):
+        return normalized
+
+    for dim in raw_dimensions:
+        if not isinstance(dim, dict):
+            continue
+
+        dim_id = str(dim.get("id") or "").strip()
+        if not dim_id or dim_id in seen_ids:
+            continue
+
+        safe_dim = dict(dim)
+        safe_dim["id"] = dim_id
+
+        dim_name = safe_dim.get("name")
+        if not isinstance(dim_name, str) or not dim_name.strip():
+            safe_dim["name"] = dim_id
+
+        key_aspects = safe_dim.get("key_aspects")
+        if isinstance(key_aspects, list):
+            safe_dim["key_aspects"] = [str(item).strip() for item in key_aspects if str(item).strip()]
+        else:
+            safe_dim["key_aspects"] = []
+
+        seen_ids.add(dim_id)
+        normalized.append(safe_dim)
+
+    return normalized
+
+
+def build_default_dimension_entries() -> list[dict]:
+    """构造可用的默认维度配置（最终兜底）。"""
+    entries: list[dict] = []
+    for dim_id, dim_info in DIMENSION_INFO.items():
+        key_aspects = dim_info.get("key_aspects", [])
+        entries.append({
+            "id": dim_id,
+            "name": dim_info.get("name", dim_id),
+            "description": dim_info.get("description", ""),
+            "key_aspects": key_aspects if isinstance(key_aspects, list) else [],
+            "min_questions": 2,
+            "max_questions": 4,
+        })
+    return entries
+
+
 def get_dimension_info_for_session(session: dict) -> dict:
     """
     获取会话的维度信息（支持动态场景）
@@ -4513,8 +4564,12 @@ def get_dimension_info_for_session(session: dict) -> dict:
         维度信息字典 {dim_id: {name, description, key_aspects}}
     """
     scenario_config = session.get("scenario_config")
+    if isinstance(scenario_config, dict):
+        scenario_dimensions = normalize_scenario_dimensions(scenario_config.get("dimensions", []))
+    else:
+        scenario_dimensions = []
 
-    if scenario_config and "dimensions" in scenario_config:
+    if scenario_dimensions:
         return {
             dim["id"]: {
                 "name": dim.get("name", dim["id"]),
@@ -4523,7 +4578,7 @@ def get_dimension_info_for_session(session: dict) -> dict:
                 "weight": dim.get("weight"),
                 "scoring_criteria": dim.get("scoring_criteria")
             }
-            for dim in scenario_config["dimensions"]
+            for dim in scenario_dimensions
         }
 
     # 向后兼容：返回默认维度
@@ -4541,9 +4596,13 @@ def get_dimension_order_for_session(session: dict) -> list:
         维度 ID 列表
     """
     scenario_config = session.get("scenario_config")
+    if isinstance(scenario_config, dict):
+        scenario_dimensions = normalize_scenario_dimensions(scenario_config.get("dimensions", []))
+    else:
+        scenario_dimensions = []
 
-    if scenario_config and "dimensions" in scenario_config:
-        return [dim["id"] for dim in scenario_config["dimensions"]]
+    if scenario_dimensions:
+        return [dim["id"] for dim in scenario_dimensions]
 
     # 向后兼容：返回默认顺序
     return list(DIMENSION_INFO.keys())
@@ -9272,15 +9331,47 @@ def create_session():
     # 加载场景配置（如果未指定，使用默认场景）
     if not scenario_id:
         scenario_id = "product-requirement"
+
     scenario_config = scenario_loader.get_scenario(scenario_id)
-    if not scenario_config:
+    if not isinstance(scenario_config, dict):
         scenario_config = scenario_loader.get_default_scenario()
-        scenario_id = scenario_config.get("id", "product-requirement")
+
+    scenario_config = dict(scenario_config or {})
+    scenario_id = str(scenario_config.get("id") or "product-requirement")
+
+    scenario_dimensions = normalize_scenario_dimensions(scenario_config.get("dimensions", []))
+
+    # 兼容历史脏数据：维度异常时自动回退默认场景，避免 500
+    if not scenario_dimensions:
+        fallback_config = scenario_loader.get_default_scenario()
+        if isinstance(fallback_config, dict):
+            fallback_config = dict(fallback_config)
+            fallback_dimensions = normalize_scenario_dimensions(fallback_config.get("dimensions", []))
+            if fallback_dimensions:
+                scenario_config = fallback_config
+                scenario_dimensions = fallback_dimensions
+                scenario_id = str(scenario_config.get("id") or "product-requirement")
+
+    # 双重兜底：默认场景也不可用时，使用内置四维度
+    if not scenario_dimensions:
+        scenario_id = "product-requirement"
+        scenario_dimensions = build_default_dimension_entries()
+        scenario_config = {
+            "id": scenario_id,
+            "name": "产品需求",
+            "description": "适用于产品需求访谈、功能规划、PRD编写",
+            "dimensions": scenario_dimensions,
+        }
+    else:
+        scenario_config["dimensions"] = scenario_dimensions
 
     # 根据场景配置创建动态维度
     dimensions = {}
-    for dim in scenario_config.get("dimensions", []):
-        dimensions[dim["id"]] = {
+    for dim in scenario_dimensions:
+        dim_id = str(dim.get("id") or "").strip()
+        if not dim_id:
+            continue
+        dimensions[dim_id] = {
             "coverage": 0,
             "items": [],
             "score": None  # 用于评估型场景
