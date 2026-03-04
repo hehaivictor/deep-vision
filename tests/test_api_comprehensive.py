@@ -9,6 +9,7 @@ import types
 import unittest
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -550,12 +551,31 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(len(materials), 1)
         self.assertEqual(materials[0]["name"], "note.md")
 
+        cn_name = "开目AI产品手册.md"
+        upload_cn_resp = self.client.post(
+            f"/api/sessions/{session_id}/documents",
+            data={"file": (io.BytesIO("# 说明\n中文文件名".encode("utf-8")), cn_name)},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(upload_cn_resp.status_code, 200, upload_cn_resp.get_data(as_text=True))
+
+        get_session_cn_resp = self.client.get(f"/api/sessions/{session_id}")
+        self.assertEqual(get_session_cn_resp.status_code, 200)
+        cn_materials = get_session_cn_resp.get_json().get("reference_materials", [])
+        self.assertEqual(len(cn_materials), 2)
+        self.assertIn(cn_name, [item.get("name") for item in cn_materials])
+
         bad_type_upload = self.client.post(
             f"/api/sessions/{session_id}/documents",
             data={"file": (io.BytesIO(b"evil"), "evil.exe")},
             content_type="multipart/form-data",
         )
         self.assertEqual(bad_type_upload.status_code, 400)
+
+        delete_cn_resp = self.client.delete(
+            f"/api/sessions/{session_id}/documents/{quote(cn_name)}"
+        )
+        self.assertEqual(delete_cn_resp.status_code, 200)
 
         delete_resp = self.client.delete(f"/api/sessions/{session_id}/documents/note.md")
         self.assertEqual(delete_resp.status_code, 200)

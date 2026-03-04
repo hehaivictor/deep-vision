@@ -10416,25 +10416,29 @@ def upload_document(session_id):
     if not original_filename:
         return jsonify({"error": "文件名无效"}), 400
 
-    safe_filename = secure_filename(original_filename)
+    display_filename = sanitize_filename(original_filename)
+    if not display_filename:
+        return jsonify({"error": "文件名无效"}), 400
+
+    safe_filename = secure_filename(display_filename)
     if not safe_filename:
-        fallback_ext = Path(original_filename).suffix.lower()
+        fallback_ext = Path(display_filename).suffix.lower()
         safe_filename = f"upload{fallback_ext or '.txt'}"
 
-    ext = Path(safe_filename).suffix.lower()
+    ext = Path(display_filename).suffix.lower()
     supported_image_types = {str(item).lower() for item in SUPPORTED_IMAGE_TYPES}
     allowed_upload_types = supported_image_types | {'.md', '.txt', '.pdf', '.docx', '.xlsx', '.pptx'}
     if ext not in allowed_upload_types:
         return jsonify({"error": f"不支持的文件类型: {ext or '未知'}"}), 400
 
-    temp_stem = Path(safe_filename).stem[:80] or "upload"
+    temp_stem = secure_filename(Path(safe_filename).stem)[:80] or "upload"
     temp_filename = f"{temp_stem}-{secrets.token_hex(8)}{ext}"
     filepath = (TEMP_DIR / temp_filename).resolve()
     if not is_path_under(filepath, TEMP_DIR):
         return jsonify({"error": "文件保存路径无效"}), 400
 
     file.save(str(filepath))
-    filename = safe_filename
+    filename = display_filename
 
     # 读取文件内容
     content = ""
