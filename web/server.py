@@ -15,6 +15,8 @@ Deep Vision Web Server - AI 驱动版本
 """
 
 import base64
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 import hashlib
 import html
 import json
@@ -32,7 +34,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, unquote, urlparse, parse_qsl, urlencode, urlunparse
 
-from flask import Flask, jsonify, request, send_from_directory, redirect, session, send_file
+from flask import Flask, jsonify, request, send_from_directory, redirect, session, send_file, make_response
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash
 from werkzeug.utils import secure_filename
@@ -305,6 +307,40 @@ REFLY_POLL_INTERVAL = _cfg_float("REFLY_POLL_INTERVAL", 2.0)
 if REFLY_POLL_INTERVAL <= 0:
     REFLY_POLL_INTERVAL = 2.0
 
+# 列表接口性能与并发保护配置
+LIST_API_DEFAULT_PAGE_SIZE = _cfg_int("LIST_API_DEFAULT_PAGE_SIZE", 20)
+if LIST_API_DEFAULT_PAGE_SIZE < 1:
+    LIST_API_DEFAULT_PAGE_SIZE = 20
+
+LIST_API_MAX_PAGE_SIZE = _cfg_int("LIST_API_MAX_PAGE_SIZE", 100)
+if LIST_API_MAX_PAGE_SIZE < LIST_API_DEFAULT_PAGE_SIZE:
+    LIST_API_MAX_PAGE_SIZE = LIST_API_DEFAULT_PAGE_SIZE
+
+SESSIONS_LIST_MAX_INFLIGHT = _cfg_int("SESSIONS_LIST_MAX_INFLIGHT", 8)
+if SESSIONS_LIST_MAX_INFLIGHT < 1:
+    SESSIONS_LIST_MAX_INFLIGHT = 8
+
+REPORTS_LIST_MAX_INFLIGHT = _cfg_int("REPORTS_LIST_MAX_INFLIGHT", 8)
+if REPORTS_LIST_MAX_INFLIGHT < 1:
+    REPORTS_LIST_MAX_INFLIGHT = 8
+
+LIST_API_RETRY_AFTER_SECONDS = _cfg_int("LIST_API_RETRY_AFTER_SECONDS", 2)
+if LIST_API_RETRY_AFTER_SECONDS < 1:
+    LIST_API_RETRY_AFTER_SECONDS = 2
+
+# 报告生成任务池与排队上限（并发优化）
+REPORT_GENERATION_MAX_WORKERS = _cfg_int("REPORT_GENERATION_MAX_WORKERS", 2)
+if REPORT_GENERATION_MAX_WORKERS < 1:
+    REPORT_GENERATION_MAX_WORKERS = 2
+
+REPORT_GENERATION_MAX_PENDING = _cfg_int("REPORT_GENERATION_MAX_PENDING", 16)
+if REPORT_GENERATION_MAX_PENDING < REPORT_GENERATION_MAX_WORKERS:
+    REPORT_GENERATION_MAX_PENDING = REPORT_GENERATION_MAX_WORKERS
+
+REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS = _cfg_int("REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS", 3)
+if REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS < 1:
+    REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS = 3
+
 # 模型路由配置：支持问题/报告分离，未配置时向后兼容 MODEL_NAME
 _base_model_name = _cfg_text("MODEL_NAME", str(MODEL_NAME or "").strip())
 QUESTION_MODEL_NAME = _cfg_text("QUESTION_MODEL_NAME", _base_model_name) or _base_model_name
@@ -484,7 +520,9 @@ PRESENTATION_MAP_LOCK = threading.Lock()
 DELETED_REPORTS_FILE = REPORTS_DIR / ".deleted_reports.json"
 DELETED_DOCS_FILE = DATA_DIR / ".deleted_docs.json"  # 软删除记录文件
 REPORT_OWNERS_FILE = REPORTS_DIR / ".owners.json"
-REPORT_OWNERS_LOCK = threading.Lock()
+REPORT_OWNERS_LOCK = threading.RLock()
+SESSIONS_LIST_SEMAPHORE = threading.BoundedSemaphore(SESSIONS_LIST_MAX_INFLIGHT)
+REPORTS_LIST_SEMAPHORE = threading.BoundedSemaphore(REPORTS_LIST_MAX_INFLIGHT)
 ALLOWED_STATIC_EXTENSIONS = {
     ".html", ".css", ".js", ".map", ".json",
     ".ico", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
@@ -572,8 +610,20 @@ THINKING_STAGES = {
 # ============ 报告生成进度状态追踪 ============
 report_generation_status = {}   # { session_id: { state, stage_index, total_stages, progress, message, updated_at, active } }
 report_generation_status_lock = threading.Lock()
-report_generation_workers = {}  # { session_id: threading.Thread }
+report_generation_workers = {}  # { session_id: Future }
 report_generation_workers_lock = threading.Lock()
+report_generation_queue_stats_lock = threading.Lock()
+report_generation_queue_stats = {
+    "submitted": 0,
+    "rejected": 0,
+    "completed": 0,
+    "failed": 0,
+}
+report_generation_slots = threading.BoundedSemaphore(REPORT_GENERATION_MAX_PENDING)
+report_generation_executor = ThreadPoolExecutor(
+    max_workers=REPORT_GENERATION_MAX_WORKERS,
+    thread_name_prefix="report-generator",
+)
 
 REPORT_GENERATION_STAGES = {
     "queued": {"index": 0, "progress": 5, "message": "已提交请求，准备生成报告..."},
@@ -589,6 +639,72 @@ REPORT_GENERATION_STAGES = {
 prefetch_cache = {}            # { session_id: { dimension: { question_data, created_at, valid } } }
 prefetch_cache_lock = threading.Lock()
 PREFETCH_TTL = 300             # 预生成缓存有效期（秒）
+report_owners_cache = {"signature": None, "data": {}}
+session_list_cache = {}        # { filename: { signature, payload } }
+session_list_cache_lock = threading.Lock()
+list_overload_stats = {
+    "sessions_list": {"rejected": 0},
+    "reports_list": {"rejected": 0},
+}
+list_overload_stats_lock = threading.Lock()
+list_api_metrics_lock = threading.Lock()
+list_api_metrics = {
+    "sessions_list": {
+        "calls": 0,
+        "success": 0,
+        "status_429": 0,
+        "status_5xx": 0,
+        "total_latency_ms": 0.0,
+        "latency_samples": deque(maxlen=500),
+        "source_sqlite": 0,
+        "source_file_scan": 0,
+        "source_overload": 0,
+        "source_unknown": 0,
+        "total_returned_items": 0,
+        "total_available_items": 0,
+        "total_page_size": 0,
+        "scan_calls": 0,
+        "total_scan_ms": 0.0,
+        "error_reasons": {},
+    },
+    "reports_list": {
+        "calls": 0,
+        "success": 0,
+        "status_429": 0,
+        "status_5xx": 0,
+        "total_latency_ms": 0.0,
+        "latency_samples": deque(maxlen=500),
+        "source_sqlite": 0,
+        "source_file_scan": 0,
+        "source_overload": 0,
+        "source_unknown": 0,
+        "total_returned_items": 0,
+        "total_available_items": 0,
+        "total_page_size": 0,
+        "scan_calls": 0,
+        "total_scan_ms": 0.0,
+        "error_reasons": {},
+    },
+}
+list_cache_metrics = {
+    "session_meta": {"hit": 0, "miss": 0},
+    "report_owner": {"hit": 0, "miss": 0},
+}
+meta_index_state = {
+    "db_path": "",
+    "schema_ready": False,
+    "sessions_bootstrapped": False,
+    "reports_bootstrapped": False,
+}
+meta_index_state_lock = threading.Lock()
+
+
+def _safe_log(text: str) -> None:
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        fallback = str(text).encode("ascii", errors="backslashreplace").decode("ascii")
+        print(fallback)
 
 
 def safe_load_session(session_file: Path) -> dict:
@@ -596,11 +712,799 @@ def safe_load_session(session_file: Path) -> dict:
     try:
         return json.loads(session_file.read_text(encoding="utf-8"))
     except json.JSONDecodeError as e:
-        print(f"⚠️ 会话文件损坏: {session_file}, 错误: {e}")
+        _safe_log(f"⚠️ 会话文件损坏: {session_file}, 错误: {e}")
         return None
     except Exception as e:
-        print(f"⚠️ 读取会话文件失败: {session_file}, 错误: {e}")
+        _safe_log(f"⚠️ 读取会话文件失败: {session_file}, 错误: {e}")
         return None
+
+
+def get_file_signature(file_path: Path) -> Optional[tuple[int, int]]:
+    try:
+        stat = file_path.stat()
+        return (int(stat.st_mtime_ns), int(stat.st_size))
+    except (FileNotFoundError, OSError):
+        return None
+
+
+def parse_list_pagination_params() -> tuple[int, int, int]:
+    page_raw = str(request.args.get("page", "1") or "1").strip()
+    page_size_raw = str(request.args.get("page_size", str(LIST_API_DEFAULT_PAGE_SIZE)) or str(LIST_API_DEFAULT_PAGE_SIZE)).strip()
+
+    try:
+        page = int(page_raw)
+    except Exception:
+        page = 1
+    if page < 1:
+        page = 1
+
+    try:
+        page_size = int(page_size_raw)
+    except Exception:
+        page_size = LIST_API_DEFAULT_PAGE_SIZE
+    if page_size < 1:
+        page_size = LIST_API_DEFAULT_PAGE_SIZE
+    if page_size > LIST_API_MAX_PAGE_SIZE:
+        page_size = LIST_API_MAX_PAGE_SIZE
+
+    offset = (page - 1) * page_size
+    return page, page_size, offset
+
+
+def apply_pagination_headers(response, page: int, page_size: int, total: int):
+    total_pages = 0 if total <= 0 else ((total - 1) // page_size + 1)
+    response.headers["X-Page"] = str(page)
+    response.headers["X-Page-Size"] = str(page_size)
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Total-Pages"] = str(total_pages)
+    return response
+
+
+def build_list_etag(endpoint: str, page: int, page_size: int, total: int, items: list) -> str:
+    payload = {
+        "endpoint": str(endpoint or ""),
+        "page": int(page or 1),
+        "page_size": int(page_size or 0),
+        "total": int(total or 0),
+        "items": items,
+    }
+    digest = hashlib.md5(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f'W/"{digest}"'
+
+
+def build_not_modified_response(etag: str, page: int, page_size: int, total: int):
+    response = make_response("", 304)
+    response.headers["ETag"] = etag
+    response.headers["Cache-Control"] = "private, max-age=2"
+    apply_pagination_headers(response, page=page, page_size=page_size, total=total)
+    return response
+
+
+def parse_if_none_match_values() -> set[str]:
+    raw = str(request.headers.get("If-None-Match", "") or "").strip()
+    if not raw:
+        return set()
+    return {token.strip() for token in raw.split(",") if token.strip()}
+
+
+def build_overload_response(endpoint_key: str):
+    response = jsonify({
+        "error": "请求过于繁忙，请稍后重试",
+        "code": "overloaded",
+        "endpoint": endpoint_key,
+    })
+    response.status_code = 429
+    response.headers["Retry-After"] = str(LIST_API_RETRY_AFTER_SECONDS)
+    return response
+
+
+def try_acquire_list_semaphore(endpoint_key: str, semaphore: threading.BoundedSemaphore) -> bool:
+    acquired = semaphore.acquire(blocking=False)
+    if acquired:
+        return True
+
+    with list_overload_stats_lock:
+        stats = list_overload_stats.setdefault(endpoint_key, {"rejected": 0})
+        stats["rejected"] = int(stats.get("rejected", 0)) + 1
+        rejected = stats["rejected"]
+
+    if ENABLE_DEBUG_LOG and (rejected == 1 or rejected % 20 == 0):
+        _safe_log(f"⚠️ {endpoint_key} 触发过载保护，累计拒绝 {rejected} 次")
+    return False
+
+
+def build_compact_dimensions(dimensions: dict) -> dict:
+    if not isinstance(dimensions, dict):
+        return {}
+
+    compact = {}
+    for key, value in dimensions.items():
+        if not isinstance(key, str):
+            continue
+        if not isinstance(value, dict):
+            compact[key] = {"coverage": 0, "score": None}
+            continue
+        coverage = value.get("coverage", 0)
+        try:
+            coverage_value = int(coverage)
+        except Exception:
+            coverage_value = 0
+        compact[key] = {
+            "coverage": max(0, min(100, coverage_value)),
+            "score": value.get("score"),
+        }
+    return compact
+
+
+def record_list_cache_metric(cache_name: str, hit: bool) -> None:
+    name = str(cache_name or "").strip()
+    if not name:
+        return
+    with list_api_metrics_lock:
+        target = list_cache_metrics.setdefault(name, {"hit": 0, "miss": 0})
+        key = "hit" if hit else "miss"
+        target[key] = int(target.get(key, 0) or 0) + 1
+
+
+def record_list_request_metric(
+    endpoint: str,
+    status_code: int,
+    latency_ms: float,
+    source: str = "unknown",
+    page_size: int = 0,
+    returned_count: int = 0,
+    total_count: int = 0,
+    scan_ms: float = 0.0,
+    error_reason: str = "",
+) -> None:
+    ep = str(endpoint or "").strip()
+    if ep not in {"sessions_list", "reports_list"}:
+        return
+
+    src = str(source or "unknown").strip()
+    if src not in {"sqlite", "file_scan", "overload", "unknown"}:
+        src = "unknown"
+
+    safe_status = int(status_code or 0)
+    safe_latency = float(latency_ms or 0.0)
+    safe_scan_ms = float(scan_ms or 0.0)
+    safe_page_size = max(0, int(page_size or 0))
+    safe_returned = max(0, int(returned_count or 0))
+    safe_total = max(0, int(total_count or 0))
+    safe_reason = str(error_reason or "").strip()
+
+    with list_api_metrics_lock:
+        stat = list_api_metrics.setdefault(ep, {
+            "calls": 0,
+            "success": 0,
+            "status_429": 0,
+            "status_5xx": 0,
+            "total_latency_ms": 0.0,
+            "latency_samples": deque(maxlen=500),
+            "source_sqlite": 0,
+            "source_file_scan": 0,
+            "source_overload": 0,
+            "source_unknown": 0,
+            "total_returned_items": 0,
+            "total_available_items": 0,
+            "total_page_size": 0,
+            "scan_calls": 0,
+            "total_scan_ms": 0.0,
+            "error_reasons": {},
+        })
+
+        stat["calls"] = int(stat.get("calls", 0) or 0) + 1
+        if 200 <= safe_status < 400:
+            stat["success"] = int(stat.get("success", 0) or 0) + 1
+        if safe_status == 429:
+            stat["status_429"] = int(stat.get("status_429", 0) or 0) + 1
+        if safe_status >= 500:
+            stat["status_5xx"] = int(stat.get("status_5xx", 0) or 0) + 1
+
+        stat["total_latency_ms"] = float(stat.get("total_latency_ms", 0.0) or 0.0) + safe_latency
+        samples = stat.get("latency_samples")
+        if not isinstance(samples, deque):
+            samples = deque(maxlen=500)
+            stat["latency_samples"] = samples
+        samples.append(safe_latency)
+
+        source_key = f"source_{src}"
+        stat[source_key] = int(stat.get(source_key, 0) or 0) + 1
+        stat["total_page_size"] = int(stat.get("total_page_size", 0) or 0) + safe_page_size
+        stat["total_returned_items"] = int(stat.get("total_returned_items", 0) or 0) + safe_returned
+        stat["total_available_items"] = int(stat.get("total_available_items", 0) or 0) + safe_total
+
+        if safe_scan_ms > 0:
+            stat["scan_calls"] = int(stat.get("scan_calls", 0) or 0) + 1
+            stat["total_scan_ms"] = float(stat.get("total_scan_ms", 0.0) or 0.0) + safe_scan_ms
+
+        if safe_reason:
+            reasons = stat.get("error_reasons")
+            if not isinstance(reasons, dict):
+                reasons = {}
+                stat["error_reasons"] = reasons
+            reasons[safe_reason] = int(reasons.get(safe_reason, 0) or 0) + 1
+
+
+def _compute_percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    idx = int((len(ordered) - 1) * percentile)
+    idx = max(0, min(len(ordered) - 1, idx))
+    return float(ordered[idx])
+
+
+def get_list_metrics_snapshot() -> dict:
+    with list_api_metrics_lock:
+        cache_snapshot = {}
+        for cache_name, metric in list_cache_metrics.items():
+            hit = int(metric.get("hit", 0) or 0)
+            miss = int(metric.get("miss", 0) or 0)
+            total = hit + miss
+            cache_snapshot[cache_name] = {
+                "hit": hit,
+                "miss": miss,
+                "hit_rate": round(hit / total * 100, 2) if total > 0 else 0.0,
+            }
+
+        endpoint_snapshot = {}
+        for endpoint, stat in list_api_metrics.items():
+            calls = int(stat.get("calls", 0) or 0)
+            success = int(stat.get("success", 0) or 0)
+            latencies = list(stat.get("latency_samples") or [])
+            total_latency = float(stat.get("total_latency_ms", 0.0) or 0.0)
+            scan_calls = int(stat.get("scan_calls", 0) or 0)
+            total_scan_ms = float(stat.get("total_scan_ms", 0.0) or 0.0)
+            total_page_size = int(stat.get("total_page_size", 0) or 0)
+            total_returned = int(stat.get("total_returned_items", 0) or 0)
+            total_available = int(stat.get("total_available_items", 0) or 0)
+
+            endpoint_snapshot[endpoint] = {
+                "calls": calls,
+                "success": success,
+                "status_429": int(stat.get("status_429", 0) or 0),
+                "status_5xx": int(stat.get("status_5xx", 0) or 0),
+                "avg_latency_ms": round(total_latency / calls, 2) if calls > 0 else 0.0,
+                "p95_latency_ms": round(_compute_percentile(latencies, 0.95), 2),
+                "p99_latency_ms": round(_compute_percentile(latencies, 0.99), 2),
+                "source_sqlite": int(stat.get("source_sqlite", 0) or 0),
+                "source_file_scan": int(stat.get("source_file_scan", 0) or 0),
+                "source_overload": int(stat.get("source_overload", 0) or 0),
+                "source_unknown": int(stat.get("source_unknown", 0) or 0),
+                "avg_page_size": round(total_page_size / calls, 2) if calls > 0 else 0.0,
+                "avg_returned_items": round(total_returned / calls, 2) if calls > 0 else 0.0,
+                "avg_total_items": round(total_available / calls, 2) if calls > 0 else 0.0,
+                "scan_calls": scan_calls,
+                "avg_scan_ms": round(total_scan_ms / scan_calls, 2) if scan_calls > 0 else 0.0,
+                "error_reasons": dict(stat.get("error_reasons") or {}),
+            }
+
+    return {
+        "endpoints": endpoint_snapshot,
+        "cache": cache_snapshot,
+    }
+
+
+def reset_list_metrics() -> None:
+    with list_api_metrics_lock:
+        for endpoint in ("sessions_list", "reports_list"):
+            stat = list_api_metrics.setdefault(endpoint, {})
+            stat.clear()
+            stat.update({
+                "calls": 0,
+                "success": 0,
+                "status_429": 0,
+                "status_5xx": 0,
+                "total_latency_ms": 0.0,
+                "latency_samples": deque(maxlen=500),
+                "source_sqlite": 0,
+                "source_file_scan": 0,
+                "source_overload": 0,
+                "source_unknown": 0,
+                "total_returned_items": 0,
+                "total_available_items": 0,
+                "total_page_size": 0,
+                "scan_calls": 0,
+                "total_scan_ms": 0.0,
+                "error_reasons": {},
+            })
+
+        for cache_name in ("session_meta", "report_owner"):
+            metric = list_cache_metrics.setdefault(cache_name, {"hit": 0, "miss": 0})
+            metric["hit"] = 0
+            metric["miss"] = 0
+
+
+def get_meta_index_db_path() -> Path:
+    return DATA_DIR / "meta_index.db"
+
+
+def ensure_meta_index_schema() -> None:
+    db_path = get_meta_index_db_path().resolve()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path_text = str(db_path)
+
+    with meta_index_state_lock:
+        if meta_index_state.get("db_path") != db_path_text:
+            meta_index_state["db_path"] = db_path_text
+            meta_index_state["schema_ready"] = False
+            meta_index_state["sessions_bootstrapped"] = False
+            meta_index_state["reports_bootstrapped"] = False
+
+        if meta_index_state.get("schema_ready"):
+            return
+
+        with sqlite3.connect(db_path, timeout=5) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_index (
+                    session_id TEXT PRIMARY KEY,
+                    file_name TEXT NOT NULL UNIQUE,
+                    owner_user_id INTEGER NOT NULL,
+                    topic TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'in_progress',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    interview_count INTEGER NOT NULL DEFAULT 0,
+                    scenario_id TEXT NOT NULL DEFAULT '',
+                    scenario_config_json TEXT NOT NULL DEFAULT '{}',
+                    dimensions_json TEXT NOT NULL DEFAULT '{}',
+                    file_mtime_ns INTEGER NOT NULL DEFAULT 0,
+                    file_size INTEGER NOT NULL DEFAULT 0,
+                    indexed_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_index_owner_updated ON session_index(owner_user_id, updated_at DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_index_owner_created ON session_index(owner_user_id, created_at DESC)"
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS report_index (
+                    file_name TEXT PRIMARY KEY,
+                    owner_user_id INTEGER NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0,
+                    size INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT '',
+                    file_mtime_ns INTEGER NOT NULL DEFAULT 0,
+                    file_size INTEGER NOT NULL DEFAULT 0,
+                    indexed_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_report_index_owner_deleted_created ON report_index(owner_user_id, deleted, created_at DESC)"
+            )
+
+        meta_index_state["schema_ready"] = True
+
+
+def get_meta_index_connection() -> sqlite3.Connection:
+    ensure_meta_index_schema()
+    conn = sqlite3.connect(get_meta_index_db_path().resolve(), timeout=5)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _decode_index_json(raw_text: str, default):
+    text = str(raw_text or "").strip()
+    if not text:
+        return default
+    try:
+        parsed = json.loads(text)
+        return parsed
+    except Exception:
+        return default
+
+
+def _build_session_index_record(session_file: Path, session_data: dict) -> Optional[dict]:
+    if not isinstance(session_data, dict):
+        return None
+
+    session_id = str(session_data.get("session_id") or "").strip()
+    if not session_id:
+        return None
+
+    try:
+        owner_user_id = int(session_data.get("owner_user_id"))
+    except (TypeError, ValueError):
+        return None
+    if owner_user_id <= 0:
+        return None
+
+    signature = get_file_signature(session_file) or (0, 0)
+    interview_log = session_data.get("interview_log", [])
+    interview_count = len(interview_log) if isinstance(interview_log, list) else 0
+
+    scenario_config = session_data.get("scenario_config")
+    if isinstance(scenario_config, (dict, list)):
+        scenario_config_json = json.dumps(scenario_config, ensure_ascii=False)
+    else:
+        scenario_config_json = "{}"
+
+    dimensions_json = json.dumps(
+        build_compact_dimensions(session_data.get("dimensions", {})),
+        ensure_ascii=False,
+    )
+
+    return {
+        "session_id": session_id,
+        "file_name": session_file.name,
+        "owner_user_id": owner_user_id,
+        "topic": str(session_data.get("topic") or ""),
+        "status": str(session_data.get("status") or "in_progress"),
+        "created_at": str(session_data.get("created_at") or ""),
+        "updated_at": str(session_data.get("updated_at") or ""),
+        "interview_count": int(interview_count),
+        "scenario_id": str(session_data.get("scenario_id") or ""),
+        "scenario_config_json": scenario_config_json,
+        "dimensions_json": dimensions_json,
+        "file_mtime_ns": int(signature[0]),
+        "file_size": int(signature[1]),
+        "indexed_at": get_utc_now(),
+    }
+
+
+def _upsert_session_index_record(record: dict) -> None:
+    if not isinstance(record, dict):
+        return
+
+    with get_meta_index_connection() as conn:
+        conn.execute(
+            "DELETE FROM session_index WHERE file_name = ? AND session_id <> ?",
+            (record["file_name"], record["session_id"]),
+        )
+        conn.execute(
+            """
+            INSERT INTO session_index (
+                session_id, file_name, owner_user_id, topic, status,
+                created_at, updated_at, interview_count, scenario_id,
+                scenario_config_json, dimensions_json, file_mtime_ns,
+                file_size, indexed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                file_name=excluded.file_name,
+                owner_user_id=excluded.owner_user_id,
+                topic=excluded.topic,
+                status=excluded.status,
+                created_at=excluded.created_at,
+                updated_at=excluded.updated_at,
+                interview_count=excluded.interview_count,
+                scenario_id=excluded.scenario_id,
+                scenario_config_json=excluded.scenario_config_json,
+                dimensions_json=excluded.dimensions_json,
+                file_mtime_ns=excluded.file_mtime_ns,
+                file_size=excluded.file_size,
+                indexed_at=excluded.indexed_at
+            """,
+            (
+                record["session_id"],
+                record["file_name"],
+                record["owner_user_id"],
+                record["topic"],
+                record["status"],
+                record["created_at"],
+                record["updated_at"],
+                record["interview_count"],
+                record["scenario_id"],
+                record["scenario_config_json"],
+                record["dimensions_json"],
+                record["file_mtime_ns"],
+                record["file_size"],
+                record["indexed_at"],
+            ),
+        )
+
+
+def save_session_json_and_sync(session_file: Path, session_data: dict) -> None:
+    session_file.write_text(
+        json.dumps(session_data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    try:
+        record = _build_session_index_record(session_file, session_data)
+        if record:
+            _upsert_session_index_record(record)
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            _safe_log(f"⚠️ 同步 session_index 失败: {session_file.name}, 错误: {exc}")
+
+
+def remove_session_index_record(session_id: str = "", file_name: str = "") -> None:
+    sid = str(session_id or "").strip()
+    fname = str(file_name or "").strip()
+    if not sid and not fname:
+        return
+
+    with get_meta_index_connection() as conn:
+        if sid and fname:
+            conn.execute(
+                "DELETE FROM session_index WHERE session_id = ? OR file_name = ?",
+                (sid, fname),
+            )
+        elif sid:
+            conn.execute("DELETE FROM session_index WHERE session_id = ?", (sid,))
+        else:
+            conn.execute("DELETE FROM session_index WHERE file_name = ?", (fname,))
+
+
+def rebuild_session_index_from_disk() -> None:
+    records = []
+    for session_file in SESSIONS_DIR.glob("*.json"):
+        session_data = safe_load_session(session_file)
+        record = _build_session_index_record(session_file, session_data)
+        if record:
+            records.append(record)
+
+    with get_meta_index_connection() as conn:
+        conn.execute("DELETE FROM session_index")
+        if records:
+            conn.executemany(
+                """
+                INSERT INTO session_index (
+                    session_id, file_name, owner_user_id, topic, status,
+                    created_at, updated_at, interview_count, scenario_id,
+                    scenario_config_json, dimensions_json, file_mtime_ns,
+                    file_size, indexed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        record["session_id"],
+                        record["file_name"],
+                        record["owner_user_id"],
+                        record["topic"],
+                        record["status"],
+                        record["created_at"],
+                        record["updated_at"],
+                        record["interview_count"],
+                        record["scenario_id"],
+                        record["scenario_config_json"],
+                        record["dimensions_json"],
+                        record["file_mtime_ns"],
+                        record["file_size"],
+                        record["indexed_at"],
+                    )
+                    for record in records
+                ],
+            )
+
+
+def ensure_session_index_bootstrapped() -> None:
+    ensure_meta_index_schema()
+
+    with meta_index_state_lock:
+        if meta_index_state.get("sessions_bootstrapped"):
+            return
+        meta_index_state["sessions_bootstrapped"] = True
+
+    try:
+        rebuild_session_index_from_disk()
+    except Exception as exc:
+        with meta_index_state_lock:
+            meta_index_state["sessions_bootstrapped"] = False
+        raise RuntimeError(f"初始化 session_index 失败: {exc}") from exc
+
+
+def query_session_index_for_user(owner_user_id: int, page: int, page_size: int) -> tuple[list[dict], int]:
+    offset = (page - 1) * page_size
+    with get_meta_index_connection() as conn:
+        total_row = conn.execute(
+            "SELECT COUNT(1) AS total FROM session_index WHERE owner_user_id = ?",
+            (int(owner_user_id),),
+        ).fetchone()
+        total = int((total_row["total"] if total_row else 0) or 0)
+
+        rows = conn.execute(
+            """
+            SELECT
+                session_id, topic, status, created_at, updated_at,
+                interview_count, scenario_id, scenario_config_json, dimensions_json
+            FROM session_index
+            WHERE owner_user_id = ?
+            ORDER BY updated_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (int(owner_user_id), int(page_size), int(offset)),
+        ).fetchall()
+
+    result = []
+    for row in rows:
+        result.append({
+            "session_id": row["session_id"],
+            "topic": row["topic"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "interview_count": int(row["interview_count"] or 0),
+            "scenario_id": row["scenario_id"],
+            "scenario_config": _decode_index_json(row["scenario_config_json"], {}),
+            "dimensions": _decode_index_json(row["dimensions_json"], {}),
+        })
+    return result, total
+
+
+def _build_report_index_record(file_name: str, owner_user_id: int, deleted: bool) -> Optional[dict]:
+    name = str(file_name or "").strip()
+    if not name or not name.endswith(".md"):
+        return None
+    if int(owner_user_id) <= 0:
+        return None
+
+    reports_root = REPORTS_DIR.resolve()
+    report_path = (REPORTS_DIR / name).resolve()
+    if report_path.parent != reports_root:
+        return None
+
+    signature = get_file_signature(report_path)
+    if signature is None:
+        return None
+
+    stat = report_path.stat()
+    return {
+        "file_name": name,
+        "owner_user_id": int(owner_user_id),
+        "deleted": 1 if deleted else 0,
+        "size": int(stat.st_size),
+        "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        "file_mtime_ns": int(signature[0]),
+        "file_size": int(signature[1]),
+        "indexed_at": get_utc_now(),
+    }
+
+
+def _upsert_report_index_record(record: dict) -> None:
+    if not isinstance(record, dict):
+        return
+
+    with get_meta_index_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO report_index (
+                file_name, owner_user_id, deleted, size, created_at,
+                file_mtime_ns, file_size, indexed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(file_name) DO UPDATE SET
+                owner_user_id=excluded.owner_user_id,
+                deleted=excluded.deleted,
+                size=excluded.size,
+                created_at=excluded.created_at,
+                file_mtime_ns=excluded.file_mtime_ns,
+                file_size=excluded.file_size,
+                indexed_at=excluded.indexed_at
+            """,
+            (
+                record["file_name"],
+                record["owner_user_id"],
+                record["deleted"],
+                record["size"],
+                record["created_at"],
+                record["file_mtime_ns"],
+                record["file_size"],
+                record["indexed_at"],
+            ),
+        )
+
+
+def remove_report_index_record(file_name: str) -> None:
+    name = str(file_name or "").strip()
+    if not name:
+        return
+    with get_meta_index_connection() as conn:
+        conn.execute("DELETE FROM report_index WHERE file_name = ?", (name,))
+
+
+def sync_report_index_for_filename(file_name: str, owner_user_id: Optional[int] = None, deleted: Optional[bool] = None) -> None:
+    name = str(file_name or "").strip()
+    if not name:
+        return
+
+    if owner_user_id is None:
+        owner_user_id = get_report_owner_id(name)
+    owner_id = int(owner_user_id or 0)
+    if owner_id <= 0:
+        remove_report_index_record(name)
+        return
+
+    is_deleted = bool(deleted) if deleted is not None else (name in get_deleted_reports())
+    record = _build_report_index_record(name, owner_id, is_deleted)
+    if not record:
+        remove_report_index_record(name)
+        return
+    _upsert_report_index_record(record)
+
+
+def rebuild_report_index_from_sources() -> None:
+    owner_map = load_report_owners()
+    deleted_set = get_deleted_reports()
+    records = []
+    for report_name, owner_id in owner_map.items():
+        record = _build_report_index_record(report_name, int(owner_id), report_name in deleted_set)
+        if record:
+            records.append(record)
+
+    with get_meta_index_connection() as conn:
+        conn.execute("DELETE FROM report_index")
+        if records:
+            conn.executemany(
+                """
+                INSERT INTO report_index (
+                    file_name, owner_user_id, deleted, size, created_at,
+                    file_mtime_ns, file_size, indexed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        record["file_name"],
+                        record["owner_user_id"],
+                        record["deleted"],
+                        record["size"],
+                        record["created_at"],
+                        record["file_mtime_ns"],
+                        record["file_size"],
+                        record["indexed_at"],
+                    )
+                    for record in records
+                ],
+            )
+
+
+def ensure_report_index_bootstrapped() -> None:
+    ensure_meta_index_schema()
+
+    with meta_index_state_lock:
+        if meta_index_state.get("reports_bootstrapped"):
+            return
+        meta_index_state["reports_bootstrapped"] = True
+
+    try:
+        rebuild_report_index_from_sources()
+    except Exception as exc:
+        with meta_index_state_lock:
+            meta_index_state["reports_bootstrapped"] = False
+        raise RuntimeError(f"初始化 report_index 失败: {exc}") from exc
+
+
+def query_report_index_for_user(owner_user_id: int, page: int, page_size: int) -> tuple[list[dict], int]:
+    offset = (page - 1) * page_size
+    with get_meta_index_connection() as conn:
+        total_row = conn.execute(
+            "SELECT COUNT(1) AS total FROM report_index WHERE owner_user_id = ? AND deleted = 0",
+            (int(owner_user_id),),
+        ).fetchone()
+        total = int((total_row["total"] if total_row else 0) or 0)
+
+        rows = conn.execute(
+            """
+            SELECT file_name, size, created_at
+            FROM report_index
+            WHERE owner_user_id = ? AND deleted = 0
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (int(owner_user_id), int(page_size), int(offset)),
+        ).fetchall()
+
+    return ([
+        {
+            "name": row["file_name"],
+            "path": str((REPORTS_DIR / row["file_name"]).resolve()),
+            "size": int(row["size"] or 0),
+            "created_at": str(row["created_at"] or ""),
+        }
+        for row in rows
+    ], total)
 
 
 def get_auth_db_connection() -> sqlite3.Connection:
@@ -1881,6 +2785,9 @@ def build_report_generation_payload(record: Optional[dict]) -> dict:
         "ai_generated": record.get("ai_generated"),
         "v3_enabled": record.get("v3_enabled"),
         "error": record.get("error", ""),
+        "queue_position": _safe_int(record.get("queue_position", 0), 0),
+        "queue_pending": _safe_int(record.get("queue_pending", 0), 0),
+        "queue_running": _safe_int(record.get("queue_running", 0), 0),
     }
 
     quality_meta = record.get("report_quality_meta")
@@ -1890,26 +2797,119 @@ def build_report_generation_payload(record: Optional[dict]) -> dict:
     return payload
 
 
+def record_report_generation_queue_event(event: str, delta: int = 1) -> None:
+    if event not in report_generation_queue_stats:
+        return
+    try:
+        step = int(delta)
+    except Exception:
+        step = 1
+    if step <= 0:
+        return
+    with report_generation_queue_stats_lock:
+        report_generation_queue_stats[event] = int(report_generation_queue_stats.get(event, 0) or 0) + step
+
+
+def release_report_generation_slot() -> None:
+    try:
+        report_generation_slots.release()
+    except ValueError:
+        # 兜底：避免异常场景重复释放导致线程报错
+        pass
+
+
+def get_report_generation_worker_snapshot(include_positions: bool = False) -> dict:
+    running = 0
+    pending_sessions = []
+    stale_sessions = []
+
+    with report_generation_workers_lock:
+        for sid, future in list(report_generation_workers.items()):
+            if not isinstance(future, Future):
+                stale_sessions.append(sid)
+                continue
+            if future.done():
+                stale_sessions.append(sid)
+                continue
+            if future.running():
+                running += 1
+            else:
+                pending_sessions.append(sid)
+
+        for sid in stale_sessions:
+            report_generation_workers.pop(sid, None)
+
+    in_flight = running + len(pending_sessions)
+
+    with report_generation_queue_stats_lock:
+        stats = dict(report_generation_queue_stats)
+
+    snapshot = {
+        "max_workers": int(REPORT_GENERATION_MAX_WORKERS),
+        "max_pending": int(REPORT_GENERATION_MAX_PENDING),
+        "in_flight": int(in_flight),
+        "running": int(running),
+        "pending": int(len(pending_sessions)),
+        "available_slots": max(0, int(REPORT_GENERATION_MAX_PENDING) - int(in_flight)),
+        "submitted": int(stats.get("submitted", 0) or 0),
+        "rejected": int(stats.get("rejected", 0) or 0),
+        "completed": int(stats.get("completed", 0) or 0),
+        "failed": int(stats.get("failed", 0) or 0),
+    }
+    if include_positions:
+        snapshot["queue_positions"] = {
+            sid: idx + 1
+            for idx, sid in enumerate(pending_sessions)
+        }
+    return snapshot
+
+
+def sync_report_generation_queue_metadata(session_id: str, snapshot: Optional[dict] = None) -> dict:
+    queue_snapshot = snapshot if isinstance(snapshot, dict) else get_report_generation_worker_snapshot(include_positions=True)
+    if not session_id:
+        return queue_snapshot
+
+    with report_generation_status_lock:
+        existing = report_generation_status.get(session_id)
+        if not isinstance(existing, dict):
+            return queue_snapshot
+
+    queue_positions = queue_snapshot.get("queue_positions", {}) if isinstance(queue_snapshot, dict) else {}
+    queue_position = 0
+    if isinstance(queue_positions, dict):
+        try:
+            queue_position = int(queue_positions.get(session_id, 0) or 0)
+        except Exception:
+            queue_position = 0
+
+    set_report_generation_metadata(session_id, {
+        "queue_position": queue_position,
+        "queue_pending": int(queue_snapshot.get("pending", 0) or 0),
+        "queue_running": int(queue_snapshot.get("running", 0) or 0),
+    })
+    return queue_snapshot
+
+
 def is_report_generation_worker_alive(session_id: str) -> bool:
     if not session_id:
         return False
     with report_generation_workers_lock:
         worker = report_generation_workers.get(session_id)
-        if worker and worker.is_alive():
+        if isinstance(worker, Future) and not worker.done():
             return True
-        if worker and not worker.is_alive():
+        if worker is not None:
             report_generation_workers.pop(session_id, None)
     return False
 
 
-def register_report_generation_worker(session_id: str, worker: threading.Thread) -> None:
+def register_report_generation_worker(session_id: str, worker: Future) -> None:
     if not session_id or worker is None:
         return
     with report_generation_workers_lock:
         report_generation_workers[session_id] = worker
 
 
-def cleanup_report_generation_worker(session_id: str, worker: Optional[threading.Thread] = None) -> None:
+def cleanup_report_generation_worker(session_id: str, worker: Optional[Future] = None) -> None:
     if not session_id:
         return
     with report_generation_workers_lock:
@@ -2691,14 +3691,46 @@ def get_deleted_reports() -> set:
 
 
 def load_report_owners() -> dict:
-    if not REPORT_OWNERS_FILE.exists():
-        return {}
-    try:
-        payload = json.loads(REPORT_OWNERS_FILE.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
+    with REPORT_OWNERS_LOCK:
+        signature = get_file_signature(REPORT_OWNERS_FILE)
+        cached_signature = report_owners_cache.get("signature")
+        cached_data = report_owners_cache.get("data")
+        if signature == cached_signature and isinstance(cached_data, dict):
+            record_list_cache_metric("report_owner", hit=True)
+            return dict(cached_data)
+
+        record_list_cache_metric("report_owner", hit=False)
+        if signature is None:
+            report_owners_cache["signature"] = None
+            report_owners_cache["data"] = {}
             return {}
+
         normalized = {}
-        for name, owner in payload.items():
+        try:
+            payload = json.loads(REPORT_OWNERS_FILE.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                for name, owner in payload.items():
+                    if not isinstance(name, str):
+                        continue
+                    try:
+                        owner_id = int(owner)
+                    except (TypeError, ValueError):
+                        continue
+                    if owner_id <= 0:
+                        continue
+                    normalized[name] = owner_id
+        except Exception:
+            normalized = {}
+
+        report_owners_cache["signature"] = signature
+        report_owners_cache["data"] = dict(normalized)
+        return dict(normalized)
+
+
+def save_report_owners(data: dict) -> None:
+    normalized = {}
+    if isinstance(data, dict):
+        for name, owner in data.items():
             if not isinstance(name, str):
                 continue
             try:
@@ -2708,21 +3740,18 @@ def load_report_owners() -> dict:
             if owner_id <= 0:
                 continue
             normalized[name] = owner_id
-        return normalized
-    except Exception:
-        return {}
 
-
-def save_report_owners(data: dict) -> None:
-    REPORT_OWNERS_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+    with REPORT_OWNERS_LOCK:
+        REPORT_OWNERS_FILE.write_text(
+            json.dumps(normalized, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+        report_owners_cache["signature"] = get_file_signature(REPORT_OWNERS_FILE)
+        report_owners_cache["data"] = dict(normalized)
 
 
 def get_report_owner_id(filename: str) -> int:
-    with REPORT_OWNERS_LOCK:
-        owners = load_report_owners()
+    owners = load_report_owners()
     try:
         return int(owners.get(filename, 0))
     except (TypeError, ValueError):
@@ -2735,6 +3764,11 @@ def set_report_owner_id(filename: str, owner_user_id: int) -> None:
         owners = load_report_owners()
         owners[filename] = owner_id
         save_report_owners(owners)
+    try:
+        sync_report_index_for_filename(filename, owner_user_id=owner_id)
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            _safe_log(f"⚠️ 同步 report_index 失败: {filename}, 错误: {exc}")
 
 
 def ensure_report_owner(filename: str, owner_user_id: int) -> bool:
@@ -2822,6 +3856,11 @@ def mark_report_as_deleted(filename: str):
         json.dumps({"deleted": list(deleted)}, ensure_ascii=False, indent=2),
         encoding="utf-8"
     )
+    try:
+        sync_report_index_for_filename(filename, deleted=True)
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            _safe_log(f"⚠️ 标记 report_index 删除失败: {filename}, 错误: {exc}")
 
 
 def normalize_topic_slug(topic: str) -> str:
@@ -3899,7 +4938,7 @@ def update_context_summary(session_id: str) -> None:
         "log_count": history_count,
         "updated_at": get_utc_now()
     }
-    session_file.write_text(json.dumps(latest_session, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_session_json_and_sync(session_file, latest_session)
     if ENABLE_DEBUG_LOG:
         print(f"📝 已更新上下文摘要: session={session_id}, 覆盖={history_count}条")
 
@@ -7978,6 +9017,130 @@ def auth_bind_phone():
 
 # ============ 会话 API ============
 
+
+def build_session_list_cache_payload(session_data: dict) -> Optional[dict]:
+    if not isinstance(session_data, dict):
+        return None
+
+    interview_log = session_data.get("interview_log", [])
+    interview_count = len(interview_log) if isinstance(interview_log, list) else 0
+    try:
+        owner_user_id = int(session_data.get("owner_user_id"))
+    except (TypeError, ValueError):
+        owner_user_id = 0
+
+    return {
+        "owner_user_id": owner_user_id,
+        "session_id": session_data.get("session_id"),
+        "topic": session_data.get("topic"),
+        "status": session_data.get("status"),
+        "created_at": session_data.get("created_at"),
+        "updated_at": session_data.get("updated_at"),
+        "dimensions": build_compact_dimensions(session_data.get("dimensions", {})),
+        "interview_count": interview_count,
+        "scenario_id": session_data.get("scenario_id"),
+        "scenario_config": session_data.get("scenario_config"),
+    }
+
+
+def get_cached_session_list_payload(session_file: Path) -> Optional[dict]:
+    signature = get_file_signature(session_file)
+    if signature is None:
+        return None
+
+    cache_key = session_file.name
+    with session_list_cache_lock:
+        cached = session_list_cache.get(cache_key)
+        if cached and cached.get("signature") == signature:
+            record_list_cache_metric("session_meta", hit=True)
+            payload = cached.get("payload")
+            if isinstance(payload, dict):
+                return dict(payload)
+
+    record_list_cache_metric("session_meta", hit=False)
+    session_data = safe_load_session(session_file)
+    if not isinstance(session_data, dict):
+        return None
+
+    payload = build_session_list_cache_payload(session_data)
+    if not isinstance(payload, dict):
+        return None
+
+    with session_list_cache_lock:
+        session_list_cache[cache_key] = {
+            "signature": signature,
+            "payload": dict(payload),
+        }
+    return dict(payload)
+
+
+def cleanup_session_list_cache(active_filenames: set[str]) -> None:
+    with session_list_cache_lock:
+        stale_names = [name for name in session_list_cache.keys() if name not in active_filenames]
+        for name in stale_names:
+            session_list_cache.pop(name, None)
+
+
+def load_sessions_for_user_from_files(user_id_int: int) -> list[dict]:
+    sessions = []
+    active_files = set()
+    for session_file in SESSIONS_DIR.glob("*.json"):
+        active_files.add(session_file.name)
+        data = get_cached_session_list_payload(session_file)
+        if not isinstance(data, dict):
+            continue
+        if int(data.get("owner_user_id", 0)) != int(user_id_int):
+            continue
+
+        sessions.append({
+            "session_id": data.get("session_id"),
+            "topic": data.get("topic"),
+            "status": data.get("status"),
+            "created_at": data.get("created_at"),
+            "updated_at": data.get("updated_at"),
+            "dimensions": data.get("dimensions", {}),
+            "interview_count": data.get("interview_count", 0),
+            "scenario_id": data.get("scenario_id"),
+            "scenario_config": data.get("scenario_config"),
+        })
+
+    cleanup_session_list_cache(active_files)
+    sessions.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+    return sessions
+
+
+def attach_report_generation_status(session_item: dict) -> dict:
+    item = dict(session_item or {})
+    session_id = item.get("session_id")
+    report_generation = None
+    if session_id:
+        status_record = get_report_generation_record(session_id)
+        if status_record and not bool(status_record.get("active")) and is_report_generation_worker_alive(session_id):
+            status_state = str(status_record.get("state") or "").strip()
+            if status_state not in {"completed", "failed", "cancelled"}:
+                update_report_generation_status(session_id, "queued", message="报告任务正在处理中...")
+                status_record = get_report_generation_record(session_id)
+        if status_record and bool(status_record.get("active")):
+            queue_snapshot = get_report_generation_worker_snapshot(include_positions=True)
+            sync_report_generation_queue_metadata(session_id, snapshot=queue_snapshot)
+            status_record = get_report_generation_record(session_id) or status_record
+        payload = build_report_generation_payload(status_record)
+        if payload.get("active"):
+            report_generation = {
+                "active": True,
+                "state": payload.get("state", "queued"),
+                "progress": payload.get("progress", 0),
+                "message": payload.get("message", ""),
+                "updated_at": payload.get("updated_at"),
+                "action": payload.get("action", "generate"),
+                "queue_position": payload.get("queue_position", 0),
+                "queue_pending": payload.get("queue_pending", 0),
+                "queue_running": payload.get("queue_running", 0),
+            }
+    item["report_generation"] = report_generation
+    return item
+
+
 @app.route('/api/sessions', methods=['GET'])
 def list_sessions():
     """获取所有会话"""
@@ -7985,48 +9148,95 @@ def list_sessions():
     if not user_id:
         return jsonify({"error": "请先登录"}), 401
 
-    sessions = []
-    for f in SESSIONS_DIR.glob("*.json"):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            if not is_session_owned_by_user(data, user_id):
-                continue
-            session_id = data.get("session_id")
-            report_generation = None
-            if session_id:
-                status_record = get_report_generation_record(session_id)
-                if status_record and not bool(status_record.get("active")) and is_report_generation_worker_alive(session_id):
-                    status_state = str(status_record.get("state") or "").strip()
-                    if status_state not in {"completed", "failed", "cancelled"}:
-                        update_report_generation_status(session_id, "queued", message="报告任务正在处理中...")
-                        status_record = get_report_generation_record(session_id)
-                payload = build_report_generation_payload(status_record)
-                if payload.get("active"):
-                    report_generation = {
-                        "active": True,
-                        "state": payload.get("state", "queued"),
-                        "progress": payload.get("progress", 0),
-                        "message": payload.get("message", ""),
-                        "updated_at": payload.get("updated_at"),
-                        "action": payload.get("action", "generate"),
-                    }
-            sessions.append({
-                "session_id": session_id,
-                "topic": data.get("topic"),
-                "status": data.get("status"),
-                "created_at": data.get("created_at"),
-                "updated_at": data.get("updated_at"),
-                "dimensions": data.get("dimensions", {}),
-                "interview_count": len(data.get("interview_log", [])),
-                "scenario_id": data.get("scenario_id"),
-                "scenario_config": data.get("scenario_config"),
-                "report_generation": report_generation,
-            })
-        except Exception as e:
-            print(f"读取会话失败 {f}: {e}")
+    page, page_size, offset = parse_list_pagination_params()
+    started_at = _time.perf_counter()
+    if not try_acquire_list_semaphore("sessions_list", SESSIONS_LIST_SEMAPHORE):
+        response = build_overload_response("sessions_list")
+        latency_ms = (_time.perf_counter() - started_at) * 1000
+        record_list_request_metric(
+            endpoint="sessions_list",
+            status_code=429,
+            latency_ms=latency_ms,
+            source="overload",
+            page_size=page_size,
+            returned_count=0,
+            total_count=0,
+            error_reason="overload",
+        )
+        return response
 
-    sessions.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
-    return jsonify(sessions)
+    try:
+        user_id_int = int(user_id)
+        data_source = "sqlite"
+        scan_ms = 0.0
+
+        try:
+            ensure_session_index_bootstrapped()
+            sessions, total = query_session_index_for_user(user_id_int, page, page_size)
+        except Exception as exc:
+            data_source = "file_scan"
+            if ENABLE_DEBUG_LOG:
+                _safe_log(f"⚠️ session_index 查询失败，回退文件扫描: {exc}")
+            scan_started_at = _time.perf_counter()
+            all_sessions = load_sessions_for_user_from_files(user_id_int)
+            scan_ms = (_time.perf_counter() - scan_started_at) * 1000
+            total = len(all_sessions)
+            sessions = all_sessions[offset: offset + page_size]
+
+        sessions = [attach_report_generation_status(item) for item in sessions]
+        etag = build_list_etag(
+            endpoint="sessions_list",
+            page=page,
+            page_size=page_size,
+            total=total,
+            items=sessions,
+        )
+        if_none_match_values = parse_if_none_match_values()
+        if etag in if_none_match_values or "*" in if_none_match_values:
+            response = build_not_modified_response(etag, page=page, page_size=page_size, total=total)
+            latency_ms = (_time.perf_counter() - started_at) * 1000
+            record_list_request_metric(
+                endpoint="sessions_list",
+                status_code=304,
+                latency_ms=latency_ms,
+                source=data_source,
+                page_size=page_size,
+                returned_count=0,
+                total_count=total,
+                scan_ms=scan_ms,
+            )
+            return response
+
+        response = jsonify(sessions)
+        response.headers["ETag"] = etag
+        response.headers["Cache-Control"] = "private, max-age=2"
+        latency_ms = (_time.perf_counter() - started_at) * 1000
+        record_list_request_metric(
+            endpoint="sessions_list",
+            status_code=200,
+            latency_ms=latency_ms,
+            source=data_source,
+            page_size=page_size,
+            returned_count=len(sessions),
+            total_count=total,
+            scan_ms=scan_ms,
+        )
+        return apply_pagination_headers(response, page=page, page_size=page_size, total=total)
+    except Exception as exc:
+        latency_ms = (_time.perf_counter() - started_at) * 1000
+        record_list_request_metric(
+            endpoint="sessions_list",
+            status_code=500,
+            latency_ms=latency_ms,
+            source="unknown",
+            page_size=page_size,
+            returned_count=0,
+            total_count=0,
+            error_reason=type(exc).__name__,
+        )
+        raise
+    finally:
+        SESSIONS_LIST_SEMAPHORE.release()
 
 
 @app.route('/api/sessions', methods=['POST'])
@@ -8104,7 +9314,7 @@ def create_session():
     }
 
     session_file = SESSIONS_DIR / f"{session_id}.json"
-    session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_session_json_and_sync(session_file, session)
 
     # ========== 步骤6: 预生成首题 ==========
     try:
@@ -8161,7 +9371,7 @@ def update_session(session_id):
             session[key] = value
 
     session["updated_at"] = get_utc_now()
-    session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_session_json_and_sync(session_file, session)
 
     return jsonify(session)
 
@@ -8179,7 +9389,9 @@ def delete_session(session_id):
     if state != "ok" or session_file is None:
         return jsonify({"error": "会话不存在"}), 404
 
+    session_file_name = session_file.name
     session_file.unlink()
+    remove_session_index_record(session_id=session_id, file_name=session_file_name)
 
     # ========== 步骤7: 清理缓存和状态 ==========
     invalidate_prefetch(session_id)
@@ -8239,7 +9451,9 @@ def batch_delete_sessions():
                     deleted_reports.add(report_name)
 
         try:
+            session_file_name = session_file.name
             session_file.unlink()
+            remove_session_index_record(session_id=session_id, file_name=session_file_name)
             invalidate_prefetch(session_id)
             clear_thinking_status(session_id)
             deleted_sessions.append(session_id)
@@ -8583,7 +9797,7 @@ def get_next_question(session_id):
         dim_state["quality_warning"] = bool(completion.get("quality_warning", False))
 
         session["updated_at"] = get_utc_now()
-        session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+        save_session_json_and_sync(session_file, session)
 
         dim_follow_ups = len([log for log in all_dim_logs if log.get("is_follow_up", False)])
         snapshot = completion.get("snapshot", {})
@@ -8921,7 +10135,7 @@ def submit_answer(session_id):
                 print(f"📊 评估评分: {dimension} = {score}分，维度均分 = {session['dimensions'][dimension].get('score')}")
 
     session["updated_at"] = get_utc_now()
-    session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_session_json_and_sync(session_file, session)
 
     # 异步更新上下文摘要（超过阈值时触发）
     # 注意：这里在后台线程中执行，不阻塞响应
@@ -8969,7 +10183,7 @@ def undo_answer(session_id):
         session["dimensions"][dimension]["coverage"] = calculate_dimension_coverage(session, dimension)
 
     session["updated_at"] = get_utc_now()
-    session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_session_json_and_sync(session_file, session)
 
     return jsonify(session)
 
@@ -9014,7 +10228,7 @@ def skip_follow_up(session_id):
     last_formal["user_skip_follow_up"] = True  # 标记为用户主动跳过
 
     session["updated_at"] = get_utc_now()
-    session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_session_json_and_sync(session_file, session)
 
     if ENABLE_DEBUG_LOG:
         print(f"⏭️ 用户跳过追问: dimension={dimension}")
@@ -9066,7 +10280,7 @@ def complete_dimension(session_id):
     session["dimensions"][dimension]["quality_warning"] = False
 
     session["updated_at"] = get_utc_now()
-    session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_session_json_and_sync(session_file, session)
 
     if ENABLE_DEBUG_LOG:
         print(f"⏭️ 用户完成维度: dimension={dimension}, coverage={current_coverage}%")
@@ -9185,7 +10399,7 @@ def upload_document(session_id):
         "uploaded_at": get_utc_now()
     })
     session["updated_at"] = get_utc_now()
-    session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_session_json_and_sync(session_file, session)
 
     return jsonify({
         "success": True,
@@ -9225,7 +10439,7 @@ def delete_document(session_id, doc_name):
         return jsonify({"error": "文档不存在"}), 404
 
     session["updated_at"] = get_utc_now()
-    session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_session_json_and_sync(session_file, session)
 
     # 软删除：记录到删除日志，文件保留在 temp/converted 目录
     mark_doc_as_deleted(session_id, doc_name)
@@ -9322,7 +10536,7 @@ def restart_interview(session_id):
     session["updated_at"] = get_utc_now()
 
     # 保存会话
-    session_file.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+    save_session_json_and_sync(session_file, session)
 
     return jsonify({
         "success": True,
@@ -9382,7 +10596,6 @@ def can_use_v3_failover_lane() -> bool:
 
 def run_report_generation_job(session_id: str, user_id: int, request_id: str) -> None:
     """后台生成报告任务。"""
-    worker_ref = threading.current_thread()
     try:
         loaded = load_session_for_user(session_id, user_id, include_missing=True)
         session_file, session, state = loaded
@@ -9416,7 +10629,7 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
                     latest_session["last_report_quality_meta"] = quality_meta
                 if isinstance(session.get("last_report_v3_debug"), dict):
                     latest_session["last_report_v3_debug"] = session["last_report_v3_debug"]
-                session_file.write_text(json.dumps(latest_session, ensure_ascii=False, indent=2), encoding="utf-8")
+                save_session_json_and_sync(session_file, latest_session)
 
             return report_file, filename
 
@@ -9605,7 +10818,16 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
         if ENABLE_DEBUG_LOG:
             print(f"❌ 报告生成异常: {error_detail}")
     finally:
-        cleanup_report_generation_worker(session_id, worker=worker_ref)
+        final_record = get_report_generation_record(session_id)
+        final_state = str(final_record.get("state") or "").strip() if isinstance(final_record, dict) else ""
+        cleanup_report_generation_worker(session_id)
+        queue_snapshot = get_report_generation_worker_snapshot(include_positions=True)
+        sync_report_generation_queue_metadata(session_id, snapshot=queue_snapshot)
+        if final_state == "completed":
+            record_report_generation_queue_event("completed")
+        else:
+            record_report_generation_queue_event("failed")
+        release_report_generation_slot()
 
 
 @app.route('/api/sessions/<session_id>/generate-report', methods=['POST'])
@@ -9630,14 +10852,39 @@ def generate_report(session_id):
             current_state = str(current_record.get("state") or "").strip()
             if current_state not in {"completed", "failed", "cancelled"}:
                 update_report_generation_status(session_id, "queued", message="报告任务正在处理中...")
-                current_record = get_report_generation_record(session_id) or {}
+        queue_snapshot = get_report_generation_worker_snapshot(include_positions=True)
+        sync_report_generation_queue_metadata(session_id, snapshot=queue_snapshot)
+        current_record = get_report_generation_record(session_id) or current_record
         payload = build_report_generation_payload(current_record)
         payload.update({
             "success": True,
             "already_running": True,
             "action": current_record.get("action", action),
+            "queue": {
+                "running": int(queue_snapshot.get("running", 0) or 0),
+                "pending": int(queue_snapshot.get("pending", 0) or 0),
+                "max_workers": int(queue_snapshot.get("max_workers", REPORT_GENERATION_MAX_WORKERS) or REPORT_GENERATION_MAX_WORKERS),
+                "max_pending": int(queue_snapshot.get("max_pending", REPORT_GENERATION_MAX_PENDING) or REPORT_GENERATION_MAX_PENDING),
+            },
         })
         return jsonify(payload), 202
+
+    if not report_generation_slots.acquire(blocking=False):
+        record_report_generation_queue_event("rejected")
+        queue_snapshot = get_report_generation_worker_snapshot(include_positions=False)
+        response = jsonify({
+            "error": "报告生成队列繁忙，请稍后重试",
+            "retry_after_seconds": REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS,
+            "queue": {
+                "running": int(queue_snapshot.get("running", 0) or 0),
+                "pending": int(queue_snapshot.get("pending", 0) or 0),
+                "max_workers": int(queue_snapshot.get("max_workers", REPORT_GENERATION_MAX_WORKERS) or REPORT_GENERATION_MAX_WORKERS),
+                "max_pending": int(queue_snapshot.get("max_pending", REPORT_GENERATION_MAX_PENDING) or REPORT_GENERATION_MAX_PENDING),
+            },
+        })
+        response.status_code = 429
+        response.headers["Retry-After"] = str(REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS)
+        return response
 
     request_id = secrets.token_hex(12)
     set_report_generation_metadata(session_id, {
@@ -9651,23 +10898,41 @@ def generate_report(session_id):
         "v3_enabled": None,
         "report_quality_meta": {},
         "error": "",
+        "queue_position": 0,
+        "queue_pending": 0,
+        "queue_running": 0,
     })
     update_report_generation_status(session_id, "queued")
 
-    worker = threading.Thread(
-        target=run_report_generation_job,
-        args=(session_id, user_id, request_id),
-        daemon=True,
-        name=f"report-generator-{session_id[:8]}"
-    )
+    try:
+        worker = report_generation_executor.submit(run_report_generation_job, session_id, user_id, request_id)
+    except Exception as exc:
+        release_report_generation_slot()
+        error_detail = str(exc)[:200] or "未知错误"
+        update_report_generation_status(session_id, "failed", message=f"报告任务提交失败：{error_detail}", active=False)
+        set_report_generation_metadata(session_id, {
+            "request_id": request_id,
+            "error": error_detail,
+            "completed_at": get_utc_now(),
+        })
+        return jsonify({"error": f"报告任务提交失败：{error_detail}"}), 500
+
     register_report_generation_worker(session_id, worker)
-    worker.start()
+    record_report_generation_queue_event("submitted")
+    queue_snapshot = get_report_generation_worker_snapshot(include_positions=True)
+    sync_report_generation_queue_metadata(session_id, snapshot=queue_snapshot)
 
     payload = build_report_generation_payload(get_report_generation_record(session_id))
     payload.update({
         "success": True,
         "already_running": False,
         "action": action,
+        "queue": {
+            "running": int(queue_snapshot.get("running", 0) or 0),
+            "pending": int(queue_snapshot.get("pending", 0) or 0),
+            "max_workers": int(queue_snapshot.get("max_workers", REPORT_GENERATION_MAX_WORKERS) or REPORT_GENERATION_MAX_WORKERS),
+            "max_pending": int(queue_snapshot.get("max_pending", REPORT_GENERATION_MAX_PENDING) or REPORT_GENERATION_MAX_PENDING),
+        },
     })
     return jsonify(payload), 202
 
@@ -10779,6 +12044,37 @@ def build_appendix_pdf_bytes(appendix_markdown: str) -> bytes:
     return buffer.read()
 
 
+def load_reports_for_user_from_files(user_id_int: int) -> list[dict]:
+    deleted = get_deleted_reports()
+    owner_map = load_report_owners()
+    reports_root = REPORTS_DIR.resolve()
+    reports = []
+    for report_name, owner_id in owner_map.items():
+        if owner_id != int(user_id_int):
+            continue
+        if report_name in deleted:
+            continue
+        if not isinstance(report_name, str) or not report_name.endswith(".md"):
+            continue
+
+        report_path = (REPORTS_DIR / report_name).resolve()
+        if report_path.parent != reports_root:
+            continue
+        if not report_path.exists() or not report_path.is_file():
+            continue
+
+        stat = report_path.stat()
+        reports.append({
+            "name": report_name,
+            "path": str(report_path),
+            "size": stat.st_size,
+            "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat()
+        })
+
+    reports.sort(key=lambda x: x["created_at"], reverse=True)
+    return reports
+
+
 @app.route('/api/reports', methods=['GET'])
 def list_reports():
     """获取所有报告（排除已删除的）"""
@@ -10786,24 +12082,94 @@ def list_reports():
     if not user_id:
         return jsonify({"error": "请先登录"}), 401
 
-    deleted = get_deleted_reports()
-    reports = []
-    for f in REPORTS_DIR.glob("*.md"):
-        # 跳过已标记为删除的报告
-        if f.name in deleted:
-            continue
-        if not ensure_report_owner(f.name, user_id):
-            continue
-        stat = f.stat()
-        reports.append({
-            "name": f.name,
-            "path": str(f),
-            "size": stat.st_size,
-            "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat()
-        })
+    page, page_size, offset = parse_list_pagination_params()
+    started_at = _time.perf_counter()
+    if not try_acquire_list_semaphore("reports_list", REPORTS_LIST_SEMAPHORE):
+        response = build_overload_response("reports_list")
+        latency_ms = (_time.perf_counter() - started_at) * 1000
+        record_list_request_metric(
+            endpoint="reports_list",
+            status_code=429,
+            latency_ms=latency_ms,
+            source="overload",
+            page_size=page_size,
+            returned_count=0,
+            total_count=0,
+            error_reason="overload",
+        )
+        return response
 
-    reports.sort(key=lambda x: x["created_at"], reverse=True)
-    return jsonify(reports)
+    try:
+        user_id_int = int(user_id)
+        data_source = "sqlite"
+        scan_ms = 0.0
+
+        try:
+            ensure_report_index_bootstrapped()
+            reports, total = query_report_index_for_user(user_id_int, page, page_size)
+        except Exception as exc:
+            data_source = "file_scan"
+            if ENABLE_DEBUG_LOG:
+                _safe_log(f"⚠️ report_index 查询失败，回退文件扫描: {exc}")
+            scan_started_at = _time.perf_counter()
+            all_reports = load_reports_for_user_from_files(user_id_int)
+            scan_ms = (_time.perf_counter() - scan_started_at) * 1000
+            total = len(all_reports)
+            reports = all_reports[offset: offset + page_size]
+
+        etag = build_list_etag(
+            endpoint="reports_list",
+            page=page,
+            page_size=page_size,
+            total=total,
+            items=reports,
+        )
+        if_none_match_values = parse_if_none_match_values()
+        if etag in if_none_match_values or "*" in if_none_match_values:
+            response = build_not_modified_response(etag, page=page, page_size=page_size, total=total)
+            latency_ms = (_time.perf_counter() - started_at) * 1000
+            record_list_request_metric(
+                endpoint="reports_list",
+                status_code=304,
+                latency_ms=latency_ms,
+                source=data_source,
+                page_size=page_size,
+                returned_count=0,
+                total_count=total,
+                scan_ms=scan_ms,
+            )
+            return response
+
+        response = jsonify(reports)
+        response.headers["ETag"] = etag
+        response.headers["Cache-Control"] = "private, max-age=2"
+        latency_ms = (_time.perf_counter() - started_at) * 1000
+        record_list_request_metric(
+            endpoint="reports_list",
+            status_code=200,
+            latency_ms=latency_ms,
+            source=data_source,
+            page_size=page_size,
+            returned_count=len(reports),
+            total_count=total,
+            scan_ms=scan_ms,
+        )
+        return apply_pagination_headers(response, page=page, page_size=page_size, total=total)
+    except Exception as exc:
+        latency_ms = (_time.perf_counter() - started_at) * 1000
+        record_list_request_metric(
+            endpoint="reports_list",
+            status_code=500,
+            latency_ms=latency_ms,
+            source="unknown",
+            page_size=page_size,
+            returned_count=0,
+            total_count=0,
+            error_reason=type(exc).__name__,
+        )
+        raise
+    finally:
+        REPORTS_LIST_SEMAPHORE.release()
 
 
 @app.route('/api/reports/<path:filename>', methods=['GET'])
@@ -11343,6 +12709,10 @@ def get_report_generation_status(session_id):
         if state not in {"completed", "failed", "cancelled"}:
             update_report_generation_status(session_id, "queued", message="报告任务正在处理中...")
             status = get_report_generation_record(session_id)
+    if status and bool(status.get("active")):
+        queue_snapshot = get_report_generation_worker_snapshot(include_positions=True)
+        sync_report_generation_queue_metadata(session_id, snapshot=queue_snapshot)
+        status = get_report_generation_record(session_id) or status
 
     if status:
         return jsonify(build_report_generation_payload(status))
@@ -11355,6 +12725,13 @@ def get_metrics():
     """获取 API 性能指标和统计信息"""
     last_n = request.args.get('last_n', type=int)
     stats = metrics_collector.get_statistics(last_n=last_n)
+    stats["list_endpoints"] = get_list_metrics_snapshot()
+    stats["report_generation_queue"] = get_report_generation_worker_snapshot(include_positions=False)
+    with list_overload_stats_lock:
+        stats["list_overload"] = {
+            "sessions_list_rejected": int(list_overload_stats.get("sessions_list", {}).get("rejected", 0) or 0),
+            "reports_list_rejected": int(list_overload_stats.get("reports_list", {}).get("rejected", 0) or 0),
+        }
     return jsonify(stats)
 
 
@@ -11372,6 +12749,13 @@ def reset_metrics():
                 "avg_prompt_length": 0
             }
         }, ensure_ascii=False, indent=2), encoding="utf-8")
+        reset_list_metrics()
+        with list_overload_stats_lock:
+            for endpoint_key in list_overload_stats.keys():
+                list_overload_stats[endpoint_key]["rejected"] = 0
+        with report_generation_queue_stats_lock:
+            for key in report_generation_queue_stats.keys():
+                report_generation_queue_stats[key] = 0
         return jsonify({"success": True, "message": "性能指标已重置"})
     except Exception as e:
         return jsonify({"error": f"重置失败: {e}"}), 500
@@ -11439,6 +12823,10 @@ if __name__ == '__main__':
     print(f"联网搜索: {'✅ 已启用 (智谱AI MCP)' if search_enabled else '⚠️  未启用'}")
     if not search_enabled and ENABLE_WEB_SEARCH:
         print("   提示: 配置 ZHIPU_API_KEY 以启用联网搜索功能")
+
+    if not DEBUG_MODE:
+        print("⚠️  生产环境建议使用 Gunicorn 启动：")
+        print("   uv run --with gunicorn gunicorn -c web/gunicorn.conf.py web.wsgi:app")
 
     print()
     print(f"访问: http://localhost:{SERVER_PORT}")

@@ -42,9 +42,37 @@ source ~/.zshrc
 
 ### 3. 启动服务
 
+开发模式（单进程，便于调试）：
+
 ```bash
 cd /Users/hehai/.claude/skills/deep-vision/web
 uv run server.py
+```
+
+生产模式（推荐，Gunicorn 多 worker）：
+
+```bash
+cd /Users/hehai/.claude/skills/deep-vision
+./scripts/start-production.sh
+```
+
+也可直接执行：
+
+```bash
+cd /Users/hehai/.claude/skills/deep-vision
+uv run --with gunicorn gunicorn -c web/gunicorn.conf.py web.wsgi:app
+```
+
+生产模式常用环境变量：
+
+```bash
+export GUNICORN_WORKERS=8
+export GUNICORN_THREADS=2
+export GUNICORN_TIMEOUT=120
+export GUNICORN_LOG_LEVEL=info
+# 报告生成任务池（避免重任务把列表请求拖慢）
+export REPORT_GENERATION_MAX_WORKERS=2
+export REPORT_GENERATION_MAX_PENDING=16
 ```
 
 启动后会看到：
@@ -64,6 +92,31 @@ AI 状态: ✓ AI 已启用 (claude-sonnet-4-20250514)
   3. AI 将根据您的回答动态生成问题，进行智能追问
 ============================================================
 ```
+
+> 说明：生产部署建议关闭 `DEBUG_MODE`，并配合 Nginx/网关做 TLS、gzip 与静态缓存。
+
+### 3.1 Nginx 网关建议（P2）
+
+示例配置文件：`deploy/nginx/deepvision.conf.example`。
+
+关键建议：
+
+1. 启用 `keepalive`，减少高并发下连接反复建立成本。  
+2. 对静态资源启用 `gzip` 和长缓存（`immutable`）。  
+3. API 代理启用合理超时，并透传 `ETag/If-None-Match`（服务端已支持 304）。  
+4. 对上游应用使用 Gunicorn 多 worker，避免 Flask 单进程瓶颈。
+
+### 3.2 列表压测脚本
+
+```bash
+cd /Users/hehai/.claude/skills/deep-vision
+python3 scripts/loadtest_list_endpoints.py \
+  --base-url http://127.0.0.1:5001 \
+  --concurrency 30 \
+  --duration 60
+```
+
+默认会输出到：`data/operations/loadtest-list-endpoints-*.json`。
 
 ### 4. 开始使用
 

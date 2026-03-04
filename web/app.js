@@ -2029,7 +2029,7 @@ function deepVision() {
                 this.loading = true;
             }
             try {
-                this.sessions = await this.apiCall('/sessions');
+                this.sessions = await this.apiCall('/sessions?page=1&page_size=100');
                 this.filterSessions({
                     preservePage: preserveListState
                 });  // 加载完成后执行筛选
@@ -4222,7 +4222,7 @@ function deepVision() {
         // ============ 报告查看 ============
         async loadReports() {
             try {
-                this.reports = await this.apiCall('/reports');
+                this.reports = await this.apiCall('/reports?page=1&page_size=100');
                 this.filterReports();
             } catch (error) {
                 console.error('加载报告失败:', error);

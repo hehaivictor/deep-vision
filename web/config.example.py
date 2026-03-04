@@ -62,6 +62,27 @@ SERVER_HOST = "0.0.0.0"        # 监听地址，0.0.0.0 表示所有网卡
 SERVER_PORT = 5001             # 监听端口
 DEBUG_MODE = True              # 是否开启调试模式
 
+# 列表接口分页与过载保护（并发优化）
+LIST_API_DEFAULT_PAGE_SIZE = 20
+LIST_API_MAX_PAGE_SIZE = 100
+SESSIONS_LIST_MAX_INFLIGHT = 8
+REPORTS_LIST_MAX_INFLIGHT = 8
+LIST_API_RETRY_AFTER_SECONDS = 2
+
+# 报告生成任务池（队列化 + 状态轮询）
+REPORT_GENERATION_MAX_WORKERS = 2
+REPORT_GENERATION_MAX_PENDING = 16
+REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS = 3
+
+# Gunicorn 生产配置（配合 scripts/start-production.sh）
+GUNICORN_WORKERS = 8
+GUNICORN_THREADS = 2
+GUNICORN_TIMEOUT = 120
+GUNICORN_GRACEFUL_TIMEOUT = 30
+GUNICORN_KEEPALIVE = 5
+GUNICORN_WORKER_CLASS = "gthread"
+GUNICORN_LOG_LEVEL = "info"
+
 # 登录鉴权配置（MVP）
 # 建议在生产环境配置固定 SECRET_KEY，否则重启服务后登录态会失效
 SECRET_KEY = "replace-with-a-strong-random-secret"

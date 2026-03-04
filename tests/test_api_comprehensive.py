@@ -3,6 +3,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -142,6 +143,22 @@ class ComprehensiveApiTests(unittest.TestCase):
 
     def setUp(self):
         self.client = self.server.app.test_client()
+        self.server.reset_list_metrics()
+        self.server.report_owners_cache["signature"] = None
+        self.server.report_owners_cache["data"] = {}
+        self.server.session_list_cache.clear()
+        with self.server.report_generation_status_lock:
+            self.server.report_generation_status.clear()
+        with self.server.report_generation_workers_lock:
+            self.server.report_generation_workers.clear()
+        with self.server.report_generation_queue_stats_lock:
+            for key in self.server.report_generation_queue_stats.keys():
+                self.server.report_generation_queue_stats[key] = 0
+        with self.server.list_overload_stats_lock:
+            for key in self.server.list_overload_stats.keys():
+                self.server.list_overload_stats[key]["rejected"] = 0
+        self.server.SESSIONS_LIST_SEMAPHORE = threading.BoundedSemaphore(self.server.SESSIONS_LIST_MAX_INFLIGHT)
+        self.server.REPORTS_LIST_SEMAPHORE = threading.BoundedSemaphore(self.server.REPORTS_LIST_MAX_INFLIGHT)
 
     def _register(self, client=None):
         target = client or self.client
@@ -348,6 +365,88 @@ class ComprehensiveApiTests(unittest.TestCase):
 
         self.assertGreater(user_a["id"], 0)
 
+    def test_sessions_list_supports_pagination_headers(self):
+        self._register()
+        for i in range(25):
+            self._create_session(topic=f"分页会话-{i:02d}")
+
+        list_resp = self.client.get("/api/sessions?page=2&page_size=10")
+        self.assertEqual(list_resp.status_code, 200, list_resp.get_data(as_text=True))
+        payload = list_resp.get_json()
+        self.assertIsInstance(payload, list)
+        self.assertEqual(len(payload), 10)
+        self.assertEqual(list_resp.headers.get("X-Page"), "2")
+        self.assertEqual(list_resp.headers.get("X-Page-Size"), "10")
+        self.assertEqual(list_resp.headers.get("X-Total-Count"), "25")
+        self.assertEqual(list_resp.headers.get("X-Total-Pages"), "3")
+        etag = list_resp.headers.get("ETag")
+        self.assertTrue(etag)
+
+        not_modified = self.client.get(
+            "/api/sessions?page=2&page_size=10",
+            headers={"If-None-Match": etag},
+        )
+        self.assertEqual(not_modified.status_code, 304)
+        self.assertEqual(not_modified.get_data(as_text=True), "")
+
+    def test_reports_list_supports_pagination_headers(self):
+        user = self._register()
+        user_id = int(user["id"])
+        for i in range(25):
+            report_name = f"deep-vision-20990101-report-{i:02d}.md"
+            report_file = self.server.REPORTS_DIR / report_name
+            report_file.write_text(f"# report {i}\n", encoding="utf-8")
+            self.server.set_report_owner_id(report_name, user_id)
+
+        list_resp = self.client.get("/api/reports?page=2&page_size=10")
+        self.assertEqual(list_resp.status_code, 200, list_resp.get_data(as_text=True))
+        payload = list_resp.get_json()
+        self.assertIsInstance(payload, list)
+        self.assertEqual(len(payload), 10)
+        self.assertEqual(list_resp.headers.get("X-Page"), "2")
+        self.assertEqual(list_resp.headers.get("X-Page-Size"), "10")
+        self.assertEqual(list_resp.headers.get("X-Total-Count"), "25")
+        self.assertEqual(list_resp.headers.get("X-Total-Pages"), "3")
+        etag = list_resp.headers.get("ETag")
+        self.assertTrue(etag)
+
+        not_modified = self.client.get(
+            "/api/reports?page=2&page_size=10",
+            headers={"If-None-Match": etag},
+        )
+        self.assertEqual(not_modified.status_code, 304)
+        self.assertEqual(not_modified.get_data(as_text=True), "")
+
+    def test_list_endpoints_return_429_when_overloaded(self):
+        self._register()
+        self._create_session(topic="过载保护会话")
+
+        old_sessions_semaphore = self.server.SESSIONS_LIST_SEMAPHORE
+        old_reports_semaphore = self.server.REPORTS_LIST_SEMAPHORE
+        self.server.SESSIONS_LIST_SEMAPHORE = threading.BoundedSemaphore(1)
+        self.server.REPORTS_LIST_SEMAPHORE = threading.BoundedSemaphore(1)
+        self.assertTrue(self.server.SESSIONS_LIST_SEMAPHORE.acquire(blocking=False))
+        self.assertTrue(self.server.REPORTS_LIST_SEMAPHORE.acquire(blocking=False))
+        try:
+            sessions_resp = self.client.get("/api/sessions")
+            self.assertEqual(sessions_resp.status_code, 429)
+            self.assertEqual(
+                sessions_resp.headers.get("Retry-After"),
+                str(self.server.LIST_API_RETRY_AFTER_SECONDS),
+            )
+
+            reports_resp = self.client.get("/api/reports")
+            self.assertEqual(reports_resp.status_code, 429)
+            self.assertEqual(
+                reports_resp.headers.get("Retry-After"),
+                str(self.server.LIST_API_RETRY_AFTER_SECONDS),
+            )
+        finally:
+            self.server.SESSIONS_LIST_SEMAPHORE.release()
+            self.server.REPORTS_LIST_SEMAPHORE.release()
+            self.server.SESSIONS_LIST_SEMAPHORE = old_sessions_semaphore
+            self.server.REPORTS_LIST_SEMAPHORE = old_reports_semaphore
+
     def test_submit_answer_and_undo(self):
         self._register()
         created = self._create_session(topic="问答链路")
@@ -468,6 +567,10 @@ class ComprehensiveApiTests(unittest.TestCase):
     def test_metrics_and_summaries_authenticated(self):
         self._register()
 
+        # 触发列表接口指标
+        self.client.get("/api/sessions")
+        self.client.get("/api/reports")
+
         metrics = self.client.get("/api/metrics")
         self.assertEqual(metrics.status_code, 200)
         metrics_payload = metrics.get_json()
@@ -475,6 +578,17 @@ class ComprehensiveApiTests(unittest.TestCase):
             "summary" in metrics_payload or "total_calls" in metrics_payload,
             f"unexpected metrics payload: {metrics_payload}",
         )
+        self.assertIn("list_endpoints", metrics_payload)
+        self.assertIn("endpoints", metrics_payload["list_endpoints"])
+        self.assertIn("cache", metrics_payload["list_endpoints"])
+        self.assertIn("sessions_list", metrics_payload["list_endpoints"]["endpoints"])
+        self.assertIn("reports_list", metrics_payload["list_endpoints"]["endpoints"])
+        self.assertIn("list_overload", metrics_payload)
+        self.assertIn("report_generation_queue", metrics_payload)
+        self.assertIn("running", metrics_payload["report_generation_queue"])
+        self.assertIn("pending", metrics_payload["report_generation_queue"])
+        self.assertIn("submitted", metrics_payload["report_generation_queue"])
+        self.assertIn("rejected", metrics_payload["report_generation_queue"])
 
         reset = self.client.post("/api/metrics/reset", json={})
         self.assertEqual(reset.status_code, 200)
@@ -564,6 +678,30 @@ class ComprehensiveApiTests(unittest.TestCase):
         names_after_delete = [item["name"] for item in list_after_delete.get_json()]
         self.assertNotIn(report_name, names_after_delete)
         self.assertGreater(user["id"], 0)
+
+    def test_generate_report_returns_429_when_queue_full(self):
+        self._register()
+        created = self._create_session(topic="队列满载测试")
+        session_id = created["session_id"]
+
+        acquired = 0
+        for _ in range(self.server.REPORT_GENERATION_MAX_PENDING):
+            if self.server.report_generation_slots.acquire(blocking=False):
+                acquired += 1
+
+        try:
+            resp = self.client.post(f"/api/sessions/{session_id}/generate-report", json={})
+            self.assertEqual(resp.status_code, 429, resp.get_data(as_text=True))
+            self.assertEqual(
+                resp.headers.get("Retry-After"),
+                str(self.server.REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS),
+            )
+            payload = resp.get_json() or {}
+            self.assertIn("报告生成队列繁忙", payload.get("error", ""))
+            self.assertIn("queue", payload)
+        finally:
+            for _ in range(acquired):
+                self.server.release_report_generation_slot()
 
     def test_batch_delete_sessions_with_linked_reports(self):
         user = self._register()
