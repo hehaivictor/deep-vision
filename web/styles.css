@@ -2000,6 +2000,44 @@ html[data-theme="dark"] .markdown-body blockquote {
     color: #aeb9c7 !important;
 }
 
+html[data-theme="dark"] .markdown-body .dv-appendix-export-trigger {
+    background: #243346;
+    border-color: #36567d;
+    color: #cfe3ff !important;
+}
+
+html[data-theme="dark"] .markdown-body .dv-appendix-export-trigger:hover {
+    background: #2b4060;
+    border-color: #4f78a8;
+}
+
+html[data-theme="dark"] .markdown-body .dv-appendix-export-trigger:focus-visible {
+    outline: 2px solid #5c98ff;
+}
+
+html[data-theme="dark"] .markdown-body .dv-appendix-export-menu {
+    background: #1f262f;
+    border-color: #33404f;
+    box-shadow: 0 16px 36px rgba(4, 9, 16, 0.45);
+}
+
+html[data-theme="dark"] .markdown-body .dv-appendix-export-item {
+    color: #d6e0ed;
+}
+
+html[data-theme="dark"] .markdown-body .dv-appendix-export-item:hover,
+html[data-theme="dark"] .markdown-body .dv-appendix-export-item:focus-visible {
+    background: #27303a;
+}
+
+html[data-theme="dark"] .markdown-body .dv-appendix-export-item-title {
+    color: #e6edf5;
+}
+
+html[data-theme="dark"] .markdown-body .dv-appendix-export-item-desc {
+    color: #9ca9b8;
+}
+
 html[data-theme="dark"] .mermaid-container {
     background: #1f252d !important;
     border-color: #344150 !important;

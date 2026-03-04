@@ -325,6 +325,7 @@ function deepVision() {
         reportSortOrder: 'newest',
         reportGroupBy: 'none',
         reportSearchDebounceTimer: null,
+        appendixExportOutsideHandler: null,
         interviewTopicMinHeight: 0,
         lastPresentationUrl: '',
 
@@ -5113,25 +5114,226 @@ function deepVision() {
                 toc.appendChild(list);
                 reportElement.prepend(toc);
             }
+
+            this.enhanceAppendixToggle(reportElement);
         },
 
-        downloadReport(format = 'md') {
+        enhanceAppendixToggle(reportElement) {
+            if (!reportElement) return;
+
+            if (this.appendixExportOutsideHandler) {
+                document.removeEventListener('click', this.appendixExportOutsideHandler, true);
+                this.appendixExportOutsideHandler = null;
+            }
+
+            const appendixHeading = Array.from(reportElement.querySelectorAll('h2'))
+                .find(heading => (heading.textContent || '').includes('附录：完整访谈记录'));
+            if (!appendixHeading) {
+                return;
+            }
+
+            appendixHeading.classList.add('dv-appendix-heading');
+            this.injectAppendixExportMenu(appendixHeading);
+
+            let rootDetails = null;
+            let cursor = appendixHeading.nextElementSibling;
+            while (cursor) {
+                if (cursor.tagName === 'H2') {
+                    break;
+                }
+                if (cursor.tagName === 'DETAILS') {
+                    rootDetails = cursor;
+                    break;
+                }
+                cursor = cursor.nextElementSibling;
+            }
+
+            if (!rootDetails) {
+                return;
+            }
+
+            const summary = rootDetails.firstElementChild?.tagName === 'SUMMARY'
+                ? rootDetails.firstElementChild
+                : null;
+            if (summary) {
+                const baseText = (summary.textContent || '').replace(/（点击展开\/收起）/g, '').trim();
+                summary.textContent = `${baseText}（点击展开/收起）`;
+            }
+
+            const childDetails = Array.from(rootDetails.querySelectorAll('details'))
+                .filter(detail => detail !== rootDetails);
+            if (childDetails.length === 0) {
+                return;
+            }
+
+            const setChildrenOpenState = (open) => {
+                childDetails.forEach(detail => {
+                    detail.open = open;
+                });
+            };
+
+            if (!rootDetails.open) {
+                setChildrenOpenState(false);
+            }
+
+            if (rootDetails.dataset.dvAppendixBound === '1') {
+                return;
+            }
+
+            rootDetails.addEventListener('toggle', () => {
+                setChildrenOpenState(rootDetails.open);
+            });
+            rootDetails.dataset.dvAppendixBound = '1';
+        },
+
+        injectAppendixExportMenu(appendixHeading) {
+            if (!appendixHeading) return;
+
+            const existingWrap = appendixHeading.querySelector('.dv-appendix-export-wrap');
+            if (existingWrap) {
+                existingWrap.remove();
+            }
+
+            const menuWrap = document.createElement('details');
+            menuWrap.className = 'dv-appendix-export-wrap';
+
+            const summary = document.createElement('summary');
+            summary.className = 'dv-appendix-export-trigger';
+            summary.innerHTML = `
+                <svg class="dv-appendix-export-trigger-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+                </svg>
+                <span>导出</span>
+                <svg class="dv-appendix-export-trigger-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                </svg>
+            `;
+            menuWrap.appendChild(summary);
+
+            const panel = document.createElement('div');
+            panel.className = 'dv-appendix-export-menu dv-popover-panel';
+
+            const options = [
+                {
+                    format: 'md',
+                    title: 'Markdown',
+                    desc: '.md 源文件',
+                    iconClass: 'is-md',
+                    iconPath: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z'
+                },
+                {
+                    format: 'pdf',
+                    title: 'PDF',
+                    desc: '适合打印分享',
+                    iconClass: 'is-pdf',
+                    iconPath: 'M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z'
+                },
+                {
+                    format: 'docx',
+                    title: 'Word',
+                    desc: '.docx 可编辑',
+                    iconClass: 'is-docx',
+                    iconPath: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z'
+                },
+            ];
+
+            options.forEach((item, index) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'dv-appendix-export-item';
+                btn.setAttribute('data-format', item.format);
+                if (index === 0) {
+                    btn.setAttribute('data-first-item', '1');
+                }
+                btn.innerHTML = `
+                    <svg class="dv-appendix-export-item-icon ${item.iconClass}" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${item.iconPath}"></path>
+                    </svg>
+                    <span class="dv-appendix-export-item-copy">
+                        <span class="dv-appendix-export-item-title">${item.title}</span>
+                        <span class="dv-appendix-export-item-desc">${item.desc}</span>
+                    </span>
+                `;
+                btn.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this.downloadAppendix(item.format);
+                    menuWrap.removeAttribute('open');
+                    summary.focus();
+                });
+                panel.appendChild(btn);
+            });
+
+            menuWrap.addEventListener('toggle', () => {
+                if (!menuWrap.open) return;
+                const firstItem = panel.querySelector('[data-first-item="1"]');
+                firstItem?.focus();
+            });
+            menuWrap.addEventListener('keydown', (event) => {
+                if (event.key !== 'Escape') return;
+                event.preventDefault();
+                menuWrap.removeAttribute('open');
+                summary.focus();
+            });
+
+            menuWrap.appendChild(panel);
+            appendixHeading.appendChild(menuWrap);
+
+            this.appendixExportOutsideHandler = (event) => {
+                if (!menuWrap.open) return;
+                if (menuWrap.contains(event.target)) return;
+                menuWrap.removeAttribute('open');
+            };
+            document.addEventListener('click', this.appendixExportOutsideHandler, true);
+        },
+
+        async downloadReport(format = 'md') {
             if (!this.reportContent || !this.selectedReport) return;
 
             const baseFilename = this.selectedReport.replace(/\.md$/, '');
 
             switch (format) {
                 case 'md':
-                    this.downloadMarkdown(baseFilename);
+                    await this.downloadMarkdown(baseFilename);
                     break;
                 case 'pdf':
-                    this.downloadPDF(baseFilename);
+                    await this.downloadPDF(baseFilename);
                     break;
                 case 'docx':
-                    this.downloadDocx(baseFilename);
+                    await this.downloadDocx(baseFilename);
                     break;
                 default:
-                    this.downloadMarkdown(baseFilename);
+                    await this.downloadMarkdown(baseFilename);
+            }
+        },
+
+        async downloadAppendix(format = 'md') {
+            if (!this.reportContent || !this.selectedReport) {
+                this.showToast('暂无可导出的附录内容', 'error');
+                return;
+            }
+
+            const appendixContent = this.getAppendixExportContent();
+            if (!appendixContent) {
+                this.showToast('未找到附录内容，无法导出', 'error');
+                return;
+            }
+
+            const baseFilename = this.selectedReport.replace(/\.md$/, '');
+            const appendixFilename = `${baseFilename}-完整访谈记录`;
+
+            switch (format) {
+                case 'md':
+                    await this.downloadMarkdown(appendixFilename, { scope: 'appendix' });
+                    break;
+                case 'pdf':
+                    await this.downloadPDF(appendixFilename, { scope: 'appendix' });
+                    break;
+                case 'docx':
+                    await this.downloadDocx(appendixFilename, { scope: 'appendix' });
+                    break;
+                default:
+                    await this.downloadMarkdown(appendixFilename, { scope: 'appendix' });
             }
         },
 
@@ -5149,91 +5351,462 @@ function deepVision() {
             return content.trim();
         },
 
-        // 下载 Markdown 格式
-        downloadMarkdown(filename) {
-            const exportContent = this.getReportExportContent();
-            const blob = new Blob([exportContent], { type: 'text/markdown;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${filename}.md`;
-            a.click();
-            URL.revokeObjectURL(url);
-            this.showToast('Markdown 文件已下载', 'success');
+        getAppendixExportContent() {
+            if (!this.reportContent) return '';
+            const content = String(this.reportContent || '');
+            const appendixIndex = content.indexOf('## 附录：完整访谈记录');
+            if (appendixIndex === -1) return '';
+
+            let appendix = content.slice(appendixIndex).trim();
+            appendix = appendix.replace(/^\s*\*\*生成方式\*\*:[^\n]*\n?/gm, '');
+            return appendix.trim();
         },
 
-        // 下载 PDF 格式
-        async downloadPDF(filename) {
-            if (typeof html2pdf === 'undefined') {
-                this.showToast('PDF 导出功能暂不可用', 'error');
-                return;
-            }
+        getAppendixExportContentForDocx() {
+            let content = this.getAppendixExportContent();
+            if (!content) return '';
 
-            this.showToast('正在生成 PDF（处理图表中）...', 'info');
+            content = content
+                .replace(/<details>\s*/gi, '')
+                .replace(/<\/details>\s*/gi, '')
+                .replace(/<summary>([\s\S]*?)<\/summary>/gi, (_, rawText) => {
+                    const text = String(rawText || '')
+                        .replace(/<[^>]+>/g, '')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+                    return text ? `### ${text}\n` : '';
+                })
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
 
-            try {
-                // 获取渲染后的报告内容
-                const reportElement = document.querySelector('.markdown-body');
-                if (!reportElement) {
-                    this.showToast('无法获取报告内容', 'error');
+            return content;
+        },
+
+        escapeHtml(text) {
+            return String(text || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        },
+
+        formatMarkdownInlineForPdf(text) {
+            const escaped = this.escapeHtml(text);
+            return escaped
+                .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                .replace(/`(.+?)`/g, '<code>$1</code>');
+        },
+
+        convertAppendixMarkdownToPdfHtml(markdownContent) {
+            const lines = String(markdownContent || '').split('\n');
+            const htmlParts = [];
+            let listBuffer = [];
+
+            const flushList = () => {
+                if (listBuffer.length === 0) return;
+                htmlParts.push('<ul>');
+                listBuffer.forEach(item => {
+                    htmlParts.push(`<li>${this.formatMarkdownInlineForPdf(item)}</li>`);
+                });
+                htmlParts.push('</ul>');
+                listBuffer = [];
+            };
+
+            lines.forEach((rawLine) => {
+                const line = String(rawLine || '').trim();
+                if (!line) {
+                    flushList();
                     return;
                 }
 
-                // 创建临时容器用于PDF生成，避免影响原始DOM
-                const tempContainer = document.createElement('div');
-                tempContainer.innerHTML = reportElement.innerHTML;
-                tempContainer.style.cssText = 'padding: 40px; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; line-height: 1.8; color: #1a1a1a;';
-
-                // 移除摘要、目录、附录（完整访谈记录）
-                const summaryBlock = tempContainer.querySelector('#report-summary-block');
-                if (summaryBlock) summaryBlock.remove();
-                const tocBlock = tempContainer.querySelector('#report-toc-block');
-                if (tocBlock) tocBlock.remove();
-                const appendixHeading = Array.from(tempContainer.querySelectorAll('h2'))
-                    .find(h => h.textContent?.trim() === '附录：完整访谈记录');
-                if (appendixHeading) {
-                    let node = appendixHeading;
-                    while (node) {
-                        const next = node.nextSibling;
-                        node.remove();
-                        node = next;
-                    }
+                if (line.startsWith('- ')) {
+                    listBuffer.push(line.slice(2).trim());
+                    return;
                 }
 
-                // 添加PDF专用样式
-                const style = document.createElement('style');
-                style.textContent = `
-                    h1 { font-size: 24px; font-weight: bold; margin: 24px 0 16px; color: #111; }
-                    h2 { font-size: 20px; font-weight: bold; margin: 20px 0 12px; color: #222; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; }
-                    h3 { font-size: 16px; font-weight: bold; margin: 16px 0 8px; color: #333; }
-                    p { margin: 8px 0; }
-                    ul, ol { margin: 8px 0; padding-left: 24px; }
-                    li { margin: 4px 0; }
-                    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 14px; }
-                    pre { background: #f3f4f6; padding: 16px; border-radius: 8px; overflow-x: auto; }
-                    blockquote { border-left: 4px solid #3b82f6; padding-left: 16px; margin: 16px 0; color: #4b5563; }
-                    table { border-collapse: collapse; width: 100%; margin: 16px 0; }
-                    th, td { border: 1px solid #e5e7eb; padding: 8px 12px; text-align: left; }
-                    th { background: #f9fafb; font-weight: 600; }
-                    .mermaid-container { page-break-inside: avoid !important; break-inside: avoid !important; margin: 16px 0; }
-                    .mermaid-container img { max-width: 100%; height: auto; page-break-inside: avoid !important; break-inside: avoid !important; }
-                    .mermaid-container svg { page-break-inside: avoid !important; break-inside: avoid !important; }
-                `;
-                tempContainer.prepend(style);
+                flushList();
+
+                if (line.startsWith('### ')) {
+                    htmlParts.push(`<h3>${this.escapeHtml(line.slice(4).trim())}</h3>`);
+                } else if (line.startsWith('## ')) {
+                    htmlParts.push(`<h2>${this.escapeHtml(line.slice(3).trim())}</h2>`);
+                } else if (line.startsWith('# ')) {
+                    htmlParts.push(`<h1>${this.escapeHtml(line.slice(2).trim())}</h1>`);
+                } else {
+                    htmlParts.push(`<p>${this.formatMarkdownInlineForPdf(line)}</p>`);
+                }
+            });
+
+            flushList();
+            return htmlParts.join('\n').trim();
+        },
+
+        wrapCanvasText(ctx, text, maxWidth) {
+            const content = String(text || '');
+            if (!content) return [''];
+            const chars = Array.from(content);
+            const lines = [];
+            let current = '';
+
+            chars.forEach((ch) => {
+                const candidate = `${current}${ch}`;
+                if (current && ctx.measureText(candidate).width > maxWidth) {
+                    lines.push(current);
+                    current = ch;
+                } else {
+                    current = candidate;
+                }
+            });
+            if (current) lines.push(current);
+            return lines.length > 0 ? lines : [''];
+        },
+
+        renderAppendixCanvasPages(markdownContent) {
+            const pageWidth = 1240;
+            const pageHeight = 1754;
+            const marginX = 86;
+            const marginY = 92;
+            const maxWidth = pageWidth - marginX * 2;
+            const lines = String(markdownContent || '').split('\n');
+            const pages = [];
+
+            const createPage = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = pageWidth;
+                canvas.height = pageHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, pageWidth, pageHeight);
+                ctx.textBaseline = 'top';
+                ctx.fillStyle = '#111827';
+                return { canvas, ctx, y: marginY };
+            };
+
+            let page = createPage();
+
+            const ensureSpace = (heightNeeded) => {
+                if (page.y + heightNeeded <= pageHeight - marginY) return;
+                pages.push(page.canvas);
+                page = createPage();
+            };
+
+            lines.forEach((rawLine) => {
+                const line = String(rawLine || '').trim();
+                if (!line) {
+                    page.y += 18;
+                    return;
+                }
+
+                let text = line;
+                let fontSize = 25;
+                let fontWeight = '400';
+                let lineHeight = 37;
+                let spacingAfter = 10;
+
+                if (line.startsWith('# ')) {
+                    text = line.slice(2).trim();
+                    fontSize = 32;
+                    fontWeight = '700';
+                    lineHeight = 46;
+                    spacingAfter = 18;
+                } else if (line.startsWith('## ')) {
+                    text = line.slice(3).trim();
+                    fontSize = 28;
+                    fontWeight = '700';
+                    lineHeight = 40;
+                    spacingAfter = 16;
+                } else if (line.startsWith('### ')) {
+                    text = line.slice(4).trim();
+                    fontSize = 26;
+                    fontWeight = '600';
+                    lineHeight = 38;
+                    spacingAfter = 14;
+                } else if (line.startsWith('- ')) {
+                    text = `• ${line.slice(2).trim()}`;
+                    fontSize = 25;
+                    lineHeight = 37;
+                    spacingAfter = 6;
+                } else {
+                    fontSize = 25;
+                    lineHeight = 37;
+                    spacingAfter = 8;
+                }
+
+                text = this.stripMarkdownFormatting(text).trim();
+                if (!text) return;
+
+                page.ctx.font = `${fontWeight} ${fontSize}px "Microsoft YaHei", "PingFang SC", sans-serif`;
+                const wrapped = this.wrapCanvasText(page.ctx, text, maxWidth);
+                ensureSpace(wrapped.length * lineHeight + spacingAfter);
+                wrapped.forEach((segment) => {
+                    page.ctx.fillText(segment, marginX, page.y);
+                    page.y += lineHeight;
+                });
+                page.y += spacingAfter;
+            });
+
+            pages.push(page.canvas);
+            return pages;
+        },
+
+        async buildAppendixPdfBlobViaCanvas(markdownContent) {
+            if (typeof html2pdf === 'undefined') return null;
+
+            const pages = this.renderAppendixCanvasPages(markdownContent);
+            if (!Array.isArray(pages) || pages.length === 0) return null;
+
+            const isValidPdfBlob = (blob) => blob instanceof Blob && blob.size >= 1024;
+
+            // 优先走 HTML 导出链路（与报告导出同源），稳定性更高
+            try {
+                const html = this.convertAppendixMarkdownToPdfHtml(markdownContent);
+                if (html) {
+                    const tempContainer = document.createElement('div');
+                    tempContainer.style.cssText = 'padding: 40px; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; line-height: 1.8; color: #1a1a1a; background: #ffffff; width: 794px; box-sizing: border-box;';
+
+                    const style = document.createElement('style');
+                    style.textContent = `
+                        h1 { font-size: 24px; font-weight: 700; margin: 24px 0 16px; color: #111; }
+                        h2 { font-size: 20px; font-weight: 700; margin: 20px 0 12px; color: #222; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; }
+                        h3 { font-size: 16px; font-weight: 700; margin: 16px 0 8px; color: #333; }
+                        p { margin: 8px 0; font-size: 14px; }
+                        ul, ol { margin: 8px 0; padding-left: 24px; }
+                        li { margin: 4px 0; font-size: 14px; }
+                        code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+                    `;
+                    tempContainer.appendChild(style);
+
+                    const contentWrap = document.createElement('div');
+                    contentWrap.innerHTML = html;
+                    tempContainer.appendChild(contentWrap);
+                    document.body.appendChild(tempContainer);
+
+                    try {
+                        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                        const worker = html2pdf().set({
+                            margin: [15, 15, 15, 15],
+                            filename: 'appendix.pdf',
+                            image: { type: 'jpeg', quality: 0.98 },
+                            html2canvas: {
+                                scale: 2,
+                                useCORS: true,
+                                logging: false,
+                                backgroundColor: '#ffffff',
+                            },
+                            jsPDF: {
+                                unit: 'mm',
+                                format: 'a4',
+                                orientation: 'portrait'
+                            },
+                            pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+                        }).from(tempContainer).toPdf();
+
+                        const pdf = await worker.get('pdf');
+                        if (pdf) {
+                            const htmlBlob = pdf.output('blob');
+                            if (isValidPdfBlob(htmlBlob)) {
+                                return htmlBlob;
+                            }
+                            console.warn('附录 PDF HTML 导出体积异常', { size: htmlBlob?.size || 0 });
+                        }
+                    } finally {
+                        if (tempContainer.parentNode) {
+                            tempContainer.parentNode.removeChild(tempContainer);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.warn('附录 PDF HTML 导出失败，回退 Canvas 方案:', error);
+            }
+
+            // 兜底：Canvas 直接写入 jsPDF
+            try {
+                const jsPdfCtor = (typeof window !== 'undefined' && window.jspdf && typeof window.jspdf.jsPDF === 'function')
+                    ? window.jspdf.jsPDF
+                    : ((typeof window !== 'undefined' && typeof window.jsPDF === 'function') ? window.jsPDF : null);
+
+                if (jsPdfCtor) {
+                    const pdf = new jsPdfCtor({
+                        unit: 'mm',
+                        format: 'a4',
+                        orientation: 'portrait'
+                    });
+
+                    pages.forEach((canvas, index) => {
+                        const imageData = canvas.toDataURL('image/jpeg', 0.96);
+                        if (index > 0) {
+                            pdf.addPage('a4', 'portrait');
+                        }
+                        pdf.addImage(imageData, 'JPEG', 0, 0, 210, 297, undefined, 'FAST');
+                    });
+
+                    const directBlob = pdf.output('blob');
+                    if (isValidPdfBlob(directBlob)) {
+                        return directBlob;
+                    }
+                    console.warn('附录 PDF 直写失败：Blob 体积异常', { pages: pages.length, size: directBlob?.size || 0 });
+                }
+            } catch (error) {
+                console.warn('附录 PDF 直写失败，回退 html2pdf 容器方案:', error);
+            }
+
+            // 最后兜底：html2pdf 渲染 Canvas 容器
+            const exportContainer = document.createElement('div');
+            exportContainer.style.cssText = 'position:absolute;left:0;top:0;width:794px;background:#ffffff;z-index:-1;pointer-events:none;';
+
+            pages.forEach((canvas, index) => {
+                const pageWrap = document.createElement('div');
+                pageWrap.style.cssText = 'width:794px;height:1123px;background:#ffffff;overflow:hidden;';
+                if (index < pages.length - 1) {
+                    pageWrap.style.pageBreakAfter = 'always';
+                    pageWrap.style.breakAfter = 'page';
+                }
+
+                const pageCanvas = document.createElement('canvas');
+                pageCanvas.width = canvas.width;
+                pageCanvas.height = canvas.height;
+                const pageCtx = pageCanvas.getContext('2d');
+                if (pageCtx) {
+                    pageCtx.drawImage(canvas, 0, 0);
+                }
+                pageCanvas.style.cssText = 'display:block;width:794px;height:1123px;';
+                pageWrap.appendChild(pageCanvas);
+                exportContainer.appendChild(pageWrap);
+            });
+
+            document.body.appendChild(exportContainer);
+
+            try {
+                // 等待浏览器完成布局，避免某些环境下首次抓取到空白画布
+                await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+                const worker = html2pdf().set({
+                    margin: [0, 0, 0, 0],
+                    filename: 'appendix.pdf',
+                    image: { type: 'jpeg', quality: 0.96 },
+                    html2canvas: {
+                        scale: 2,
+                        useCORS: true,
+                        logging: false,
+                        backgroundColor: '#ffffff',
+                    },
+                    jsPDF: {
+                        unit: 'mm',
+                        format: 'a4',
+                        orientation: 'portrait'
+                    },
+                    pagebreak: { mode: ['css', 'legacy'] }
+                }).from(exportContainer).toPdf();
+                const pdf = await worker.get('pdf');
+                if (!pdf) return null;
+                const blob = pdf.output('blob');
+                if (!isValidPdfBlob(blob)) {
+                    console.warn('附录 PDF 导出异常：文件体积过小', { pages: pages.length, size: blob.size });
+                    return null;
+                }
+                return blob;
+            } catch (error) {
+                console.error('附录 Canvas PDF 导出失败:', error);
+                return null;
+            } finally {
+                if (exportContainer.parentNode) {
+                    exportContainer.parentNode.removeChild(exportContainer);
+                }
+            }
+        },
+
+        buildAppendixPdfHtmlFromDom(reportElement) {
+            if (!reportElement) return '';
+
+            const appendixHeading = Array.from(reportElement.querySelectorAll('h2'))
+                .find(heading => (heading.textContent || '').includes('附录：完整访谈记录'));
+            if (!appendixHeading) return '';
+
+            const wrapper = document.createElement('div');
+            const headingClone = appendixHeading.cloneNode(true);
+            const exportWrap = headingClone.querySelector('.dv-appendix-export-wrap');
+            if (exportWrap) exportWrap.remove();
+            wrapper.appendChild(headingClone);
+
+            let cursor = appendixHeading.nextElementSibling;
+            while (cursor) {
+                if (cursor.tagName === 'H2') {
+                    break;
+                }
+                wrapper.appendChild(cursor.cloneNode(true));
+                cursor = cursor.nextElementSibling;
+            }
+
+            wrapper.querySelectorAll('.dv-appendix-export-wrap').forEach(node => node.remove());
+
+            const detailsNodes = Array.from(wrapper.querySelectorAll('details'));
+            detailsNodes.reverse().forEach(detail => {
+                const fragment = document.createDocumentFragment();
+                const summary = detail.querySelector(':scope > summary') || detail.querySelector('summary');
+                const summaryText = (summary?.textContent || '').replace(/\s+/g, ' ').trim();
+
+                if (summaryText) {
+                    const titleNode = document.createElement(summaryText.startsWith('问题 ') ? 'h3' : 'p');
+                    titleNode.textContent = summaryText;
+                    if (titleNode.tagName === 'P') {
+                        titleNode.style.fontWeight = '600';
+                    }
+                    fragment.appendChild(titleNode);
+                }
+
+                Array.from(detail.childNodes).forEach(child => {
+                    if (summary && child === summary) return;
+                    fragment.appendChild(child.cloneNode(true));
+                });
+                detail.replaceWith(fragment);
+            });
+
+            return wrapper.innerHTML.trim();
+        },
+
+        async buildAppendixPdfBlobFromDom(reportElement) {
+            if (typeof html2pdf === 'undefined' || !reportElement) return null;
+
+            const appendixHtml = this.buildAppendixPdfHtmlFromDom(reportElement);
+            if (!appendixHtml) return null;
+
+            const tempContainer = document.createElement('div');
+            tempContainer.style.cssText = 'padding: 40px; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; line-height: 1.8; color: #1a1a1a; background: #ffffff; width: 794px; box-sizing: border-box;';
+
+            const style = document.createElement('style');
+            style.textContent = `
+                h1 { font-size: 24px; font-weight: bold; margin: 24px 0 16px; color: #111; }
+                h2 { font-size: 20px; font-weight: bold; margin: 20px 0 12px; color: #222; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; }
+                h3 { font-size: 16px; font-weight: bold; margin: 16px 0 8px; color: #333; }
+                p { margin: 8px 0; }
+                ul, ol { margin: 8px 0; padding-left: 24px; }
+                li { margin: 4px 0; }
+                code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 14px; }
+                pre { background: #f3f4f6; padding: 16px; border-radius: 8px; overflow-x: auto; }
+                blockquote { border-left: 4px solid #3b82f6; padding-left: 16px; margin: 16px 0; color: #4b5563; }
+                table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+                th, td { border: 1px solid #e5e7eb; padding: 8px 12px; text-align: left; }
+                th { background: #f9fafb; font-weight: 600; }
+            `;
+
+            try {
+                tempContainer.appendChild(style);
+                tempContainer.insertAdjacentHTML('beforeend', appendixHtml);
                 document.body.appendChild(tempContainer);
 
-                // 将 Mermaid SVG 转换为图片
                 await this.convertMermaidToImages(tempContainer);
 
-                const options = {
+                const worker = html2pdf().set({
                     margin: [15, 15, 15, 15],
-                    filename: `${filename}.pdf`,
+                    filename: 'appendix.pdf',
                     image: { type: 'jpeg', quality: 0.98 },
                     html2canvas: {
                         scale: 2,
                         useCORS: true,
                         logging: false,
-                        letterRendering: true
+                        backgroundColor: '#ffffff',
                     },
                     jsPDF: {
                         unit: 'mm',
@@ -5241,28 +5814,309 @@ function deepVision() {
                         orientation: 'portrait'
                     },
                     pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+                }).from(tempContainer).toPdf();
+
+                const pdf = await worker.get('pdf');
+                if (!pdf) return null;
+                const blob = pdf.output('blob');
+                if (!(blob instanceof Blob) || blob.size < 1024) return null;
+                return blob;
+            } catch (error) {
+                console.error('附录 DOM PDF 导出失败:', error);
+                return null;
+            } finally {
+                if (tempContainer.parentNode) {
+                    tempContainer.parentNode.removeChild(tempContainer);
+                }
+            }
+        },
+
+        getExportPickerMeta(format) {
+            switch (format) {
+                case 'pdf':
+                    return {
+                        description: 'PDF 文档',
+                        mime: 'application/pdf',
+                        extensions: ['.pdf'],
+                    };
+                case 'docx':
+                    return {
+                        description: 'Word 文档',
+                        mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        extensions: ['.docx'],
+                    };
+                case 'md':
+                default:
+                    return {
+                        description: 'Markdown 文件',
+                        mime: 'text/markdown',
+                        extensions: ['.md'],
+                    };
+            }
+        },
+
+        async openExportTarget(filenameWithExt, format) {
+            if (typeof window === 'undefined' || typeof window.showSaveFilePicker !== 'function') {
+                return { mode: 'fallback' };
+            }
+
+            const meta = this.getExportPickerMeta(format);
+            try {
+                const handle = await window.showSaveFilePicker({
+                    suggestedName: filenameWithExt,
+                    types: [{
+                        description: meta.description,
+                        accept: {
+                            [meta.mime]: meta.extensions,
+                        },
+                    }],
+                });
+                return { mode: 'picker', handle };
+            } catch (error) {
+                if (error?.name === 'AbortError') {
+                    return { mode: 'cancelled' };
+                }
+                throw error;
+            }
+        },
+
+        async commitExportBlob(target, blob, filenameWithExt) {
+            if (!blob) return false;
+            if (target.mode === 'cancelled') return false;
+
+            if (target.mode === 'picker' && target.handle) {
+                const writable = await target.handle.createWritable();
+                await writable.write(blob);
+                await writable.close();
+                return true;
+            }
+
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filenameWithExt;
+            a.click();
+            URL.revokeObjectURL(url);
+            return true;
+        },
+
+        async fetchAppendixPdfBlobFromServer() {
+            if (!this.selectedReport) {
+                return { ok: false, error: '未选中报告' };
+            }
+
+            try {
+                const response = await fetch(
+                    `/api/reports/${encodeURIComponent(this.selectedReport)}/appendix/pdf`,
+                    {
+                        method: 'GET',
+                        credentials: 'same-origin',
+                        headers: {
+                            Accept: 'application/pdf',
+                        },
+                    }
+                );
+                if (!response.ok) {
+                    let errorMessage = '';
+                    try {
+                        const payload = await response.json();
+                        errorMessage = payload?.error || '';
+                    } catch (_error) {
+                        try {
+                            errorMessage = (await response.text() || '').trim();
+                        } catch (_ignore) {
+                            errorMessage = '';
+                        }
+                    }
+                    console.warn('服务端附录 PDF 导出失败', { status: response.status, error: errorMessage });
+                    return {
+                        ok: false,
+                        status: response.status,
+                        error: errorMessage || '服务端导出失败',
+                    };
+                }
+                const blob = await response.blob();
+                if (!(blob instanceof Blob) || blob.size < 1024) {
+                    console.warn('服务端附录 PDF Blob 异常', { size: blob?.size || 0 });
+                    return {
+                        ok: false,
+                        status: response.status,
+                        error: `服务端返回文件异常（${blob?.size || 0} bytes）`,
+                    };
+                }
+                return { ok: true, blob };
+            } catch (error) {
+                console.warn('服务端附录 PDF 导出失败，回退前端导出:', error);
+                return {
+                    ok: false,
+                    error: `网络异常：${error?.message || '请求失败'}`,
                 };
+            }
+        },
 
-                await html2pdf().set(options).from(tempContainer).save();
+        // 下载 Markdown 格式
+        async downloadMarkdown(filename, options = {}) {
+            const scope = options.scope === 'appendix' ? 'appendix' : 'report';
+            const exportContent = scope === 'appendix'
+                ? this.getAppendixExportContent()
+                : this.getReportExportContent();
+            if (!exportContent) {
+                this.showToast(scope === 'appendix' ? '附录内容为空，无法导出' : '报告内容为空，无法导出', 'error');
+                return;
+            }
 
-                // 清理临时容器
-                document.body.removeChild(tempContainer);
+            const target = await this.openExportTarget(`${filename}.md`, 'md');
+            if (target.mode === 'cancelled') {
+                return;
+            }
 
-                this.showToast('PDF 文件已下载', 'success');
+            const blob = new Blob([exportContent], { type: 'text/markdown;charset=utf-8' });
+            const saved = await this.commitExportBlob(target, blob, `${filename}.md`);
+            if (saved) {
+                this.showToast(scope === 'appendix' ? '附录 Markdown 文件已下载' : 'Markdown 文件已下载', 'success');
+            }
+        },
+
+        // 下载 PDF 格式
+        async downloadPDF(filename, options = {}) {
+            const scope = options.scope === 'appendix' ? 'appendix' : 'report';
+
+            const target = await this.openExportTarget(`${filename}.pdf`, 'pdf');
+            if (target.mode === 'cancelled') {
+                return;
+            }
+
+            this.showToast(scope === 'appendix' ? '正在生成附录 PDF（处理图表中）...' : '正在生成 PDF（处理图表中）...', 'info');
+
+            try {
+                if (scope === 'appendix') {
+                    const exportResult = await this.fetchAppendixPdfBlobFromServer();
+                    if (exportResult?.ok && exportResult.blob) {
+                        const saved = await this.commitExportBlob(target, exportResult.blob, `${filename}.pdf`);
+                        if (saved) {
+                            this.showToast('附录 PDF 文件已下载', 'success');
+                        }
+                        return;
+                    }
+
+                    const errorMsg = exportResult?.error || '服务端导出失败';
+                    const statusPart = exportResult?.status ? `HTTP ${exportResult.status}` : '请求失败';
+                    this.showToast(`附录 PDF 导出失败：${statusPart}，${errorMsg}`, 'error');
+                    return;
+                }
+
+                if (typeof html2pdf === 'undefined') {
+                    this.showToast('PDF 导出功能暂不可用', 'error');
+                    return;
+                }
+
+                // 获取渲染后的报告内容
+                const reportElement = document.querySelector('.markdown-body');
+                if (!reportElement) {
+                    this.showToast('无法获取报告内容', 'error');
+                    return;
+                }
+
+                const tempContainer = document.createElement('div');
+                tempContainer.style.cssText = 'padding: 40px; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; line-height: 1.8; color: #1a1a1a; background: #ffffff; width: 794px; box-sizing: border-box;';
+                try {
+                    tempContainer.innerHTML = reportElement.innerHTML;
+
+                    // 报告导出时移除摘要、目录、附录（完整访谈记录）
+                    const summaryBlock = tempContainer.querySelector('#report-summary-block');
+                    if (summaryBlock) summaryBlock.remove();
+                    const tocBlock = tempContainer.querySelector('#report-toc-block');
+                    if (tocBlock) tocBlock.remove();
+                    const appendixExportControl = tempContainer.querySelector('.dv-appendix-export-wrap');
+                    if (appendixExportControl) appendixExportControl.remove();
+                    const appendixHeading = Array.from(tempContainer.querySelectorAll('h2'))
+                        .find(h => (h.textContent || '').includes('附录：完整访谈记录'));
+                    if (appendixHeading) {
+                        let node = appendixHeading;
+                        while (node) {
+                            const next = node.nextSibling;
+                            node.remove();
+                            node = next;
+                        }
+                    }
+
+                    // 添加PDF专用样式
+                    const style = document.createElement('style');
+                    style.textContent = `
+                        h1 { font-size: 24px; font-weight: bold; margin: 24px 0 16px; color: #111; }
+                        h2 { font-size: 20px; font-weight: bold; margin: 20px 0 12px; color: #222; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; }
+                        h3 { font-size: 16px; font-weight: bold; margin: 16px 0 8px; color: #333; }
+                        p { margin: 8px 0; }
+                        ul, ol { margin: 8px 0; padding-left: 24px; }
+                        li { margin: 4px 0; }
+                        code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 14px; }
+                        pre { background: #f3f4f6; padding: 16px; border-radius: 8px; overflow-x: auto; }
+                        blockquote { border-left: 4px solid #3b82f6; padding-left: 16px; margin: 16px 0; color: #4b5563; }
+                        table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+                        th, td { border: 1px solid #e5e7eb; padding: 8px 12px; text-align: left; }
+                        th { background: #f9fafb; font-weight: 600; }
+                        .mermaid-container { page-break-inside: avoid !important; break-inside: avoid !important; margin: 16px 0; }
+                        .mermaid-container img { max-width: 100%; height: auto; page-break-inside: avoid !important; break-inside: avoid !important; }
+                        .mermaid-container svg { page-break-inside: avoid !important; break-inside: avoid !important; }
+                    `;
+                    tempContainer.prepend(style);
+                    document.body.appendChild(tempContainer);
+
+                    // 将 Mermaid SVG 转换为图片
+                    await this.convertMermaidToImages(tempContainer);
+
+                    const pdfOptions = {
+                        margin: [15, 15, 15, 15],
+                        filename: `${filename}.pdf`,
+                        image: { type: 'jpeg', quality: 0.98 },
+                        html2canvas: {
+                            scale: 2,
+                            useCORS: true,
+                            logging: false
+                        },
+                        jsPDF: {
+                            unit: 'mm',
+                            format: 'a4',
+                            orientation: 'portrait'
+                        },
+                        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+                    };
+
+                    const worker = html2pdf().set(pdfOptions).from(tempContainer).toPdf();
+                    const pdf = await worker.get('pdf');
+                    if (!pdf) {
+                        throw new Error('pdf instance missing');
+                    }
+                    const blob = pdf.output('blob');
+                    const saved = await this.commitExportBlob(target, blob, `${filename}.pdf`);
+                    if (saved) {
+                        this.showToast('PDF 文件已下载', 'success');
+                    }
+                } finally {
+                    if (tempContainer.parentNode) {
+                        tempContainer.parentNode.removeChild(tempContainer);
+                    }
+                }
             } catch (error) {
                 console.error('PDF 导出失败:', error);
-                this.showToast('PDF 导出失败，请重试', 'error');
+                this.showToast(scope === 'appendix' ? '附录 PDF 导出失败，请重试' : 'PDF 导出失败，请重试', 'error');
             }
         },
 
         // 下载 Word 格式
-        async downloadDocx(filename) {
+        async downloadDocx(filename, options = {}) {
+            const scope = options.scope === 'appendix' ? 'appendix' : 'report';
             if (typeof docx === 'undefined') {
                 this.showToast('Word 导出功能暂不可用', 'error');
                 return;
             }
 
-            this.showToast('正在生成 Word 文档（处理图表中）...', 'info');
+            const target = await this.openExportTarget(`${filename}.docx`, 'docx');
+            if (target.mode === 'cancelled') {
+                return;
+            }
+
+            this.showToast(scope === 'appendix' ? '正在生成附录 Word 文档（处理图表中）...' : '正在生成 Word 文档（处理图表中）...', 'info');
 
             try {
                 const { Document, Packer, Paragraph, TextRun, HeadingLevel, AlignmentType, BorderStyle, ImageRun } = docx;
@@ -5270,8 +6124,14 @@ function deepVision() {
                 // 先收集所有 Mermaid 图表的图片数据
                 const mermaidImages = await this.collectMermaidImages();
 
-                // 解析 Markdown 内容为文档段落（导出精简版）
-                const exportContent = this.getReportExportContent();
+                // 解析 Markdown 内容为文档段落（报告导出为精简版，附录导出为完整记录）
+                const exportContent = scope === 'appendix'
+                    ? this.getAppendixExportContentForDocx()
+                    : this.getReportExportContent();
+                if (!exportContent) {
+                    this.showToast(scope === 'appendix' ? '未找到附录内容，无法导出 Word' : '报告内容为空，无法导出 Word', 'error');
+                    return;
+                }
                 const lines = exportContent.split('\n');
                 const children = [];
                 let inMermaidBlock = false;
@@ -5434,12 +6294,13 @@ function deepVision() {
                 });
 
                 const blob = await Packer.toBlob(doc);
-                saveAs(blob, `${filename}.docx`);
-
-                this.showToast('Word 文档已下载', 'success');
+                const saved = await this.commitExportBlob(target, blob, `${filename}.docx`);
+                if (saved) {
+                    this.showToast(scope === 'appendix' ? '附录 Word 文档已下载' : 'Word 文档已下载', 'success');
+                }
             } catch (error) {
                 console.error('Word 导出失败:', error);
-                this.showToast('Word 导出失败，请重试', 'error');
+                this.showToast(scope === 'appendix' ? '附录 Word 导出失败，请重试' : 'Word 导出失败，请重试', 'error');
             }
         },
 

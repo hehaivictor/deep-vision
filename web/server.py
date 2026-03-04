@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["flask", "flask-cors", "anthropic", "requests"]
+# dependencies = ["flask", "flask-cors", "anthropic", "requests", "reportlab", "pillow"]
 # ///
 """
 Deep Vision Web Server - AI 驱动版本
@@ -16,6 +16,7 @@ Deep Vision Web Server - AI 驱动版本
 
 import base64
 import hashlib
+import html
 import json
 import os
 import re
@@ -26,11 +27,12 @@ import time as _time
 import requests
 from functools import wraps
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, unquote, urlparse, parse_qsl, urlencode, urlunparse
 
-from flask import Flask, jsonify, request, send_from_directory, redirect, session
+from flask import Flask, jsonify, request, send_from_directory, redirect, session, send_file
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash
 from werkzeug.utils import secure_filename
@@ -134,6 +136,32 @@ except Exception:
     JdSmsClient = None
     JdBatchSendRequest = None
     JD_SMS_SDK_AVAILABLE = False
+
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.units import mm
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.pdfgen import canvas as report_canvas
+    REPORTLAB_AVAILABLE = True
+except Exception:
+    A4 = None
+    mm = None
+    ImageReader = None
+    pdfmetrics = None
+    UnicodeCIDFont = None
+    report_canvas = None
+    REPORTLAB_AVAILABLE = False
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    PIL_AVAILABLE = True
+except Exception:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+    PIL_AVAILABLE = False
 
 # ============ 配置读取工具 ============
 def _cfg_get(name: str, default):
@@ -9644,32 +9672,54 @@ def generate_report(session_id):
     return jsonify(payload), 202
 
 
-def format_appendix_answer(log: dict) -> str:
-    """格式化附录中的回答展示，兼容“其他（自由输入）”明细。"""
-    if not isinstance(log, dict):
-        return str(log or "").strip()
+def resolve_selected_options(log: dict, option_list: list[str]) -> set[str]:
+    """解析用户实际勾选的选项（兼容单选、多选、其他输入引用选项）。"""
+    if not isinstance(log, dict) or not option_list:
+        return set()
 
     answer_text = str(log.get("answer", "") or "").strip()
-    if not bool(log.get("other_selected")):
-        return answer_text
+    if not answer_text:
+        return set()
 
-    options = log.get("options")
+    answer_tokens = {
+        token.strip()
+        for token in re.split(r"[；;]\s*", answer_text)
+        if token and token.strip()
+    }
+    if not answer_tokens and answer_text:
+        answer_tokens.add(answer_text)
+
+    return {option for option in option_list if option in answer_tokens}
+
+
+def render_appendix_answer_block(log: dict) -> str:
+    """将附录回答渲染为“全选项 + 勾选态 + 其他输入”格式。"""
+    if not isinstance(log, dict):
+        text = str(log or "").strip()
+        return f"**回答**：\n- ☑ {text or '（未填写）'}"
+
+    answer_text = str(log.get("answer", "") or "").strip()
     option_list = []
+    options = log.get("options")
     if isinstance(options, list):
         option_list = [str(item or "").strip() for item in options if str(item or "").strip()]
 
-    other_input = str(log.get("other_answer_text", "") or "").strip()
+    selected_options = resolve_selected_options(log, option_list)
 
-    details = []
+    lines = ["**回答**："]
     if option_list:
-        numbered_options = "；".join([f"{idx + 1}.{opt}" for idx, opt in enumerate(option_list)])
-        details.append(f"全部选项：{numbered_options}")
-    if other_input:
-        details.append(f"自由输入：{other_input}")
+        for option in option_list:
+            mark = "☑" if option in selected_options else "☐"
+            lines.append(f"- {mark} {option}")
+    else:
+        lines.append(f"- ☑ {answer_text or '（未填写）'}")
 
-    if details:
-        return " | ".join(details)
-    return answer_text
+    other_selected = bool(log.get("other_selected"))
+    other_input = str(log.get("other_answer_text", "") or "").strip()
+    if other_selected and other_input:
+        lines.append(f"- ☑ 其他（自由输入）：{other_input}")
+
+    return "\n".join(lines)
 
 
 def generate_interview_appendix(session: dict) -> str:
@@ -9680,20 +9730,19 @@ def generate_interview_appendix(session: dict) -> str:
 
     appendix = "\n\n---\n\n## 附录：完整访谈记录\n\n"
     appendix += "<details>\n"
-    appendix += f"<summary>本次访谈共收集了 {len(interview_log)} 个问题的回答（点击展开/收起）</summary>\n\n"
+    appendix += f"<summary>本次访谈共手机了 {len(interview_log)} 个问题的回答（点击展开/收起）</summary>\n\n"
 
     appendix_dim_info = get_dimension_info_for_session(session)
     for i, log in enumerate(interview_log, 1):
         dim_name = appendix_dim_info.get(log.get('dimension', ''), {}).get('name', '未分类')
-        question = log.get('question', '')
-        answer = format_appendix_answer(log)
+        question = str(log.get('question', '') or '').strip() or '（未记录问题）'
+        answer_block = render_appendix_answer_block(log)
         appendix += "<details>\n"
-        appendix += f"<summary>Q{i}: {question}</summary>\n\n"
-        appendix += f"**回答**: {answer}\n\n"
+        appendix += f"<summary>问题 {i}：{question}</summary>\n\n"
+        appendix += f"{answer_block}\n\n"
         appendix += f"**维度**: {dim_name}\n\n"
-        if log.get('timestamp'):
-            appendix += f"*记录时间: {log['timestamp']}*\n\n"
         appendix += "</details>\n\n"
+
     appendix += "</details>\n\n"
 
     return appendix
@@ -10453,6 +10502,283 @@ def get_report_presentation_link(filename):
 
 # ============ 报告 API ============
 
+def extract_appendix_markdown_from_report(content: str) -> str:
+    report_text = str(content or "")
+    marker = "## 附录：完整访谈记录"
+    appendix_index = report_text.find(marker)
+    if appendix_index < 0:
+        return ""
+
+    appendix = report_text[appendix_index:].strip()
+    appendix = re.sub(r"^\s*\*\*生成方式\*\*:[^\n]*\n?", "", appendix, flags=re.MULTILINE)
+    return appendix.strip()
+
+
+def normalize_appendix_line_for_pdf(raw_line: str) -> str:
+    line = html.unescape(str(raw_line or ""))
+    if not line:
+        return ""
+
+    summary_match = re.match(r"^\s*<summary[^>]*>\s*(.*?)\s*</summary>\s*$", line, flags=re.IGNORECASE)
+    if summary_match:
+        line = f"### {summary_match.group(1).strip()}"
+
+    line = re.sub(r"</?details[^>]*>", "", line, flags=re.IGNORECASE)
+    line = re.sub(r"<br\s*/?>", " ", line, flags=re.IGNORECASE)
+    line = re.sub(r"<[^>]+>", "", line)
+    line = re.sub(r"\s+", " ", line).strip()
+    line = line.replace("☑", "[√]").replace("☐", "[ ]")
+    return line
+
+
+def wrap_pdf_text(text: str, font_name: str, font_size: float, max_width: float) -> list[str]:
+    content = str(text or "")
+    if not content:
+        return [""]
+
+    wrapped: list[str] = []
+    current = ""
+    for ch in content:
+        candidate = f"{current}{ch}"
+        if current and pdfmetrics.stringWidth(candidate, font_name, font_size) > max_width:
+            wrapped.append(current)
+            current = ch
+        else:
+            current = candidate
+
+    if current:
+        wrapped.append(current)
+
+    return wrapped or [""]
+
+
+def resolve_appendix_cjk_font_path() -> str:
+    candidates = [
+        # macOS
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/Library/Fonts/Arial Unicode.ttf",
+        # Linux
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKSC-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        # Windows
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+    ]
+    for path in candidates:
+        try:
+            if Path(path).is_file():
+                return path
+        except Exception:
+            continue
+    return ""
+
+
+def wrap_pil_text(draw: "ImageDraw.ImageDraw", text: str, font: "ImageFont.FreeTypeFont", max_width: int) -> list[str]:
+    content = str(text or "")
+    if not content:
+        return [""]
+
+    lines: list[str] = []
+    current = ""
+    for ch in content:
+        candidate = f"{current}{ch}"
+        width = draw.textlength(candidate, font=font)
+        if current and width > max_width:
+            lines.append(current)
+            current = ch
+        else:
+            current = candidate
+
+    if current:
+        lines.append(current)
+    return lines or [""]
+
+
+def render_appendix_pages_as_images(appendix_markdown: str) -> list["Image.Image"]:
+    if not PIL_AVAILABLE:
+        return []
+
+    page_width = 1240
+    page_height = 1754
+    margin_x = 86
+    margin_y = 92
+    max_width = page_width - margin_x * 2
+
+    font_path = resolve_appendix_cjk_font_path()
+
+    def load_font(size: int) -> "ImageFont.ImageFont":
+        if font_path:
+            try:
+                return ImageFont.truetype(font_path, size=size)
+            except Exception:
+                pass
+        return ImageFont.load_default()
+
+    font_body = load_font(25)
+    font_h3 = load_font(26)
+    font_h2 = load_font(28)
+    font_h1 = load_font(32)
+
+    pages: list[Image.Image] = []
+    image = Image.new("RGB", (page_width, page_height), "#FFFFFF")
+    draw = ImageDraw.Draw(image)
+    y = margin_y
+
+    def new_page() -> None:
+        nonlocal image, draw, y
+        pages.append(image)
+        image = Image.new("RGB", (page_width, page_height), "#FFFFFF")
+        draw = ImageDraw.Draw(image)
+        y = margin_y
+
+    def ensure_space(height_needed: int) -> None:
+        nonlocal y
+        if y + height_needed <= page_height - margin_y:
+            return
+        new_page()
+
+    for raw_line in str(appendix_markdown or "").splitlines():
+        line = normalize_appendix_line_for_pdf(raw_line)
+        if not line:
+            y += 18
+            continue
+
+        text = line
+        font = font_body
+        line_height = 37
+        spacing_after = 8
+
+        if line.startswith("# "):
+            text = line[2:].strip()
+            font = font_h1
+            line_height = 46
+            spacing_after = 18
+        elif line.startswith("## "):
+            text = line[3:].strip()
+            font = font_h2
+            line_height = 40
+            spacing_after = 16
+        elif line.startswith("### "):
+            text = line[4:].strip()
+            font = font_h3
+            line_height = 38
+            spacing_after = 14
+        elif line.startswith("- "):
+            text = f"• {line[2:].strip()}"
+            font = font_body
+            line_height = 37
+            spacing_after = 6
+
+        wrapped_lines = wrap_pil_text(draw, text, font, max_width)
+        ensure_space(len(wrapped_lines) * line_height + spacing_after)
+
+        for segment in wrapped_lines:
+            draw.text((margin_x, y), segment, fill="#111827", font=font)
+            y += line_height
+        y += spacing_after
+
+    pages.append(image)
+    return pages
+
+
+def build_appendix_pdf_bytes_via_images(appendix_markdown: str) -> bytes:
+    if not (REPORTLAB_AVAILABLE and PIL_AVAILABLE):
+        raise RuntimeError("图像渲染依赖不可用")
+
+    pages = render_appendix_pages_as_images(appendix_markdown)
+    if not pages:
+        raise RuntimeError("未生成有效图像页")
+
+    buffer = BytesIO()
+    pdf = report_canvas.Canvas(buffer, pagesize=A4, pageCompression=1)
+    pdf_page_width, pdf_page_height = A4
+
+    for page in pages:
+        img_buffer = BytesIO()
+        page.save(img_buffer, format="PNG")
+        img_buffer.seek(0)
+        pdf.drawImage(ImageReader(img_buffer), 0, 0, width=pdf_page_width, height=pdf_page_height, preserveAspectRatio=False, mask="auto")
+        pdf.showPage()
+
+    pdf.save()
+    buffer.seek(0)
+    return buffer.read()
+
+
+def build_appendix_pdf_bytes(appendix_markdown: str) -> bytes:
+    if not REPORTLAB_AVAILABLE:
+        raise RuntimeError("reportlab 不可用")
+
+    font_name = "STSong-Light"
+    if font_name not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(UnicodeCIDFont(font_name))
+
+    buffer = BytesIO()
+    pdf = report_canvas.Canvas(buffer, pagesize=A4, pageCompression=1)
+
+    page_width, page_height = A4
+    margin_x = 18 * mm
+    margin_top = 18 * mm
+    margin_bottom = 16 * mm
+    max_width = page_width - margin_x * 2
+    y = page_height - margin_top
+
+    def ensure_space(height_needed: float) -> None:
+        nonlocal y
+        if y - height_needed < margin_bottom:
+            pdf.showPage()
+            y = page_height - margin_top
+
+    for raw_line in str(appendix_markdown or "").splitlines():
+        line = normalize_appendix_line_for_pdf(raw_line)
+        if not line:
+            ensure_space(8)
+            y -= 8
+            continue
+
+        text = line
+        font_size = 10.5
+        line_height = 16
+        spacing_after = 2
+
+        if line.startswith("# "):
+            text = line[2:].strip()
+            font_size = 16
+            line_height = 23
+            spacing_after = 7
+        elif line.startswith("## "):
+            text = line[3:].strip()
+            font_size = 14
+            line_height = 21
+            spacing_after = 6
+        elif line.startswith("### "):
+            text = line[4:].strip()
+            font_size = 12.5
+            line_height = 19
+            spacing_after = 4
+        elif line.startswith("- "):
+            text = f"• {line[2:].strip()}"
+            font_size = 10.5
+            line_height = 16
+            spacing_after = 2
+
+        wrapped_lines = wrap_pdf_text(text, font_name, font_size, max_width)
+        ensure_space(len(wrapped_lines) * line_height + spacing_after)
+
+        pdf.setFont(font_name, font_size)
+        for segment in wrapped_lines:
+            pdf.drawString(margin_x, y, segment)
+            y -= line_height
+        y -= spacing_after
+
+    pdf.save()
+    buffer.seek(0)
+    return buffer.read()
+
+
 @app.route('/api/reports', methods=['GET'])
 def list_reports():
     """获取所有报告（排除已删除的）"""
@@ -10494,6 +10820,48 @@ def get_report(filename):
 
     content = report_file.read_text(encoding="utf-8")
     return jsonify({"name": filename, "content": content})
+
+
+@app.route('/api/reports/<path:filename>/appendix/pdf', methods=['GET'])
+def export_report_appendix_pdf(filename):
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    report_file, owner_error = enforce_report_owner_or_404(filename, user_id)
+    if owner_error:
+        response, status_code = owner_error
+        return response, status_code
+
+    if not REPORTLAB_AVAILABLE:
+        return jsonify({"error": "服务端 PDF 导出能力不可用"}), 503
+
+    report_content = report_file.read_text(encoding="utf-8")
+    appendix_markdown = extract_appendix_markdown_from_report(report_content)
+    if not appendix_markdown:
+        return jsonify({"error": "未找到附录内容"}), 404
+
+    try:
+        # 优先走图像渲染，规避部分 PDF 阅读器对 CJK 字体兼容导致的空白问题
+        if PIL_AVAILABLE:
+            pdf_bytes = build_appendix_pdf_bytes_via_images(appendix_markdown)
+        else:
+            pdf_bytes = build_appendix_pdf_bytes(appendix_markdown)
+    except Exception as exc:
+        print(f"⚠️ 附录 PDF 图像渲染失败，回退文本渲染: {exc}")
+        try:
+            pdf_bytes = build_appendix_pdf_bytes(appendix_markdown)
+        except Exception as text_exc:
+            print(f"⚠️ 附录 PDF 生成失败: {text_exc}")
+            return jsonify({"error": "附录 PDF 生成失败"}), 500
+
+    download_name = f"{Path(filename).stem}-完整访谈记录.pdf"
+    return send_file(
+        BytesIO(pdf_bytes),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=download_name,
+    )
 
 
 @app.route('/api/reports/<path:filename>/refly', methods=['POST'])

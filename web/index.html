@@ -376,6 +376,124 @@
         .markdown-body hr { border: none; border-top: 1px solid #E5E5E5; margin: 1.5rem 0; }
         .markdown-body details { margin: 1rem 0; }
         .markdown-body summary { cursor: pointer; font-weight: 500; color: #000000; }
+        .markdown-body h2.dv-appendix-heading {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+        .markdown-body .dv-appendix-export-wrap {
+            position: relative;
+            margin-left: auto;
+        }
+        .markdown-body .dv-appendix-export-trigger {
+            list-style: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.375rem;
+            border: 1px solid #BFDBFE;
+            background: #EFF6FF;
+            color: #1D4ED8;
+            border-radius: 9999px;
+            padding: 0.25rem 0.75rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            line-height: 1.5;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+        .markdown-body .dv-appendix-export-trigger::-webkit-details-marker {
+            display: none;
+        }
+        .markdown-body .dv-appendix-export-trigger::marker {
+            content: "";
+        }
+        .markdown-body .dv-appendix-export-trigger:hover {
+            background: #DBEAFE;
+            border-color: #93C5FD;
+        }
+        .markdown-body .dv-appendix-export-trigger:focus-visible {
+            outline: 2px solid #2563EB;
+            outline-offset: 2px;
+        }
+        .markdown-body .dv-appendix-export-trigger-icon,
+        .markdown-body .dv-appendix-export-trigger-caret {
+            width: 0.9rem;
+            height: 0.9rem;
+            stroke-width: 2;
+        }
+        .markdown-body .dv-appendix-export-wrap[open] .dv-appendix-export-trigger-caret {
+            transform: rotate(180deg);
+        }
+        .markdown-body .dv-appendix-export-menu {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: calc(100% + 0.5rem);
+            min-width: 14.5rem;
+            background: #ffffff;
+            border: 1px solid #E5E7EB;
+            border-radius: 0.875rem;
+            box-shadow: 0 16px 36px rgba(15, 23, 42, 0.14);
+            padding: 0.4rem;
+            z-index: 60;
+        }
+        .markdown-body .dv-appendix-export-wrap[open] .dv-appendix-export-menu {
+            display: block;
+        }
+        .markdown-body .dv-appendix-export-item {
+            width: 100%;
+            border: none;
+            background: transparent;
+            border-radius: 0.625rem;
+            display: flex;
+            align-items: center;
+            gap: 0.625rem;
+            text-align: left;
+            padding: 0.55rem 0.6rem;
+            cursor: pointer;
+            transition: background-color 0.2s ease;
+            color: #374151;
+        }
+        .markdown-body .dv-appendix-export-item:hover,
+        .markdown-body .dv-appendix-export-item:focus-visible {
+            background: #F8FAFC;
+            outline: none;
+        }
+        .markdown-body .dv-appendix-export-item-icon {
+            width: 1.25rem;
+            height: 1.25rem;
+            stroke-width: 2;
+            flex-shrink: 0;
+            color: #6B7280;
+        }
+        .markdown-body .dv-appendix-export-item-icon.is-pdf { color: #EF4444; }
+        .markdown-body .dv-appendix-export-item-icon.is-docx { color: #2563EB; }
+        .markdown-body .dv-appendix-export-item-copy {
+            display: inline-flex;
+            flex-direction: column;
+            gap: 0.05rem;
+        }
+        .markdown-body .dv-appendix-export-item-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            line-height: 1.3;
+            color: #374151;
+        }
+        .markdown-body .dv-appendix-export-item-desc {
+            font-size: 0.72rem;
+            color: #6B7280;
+            line-height: 1.25;
+        }
+        @media (max-width: 767px) {
+            .markdown-body .dv-appendix-export-wrap {
+                margin-left: 0;
+            }
+            .markdown-body .dv-appendix-export-menu {
+                right: auto;
+                left: 0;
+            }
+        }
         /* Mermaid 图表样式 */
         .mermaid-container {
             margin: 1.5rem 0;
@@ -517,6 +635,10 @@
             .typing-cursor {
                 animation: none;
                 opacity: 1;
+            }
+            .markdown-body .dv-appendix-export-trigger,
+            .markdown-body .dv-appendix-export-item {
+                transition: none;
             }
             .option-skeleton {
                 transition: none;
@@ -3824,6 +3946,6 @@
 
     <!-- 前端配置文件 -->
     <script src="site-config.js"></script>
-    <script src="app.js"></script>
+    <script src="app.js?v=20260304-appendix-pdf-fix6"></script>
 </body>
 </html>
