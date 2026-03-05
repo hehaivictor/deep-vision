@@ -15,12 +15,16 @@ Deep Vision Web Server - AI 驱动版本
 """
 
 import base64
+import copy
+import atexit
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 import hashlib
 import html
 import json
 import os
+import queue
 import re
 import secrets
 import sqlite3
@@ -364,6 +368,8 @@ if REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS < 1:
 _base_model_name = _cfg_text("MODEL_NAME", str(MODEL_NAME or "").strip())
 QUESTION_MODEL_NAME = _cfg_text("QUESTION_MODEL_NAME", _base_model_name) or _base_model_name
 REPORT_MODEL_NAME = _cfg_text("REPORT_MODEL_NAME", QUESTION_MODEL_NAME) or QUESTION_MODEL_NAME
+SUMMARY_MODEL_NAME = _cfg_text("SUMMARY_MODEL_NAME", QUESTION_MODEL_NAME) or QUESTION_MODEL_NAME
+SEARCH_DECISION_MODEL_NAME = _cfg_text("SEARCH_DECISION_MODEL_NAME", SUMMARY_MODEL_NAME) or SUMMARY_MODEL_NAME
 
 # 鉴权路由配置：兼容 Anthropic x-api-key 与 Bearer Authorization 两种网关模式
 # 未显式配置时，按网关地址自动推断（aicodemirror 默认 Bearer）。
@@ -389,11 +395,34 @@ _cfg_report_base_url = _first_non_empty(
     _cfg_text("REPORT_BASE_URL", ""),
     _cfg_text("REPORT_ANTHROPIC_BASE_URL", ""),
 )
+_cfg_summary_api_key = _first_non_empty(
+    _cfg_text("SUMMARY_API_KEY", ""),
+    _cfg_text("SUMMARY_ANTHROPIC_API_KEY", ""),
+)
+_cfg_summary_base_url = _first_non_empty(
+    _cfg_text("SUMMARY_BASE_URL", ""),
+    _cfg_text("SUMMARY_ANTHROPIC_BASE_URL", ""),
+)
+_cfg_search_decision_api_key = _first_non_empty(
+    _cfg_text("SEARCH_DECISION_API_KEY", ""),
+    _cfg_text("SEARCH_DECISION_ANTHROPIC_API_KEY", ""),
+)
+_cfg_search_decision_base_url = _first_non_empty(
+    _cfg_text("SEARCH_DECISION_BASE_URL", ""),
+    _cfg_text("SEARCH_DECISION_ANTHROPIC_BASE_URL", ""),
+)
 
 QUESTION_API_KEY = _cfg_question_api_key or _cfg_text("ANTHROPIC_API_KEY", str(ANTHROPIC_API_KEY or "").strip())
 QUESTION_BASE_URL = _cfg_question_base_url or _cfg_text("ANTHROPIC_BASE_URL", str(ANTHROPIC_BASE_URL or "").strip())
 REPORT_API_KEY = _cfg_report_api_key or QUESTION_API_KEY
 REPORT_BASE_URL = _cfg_report_base_url or QUESTION_BASE_URL
+SUMMARY_API_KEY = _cfg_summary_api_key or REPORT_API_KEY
+SUMMARY_BASE_URL = _cfg_summary_base_url or REPORT_BASE_URL
+SEARCH_DECISION_API_KEY = _cfg_search_decision_api_key or SUMMARY_API_KEY
+SEARCH_DECISION_BASE_URL = _cfg_search_decision_base_url or SUMMARY_BASE_URL
+
+SUMMARY_USE_BEARER_AUTH = _cfg_bool("SUMMARY_USE_BEARER_AUTH", REPORT_USE_BEARER_AUTH)
+SEARCH_DECISION_USE_BEARER_AUTH = _cfg_bool("SEARCH_DECISION_USE_BEARER_AUTH", SUMMARY_USE_BEARER_AUTH)
 
 # 兼容历史代码中直接引用 MODEL_NAME 的位置：默认指向问题模型
 MODEL_NAME = QUESTION_MODEL_NAME
@@ -404,6 +433,73 @@ DEEP_MODE_SKIP_FOLLOWUP_CONFIRM = _cfg_bool("DEEP_MODE_SKIP_FOLLOWUP_CONFIRM", T
 # 运行策略配置
 CONTEXT_WINDOW_SIZE = _cfg_int("CONTEXT_WINDOW_SIZE", 5)  # 保留最近N条完整问答
 SUMMARY_THRESHOLD = _cfg_int("SUMMARY_THRESHOLD", 8)      # 超过此数量时触发摘要生成
+SUMMARY_UPDATE_DEBOUNCE_SECONDS = _cfg_int("SUMMARY_UPDATE_DEBOUNCE_SECONDS", 60)  # 摘要异步更新最小间隔（秒）
+if SUMMARY_UPDATE_DEBOUNCE_SECONDS < 5:
+    SUMMARY_UPDATE_DEBOUNCE_SECONDS = 5
+SEARCH_DECISION_CACHE_TTL_SECONDS = _cfg_int("SEARCH_DECISION_CACHE_TTL_SECONDS", 600)  # 搜索决策缓存时间（秒）
+if SEARCH_DECISION_CACHE_TTL_SECONDS < 0:
+    SEARCH_DECISION_CACHE_TTL_SECONDS = 0
+SEARCH_DECISION_CACHE_MAX_ENTRIES = _cfg_int("SEARCH_DECISION_CACHE_MAX_ENTRIES", 256)
+if SEARCH_DECISION_CACHE_MAX_ENTRIES < 32:
+    SEARCH_DECISION_CACHE_MAX_ENTRIES = 32
+SEARCH_DECISION_INFLIGHT_WAIT_SECONDS = _cfg_float("SEARCH_DECISION_INFLIGHT_WAIT_SECONDS", 10.0)
+if SEARCH_DECISION_INFLIGHT_WAIT_SECONDS < 1.0:
+    SEARCH_DECISION_INFLIGHT_WAIT_SECONDS = 1.0
+SEARCH_RESULT_CACHE_TTL_SECONDS = _cfg_int("SEARCH_RESULT_CACHE_TTL_SECONDS", 300)
+if SEARCH_RESULT_CACHE_TTL_SECONDS < 0:
+    SEARCH_RESULT_CACHE_TTL_SECONDS = 0
+SEARCH_RESULT_CACHE_MAX_ENTRIES = _cfg_int("SEARCH_RESULT_CACHE_MAX_ENTRIES", 128)
+if SEARCH_RESULT_CACHE_MAX_ENTRIES < 32:
+    SEARCH_RESULT_CACHE_MAX_ENTRIES = 32
+SEARCH_RESULT_INFLIGHT_WAIT_SECONDS = _cfg_float("SEARCH_RESULT_INFLIGHT_WAIT_SECONDS", 12.0)
+if SEARCH_RESULT_INFLIGHT_WAIT_SECONDS < 1.0:
+    SEARCH_RESULT_INFLIGHT_WAIT_SECONDS = 1.0
+PREFETCH_IDLE_ONLY = _cfg_bool("PREFETCH_IDLE_ONLY", True)
+PREFETCH_IDLE_MAX_LOW_RUNNING = _cfg_int("PREFETCH_IDLE_MAX_LOW_RUNNING", 0)
+if PREFETCH_IDLE_MAX_LOW_RUNNING < 0:
+    PREFETCH_IDLE_MAX_LOW_RUNNING = 0
+PREFETCH_IDLE_WAIT_SECONDS = _cfg_float("PREFETCH_IDLE_WAIT_SECONDS", 8.0)
+if PREFETCH_IDLE_WAIT_SECONDS < 0.0:
+    PREFETCH_IDLE_WAIT_SECONDS = 0.0
+FIRST_QUESTION_PREFETCH_PRIORITY_ENABLED = _cfg_bool("FIRST_QUESTION_PREFETCH_PRIORITY_ENABLED", True)
+FIRST_QUESTION_PREFETCH_PRIORITY_WINDOW_SECONDS = _cfg_float("FIRST_QUESTION_PREFETCH_PRIORITY_WINDOW_SECONDS", 120.0)
+if FIRST_QUESTION_PREFETCH_PRIORITY_WINDOW_SECONDS < 10.0:
+    FIRST_QUESTION_PREFETCH_PRIORITY_WINDOW_SECONDS = 10.0
+QUESTION_FAST_PATH_ENABLED = _cfg_bool("QUESTION_FAST_PATH_ENABLED", True)
+QUESTION_FAST_TIMEOUT = _cfg_float("QUESTION_FAST_TIMEOUT", 20.0)
+if QUESTION_FAST_TIMEOUT < 5.0:
+    QUESTION_FAST_TIMEOUT = 5.0
+QUESTION_FAST_MAX_TOKENS = _cfg_int("QUESTION_FAST_MAX_TOKENS", 1400)
+QUESTION_FAST_MAX_TOKENS = max(600, min(QUESTION_FAST_MAX_TOKENS, MAX_TOKENS_QUESTION))
+QUESTION_HEDGED_ENABLED = _cfg_bool("QUESTION_HEDGED_ENABLED", True)
+QUESTION_HEDGED_DELAY_SECONDS = _cfg_float("QUESTION_HEDGED_DELAY_SECONDS", 8.0)
+if QUESTION_HEDGED_DELAY_SECONDS < 0.5:
+    QUESTION_HEDGED_DELAY_SECONDS = 0.5
+QUESTION_HEDGED_SECONDARY_LANE = _cfg_text("QUESTION_HEDGED_SECONDARY_LANE", "report").strip().lower()
+if QUESTION_HEDGED_SECONDARY_LANE not in {"report", "summary", "search_decision"}:
+    QUESTION_HEDGED_SECONDARY_LANE = "report"
+QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT = _cfg_bool("QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT", True)
+QUESTION_RESULT_CACHE_TTL_SECONDS = _cfg_int("QUESTION_RESULT_CACHE_TTL_SECONDS", 120)
+if QUESTION_RESULT_CACHE_TTL_SECONDS < 0:
+    QUESTION_RESULT_CACHE_TTL_SECONDS = 0
+QUESTION_RESULT_CACHE_MAX_ENTRIES = _cfg_int("QUESTION_RESULT_CACHE_MAX_ENTRIES", 512)
+if QUESTION_RESULT_CACHE_MAX_ENTRIES < 64:
+    QUESTION_RESULT_CACHE_MAX_ENTRIES = 64
+METRICS_ASYNC_FLUSH_INTERVAL_SECONDS = _cfg_float("METRICS_ASYNC_FLUSH_INTERVAL_SECONDS", 1.5)
+if METRICS_ASYNC_FLUSH_INTERVAL_SECONDS < 0.2:
+    METRICS_ASYNC_FLUSH_INTERVAL_SECONDS = 0.2
+METRICS_ASYNC_BATCH_SIZE = _cfg_int("METRICS_ASYNC_BATCH_SIZE", 20)
+if METRICS_ASYNC_BATCH_SIZE < 1:
+    METRICS_ASYNC_BATCH_SIZE = 1
+METRICS_ASYNC_MAX_PENDING = _cfg_int("METRICS_ASYNC_MAX_PENDING", 5000)
+if METRICS_ASYNC_MAX_PENDING < 100:
+    METRICS_ASYNC_MAX_PENDING = 100
+INTERVIEW_PROMPT_CACHE_TTL_SECONDS = _cfg_int("INTERVIEW_PROMPT_CACHE_TTL_SECONDS", 45)
+if INTERVIEW_PROMPT_CACHE_TTL_SECONDS < 0:
+    INTERVIEW_PROMPT_CACHE_TTL_SECONDS = 0
+INTERVIEW_PROMPT_CACHE_MAX_ENTRIES = _cfg_int("INTERVIEW_PROMPT_CACHE_MAX_ENTRIES", 256)
+if INTERVIEW_PROMPT_CACHE_MAX_ENTRIES < 32:
+    INTERVIEW_PROMPT_CACHE_MAX_ENTRIES = 32
 MAX_DOC_LENGTH = _cfg_int("MAX_DOC_LENGTH", 2000)         # 单个文档最大长度（字符）
 MAX_TOTAL_DOCS = _cfg_int("MAX_TOTAL_DOCS", 5000)         # 所有文档总长度限制（字符）
 API_TIMEOUT = _cfg_float("API_TIMEOUT", 90.0)             # 通用 API 超时时间（秒）
@@ -481,6 +577,53 @@ CONFIG_BUILTIN_SCENARIOS_DIR = _cfg_text("BUILTIN_SCENARIOS_DIR", "")
 CONFIG_CUSTOM_SCENARIOS_DIR = _cfg_text("CUSTOM_SCENARIOS_DIR", "")
 
 
+def _build_lane_signature(api_key: str, base_url: str, use_bearer_auth: bool) -> tuple[str, str, bool]:
+    return (str(api_key or "").strip(), str(base_url or "").strip(), bool(use_bearer_auth))
+
+
+def _resolve_lane_model_name(lane: str) -> str:
+    """根据 lane 的实际网关签名选择模型，避免模型与网关供应商不匹配。"""
+    normalized_lane = str(lane or "").strip().lower()
+
+    if normalized_lane == "report":
+        return REPORT_MODEL_NAME or QUESTION_MODEL_NAME
+
+    if normalized_lane == "summary":
+        default_model = SUMMARY_MODEL_NAME or QUESTION_MODEL_NAME
+        summary_signature = _build_lane_signature(SUMMARY_API_KEY, SUMMARY_BASE_URL, SUMMARY_USE_BEARER_AUTH)
+        report_signature = _build_lane_signature(REPORT_API_KEY, REPORT_BASE_URL, REPORT_USE_BEARER_AUTH)
+        if (
+            summary_signature == report_signature
+            and default_model == QUESTION_MODEL_NAME
+            and REPORT_MODEL_NAME
+            and REPORT_MODEL_NAME != default_model
+        ):
+            return REPORT_MODEL_NAME
+        return default_model
+
+    if normalized_lane == "search_decision":
+        default_model = SEARCH_DECISION_MODEL_NAME or SUMMARY_MODEL_NAME or QUESTION_MODEL_NAME
+        search_signature = _build_lane_signature(
+            SEARCH_DECISION_API_KEY,
+            SEARCH_DECISION_BASE_URL,
+            SEARCH_DECISION_USE_BEARER_AUTH,
+        )
+        report_signature = _build_lane_signature(REPORT_API_KEY, REPORT_BASE_URL, REPORT_USE_BEARER_AUTH)
+        if (
+            search_signature == report_signature
+            and default_model in {QUESTION_MODEL_NAME, SUMMARY_MODEL_NAME}
+            and REPORT_MODEL_NAME
+            and REPORT_MODEL_NAME != default_model
+        ):
+            return REPORT_MODEL_NAME
+        summary_signature = _build_lane_signature(SUMMARY_API_KEY, SUMMARY_BASE_URL, SUMMARY_USE_BEARER_AUTH)
+        if search_signature == summary_signature:
+            return _resolve_lane_model_name("summary")
+        return default_model
+
+    return QUESTION_MODEL_NAME
+
+
 def resolve_model_name(call_type: str = "", model_name: str = "") -> str:
     """根据调用类型选择模型；显式传入 model_name 时优先使用。"""
     explicit = str(model_name or "").strip()
@@ -488,14 +631,22 @@ def resolve_model_name(call_type: str = "", model_name: str = "") -> str:
         return explicit
 
     lowered = (call_type or "").lower()
+    if "search_decision" in lowered:
+        return _resolve_lane_model_name("search_decision")
+    if "summary" in lowered:
+        return _resolve_lane_model_name("summary")
     if "report" in lowered:
-        return REPORT_MODEL_NAME
+        return _resolve_lane_model_name("report")
     return QUESTION_MODEL_NAME
 
 
 def resolve_call_lane(call_type: str = "", model_name: str = "") -> str:
     """根据调用类型判断应该优先使用的问题/报告网关。"""
     lowered = (call_type or "").lower()
+    if "search_decision" in lowered:
+        return "search_decision"
+    if "summary" in lowered:
+        return "summary"
     if "report" in lowered:
         return "report"
 
@@ -627,6 +778,42 @@ web_search_active = False
 thinking_status = {}           # { session_id: { stage, stage_index, total_stages, message } }
 thinking_status_lock = threading.Lock()
 
+# ============ AI 调度优先级控制 ============
+# 目标：问题/报告优先，摘要/搜索决策后台降级，减少主链路尾延迟。
+ai_priority_state = {
+    "high_waiting": 0,
+    "high_running": 0,
+    "low_running": 0,
+}
+ai_priority_condition = threading.Condition()
+ai_priority_local = threading.local()
+
+# ============ 异步摘要调度控制 ============
+summary_update_schedule_lock = threading.Lock()
+summary_update_schedule_state = {}  # { session_id: { inflight: bool, last_trigger_ts: float } }
+
+# ============ 搜索决策缓存 ============
+search_decision_cache_lock = threading.Lock()
+search_decision_cache = {}  # { cache_key: { value: dict, expire_at: float } }
+search_decision_inflight = {}  # { cache_key: { event: threading.Event, started_at: float } }
+
+# ============ 搜索结果缓存与并发去重 ============
+search_result_cache_lock = threading.Lock()
+search_result_cache = {}  # { cache_key: { value: list, expire_at: float } }
+search_result_inflight = {}  # { cache_key: { event: threading.Event, started_at: float } }
+
+# ============ 问题结果幂等缓存 ============
+question_result_cache_lock = threading.Lock()
+question_result_cache = {}  # { cache_key: { value: dict, expire_at: float } }
+
+# ============ 访谈 Prompt 构建缓存 ============
+interview_prompt_cache_lock = threading.Lock()
+interview_prompt_cache = {}  # { cache_key: { value: tuple[prompt, truncated_docs, decision_meta], expire_at: float } }
+
+# ============ 首题预生成优先窗口 ============
+first_question_prefetch_priority_lock = threading.Lock()
+first_question_prefetch_priority = {}  # { session_id: deadline_ts }
+
 THINKING_STAGES = {
     "analyzing": {"index": 0, "message": "正在分析您的回答..."},
     "searching": {"index": 1, "message": "正在检索相关资料..."},
@@ -731,6 +918,504 @@ def _safe_log(text: str) -> None:
     except UnicodeEncodeError:
         fallback = str(text).encode("ascii", errors="backslashreplace").decode("ascii")
         print(fallback)
+
+
+def _is_low_priority_ai_call(call_type: str) -> bool:
+    lowered = str(call_type or "").strip().lower()
+    if not lowered:
+        return False
+    low_prefixes = ("summary", "doc_summary", "search_decision", "prefetch")
+    return any(lowered == prefix or lowered.startswith(f"{prefix}_") for prefix in low_prefixes)
+
+
+def _get_ai_call_priority_lane(call_type: str) -> str:
+    return "low" if _is_low_priority_ai_call(call_type) else "high"
+
+
+@contextmanager
+def ai_call_priority_slot(call_type: str):
+    """AI 调度闸门：优先保障问题/报告调用，低优先级调用在高优先级活跃时暂停。"""
+    current_depth = int(getattr(ai_priority_local, "depth", 0) or 0)
+    lane = _get_ai_call_priority_lane(call_type)
+    if current_depth > 0:
+        ai_priority_local.depth = current_depth + 1
+        try:
+            yield {
+                "lane": lane,
+                "queue_wait_ms": 0.0,
+                "nested": True,
+            }
+        finally:
+            ai_priority_local.depth = max(0, int(getattr(ai_priority_local, "depth", 1) or 1) - 1)
+        return
+
+    wait_started_at = _time.perf_counter()
+    queue_wait_ms = 0.0
+    with ai_priority_condition:
+        if lane == "high":
+            ai_priority_state["high_waiting"] += 1
+            ai_priority_state["high_waiting"] = max(0, ai_priority_state["high_waiting"] - 1)
+            ai_priority_state["high_running"] += 1
+        else:
+            while ai_priority_state["high_waiting"] > 0 or ai_priority_state["high_running"] > 0:
+                ai_priority_condition.wait(timeout=0.2)
+            ai_priority_state["low_running"] += 1
+        queue_wait_ms = max(0.0, (_time.perf_counter() - wait_started_at) * 1000.0)
+
+    ai_priority_local.depth = 1
+    try:
+        yield {
+            "lane": lane,
+            "queue_wait_ms": round(queue_wait_ms, 2),
+            "nested": False,
+        }
+    finally:
+        ai_priority_local.depth = 0
+        with ai_priority_condition:
+            if lane == "high":
+                ai_priority_state["high_running"] = max(0, ai_priority_state["high_running"] - 1)
+            else:
+                ai_priority_state["low_running"] = max(0, ai_priority_state["low_running"] - 1)
+            ai_priority_condition.notify_all()
+
+
+def _wait_for_prefetch_idle(wait_seconds: float = 0.0) -> bool:
+    """预生成仅在主链路空闲时触发，避免与实时出题抢资源。"""
+    if not PREFETCH_IDLE_ONLY:
+        return True
+
+    deadline = _time.time() + max(0.0, float(wait_seconds or 0.0))
+    while True:
+        with ai_priority_condition:
+            high_waiting = int(ai_priority_state.get("high_waiting", 0) or 0)
+            high_running = int(ai_priority_state.get("high_running", 0) or 0)
+            low_running = int(ai_priority_state.get("low_running", 0) or 0)
+            if (
+                high_waiting <= 0
+                and high_running <= 0
+                and low_running <= PREFETCH_IDLE_MAX_LOW_RUNNING
+            ):
+                return True
+
+        if _time.time() >= deadline:
+            return False
+        _time.sleep(0.2)
+
+
+def _set_first_question_prefetch_priority(session_id: str) -> None:
+    if not FIRST_QUESTION_PREFETCH_PRIORITY_ENABLED:
+        return
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    deadline_ts = _time.time() + float(FIRST_QUESTION_PREFETCH_PRIORITY_WINDOW_SECONDS)
+    with first_question_prefetch_priority_lock:
+        first_question_prefetch_priority[sid] = deadline_ts
+
+
+def _is_first_question_prefetch_priority_active(session_id: str) -> bool:
+    if not FIRST_QUESTION_PREFETCH_PRIORITY_ENABLED:
+        return False
+    sid = str(session_id or "").strip()
+    if not sid:
+        return False
+    now_ts = _time.time()
+    with first_question_prefetch_priority_lock:
+        expired_keys = [
+            key
+            for key, deadline_ts in first_question_prefetch_priority.items()
+            if float(deadline_ts or 0.0) <= now_ts
+        ]
+        for key in expired_keys:
+            first_question_prefetch_priority.pop(key, None)
+        deadline = float(first_question_prefetch_priority.get(sid, 0.0) or 0.0)
+        return deadline > now_ts
+
+
+def _clear_first_question_prefetch_priority(session_id: str) -> None:
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    with first_question_prefetch_priority_lock:
+        first_question_prefetch_priority.pop(sid, None)
+
+
+def _try_begin_summary_update(session_id: str) -> bool:
+    if not session_id:
+        return False
+    now_ts = _time.time()
+    with summary_update_schedule_lock:
+        state = summary_update_schedule_state.get(session_id, {})
+        if bool(state.get("inflight")):
+            return False
+        last_trigger_ts = float(state.get("last_trigger_ts", 0.0) or 0.0)
+        if (now_ts - last_trigger_ts) < float(SUMMARY_UPDATE_DEBOUNCE_SECONDS):
+            return False
+        summary_update_schedule_state[session_id] = {
+            "inflight": True,
+            "last_trigger_ts": now_ts,
+        }
+        return True
+
+
+def _end_summary_update(session_id: str) -> None:
+    if not session_id:
+        return
+    with summary_update_schedule_lock:
+        state = summary_update_schedule_state.get(session_id, {})
+        state["inflight"] = False
+        state["last_trigger_ts"] = _time.time()
+        summary_update_schedule_state[session_id] = state
+
+
+def schedule_context_summary_update_async(session_id: str) -> bool:
+    """按节流策略异步更新会话摘要，返回是否成功触发后台任务。"""
+    if not _try_begin_summary_update(session_id):
+        return False
+
+    def async_update_summary():
+        try:
+            update_context_summary(session_id)
+        except Exception as exc:
+            print(f"⚠️ 异步更新摘要失败: {exc}")
+        finally:
+            _end_summary_update(session_id)
+
+    threading.Thread(target=async_update_summary, daemon=True).start()
+    return True
+
+
+def _build_search_decision_cache_key(topic: str, dimension: str, recent_qa: list) -> str:
+    normalized_recent = []
+    for item in (recent_qa or [])[-3:]:
+        if not isinstance(item, dict):
+            continue
+        normalized_recent.append({
+            "q": str(item.get("question", "") or "").strip(),
+            "a": str(item.get("answer", "") or "").strip(),
+        })
+    payload = {
+        "topic": str(topic or "").strip(),
+        "dimension": str(dimension or "").strip(),
+        "recent_qa": normalized_recent,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _get_search_decision_cache(cache_key: str) -> Optional[dict]:
+    if SEARCH_DECISION_CACHE_TTL_SECONDS <= 0:
+        return None
+    key = str(cache_key or "").strip()
+    if not key:
+        return None
+    now_ts = _time.time()
+    with search_decision_cache_lock:
+        cached = search_decision_cache.get(key)
+        if not isinstance(cached, dict):
+            return None
+        expire_at = float(cached.get("expire_at", 0.0) or 0.0)
+        if expire_at <= now_ts:
+            search_decision_cache.pop(key, None)
+            return None
+        value = cached.get("value")
+        if isinstance(value, dict):
+            return dict(value)
+        return None
+
+
+def _set_search_decision_cache(cache_key: str, value: dict) -> None:
+    if SEARCH_DECISION_CACHE_TTL_SECONDS <= 0:
+        return
+    key = str(cache_key or "").strip()
+    if not key or not isinstance(value, dict):
+        return
+    now_ts = _time.time()
+    expire_at = now_ts + float(SEARCH_DECISION_CACHE_TTL_SECONDS)
+    with search_decision_cache_lock:
+        # 清理过期项，避免缓存无限增长
+        expired_keys = [
+            item_key
+            for item_key, cached in search_decision_cache.items()
+            if float((cached or {}).get("expire_at", 0.0) or 0.0) <= now_ts
+        ]
+        for item_key in expired_keys:
+            search_decision_cache.pop(item_key, None)
+
+        while len(search_decision_cache) >= SEARCH_DECISION_CACHE_MAX_ENTRIES:
+            oldest_key = next(iter(search_decision_cache), None)
+            if oldest_key is None:
+                break
+            search_decision_cache.pop(oldest_key, None)
+
+        search_decision_cache[key] = {
+            "value": dict(value),
+            "expire_at": expire_at,
+        }
+
+
+def _begin_search_decision_inflight(cache_key: str) -> tuple[Optional[threading.Event], bool]:
+    key = str(cache_key or "").strip()
+    if not key:
+        return None, False
+    with search_decision_cache_lock:
+        inflight = search_decision_inflight.get(key)
+        event = inflight.get("event") if isinstance(inflight, dict) else None
+        if isinstance(event, threading.Event):
+            return event, False
+
+        owner_event = threading.Event()
+        search_decision_inflight[key] = {
+            "event": owner_event,
+            "started_at": _time.time(),
+        }
+        return owner_event, True
+
+
+def _end_search_decision_inflight(cache_key: str, owner_event: Optional[threading.Event]) -> None:
+    key = str(cache_key or "").strip()
+    if not key or not isinstance(owner_event, threading.Event):
+        return
+    with search_decision_cache_lock:
+        inflight = search_decision_inflight.get(key)
+        if isinstance(inflight, dict) and inflight.get("event") is owner_event:
+            search_decision_inflight.pop(key, None)
+    owner_event.set()
+
+
+def _build_search_result_cache_key(query: str) -> str:
+    normalized_query = re.sub(r"\s+", " ", str(query or "").strip()).lower()
+    if not normalized_query:
+        return ""
+    return hashlib.sha1(normalized_query.encode("utf-8")).hexdigest()
+
+
+def _get_search_result_cache(cache_key: str) -> Optional[list]:
+    if SEARCH_RESULT_CACHE_TTL_SECONDS <= 0:
+        return None
+    key = str(cache_key or "").strip()
+    if not key:
+        return None
+    now_ts = _time.time()
+    with search_result_cache_lock:
+        cached = search_result_cache.get(key)
+        if not isinstance(cached, dict):
+            return None
+        expire_at = float(cached.get("expire_at", 0.0) or 0.0)
+        if expire_at <= now_ts:
+            search_result_cache.pop(key, None)
+            return None
+        value = cached.get("value")
+        if isinstance(value, list):
+            return [dict(item) for item in value if isinstance(item, dict)]
+        return None
+
+
+def _set_search_result_cache(cache_key: str, value: list) -> None:
+    if SEARCH_RESULT_CACHE_TTL_SECONDS <= 0:
+        return
+    key = str(cache_key or "").strip()
+    if not key or not isinstance(value, list):
+        return
+    normalized = [dict(item) for item in value if isinstance(item, dict)]
+    now_ts = _time.time()
+    expire_at = now_ts + float(SEARCH_RESULT_CACHE_TTL_SECONDS)
+    with search_result_cache_lock:
+        expired_keys = [
+            item_key
+            for item_key, cached in search_result_cache.items()
+            if float((cached or {}).get("expire_at", 0.0) or 0.0) <= now_ts
+        ]
+        for item_key in expired_keys:
+            search_result_cache.pop(item_key, None)
+
+        while len(search_result_cache) >= SEARCH_RESULT_CACHE_MAX_ENTRIES:
+            oldest_key = next(iter(search_result_cache), None)
+            if oldest_key is None:
+                break
+            search_result_cache.pop(oldest_key, None)
+
+        search_result_cache[key] = {
+            "value": normalized,
+            "expire_at": expire_at,
+        }
+
+
+def _begin_search_inflight(cache_key: str) -> tuple[Optional[threading.Event], bool]:
+    key = str(cache_key or "").strip()
+    if not key:
+        return None, False
+    with search_result_cache_lock:
+        inflight = search_result_inflight.get(key)
+        event = inflight.get("event") if isinstance(inflight, dict) else None
+        if isinstance(event, threading.Event):
+            return event, False
+
+        owner_event = threading.Event()
+        search_result_inflight[key] = {
+            "event": owner_event,
+            "started_at": _time.time(),
+        }
+        return owner_event, True
+
+
+def _end_search_inflight(cache_key: str, owner_event: Optional[threading.Event]) -> None:
+    key = str(cache_key or "").strip()
+    if not key or not isinstance(owner_event, threading.Event):
+        return
+    with search_result_cache_lock:
+        inflight = search_result_inflight.get(key)
+        if isinstance(inflight, dict) and inflight.get("event") is owner_event:
+            search_result_inflight.pop(key, None)
+    owner_event.set()
+
+
+def _build_question_result_cache_key(session_id: str, dimension: str, session_signature: Optional[tuple[int, int]]) -> str:
+    signature = session_signature if isinstance(session_signature, tuple) else None
+    payload = {
+        "session_id": str(session_id or "").strip(),
+        "dimension": str(dimension or "").strip(),
+        "signature": signature,
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _get_question_result_cache(cache_key: str) -> Optional[dict]:
+    if QUESTION_RESULT_CACHE_TTL_SECONDS <= 0:
+        return None
+    key = str(cache_key or "").strip()
+    if not key:
+        return None
+    now_ts = _time.time()
+    with question_result_cache_lock:
+        cached = question_result_cache.get(key)
+        if not isinstance(cached, dict):
+            return None
+        expire_at = float(cached.get("expire_at", 0.0) or 0.0)
+        if expire_at <= now_ts:
+            question_result_cache.pop(key, None)
+            return None
+        value = cached.get("value")
+        if isinstance(value, dict):
+            return copy.deepcopy(value)
+        return None
+
+
+def _set_question_result_cache(cache_key: str, value: dict) -> None:
+    if QUESTION_RESULT_CACHE_TTL_SECONDS <= 0:
+        return
+    key = str(cache_key or "").strip()
+    if not key or not isinstance(value, dict):
+        return
+    now_ts = _time.time()
+    expire_at = now_ts + float(QUESTION_RESULT_CACHE_TTL_SECONDS)
+    with question_result_cache_lock:
+        expired_keys = [
+            item_key
+            for item_key, cached in question_result_cache.items()
+            if float((cached or {}).get("expire_at", 0.0) or 0.0) <= now_ts
+        ]
+        for item_key in expired_keys:
+            question_result_cache.pop(item_key, None)
+
+        while len(question_result_cache) >= QUESTION_RESULT_CACHE_MAX_ENTRIES:
+            oldest_key = next(iter(question_result_cache), None)
+            if oldest_key is None:
+                break
+            question_result_cache.pop(oldest_key, None)
+
+        question_result_cache[key] = {
+            "value": copy.deepcopy(value),
+            "expire_at": expire_at,
+        }
+
+
+def _build_interview_prompt_cache_key(
+    session_signature: Optional[tuple[int, int]],
+    dimension: str,
+    session_id: str = "",
+) -> str:
+    if not isinstance(session_signature, tuple) or len(session_signature) != 2:
+        return ""
+    payload = {
+        "session_id": str(session_id or "").strip(),
+        "signature": session_signature,
+        "dimension": str(dimension or "").strip(),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _get_interview_prompt_cache(cache_key: str) -> Optional[tuple[str, list, dict]]:
+    if INTERVIEW_PROMPT_CACHE_TTL_SECONDS <= 0:
+        return None
+    key = str(cache_key or "").strip()
+    if not key:
+        return None
+    now_ts = _time.time()
+    with interview_prompt_cache_lock:
+        cached = interview_prompt_cache.get(key)
+        if not isinstance(cached, dict):
+            return None
+        expire_at = float(cached.get("expire_at", 0.0) or 0.0)
+        if expire_at <= now_ts:
+            interview_prompt_cache.pop(key, None)
+            return None
+        value = cached.get("value")
+        if not isinstance(value, dict):
+            return None
+        prompt = value.get("prompt")
+        truncated_docs = value.get("truncated_docs")
+        decision_meta = value.get("decision_meta")
+        if not isinstance(prompt, str):
+            return None
+        if not isinstance(truncated_docs, list):
+            truncated_docs = []
+        if not isinstance(decision_meta, dict):
+            decision_meta = {}
+        return prompt, copy.deepcopy(truncated_docs), copy.deepcopy(decision_meta)
+
+
+def _set_interview_prompt_cache(
+    cache_key: str,
+    prompt: str,
+    truncated_docs: list,
+    decision_meta: dict,
+) -> None:
+    if INTERVIEW_PROMPT_CACHE_TTL_SECONDS <= 0:
+        return
+    key = str(cache_key or "").strip()
+    if not key or not isinstance(prompt, str):
+        return
+    safe_truncated_docs = list(truncated_docs or [])
+    safe_decision_meta = copy.deepcopy(decision_meta) if isinstance(decision_meta, dict) else {}
+
+    now_ts = _time.time()
+    expire_at = now_ts + float(INTERVIEW_PROMPT_CACHE_TTL_SECONDS)
+    with interview_prompt_cache_lock:
+        expired_keys = [
+            item_key
+            for item_key, cached in interview_prompt_cache.items()
+            if float((cached or {}).get("expire_at", 0.0) or 0.0) <= now_ts
+        ]
+        for item_key in expired_keys:
+            interview_prompt_cache.pop(item_key, None)
+
+        while len(interview_prompt_cache) >= INTERVIEW_PROMPT_CACHE_MAX_ENTRIES:
+            oldest_key = next(iter(interview_prompt_cache), None)
+            if oldest_key is None:
+                break
+            interview_prompt_cache.pop(oldest_key, None)
+
+        interview_prompt_cache[key] = {
+            "value": {
+                "prompt": prompt,
+                "truncated_docs": copy.deepcopy(safe_truncated_docs),
+                "decision_meta": safe_decision_meta,
+            },
+            "expire_at": expire_at,
+        }
 
 
 def safe_load_session(session_file: Path) -> dict:
@@ -3052,18 +3737,25 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str):
             if ENABLE_DEBUG_LOG:
                 print(f"🔮 开始预生成: session={session_id}, next_dim={next_dimension}")
 
+            if not _wait_for_prefetch_idle(PREFETCH_IDLE_WAIT_SECONDS):
+                if ENABLE_DEBUG_LOG:
+                    print(f"⏭️  跳过预生成（主链路繁忙）: session={session_id}, dim={next_dimension}")
+                return
+
             # 重新读取会话数据（可能已更新）
             session_file = SESSIONS_DIR / f"{session_id}.json"
             if not session_file.exists():
                 return
 
             session_data = json.loads(session_file.read_text(encoding="utf-8"))
+            session_signature = get_file_signature(session_file)
             next_dim_logs = [l for l in session_data.get("interview_log", [])
                            if l.get("dimension") == next_dimension]
 
             # 构建预生成的 prompt
             prompt, truncated_docs, _decision_meta = build_interview_prompt(
-                session_data, next_dimension, next_dim_logs
+                session_data, next_dimension, next_dim_logs,
+                session_signature=session_signature,
             )
 
             # 调用 Claude API
@@ -3114,46 +3806,60 @@ def prefetch_first_question(session_id: str):
             if ENABLE_DEBUG_LOG:
                 print(f"🔮 开始预生成首题: session={session_id}")
 
+            priority_active = _is_first_question_prefetch_priority_active(session_id)
+            if priority_active:
+                if ENABLE_DEBUG_LOG:
+                    print(f"⚡ 首题预生成优先窗口生效: session={session_id}")
+            elif not _wait_for_prefetch_idle(PREFETCH_IDLE_WAIT_SECONDS):
+                if ENABLE_DEBUG_LOG:
+                    print(f"⏭️  跳过首题预生成（主链路繁忙）: session={session_id}")
+                return
+
             session_file = SESSIONS_DIR / f"{session_id}.json"
             if not session_file.exists():
                 return
 
             session_data = json.loads(session_file.read_text(encoding="utf-8"))
+            session_signature = get_file_signature(session_file)
 
             # 获取第一个维度（动态场景支持）
             first_dim = get_dimension_order_for_session(session_data)[0] if get_dimension_order_for_session(session_data) else "customer_needs"
 
             # 首题不依赖任何历史记录
             prompt, truncated_docs, _decision_meta = build_interview_prompt(
-                session_data, first_dim, []
+                session_data, first_dim, [],
+                session_signature=session_signature,
             )
 
-            response = call_claude(
+            response, result, tier_used = generate_question_with_tiered_strategy(
                 prompt,
-                max_tokens=MAX_TOKENS_QUESTION,
-                call_type="prefetch_first",
-                truncated_docs=truncated_docs
+                truncated_docs=truncated_docs,
+                debug=ENABLE_DEBUG_LOG,
+                base_call_type="prefetch_first",
+                allow_fast_path=True,
             )
+            if ENABLE_DEBUG_LOG:
+                print(f"⚙️ 首题预生成通道: {tier_used}")
 
-            if response:
-                result = parse_question_response(response, debug=False)
-                if result:
-                    result["dimension"] = first_dim
-                    result["ai_generated"] = True
+            if response and result:
+                result["dimension"] = first_dim
+                result["ai_generated"] = True
 
-                    with prefetch_cache_lock:
-                        if session_id not in prefetch_cache:
-                            prefetch_cache[session_id] = {}
-                        prefetch_cache[session_id][first_dim] = {
-                            "question_data": result,
-                            "created_at": _time.time(),
-                            "topic": session_data.get("topic"),
-                            "valid": True,
-                        }
-                    if ENABLE_DEBUG_LOG:
-                        print(f"✅ 首题预生成完成: session={session_id}")
+                with prefetch_cache_lock:
+                    if session_id not in prefetch_cache:
+                        prefetch_cache[session_id] = {}
+                    prefetch_cache[session_id][first_dim] = {
+                        "question_data": result,
+                        "created_at": _time.time(),
+                        "topic": session_data.get("topic"),
+                        "valid": True,
+                    }
+                if ENABLE_DEBUG_LOG:
+                    print(f"✅ 首题预生成完成: session={session_id}")
         except Exception as e:
             print(f"⚠️ 首题预生成失败: {e}")
+        finally:
+            _clear_first_question_prefetch_priority(session_id)
 
     threading.Thread(target=do_prefetch, daemon=True).start()
 
@@ -3165,31 +3871,236 @@ class MetricsCollector:
 
     def __init__(self, metrics_file: Path):
         self.metrics_file = metrics_file
+        self._pending_records = deque()
+        self._pending_lock = threading.Lock()
+        self._file_lock = threading.Lock()
+        self._flush_event = threading.Event()
+        self._stop_event = threading.Event()
+        self._closed = False
+        self._flush_interval = float(METRICS_ASYNC_FLUSH_INTERVAL_SECONDS)
+        self._flush_batch_size = int(METRICS_ASYNC_BATCH_SIZE)
+        self._max_pending = int(METRICS_ASYNC_MAX_PENDING)
         self._ensure_metrics_file()
+        self._flush_worker = threading.Thread(
+            target=self._flush_loop,
+            daemon=True,
+            name="metrics-flush-worker",
+        )
+        self._flush_worker.start()
+        try:
+            atexit.register(self.close)
+        except Exception:
+            pass
 
     def _ensure_metrics_file(self):
         """确保指标文件存在"""
-        if not self.metrics_file.exists():
-            self.metrics_file.write_text(json.dumps({
-                "calls": [],
-                "summary": {
-                    "total_calls": 0,
-                    "total_timeouts": 0,
-                    "total_truncations": 0,
-                    "avg_response_time": 0,
-                    "avg_prompt_length": 0
-                }
-            }, ensure_ascii=False, indent=2), encoding="utf-8")
+        payload = self._empty_payload()
+        with self._file_lock:
+            self.metrics_file.parent.mkdir(parents=True, exist_ok=True)
+            if not self.metrics_file.exists():
+                self.metrics_file.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
+    def _empty_payload(self) -> dict:
+        return {
+            "calls": [],
+            "summary": {
+                "total_calls": 0,
+                "total_timeouts": 0,
+                "total_truncations": 0,
+                "total_cache_hits": 0,
+                "total_hedge_triggered": 0,
+                "avg_response_time": 0,
+                "avg_prompt_length": 0,
+                "avg_queue_wait_ms": 0,
+            },
+        }
+
+    def _load_metrics_data(self) -> dict:
+        payload = self._empty_payload()
+        try:
+            if not self.metrics_file.exists():
+                return payload
+            data = json.loads(self.metrics_file.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return payload
+
+            calls_raw = data.get("calls", [])
+            calls = [item for item in calls_raw if isinstance(item, dict)] if isinstance(calls_raw, list) else []
+            summary_raw = data.get("summary", {})
+            summary = summary_raw if isinstance(summary_raw, dict) else {}
+            merged_summary = {
+                "total_calls": int(summary.get("total_calls", 0) or 0),
+                "total_timeouts": int(summary.get("total_timeouts", 0) or 0),
+                "total_truncations": int(summary.get("total_truncations", 0) or 0),
+                "total_cache_hits": int(summary.get("total_cache_hits", 0) or 0),
+                "total_hedge_triggered": int(summary.get("total_hedge_triggered", 0) or 0),
+                "avg_response_time": float(summary.get("avg_response_time", 0) or 0),
+                "avg_prompt_length": float(summary.get("avg_prompt_length", 0) or 0),
+                "avg_queue_wait_ms": float(summary.get("avg_queue_wait_ms", 0) or 0),
+            }
+            return {"calls": calls, "summary": merged_summary}
+        except Exception:
+            return payload
+
+    def _write_metrics_data(self, data: dict) -> None:
+        self.metrics_file.parent.mkdir(parents=True, exist_ok=True)
+        self.metrics_file.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _apply_records_to_data(self, data: dict, records: list[dict]) -> dict:
+        if not isinstance(data, dict):
+            data = self._empty_payload()
+
+        calls = data.get("calls", [])
+        if not isinstance(calls, list):
+            calls = []
+        summary = data.get("summary", {})
+        if not isinstance(summary, dict):
+            summary = {}
+        total_calls = int(summary.get("total_calls", 0) or 0)
+        total_timeouts = int(summary.get("total_timeouts", 0) or 0)
+        total_truncations = int(summary.get("total_truncations", 0) or 0)
+        total_cache_hits = int(summary.get("total_cache_hits", 0) or 0)
+        total_hedge_triggered = int(summary.get("total_hedge_triggered", 0) or 0)
+
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            calls.append(record)
+            total_calls += 1
+            if bool(record.get("timeout", False)):
+                total_timeouts += 1
+            total_truncations += len(record.get("truncated_docs", []) or [])
+            if bool(record.get("cache_hit", False)):
+                total_cache_hits += 1
+            if bool(record.get("hedge_triggered", False)):
+                total_hedge_triggered += 1
+
+        if len(calls) > 1000:
+            calls = calls[-1000:]
+
+        avg_response_time = 0.0
+        avg_prompt_length = 0.0
+        avg_queue_wait_ms = 0.0
+        if calls:
+            avg_response_time = round(
+                sum(float(c.get("response_time_ms", 0) or 0) for c in calls) / len(calls), 2
+            )
+            avg_prompt_length = round(
+                sum(float(c.get("prompt_length", 0) or 0) for c in calls) / len(calls), 2
+            )
+            queue_wait_values = [
+                float(c.get("queue_wait_ms", 0) or 0)
+                for c in calls
+                if isinstance(c.get("queue_wait_ms", 0), (int, float))
+            ]
+            if queue_wait_values:
+                avg_queue_wait_ms = round(sum(queue_wait_values) / len(queue_wait_values), 2)
+
+        data["calls"] = calls
+        data["summary"] = {
+            "total_calls": total_calls,
+            "total_timeouts": total_timeouts,
+            "total_truncations": total_truncations,
+            "total_cache_hits": total_cache_hits,
+            "total_hedge_triggered": total_hedge_triggered,
+            "avg_response_time": avg_response_time,
+            "avg_prompt_length": avg_prompt_length,
+            "avg_queue_wait_ms": avg_queue_wait_ms,
+        }
+        return data
+
+    def _drain_pending_records(self, max_items: Optional[int] = None) -> list[dict]:
+        drained = []
+        with self._pending_lock:
+            if not self._pending_records:
+                return drained
+            if max_items is None or max_items >= len(self._pending_records):
+                while self._pending_records:
+                    drained.append(self._pending_records.popleft())
+            else:
+                for _ in range(max_items):
+                    if not self._pending_records:
+                        break
+                    drained.append(self._pending_records.popleft())
+        return drained
+
+    def _flush_pending_records(self, force: bool = False) -> int:
+        flushed = 0
+        while True:
+            batch_size = None if force else self._flush_batch_size
+            records = self._drain_pending_records(max_items=batch_size)
+            if not records:
+                break
+            try:
+                with self._file_lock:
+                    data = self._load_metrics_data()
+                    data = self._apply_records_to_data(data, records)
+                    self._write_metrics_data(data)
+                flushed += len(records)
+            except Exception as exc:
+                print(f"⚠️  刷新指标失败: {exc}")
+                with self._pending_lock:
+                    for record in reversed(records):
+                        self._pending_records.appendleft(record)
+                    while len(self._pending_records) > self._max_pending:
+                        self._pending_records.popleft()
+                break
+
+            if not force:
+                break
+
+        if not force:
+            with self._pending_lock:
+                has_more = bool(self._pending_records)
+            if has_more:
+                self._flush_event.set()
+        return flushed
+
+    def _flush_loop(self) -> None:
+        while not self._stop_event.is_set():
+            self._flush_event.wait(timeout=self._flush_interval)
+            self._flush_event.clear()
+            self._flush_pending_records(force=False)
+
+        # 退出前确保尽量落盘
+        self._flush_pending_records(force=True)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._stop_event.set()
+        self._flush_event.set()
+        try:
+            if self._flush_worker.is_alive():
+                self._flush_worker.join(timeout=2.0)
+        except Exception:
+            pass
+        self._flush_pending_records(force=True)
+
+    def reset(self) -> None:
+        with self._pending_lock:
+            self._pending_records.clear()
+        with self._file_lock:
+            self._write_metrics_data(self._empty_payload())
 
     def record_api_call(self, call_type: str, prompt_length: int, response_time: float,
                        success: bool, timeout: bool = False, error_msg: str = None,
-                       truncated_docs: list = None, max_tokens: int = None):
+                       truncated_docs: list = None, max_tokens: int = None,
+                       queue_wait_ms: float = 0.0, hedge_triggered: bool = False,
+                       cache_hit: bool = False):
         """记录 API 调用指标"""
         try:
-            # 读取现有数据
-            data = json.loads(self.metrics_file.read_text(encoding="utf-8"))
-
-            # 添加新记录
+            try:
+                normalized_queue_wait_ms = max(0.0, float(queue_wait_ms or 0.0))
+            except Exception:
+                normalized_queue_wait_ms = 0.0
             call_record = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "type": call_type,  # "question" or "report"
@@ -3199,37 +4110,20 @@ class MetricsCollector:
                 "success": success,
                 "timeout": timeout,
                 "error": error_msg,
-                "truncated_docs": truncated_docs or []
+                "truncated_docs": truncated_docs or [],
+                "queue_wait_ms": round(normalized_queue_wait_ms, 2),
+                "hedge_triggered": bool(hedge_triggered),
+                "cache_hit": bool(cache_hit),
             }
 
-            data["calls"].append(call_record)
+            with self._pending_lock:
+                self._pending_records.append(call_record)
+                while len(self._pending_records) > self._max_pending:
+                    self._pending_records.popleft()
+                pending_count = len(self._pending_records)
 
-            # 更新汇总统计
-            summary = data["summary"]
-            summary["total_calls"] = summary.get("total_calls", 0) + 1
-            if timeout:
-                summary["total_timeouts"] = summary.get("total_timeouts", 0) + 1
-            if truncated_docs:
-                summary["total_truncations"] = summary.get("total_truncations", 0) + len(truncated_docs)
-
-            # 计算平均值
-            all_calls = data["calls"]
-            if all_calls:
-                summary["avg_response_time"] = round(
-                    sum(c["response_time_ms"] for c in all_calls) / len(all_calls), 2
-                )
-                summary["avg_prompt_length"] = round(
-                    sum(c["prompt_length"] for c in all_calls) / len(all_calls), 2
-                )
-
-            # 保存（只保留最近 1000 条记录）
-            if len(data["calls"]) > 1000:
-                data["calls"] = data["calls"][-1000:]
-
-            self.metrics_file.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
+            if pending_count >= self._flush_batch_size:
+                self._flush_event.set()
 
         except Exception as e:
             print(f"⚠️  记录指标失败: {e}")
@@ -3240,13 +4134,16 @@ class MetricsCollector:
             "total_calls": 0,
             "total_timeouts": 0,
             "total_truncations": 0,
+            "total_cache_hits": 0,
+            "total_hedge_triggered": 0,
             "avg_response_time": 0,
             "avg_prompt_length": 0,
+            "avg_queue_wait_ms": 0,
         }
         try:
-            data = json.loads(self.metrics_file.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                data = {}
+            self._flush_pending_records(force=True)
+            with self._file_lock:
+                data = self._load_metrics_data()
             summary_data = data.get("summary", empty_summary)
             if not isinstance(summary_data, dict):
                 summary_data = empty_summary
@@ -3273,6 +4170,12 @@ class MetricsCollector:
                     "min_response_time_ms": 0,
                     "avg_prompt_length": 0,
                     "max_prompt_length": 0,
+                    "cache_hit_calls": 0,
+                    "cache_hit_rate": 0,
+                    "hedge_triggered_calls": 0,
+                    "hedge_trigger_rate": 0,
+                    "avg_queue_wait_ms": 0,
+                    "max_queue_wait_ms": 0,
                     "recommendations": [{
                         "level": "info",
                         "message": "暂无数据"
@@ -3281,8 +4184,11 @@ class MetricsCollector:
                         "total_calls": int(summary_data.get("total_calls", 0) or 0),
                         "total_timeouts": int(summary_data.get("total_timeouts", 0) or 0),
                         "total_truncations": int(summary_data.get("total_truncations", 0) or 0),
+                        "total_cache_hits": int(summary_data.get("total_cache_hits", 0) or 0),
+                        "total_hedge_triggered": int(summary_data.get("total_hedge_triggered", 0) or 0),
                         "avg_response_time": float(summary_data.get("avg_response_time", 0) or 0),
                         "avg_prompt_length": float(summary_data.get("avg_prompt_length", 0) or 0),
+                        "avg_queue_wait_ms": float(summary_data.get("avg_queue_wait_ms", 0) or 0),
                     },
                     "calls": [],
                     "message": "暂无数据"
@@ -3293,6 +4199,8 @@ class MetricsCollector:
             successful_calls = sum(1 for c in calls if bool(c.get("success")))
             timeout_calls = sum(1 for c in calls if c.get("timeout", False))
             truncation_events = sum(len(c.get("truncated_docs", [])) for c in calls)
+            cache_hit_calls = sum(1 for c in calls if bool(c.get("cache_hit", False)))
+            hedge_triggered_calls = sum(1 for c in calls if bool(c.get("hedge_triggered", False)))
 
             response_times = [
                 float(c.get("response_time_ms", 0))
@@ -3303,6 +4211,11 @@ class MetricsCollector:
                 float(c.get("prompt_length", 0))
                 for c in calls
                 if isinstance(c.get("prompt_length", 0), (int, float))
+            ]
+            queue_wait_values = [
+                float(c.get("queue_wait_ms", 0))
+                for c in calls
+                if isinstance(c.get("queue_wait_ms", 0), (int, float))
             ]
 
             stats = {
@@ -3319,6 +4232,12 @@ class MetricsCollector:
                 "min_response_time_ms": round(min(response_times), 2) if response_times else 0,
                 "avg_prompt_length": round(sum(prompt_lengths) / len(prompt_lengths), 2) if prompt_lengths else 0,
                 "max_prompt_length": max(prompt_lengths) if prompt_lengths else 0,
+                "cache_hit_calls": cache_hit_calls,
+                "cache_hit_rate": round(cache_hit_calls / total_calls * 100, 2) if total_calls > 0 else 0,
+                "hedge_triggered_calls": hedge_triggered_calls,
+                "hedge_trigger_rate": round(hedge_triggered_calls / total_calls * 100, 2) if total_calls > 0 else 0,
+                "avg_queue_wait_ms": round(sum(queue_wait_values) / len(queue_wait_values), 2) if queue_wait_values else 0,
+                "max_queue_wait_ms": round(max(queue_wait_values), 2) if queue_wait_values else 0,
             }
 
             # 生成优化建议
@@ -3327,8 +4246,11 @@ class MetricsCollector:
                 "total_calls": int(summary_data.get("total_calls", 0) or 0),
                 "total_timeouts": int(summary_data.get("total_timeouts", 0) or 0),
                 "total_truncations": int(summary_data.get("total_truncations", 0) or 0),
+                "total_cache_hits": int(summary_data.get("total_cache_hits", 0) or 0),
+                "total_hedge_triggered": int(summary_data.get("total_hedge_triggered", 0) or 0),
                 "avg_response_time": float(summary_data.get("avg_response_time", 0) or 0),
                 "avg_prompt_length": float(summary_data.get("avg_prompt_length", 0) or 0),
+                "avg_queue_wait_ms": float(summary_data.get("avg_queue_wait_ms", 0) or 0),
             }
             stats["calls"] = calls
 
@@ -3349,6 +4271,12 @@ class MetricsCollector:
                 "min_response_time_ms": 0,
                 "avg_prompt_length": 0,
                 "max_prompt_length": 0,
+                "cache_hit_calls": 0,
+                "cache_hit_rate": 0,
+                "hedge_triggered_calls": 0,
+                "hedge_trigger_rate": 0,
+                "avg_queue_wait_ms": 0,
+                "max_queue_wait_ms": 0,
                 "recommendations": [{
                     "level": "warning",
                     "message": "指标文件异常，已返回空统计"
@@ -3394,6 +4322,11 @@ class MetricsCollector:
                 "level": "warning",
                 "message": f"平均响应时间较长 ({stats['avg_response_time_ms']/1000:.1f} 秒)，建议优化 Prompt 长度"
             })
+        if float(stats.get("avg_queue_wait_ms", 0) or 0) > 1200:
+            recommendations.append({
+                "level": "warning",
+                "message": f"调度排队时间偏高 ({stats['avg_queue_wait_ms']:.0f} ms)，建议提升高优先级并发资源"
+            })
 
         # 一切正常
         if not recommendations:
@@ -3409,10 +4342,27 @@ class MetricsCollector:
 # 初始化指标收集器
 metrics_collector = MetricsCollector(METRICS_DIR / "api_metrics.json")
 
+
+def _record_cache_hit_metric(call_type: str) -> None:
+    safe_call_type = str(call_type or "").strip() or "cache_hit"
+    try:
+        metrics_collector.record_api_call(
+            call_type=safe_call_type,
+            prompt_length=0,
+            response_time=0.0,
+            success=True,
+            cache_hit=True,
+        )
+    except Exception:
+        pass
+
+
 # AI 客户端初始化（支持问题/报告分网关）
 claude_client = None  # 历史兼容：默认指向可用的主客户端
 question_ai_client = None
 report_ai_client = None
+summary_ai_client = None
+search_decision_ai_client = None
 
 # 检查 API Key 是否有效
 def is_valid_api_key(api_key: str) -> bool:
@@ -3474,9 +4424,22 @@ def _init_lane_client(lane_name: str, api_key: str, base_url: str, test_model: s
         return None
 
 
+def _pick_reused_client(signature: tuple, lane_signatures: list[tuple]) -> tuple[Optional[object], str]:
+    for lane_name, lane_signature, lane_client in lane_signatures:
+        if signature == lane_signature and lane_client:
+            return lane_client, lane_name
+    return None, ""
+
+
 if ENABLE_AI and HAS_ANTHROPIC:
     question_signature = (QUESTION_API_KEY, QUESTION_BASE_URL, QUESTION_USE_BEARER_AUTH)
     report_signature = (REPORT_API_KEY, REPORT_BASE_URL, REPORT_USE_BEARER_AUTH)
+    summary_signature = (SUMMARY_API_KEY, SUMMARY_BASE_URL, SUMMARY_USE_BEARER_AUTH)
+    search_decision_signature = (
+        SEARCH_DECISION_API_KEY,
+        SEARCH_DECISION_BASE_URL,
+        SEARCH_DECISION_USE_BEARER_AUTH,
+    )
 
     question_ai_client = _init_lane_client(
         lane_name="问题",
@@ -3499,9 +4462,39 @@ if ENABLE_AI and HAS_ANTHROPIC:
             use_bearer_auth=REPORT_USE_BEARER_AUTH,
         )
 
-    claude_client = question_ai_client or report_ai_client
+    reusable_lanes = [
+        ("问题", question_signature, question_ai_client),
+        ("报告", report_signature, report_ai_client),
+    ]
+
+    summary_ai_client, summary_reuse_lane = _pick_reused_client(summary_signature, reusable_lanes)
+    if summary_ai_client and summary_reuse_lane:
+        print(f"ℹ️  摘要网关复用{summary_reuse_lane}网关客户端（相同 Key/Base URL）")
+    else:
+        summary_ai_client = _init_lane_client(
+            lane_name="摘要",
+            api_key=SUMMARY_API_KEY,
+            base_url=SUMMARY_BASE_URL,
+            test_model=SUMMARY_MODEL_NAME,
+            use_bearer_auth=SUMMARY_USE_BEARER_AUTH,
+        )
+
+    reusable_lanes.append(("摘要", summary_signature, summary_ai_client))
+    search_decision_ai_client, search_reuse_lane = _pick_reused_client(search_decision_signature, reusable_lanes)
+    if search_decision_ai_client and search_reuse_lane:
+        print(f"ℹ️  搜索决策网关复用{search_reuse_lane}网关客户端（相同 Key/Base URL）")
+    else:
+        search_decision_ai_client = _init_lane_client(
+            lane_name="搜索决策",
+            api_key=SEARCH_DECISION_API_KEY,
+            base_url=SEARCH_DECISION_BASE_URL,
+            test_model=SEARCH_DECISION_MODEL_NAME,
+            use_bearer_auth=SEARCH_DECISION_USE_BEARER_AUTH,
+        )
+
+    claude_client = question_ai_client or report_ai_client or summary_ai_client or search_decision_ai_client
     if not claude_client:
-        print("❌ AI 客户端初始化失败：问题/报告网关均不可用")
+        print("❌ AI 客户端初始化失败：所有网关均不可用")
 else:
     if not ENABLE_AI:
         print("ℹ️  AI 功能已禁用（ENABLE_AI=False）")
@@ -3514,15 +4507,23 @@ else:
 def resolve_ai_client(call_type: str = "", model_name: str = "", preferred_lane: str = ""):
     """按调用类型选择客户端；支持显式指定 lane，目标客户端不可用时回退到另一侧。"""
     forced_lane = str(preferred_lane or "").strip().lower()
+    if forced_lane == "search_decision":
+        return search_decision_ai_client or summary_ai_client or question_ai_client or report_ai_client
+    if forced_lane == "summary":
+        return summary_ai_client or report_ai_client or question_ai_client or search_decision_ai_client
     if forced_lane == "report":
         return report_ai_client or question_ai_client
     if forced_lane == "question":
         return question_ai_client or report_ai_client
 
     lane = resolve_call_lane(call_type=call_type, model_name=model_name)
+    if lane == "search_decision":
+        return search_decision_ai_client or summary_ai_client or question_ai_client or report_ai_client
+    if lane == "summary":
+        return summary_ai_client or report_ai_client or question_ai_client or search_decision_ai_client
     if lane == "report":
         return report_ai_client or question_ai_client
-    return question_ai_client or report_ai_client
+    return question_ai_client or report_ai_client or summary_ai_client or search_decision_ai_client
 
 
 def _content_block_field(block, field: str):
@@ -4162,103 +5163,111 @@ def web_search(query: str) -> list:
             print(f"⚠️  搜索功能未启用或 API Key 未配置，跳过搜索: {query}")
         return []
 
-    try:
-        # 设置搜索状态为活动
-        web_search_active = True
+    normalized_query = re.sub(r"\s+", " ", str(query or "").strip())
+    if not normalized_query:
+        return []
+    cache_key = _build_search_result_cache_key(normalized_query)
 
+    cached_results = _get_search_result_cache(cache_key)
+    if cached_results is not None:
+        if ENABLE_DEBUG_LOG:
+            print(f"📦 命中搜索结果缓存，跳过 MCP 调用: {normalized_query}")
+        _record_cache_hit_metric("web_search_cache_hit")
+        return cached_results
+
+    owner_event, is_owner = _begin_search_inflight(cache_key)
+    if not is_owner and isinstance(owner_event, threading.Event):
+        wait_seconds = float(SEARCH_RESULT_INFLIGHT_WAIT_SECONDS)
+        if ENABLE_DEBUG_LOG:
+            print(f"⏳ 搜索请求去重生效，等待同查询结果: {normalized_query}")
+        owner_event.wait(timeout=wait_seconds)
+        cached_after_wait = _get_search_result_cache(cache_key)
+        if cached_after_wait is not None:
+            if ENABLE_DEBUG_LOG:
+                print(f"✅ 复用并发搜索结果: {normalized_query}")
+            _record_cache_hit_metric("web_search_cache_hit")
+            return cached_after_wait
+
+    is_owner_search = bool(is_owner)
+    if not is_owner_search:
+        owner_event, is_owner_search = _begin_search_inflight(cache_key)
+
+    try:
+        web_search_active = True
         mcp_url = "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp"
 
         if ENABLE_DEBUG_LOG:
-            print(f"🔍 开始MCP搜索: {query}")
+            print(f"🔍 开始MCP搜索: {normalized_query}")
 
-        # 创建MCP客户端
         client = MCPClient(ZHIPU_API_KEY, mcp_url)
-
-        # 调用webSearchPrime工具（注意：工具名是驼峰命名）
         result = client.call_tool("webSearchPrime", {
-            "search_query": query,
+            "search_query": normalized_query,
             "search_recency_filter": "noLimit",
             "content_size": "medium"
         })
 
-        # 解析结果
         results = []
-
-        # MCP返回的content是一个列表
         content_list = result.get("content", [])
-
         for item in content_list:
-            if item.get("type") == "text":
-                # 文本内容
-                text = item.get("text", "")
+            if item.get("type") != "text":
+                continue
+            text = item.get("text", "")
+            try:
+                import json as json_module
+                if text.startswith('"') and text.endswith('"'):
+                    text = json_module.loads(text)
+                search_data = json_module.loads(text)
 
-                # 尝试解析JSON格式的搜索结果
-                try:
-                    import json as json_module
-
-                    # 第一次解析：去掉外层引号和转义
-                    if text.startswith('"') and text.endswith('"'):
-                        text = json_module.loads(text)
-
-                    # 第二次解析：获取实际的搜索结果数组
-                    search_data = json_module.loads(text)
-
-                    # 如果是列表形式的搜索结果
-                    if isinstance(search_data, list):
-                        for entry in search_data[:SEARCH_MAX_RESULTS]:
-                            title = entry.get("title", "")
-                            content = entry.get("content", "")
-                            url = entry.get("link", entry.get("url", ""))
-
-                            if title or content:  # 确保有实际内容
-                                results.append({
-                                    "type": "result",
-                                    "title": title[:100] if title else "搜索结果",
-                                    "content": content[:300],
-                                    "url": url
-                                })
-                    # 如果是单个结果
-                    elif isinstance(search_data, dict):
-                        title = search_data.get("title", "")
-                        content = search_data.get("content", text[:300])
-                        url = search_data.get("link", search_data.get("url", ""))
-
-                        results.append({
-                            "type": "result",
-                            "title": title[:100] if title else "搜索结果",
-                            "content": content[:300],
-                            "url": url
-                        })
-                except Exception as parse_error:
-                    if ENABLE_DEBUG_LOG:
-                        print(f"⚠️  解析搜索结果失败: {parse_error}")
-                        print(f"   原始文本前200字符: {text[:200]}")
-                    # 如果解析失败，直接作为文本结果
+                if isinstance(search_data, list):
+                    for entry in search_data[:SEARCH_MAX_RESULTS]:
+                        title = entry.get("title", "")
+                        content = entry.get("content", "")
+                        url = entry.get("link", entry.get("url", ""))
+                        if title or content:
+                            results.append({
+                                "type": "result",
+                                "title": title[:100] if title else "搜索结果",
+                                "content": content[:300],
+                                "url": url
+                            })
+                elif isinstance(search_data, dict):
+                    title = search_data.get("title", "")
+                    content = search_data.get("content", text[:300])
+                    url = search_data.get("link", search_data.get("url", ""))
                     results.append({
                         "type": "result",
-                        "title": "搜索结果",
-                        "content": text[:300],
-                        "url": ""
+                        "title": title[:100] if title else "搜索结果",
+                        "content": content[:300],
+                        "url": url
                     })
+            except Exception as parse_error:
+                if ENABLE_DEBUG_LOG:
+                    print(f"⚠️  解析搜索结果失败: {parse_error}")
+                    print(f"   原始文本前200字符: {text[:200]}")
+                results.append({
+                    "type": "result",
+                    "title": "搜索结果",
+                    "content": text[:300],
+                    "url": ""
+                })
 
         if ENABLE_DEBUG_LOG:
             print(f"✅ MCP搜索成功，找到 {len(results)} 条结果")
 
-        # 搜索完成，重置状态
-        web_search_active = False
+        _set_search_result_cache(cache_key, results)
         return results
-
     except requests.exceptions.Timeout:
-        print(f"⏱️  搜索超时: {query}")
-        web_search_active = False
+        print(f"⏱️  搜索超时: {normalized_query}")
         return []
     except Exception as e:
         print(f"❌ MCP搜索失败: {e}")
         if ENABLE_DEBUG_LOG:
             import traceback
             traceback.print_exc()
-        web_search_active = False
         return []
+    finally:
+        web_search_active = False
+        _end_search_inflight(cache_key, owner_event if is_owner_search else None)
 
 
 def should_search(topic: str, dimension: str, context: dict) -> bool:
@@ -4349,19 +5358,44 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
     if not ENABLE_WEB_SEARCH or not ai_client:
         return {"need_search": False, "reason": "搜索功能未启用", "search_query": ""}
 
-    search_dim_info = get_dimension_info_for_session(context) if context else DIMENSION_INFO
-    dim_info = search_dim_info.get(dimension, {})
-    dim_name = dim_info.get("name", dimension)
+    cache_key = _build_search_decision_cache_key(topic, dimension, recent_qa or [])
+    cached = _get_search_decision_cache(cache_key)
+    if isinstance(cached, dict):
+        if ENABLE_DEBUG_LOG:
+            print("📦 命中搜索决策缓存，跳过 AI 决策调用")
+        _record_cache_hit_metric("search_decision_cache_hit")
+        return cached
 
-    # 构建最近的问答上下文
-    recent_context = ""
-    if recent_qa:
-        recent_context = "\n".join([
-            f"Q: {qa.get('question', '')}\nA: {qa.get('answer', '')}"
-            for qa in recent_qa[-3:]  # 只取最近3条
-        ])
+    owner_event = None
+    owner_mode = False
+    if cache_key:
+        owner_event, owner_mode = _begin_search_decision_inflight(cache_key)
+        if not owner_mode and isinstance(owner_event, threading.Event):
+            wait_seconds = float(SEARCH_DECISION_INFLIGHT_WAIT_SECONDS)
+            if ENABLE_DEBUG_LOG:
+                print(f"⏳ 搜索决策去重生效，等待首个结果: dim={dimension}")
+            owner_event.wait(timeout=wait_seconds)
+            cached_after_wait = _get_search_decision_cache(cache_key)
+            if isinstance(cached_after_wait, dict):
+                if ENABLE_DEBUG_LOG:
+                    print("✅ 复用并发搜索决策结果")
+                _record_cache_hit_metric("search_decision_cache_hit")
+                return cached_after_wait
 
-    prompt = f"""你是一个智能搜索决策助手。请判断在当前访谈场景下，是否需要联网搜索来获取更准确、更专业的信息。
+    try:
+        search_dim_info = get_dimension_info_for_session(context) if context else DIMENSION_INFO
+        dim_info = search_dim_info.get(dimension, {})
+        dim_name = dim_info.get("name", dimension)
+
+        # 构建最近的问答上下文
+        recent_context = ""
+        if recent_qa:
+            recent_context = "\n".join([
+                f"Q: {qa.get('question', '')}\nA: {qa.get('answer', '')}"
+                for qa in recent_qa[-3:]  # 只取最近3条
+            ])
+
+        prompt = f"""你是一个智能搜索决策助手。请判断在当前访谈场景下，是否需要联网搜索来获取更准确、更专业的信息。
 
 ## 当前访谈信息
 - 访谈主题：{topic}
@@ -4386,7 +5420,6 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
     "search_query": "如果需要搜索，给出最佳搜索词（要精准、具体，15字以内）；不需要搜索则留空"
 }}"""
 
-    try:
         result = None
         attempts = [
             {
@@ -4407,12 +5440,13 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
                 if attempt["extra_instruction"]:
                     attempt_prompt = f"{prompt}\n\n【额外要求】{attempt['extra_instruction']}"
 
-                response = ai_client.messages.create(
-                    model=resolve_model_name(call_type="search_decision"),
-                    max_tokens=attempt["max_tokens"],
-                    timeout=attempt["timeout"],
-                    messages=[{"role": "user", "content": attempt_prompt}]
-                )
+                with ai_call_priority_slot("search_decision"):
+                    response = ai_client.messages.create(
+                        model=resolve_model_name(call_type="search_decision"),
+                        max_tokens=attempt["max_tokens"],
+                        timeout=attempt["timeout"],
+                        messages=[{"role": "user", "content": attempt_prompt}]
+                    )
 
                 result_text = extract_message_text(response)
                 if not result_text:
@@ -4437,17 +5471,22 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
         if isinstance(need_search, str):
             need_search = need_search.strip().lower() in ["true", "1", "yes", "y"]
 
-        return {
+        normalized_result = {
             "need_search": bool(need_search),
             "reason": str(result.get("reason", "") or ""),
             "search_query": str(result.get("search_query", "") or "")
         }
+        _set_search_decision_cache(cache_key, normalized_result)
+        return normalized_result
 
     except Exception as e:
         if ENABLE_DEBUG_LOG:
             print(f"⚠️  AI搜索决策失败: {e}")
         # 失败时返回不搜索，避免阻塞流程
         return {"need_search": False, "reason": f"决策失败: {e}", "search_query": ""}
+    finally:
+        if owner_mode:
+            _end_search_decision_inflight(cache_key, owner_event)
 
 
 def smart_search_decision(topic: str, dimension: str, context: dict, recent_qa: list = None) -> tuple:
@@ -4750,12 +5789,13 @@ def summarize_document(content: str, doc_name: str = "文档", topic: str = "") 
         import time
         start_time = time.time()
 
-        response = summary_client.messages.create(
-            model=resolve_model_name(call_type="summary"),
-            max_tokens=MAX_TOKENS_SUMMARY,
-            timeout=60.0,  # 摘要生成用较短超时
-            messages=[{"role": "user", "content": summary_prompt}]
-        )
+        with ai_call_priority_slot("doc_summary"):
+            response = summary_client.messages.create(
+                model=resolve_model_name(call_type="summary"),
+                max_tokens=MAX_TOKENS_SUMMARY,
+                timeout=60.0,  # 摘要生成用较短超时
+                messages=[{"role": "user", "content": summary_prompt}]
+            )
 
         response_time = time.time() - start_time
         summary = extract_message_text(response)
@@ -4842,13 +5882,14 @@ def process_document_for_context(doc: dict, remaining_length: int, topic: str = 
     return doc_name, truncated, len(truncated), True
 
 
-def generate_history_summary(session: dict, exclude_recent: int = 5) -> Optional[str]:
+def generate_history_summary(session: dict, exclude_recent: int = 5, allow_ai_generation: bool = True) -> Optional[str]:
     """
     生成历史访谈记录的摘要
 
     Args:
         session: 会话数据
         exclude_recent: 排除最近N条记录（这些会保留完整内容）
+        allow_ai_generation: 是否允许同步触发 AI 摘要生成
 
     Returns:
         摘要文本，如果无需摘要则返回 None
@@ -4874,6 +5915,12 @@ def generate_history_summary(session: dict, exclude_recent: int = 5) -> Optional
         if ENABLE_DEBUG_LOG:
             print(f"📋 使用缓存的历史摘要（覆盖 {cached_count} 条记录）")
         return cached_summary["text"]
+
+    # 问题主链路优先：若禁用同步 AI 摘要，则先走轻量本地摘要并异步补全缓存
+    if not allow_ai_generation:
+        if ENABLE_DEBUG_LOG:
+            print(f"📋 历史摘要缓存未命中，先使用轻量摘要（覆盖 {len(history_logs)} 条记录）")
+        return _generate_simple_summary(history_logs, session)
 
     # 需要生成新摘要
     if not resolve_ai_client(call_type="summary"):
@@ -5852,12 +6899,13 @@ def score_assessment_answer(session: dict, dimension: str, question: str, answer
 请严格按照评分标准打分，只返回一个数字（1-5之间的整数或小数，如 3.5），不要有任何其他文字："""
 
     try:
-        response = ai_client.messages.create(
-            model=resolve_model_name(call_type="assessment_score"),
-            max_tokens=96,  # MiniMax 在低 token 下容易只返回 thinking，适当提高稳定性
-            timeout=15.0,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        with ai_call_priority_slot("assessment_score"):
+            response = ai_client.messages.create(
+                model=resolve_model_name(call_type="assessment_score"),
+                max_tokens=96,  # MiniMax 在低 token 下容易只返回 thinking，适当提高稳定性
+                timeout=15.0,
+                messages=[{"role": "user", "content": prompt}]
+            )
         raw = extract_message_text(response)
         if not raw:
             raise ValueError("模型响应中未包含评分文本")
@@ -6042,7 +7090,8 @@ def _build_follow_up_reason(signals: list) -> str:
 
 
 def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
-                           session_id: str = None) -> tuple[str, list, dict]:
+                           session_id: str = None,
+                           session_signature: Optional[tuple[int, int]] = None) -> tuple[str, list, dict]:
     """构建访谈 prompt（使用滑动窗口 + 摘要压缩 + 智能追问）
 
     Args:
@@ -6050,6 +7099,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         dimension: 当前维度
         all_dim_logs: 当前维度的所有访谈记录
         session_id: 会话ID（可选，用于更新思考进度状态）
+        session_signature: 会话文件签名（可选，用于 prompt 构建缓存）
 
     Returns:
         tuple[str, list, dict]: (prompt字符串, 被截断的文档列表, 决策元数据)
@@ -6063,6 +7113,14 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     interview_log = session.get("interview_log", [])
     session_dim_info = get_dimension_info_for_session(session)
     dim_info = session_dim_info.get(dimension, {})
+    cache_session_id = str(session.get("session_id", "") or "").strip()
+    prompt_cache_key = _build_interview_prompt_cache_key(session_signature, dimension, cache_session_id)
+    if prompt_cache_key:
+        cached_prompt = _get_interview_prompt_cache(prompt_cache_key)
+        if isinstance(cached_prompt, tuple) and len(cached_prompt) == 3:
+            if ENABLE_DEBUG_LOG:
+                print(f"📦 命中访谈 Prompt 缓存: dim={dimension}")
+            return cached_prompt
 
     # 构建上下文
     context_parts = [f"当前访谈主题：{topic}"]
@@ -6137,8 +7195,20 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 
         # 判断是否需要使用摘要
         if len(interview_log) > CONTEXT_WINDOW_SIZE:
-            # 获取或生成历史摘要
-            history_summary = generate_history_summary(session, exclude_recent=CONTEXT_WINDOW_SIZE)
+            history_count = len(interview_log) - CONTEXT_WINDOW_SIZE
+            cached_summary = session.get("context_summary", {}) if isinstance(session.get("context_summary", {}), dict) else {}
+            cached_count = int(cached_summary.get("log_count", 0) or 0)
+            if cached_count < history_count:
+                target_session_id = str(session_id or session.get("session_id", "") or "").strip()
+                if target_session_id:
+                    schedule_context_summary_update_async(target_session_id)
+
+            # 问题生成主链路优先：仅使用缓存/轻量摘要，不在此处阻塞等待 AI 摘要。
+            history_summary = generate_history_summary(
+                session,
+                exclude_recent=CONTEXT_WINDOW_SIZE,
+                allow_ai_generation=False,
+            )
             if history_summary:
                 context_parts.append(f"\n### 历史访谈摘要（共{len(interview_log) - CONTEXT_WINDOW_SIZE}条）：")
                 context_parts.append(history_summary)
@@ -6367,6 +7437,14 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         "hard_triggered": hard_triggered,
         "missing_aspects": missing_aspects,
     }
+
+    if prompt_cache_key:
+        _set_interview_prompt_cache(
+            prompt_cache_key,
+            prompt,
+            truncated_docs,
+            decision_meta,
+        )
 
     return prompt, truncated_docs, decision_meta
 
@@ -8095,12 +9173,13 @@ async def call_claude_async(prompt: str, max_tokens: int = None,
             print(f"🤖 异步调用 Claude API，model={effective_model}，max_tokens={max_tokens}，timeout={API_TIMEOUT}s")
 
         # 使用配置的超时时间
-        message = client.messages.create(
-            model=effective_model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-            timeout=API_TIMEOUT
-        )
+        with ai_call_priority_slot(call_type):
+            message = client.messages.create(
+                model=effective_model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+                timeout=API_TIMEOUT
+            )
 
         response_text = extract_message_text(message)
         if not response_text:
@@ -8233,7 +9312,8 @@ def describe_image_with_vision(image_path: Path, filename: str) -> str:
 
 def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = True,
                 call_type: str = "unknown", truncated_docs: list = None,
-                timeout: float = None, model_name: str = "", preferred_lane: str = "") -> Optional[str]:
+                timeout: float = None, model_name: str = "", preferred_lane: str = "",
+                hedge_triggered: bool = False, cache_hit: bool = False) -> Optional[str]:
     """同步调用 Claude API，带超时控制和容错机制"""
     import time
 
@@ -8252,18 +9332,25 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
     timeout_occurred = False
     error_message = None
     response_text = None
+    queue_wait_ms = 0.0
 
     try:
         if ENABLE_DEBUG_LOG:
             print(f"🤖 调用 Claude API，model={effective_model}，max_tokens={max_tokens}，timeout={effective_timeout}s")
 
         # 使用配置的超时时间
-        message = effective_client.messages.create(
-            model=effective_model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-            timeout=effective_timeout
-        )
+        with ai_call_priority_slot(call_type) as priority_meta:
+            if isinstance(priority_meta, dict):
+                try:
+                    queue_wait_ms = max(0.0, float(priority_meta.get("queue_wait_ms", 0.0) or 0.0))
+                except Exception:
+                    queue_wait_ms = 0.0
+            message = effective_client.messages.create(
+                model=effective_model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+                timeout=effective_timeout
+            )
 
         response_text = extract_message_text(message)
         if not response_text:
@@ -8308,6 +9395,8 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
                     timeout=retry_timeout,
                     model_name=effective_model,
                     preferred_lane=preferred_lane,
+                    hedge_triggered=hedge_triggered,
+                    cache_hit=cache_hit,
                 )
 
                 if response_text:
@@ -8329,7 +9418,10 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
             timeout=timeout_occurred,
             error_msg=error_message if not success else None,
             truncated_docs=truncated_docs,
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
+            queue_wait_ms=queue_wait_ms,
+            hedge_triggered=hedge_triggered,
+            cache_hit=cache_hit,
         )
 
     return response_text
@@ -9441,6 +10533,7 @@ def create_session():
 
     session_file = SESSIONS_DIR / f"{session_id}.json"
     save_session_json_and_sync(session_file, session)
+    _set_first_question_prefetch_priority(session_id)
 
     # ========== 步骤6: 预生成首题 ==========
     try:
@@ -9521,6 +10614,7 @@ def delete_session(session_id):
 
     # ========== 步骤7: 清理缓存和状态 ==========
     invalidate_prefetch(session_id)
+    _clear_first_question_prefetch_priority(session_id)
     clear_thinking_status(session_id)
     clear_report_generation_status(session_id)
 
@@ -9581,6 +10675,7 @@ def batch_delete_sessions():
             session_file.unlink()
             remove_session_index_record(session_id=session_id, file_name=session_file_name)
             invalidate_prefetch(session_id)
+            _clear_first_question_prefetch_priority(session_id)
             clear_thinking_status(session_id)
             deleted_sessions.append(session_id)
         except Exception as exc:
@@ -9774,6 +10869,142 @@ def parse_question_response(response: str, debug: bool = False) -> Optional[dict
 
     return None
 
+
+def _call_question_with_optional_hedge(
+    prompt: str,
+    max_tokens: int,
+    call_type: str,
+    truncated_docs: Optional[list] = None,
+    timeout: Optional[float] = None,
+    retry_on_timeout: bool = False,
+    debug: bool = False,
+) -> tuple[Optional[str], str]:
+    """问题生成可选竞速：主通道先发，延迟触发备用通道，谁先返回可用结果用谁。"""
+    primary_lane = "question"
+    secondary_lane = QUESTION_HEDGED_SECONDARY_LANE
+
+    def _run_single(lane: str, lane_call_type: str, hedge_flag: bool = False) -> Optional[str]:
+        return call_claude(
+            prompt,
+            max_tokens=max_tokens,
+            retry_on_timeout=retry_on_timeout,
+            call_type=lane_call_type,
+            truncated_docs=truncated_docs,
+            timeout=timeout,
+            preferred_lane=lane,
+            hedge_triggered=hedge_flag,
+        )
+
+    if not QUESTION_HEDGED_ENABLED or secondary_lane == primary_lane:
+        return _run_single(primary_lane, call_type), primary_lane
+
+    primary_client = resolve_ai_client(call_type=call_type, preferred_lane=primary_lane)
+    secondary_client = resolve_ai_client(call_type=call_type, preferred_lane=secondary_lane)
+    if not primary_client:
+        return None, primary_lane
+    if not secondary_client:
+        return _run_single(primary_lane, call_type), primary_lane
+    if QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT and primary_client is secondary_client:
+        return _run_single(primary_lane, call_type), primary_lane
+
+    result_queue: queue.Queue = queue.Queue()
+
+    def _runner(lane: str, lane_call_type: str, hedge_flag: bool) -> None:
+        response_text = _run_single(lane, lane_call_type, hedge_flag=hedge_flag)
+        result_queue.put((lane, response_text))
+
+    primary_thread = threading.Thread(
+        target=_runner,
+        args=(primary_lane, call_type, False),
+        daemon=True,
+        name=f"question-hedge-{call_type}-primary",
+    )
+    primary_thread.start()
+
+    responses: list[tuple[str, Optional[str]]] = []
+    delay_deadline = _time.time() + float(QUESTION_HEDGED_DELAY_SECONDS)
+    while _time.time() < delay_deadline:
+        wait_timeout = max(0.01, min(0.15, delay_deadline - _time.time()))
+        try:
+            lane, response_text = result_queue.get(timeout=wait_timeout)
+            responses.append((lane, response_text))
+            if response_text:
+                return response_text, lane
+        except queue.Empty:
+            if not primary_thread.is_alive():
+                break
+
+    secondary_thread = None
+    if all(not text for _lane, text in responses):
+        if debug:
+            print(f"⚡ 触发问题生成竞速: {primary_lane} vs {secondary_lane}")
+        secondary_thread = threading.Thread(
+            target=_runner,
+            args=(secondary_lane, f"{call_type}_hedged_{secondary_lane}", True),
+            daemon=True,
+            name=f"question-hedge-{call_type}-secondary",
+        )
+        secondary_thread.start()
+
+    expected_count = 1 + (1 if secondary_thread else 0)
+    finish_deadline = _time.time() + max(2.0, float(timeout if timeout is not None else API_TIMEOUT) + 2.0)
+    while len(responses) < expected_count and _time.time() < finish_deadline:
+        wait_timeout = max(0.01, min(0.2, finish_deadline - _time.time()))
+        try:
+            lane, response_text = result_queue.get(timeout=wait_timeout)
+            responses.append((lane, response_text))
+            if response_text:
+                if debug and lane != primary_lane:
+                    print(f"🏁 竞速命中备用通道: {lane}")
+                return response_text, lane
+        except queue.Empty:
+            secondary_alive = bool(secondary_thread and secondary_thread.is_alive())
+            if not primary_thread.is_alive() and not secondary_alive:
+                break
+
+    return None, primary_lane
+
+
+def generate_question_with_tiered_strategy(
+    prompt: str,
+    truncated_docs: Optional[list] = None,
+    debug: bool = False,
+    base_call_type: str = "question",
+    allow_fast_path: bool = True,
+) -> tuple[Optional[str], Optional[dict], str]:
+    """问题生成双档策略：快档优先，解析失败或空响应时回退全量档。"""
+    if allow_fast_path and QUESTION_FAST_PATH_ENABLED:
+        fast_timeout = min(float(API_TIMEOUT), float(QUESTION_FAST_TIMEOUT))
+        fast_response, fast_lane = _call_question_with_optional_hedge(
+            prompt,
+            max_tokens=QUESTION_FAST_MAX_TOKENS,
+            call_type=f"{base_call_type}_fast",
+            truncated_docs=truncated_docs,
+            timeout=fast_timeout,
+            retry_on_timeout=False,
+            debug=debug,
+        )
+        if fast_response:
+            fast_result = parse_question_response(fast_response, debug=debug)
+            if fast_result:
+                return fast_response, fast_result, f"fast:{fast_lane}"
+            if debug:
+                print("⚠️ 快档响应解析失败，回退全量档重试")
+        elif debug:
+            print("⚠️ 快档未返回有效响应，回退全量档重试")
+
+    full_response, full_lane = _call_question_with_optional_hedge(
+        prompt,
+        max_tokens=MAX_TOKENS_QUESTION,
+        call_type=base_call_type,
+        truncated_docs=truncated_docs,
+        retry_on_timeout=True,
+        debug=debug,
+    )
+    full_result = parse_question_response(full_response, debug=debug) if full_response else None
+    return full_response, full_result, f"full:{full_lane}"
+
+
 @app.route('/api/sessions/<session_id>/next-question', methods=['POST'])
 def get_next_question(session_id):
     """获取下一个问题（AI 生成）"""
@@ -9790,12 +11021,23 @@ def get_next_question(session_id):
     data = request.get_json() or {}
     default_dim = get_dimension_order_for_session(session)[0] if get_dimension_order_for_session(session) else "customer_needs"
     dimension = data.get("dimension", default_dim)
+    session_signature = get_file_signature(session_file)
+    question_cache_key = _build_question_result_cache_key(session_id, dimension, session_signature)
+
+    cached_question_payload = _get_question_result_cache(question_cache_key)
+    if isinstance(cached_question_payload, dict):
+        if ENABLE_DEBUG_LOG:
+            print(f"📦 命中问题结果缓存: session={session_id}, dimension={dimension}")
+        _record_cache_hit_metric("question_result_cache_hit")
+        cached_question_payload["cached"] = True
+        return jsonify(cached_question_payload)
 
     # ========== 步骤5: 检查预生成缓存 ==========
     prefetched = get_prefetch_result(session_id, dimension)
     if prefetched:
         if ENABLE_DEBUG_LOG:
             print(f"🎯 预生成缓存命中: session={session_id}, dimension={dimension}")
+        _record_cache_hit_metric("question_prefetch_cache_hit")
 
         # 先检查维度是否已完成（即使有缓存也要检查）
         dim_data = session.get("dimensions", {}).get(dimension, {})
@@ -9866,6 +11108,7 @@ def get_next_question(session_id):
         }
 
         prefetched["prefetched"] = True
+        _set_question_result_cache(question_cache_key, prefetched)
         return jsonify(prefetched)
 
     # 检查是否有 Claude API
@@ -9954,7 +11197,13 @@ def get_next_question(session_id):
         # 阶段1: 分析回答
         update_thinking_status(session_id, "analyzing", has_search)
 
-        prompt, truncated_docs, decision_meta = build_interview_prompt(session, dimension, all_dim_logs, session_id=session_id)
+        prompt, truncated_docs, decision_meta = build_interview_prompt(
+            session,
+            dimension,
+            all_dim_logs,
+            session_id=session_id,
+            session_signature=session_signature,
+        )
 
         # 日志：记录 prompt 长度（便于监控和调优）
         if ENABLE_DEBUG_LOG:
@@ -9966,12 +11215,15 @@ def get_next_question(session_id):
         # 阶段3: 生成问题
         update_thinking_status(session_id, "generating", has_search)
 
-        response = call_claude(
+        response, result, tier_used = generate_question_with_tiered_strategy(
             prompt,
-            max_tokens=MAX_TOKENS_QUESTION,
-            call_type="question",
-            truncated_docs=truncated_docs
+            truncated_docs=truncated_docs,
+            debug=ENABLE_DEBUG_LOG,
+            base_call_type="question",
+            allow_fast_path=True,
         )
+        if ENABLE_DEBUG_LOG:
+            print(f"⚙️ 问题生成通道: {tier_used}")
 
         if not response:
             # 清除思考状态
@@ -9980,9 +11232,6 @@ def get_next_question(session_id):
                 "error": "AI 响应失败",
                 "detail": "未能从 AI 服务获取响应，请检查网络连接或稍后重试"
             }), 503
-
-        # 使用抽取的解析函数解析 JSON 响应
-        result = parse_question_response(response, debug=ENABLE_DEBUG_LOG)
 
         if result:
             result["dimension"] = dimension
@@ -9993,13 +11242,15 @@ def get_next_question(session_id):
             if last_log and last_log.get("question") == result.get("question"):
                 if ENABLE_DEBUG_LOG:
                     print("⚠️ 检测到重复问题，自动重试一次")
-                retry_response = call_claude(
+                retry_response, retry_result, retry_tier = generate_question_with_tiered_strategy(
                     prompt,
-                    max_tokens=MAX_TOKENS_QUESTION,
-                    call_type="question",
-                    truncated_docs=truncated_docs
+                    truncated_docs=truncated_docs,
+                    debug=ENABLE_DEBUG_LOG,
+                    base_call_type="question_retry",
+                    allow_fast_path=False,
                 )
-                retry_result = parse_question_response(retry_response, debug=ENABLE_DEBUG_LOG) if retry_response else None
+                if ENABLE_DEBUG_LOG:
+                    print(f"⚙️ 重复问题重试通道: {retry_tier}")
                 if retry_result and retry_result.get("question") != last_log.get("question"):
                     retry_result["dimension"] = dimension
                     retry_result["ai_generated"] = True
@@ -10041,6 +11292,7 @@ def get_next_question(session_id):
             clear_thinking_status(session_id)
             # ========== 步骤5: 触发预生成（如果需要）==========
             trigger_prefetch_if_needed(session, dimension)
+            _set_question_result_cache(question_cache_key, result)
             return jsonify(result)
 
         # 解析失败
@@ -10263,15 +11515,9 @@ def submit_answer(session_id):
     session["updated_at"] = get_utc_now()
     save_session_json_and_sync(session_file, session)
 
-    # 异步更新上下文摘要（超过阈值时触发）
-    # 注意：这里在后台线程中执行，不阻塞响应
-    import threading
-    def async_update_summary():
-        try:
-            update_context_summary(session_id)
-        except Exception as e:
-            print(f"⚠️ 异步更新摘要失败: {e}")
-    threading.Thread(target=async_update_summary, daemon=True).start()
+    # 异步更新上下文摘要（超过阈值且满足节流时触发）
+    if len(session.get("interview_log", [])) >= SUMMARY_THRESHOLD:
+        schedule_context_summary_update_async(session_id)
 
     return jsonify(session)
 
@@ -12873,16 +14119,7 @@ def get_metrics():
 def reset_metrics():
     """重置性能指标（清空历史数据）"""
     try:
-        metrics_collector.metrics_file.write_text(json.dumps({
-            "calls": [],
-            "summary": {
-                "total_calls": 0,
-                "total_timeouts": 0,
-                "total_truncations": 0,
-                "avg_response_time": 0,
-                "avg_prompt_length": 0
-            }
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        metrics_collector.reset()
         reset_list_metrics()
         with list_overload_stats_lock:
             for endpoint_key in list_overload_stats.keys():
@@ -12947,10 +14184,17 @@ if __name__ == '__main__':
     if claude_client:
         question_endpoint = QUESTION_BASE_URL or "(Anthropic 官方默认地址)"
         report_endpoint = REPORT_BASE_URL or "(Anthropic 官方默认地址)"
+        summary_endpoint = SUMMARY_BASE_URL or "(Anthropic 官方默认地址)"
+        search_decision_endpoint = SEARCH_DECISION_BASE_URL or "(Anthropic 官方默认地址)"
         print(f"问题模型: {QUESTION_MODEL_NAME}")
         print(f"问题网关: {'可用' if question_ai_client else '不可用'} @ {question_endpoint}")
         print(f"报告模型: {REPORT_MODEL_NAME}")
         print(f"报告网关: {'可用' if report_ai_client else '不可用'} @ {report_endpoint}")
+        print(f"摘要模型: {SUMMARY_MODEL_NAME}")
+        print(f"摘要网关: {'可用' if summary_ai_client else '不可用'} @ {summary_endpoint}")
+        print(f"搜索决策模型: {SEARCH_DECISION_MODEL_NAME}")
+        print(f"搜索决策网关: {'可用' if search_decision_ai_client else '不可用'} @ {search_decision_endpoint}")
+        print(f"搜索决策缓存: TTL={SEARCH_DECISION_CACHE_TTL_SECONDS}s, MAX={SEARCH_DECISION_CACHE_MAX_ENTRIES}")
 
     # 搜索功能状态
     search_enabled = ENABLE_WEB_SEARCH and ZHIPU_API_KEY and ZHIPU_API_KEY != "your-zhipu-api-key-here"

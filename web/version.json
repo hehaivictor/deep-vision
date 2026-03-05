@@ -1,7 +1,18 @@
 {
-  "version": "2.7.7",
+  "version": "2.8.0",
   "releaseDate": "2026-03-05",
   "changelog": [
+    {
+      "version": "2.8.0",
+      "date": "2026-03-05",
+      "type": "minor",
+      "title": "优化问题生成链路性能与稳定性",
+      "changes": [
+        "perf: 新增访谈Prompt签名缓存与首题预生成优先窗口",
+        "feat: 扩展调用指标维度并补充缓存命中埋点",
+        "docs: 同步配置示例中的新增性能参数说明"
+      ]
+    },
     {
       "version": "2.7.7",
       "date": "2026-03-05",
