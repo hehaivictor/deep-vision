@@ -670,8 +670,13 @@ class ComprehensiveApiTests(unittest.TestCase):
         )
         self.assertEqual(submit_resp.status_code, 200, submit_resp.get_data(as_text=True))
 
-        gen_resp = self.client.post(f"/api/sessions/{session_id}/generate-report", json={})
+        gen_resp = self.client.post(
+            f"/api/sessions/{session_id}/generate-report",
+            json={"report_profile": "quality"},
+        )
         self.assertEqual(gen_resp.status_code, 202, gen_resp.get_data(as_text=True))
+        first_payload = gen_resp.get_json() or {}
+        self.assertEqual(first_payload.get("report_profile"), "quality")
 
         status_payload = {}
         for _ in range(120):
@@ -682,6 +687,7 @@ class ComprehensiveApiTests(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertEqual(status_payload.get("state"), "completed", status_payload)
+        self.assertEqual(status_payload.get("report_profile"), "quality")
         report_name = status_payload.get("report_name")
         self.assertTrue(report_name)
 
@@ -753,6 +759,19 @@ class ComprehensiveApiTests(unittest.TestCase):
         finally:
             for _ in range(acquired):
                 self.server.release_report_generation_slot()
+
+    def test_generate_report_rejects_invalid_profile(self):
+        self._register()
+        created = self._create_session(topic="档位参数校验")
+        session_id = created["session_id"]
+
+        resp = self.client.post(
+            f"/api/sessions/{session_id}/generate-report",
+            json={"report_profile": "turbo"},
+        )
+        self.assertEqual(resp.status_code, 400, resp.get_data(as_text=True))
+        payload = resp.get_json() or {}
+        self.assertIn("report_profile", payload.get("error", ""))
 
     def test_strip_inline_evidence_markers_for_report_text(self):
         raw_text = "核心结论[证据:Q1,Q4]。流程观察（证据：Q10，Q12）。补充说明(证据:Q19)。附加结论（Q4，Q7，Q8，Q9）。"

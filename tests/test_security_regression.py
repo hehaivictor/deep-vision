@@ -304,6 +304,124 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual(self.server.REPORT_V3_DRAFT_RETRY_COUNT, 1)
         self.assertTrue(self.server.REPORT_V3_FAST_FAIL_ON_DRAFT_EMPTY)
         self.assertGreaterEqual(self.server.REPORT_V3_REVIEW_MAX_TOKENS, 2600)
+        self.assertTrue(self.server.REPORT_V3_DUAL_STAGE_ENABLED)
+
+    def test_resolve_report_v3_phase_lane_defaults_and_failover_behavior(self):
+        keys = [
+            "REPORT_V3_DUAL_STAGE_ENABLED",
+            "REPORT_V3_DRAFT_PRIMARY_LANE",
+            "REPORT_V3_REVIEW_PRIMARY_LANE",
+            "REPORT_V3_FAILOVER_FORCE_SINGLE_LANE",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+        try:
+            self.server.REPORT_V3_DUAL_STAGE_ENABLED = True
+            self.server.REPORT_V3_DRAFT_PRIMARY_LANE = "question"
+            self.server.REPORT_V3_REVIEW_PRIMARY_LANE = "report"
+            self.server.REPORT_V3_FAILOVER_FORCE_SINGLE_LANE = True
+
+            self.assertEqual(self.server.resolve_report_v3_phase_lane("draft", pipeline_lane="report"), "question")
+            self.assertEqual(self.server.resolve_report_v3_phase_lane("review", pipeline_lane="report"), "report")
+            self.assertEqual(self.server.resolve_report_v3_phase_lane("draft", pipeline_lane="question"), "question")
+            self.assertEqual(self.server.resolve_report_v3_phase_lane("review", pipeline_lane="question"), "question")
+
+            self.server.REPORT_V3_FAILOVER_FORCE_SINGLE_LANE = False
+            self.assertEqual(self.server.resolve_report_v3_phase_lane("review", pipeline_lane="question"), "report")
+        finally:
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+
+    def test_select_slimmed_facts_for_prompt_prioritizes_signal_and_dedup(self):
+        keys = [
+            "REPORT_V3_EVIDENCE_SLIM_ENABLED",
+            "REPORT_V3_EVIDENCE_DEDUP_ENABLED",
+            "REPORT_V3_EVIDENCE_DIM_QUOTA",
+            "REPORT_V3_EVIDENCE_MIN_QUALITY",
+            "REPORT_V3_EVIDENCE_KEEP_HARD_TRIGGERED",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+        try:
+            self.server.REPORT_V3_EVIDENCE_SLIM_ENABLED = True
+            self.server.REPORT_V3_EVIDENCE_DEDUP_ENABLED = True
+            self.server.REPORT_V3_EVIDENCE_DIM_QUOTA = 2
+            self.server.REPORT_V3_EVIDENCE_MIN_QUALITY = 0.45
+            self.server.REPORT_V3_EVIDENCE_KEEP_HARD_TRIGGERED = True
+
+            evidence_pack = {
+                "facts": [
+                    {"q_id": "Q1", "dimension": "customer_needs", "question": "预算多少", "answer": "100万", "quality_score": 0.92},
+                    {"q_id": "Q2", "dimension": "customer_needs", "question": "预算多少", "answer": "100万", "quality_score": 0.51},
+                    {"q_id": "Q3", "dimension": "business_flow", "question": "上线窗口", "answer": "暂不确定", "quality_score": 0.15, "hard_triggered": True},
+                    {"q_id": "Q4", "dimension": "tech_constraints", "question": "是否支持私有化", "answer": "必须支持", "quality_score": 0.31},
+                    {"q_id": "Q5", "dimension": "tech_constraints", "question": "并发规模", "answer": "不清楚", "quality_score": 0.1},
+                ],
+                "contradictions": [{"evidence_refs": ["Q4"]}],
+                "unknowns": [{"q_id": "Q3"}],
+            }
+
+            selected = self.server.select_slimmed_facts_for_prompt(evidence_pack, facts_limit=3)
+            selected_ids = [item.get("q_id") for item in selected]
+
+            self.assertLessEqual(len(selected), 3)
+            self.assertIn("Q3", selected_ids)  # hard trigger 强保留
+            self.assertIn("Q4", selected_ids)  # 冲突证据强保留
+            self.assertTrue(("Q1" in selected_ids) ^ ("Q2" in selected_ids))  # 去重后仅保留一条
+        finally:
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+
+    def test_metrics_stage_profiles_group_by_stage_lane_model(self):
+        self.server.metrics_collector.reset()
+
+        self.server.metrics_collector.record_api_call(
+            call_type="report_v3_draft",
+            prompt_length=1200,
+            response_time=1.0,
+            success=True,
+            timeout=False,
+            lane="question",
+            model="glm-5",
+            stage="draft_gen",
+        )
+        self.server.metrics_collector.record_api_call(
+            call_type="report_v3_draft_retry_2",
+            prompt_length=1100,
+            response_time=2.0,
+            success=False,
+            timeout=True,
+            error_msg="timeout",
+            lane="question",
+            model="glm-5",
+            stage="draft_gen",
+        )
+        self.server.record_pipeline_stage_metric(
+            stage="review_parse",
+            success=True,
+            elapsed_seconds=0.3,
+            lane="report",
+            model="gpt-5",
+            error_msg="",
+        )
+
+        stats = self.server.metrics_collector.get_statistics(last_n=20)
+        self.assertEqual(stats.get("total_calls"), 2)  # pipeline_stage 不应污染 API 总量
+        self.assertIn("stage_profiles", stats)
+        stage_profiles = stats.get("stage_profiles", {})
+        self.assertGreaterEqual(stage_profiles.get("sample_count", 0), 3)
+
+        groups = stage_profiles.get("groups", [])
+        target_group = None
+        for item in groups:
+            if (
+                item.get("stage") == "draft_gen"
+                and item.get("lane") == "question"
+                and item.get("model") == "glm-5"
+            ):
+                target_group = item
+                break
+        self.assertIsNotNone(target_group)
+        self.assertEqual(target_group.get("count"), 2)
+        self.assertIn("review_parse", stage_profiles.get("stages", {}))
 
     def test_gateway_circuit_breaker_opens_and_resets_after_success(self):
         keys = [

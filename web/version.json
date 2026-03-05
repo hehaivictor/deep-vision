@@ -1,7 +1,18 @@
 {
-  "version": "2.9.0",
+  "version": "2.10.0",
   "releaseDate": "2026-03-06",
   "changelog": [
+    {
+      "version": "2.10.0",
+      "date": "2026-03-06",
+      "type": "minor",
+      "title": "支持报告生成档位按请求切换 balanced/quality",
+      "changes": [
+        "perf: V3 流水线按档位动态应用 tokens/事实数/重试与审稿轮次",
+        "obs: 指标新增分阶段统计并按 stage/lane/model 输出 P50/P95",
+        "test: 补充档位参数校验与阶段统计回归用例"
+      ]
+    },
     {
       "version": "2.9.0",
       "date": "2026-03-06",

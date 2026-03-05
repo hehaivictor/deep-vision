@@ -64,6 +64,22 @@ function deepVision() {
         submitting: false,  // 提交答案进行中，防止并发操作
         generatingReport: false,
         generatingReportSessionId: '',
+        reportProfileStorageKey: 'deepvision_report_profile',
+        reportProfileLoadedFromStorage: false,
+        reportProfileDefault: 'balanced',
+        reportProfile: 'balanced',
+        reportProfileOptions: [
+            {
+                value: 'balanced',
+                title: '平衡档（稳定优先）',
+                description: '推荐默认：响应更快、成功率更高。'
+            },
+            {
+                value: 'quality',
+                title: '高质量慢档',
+                description: '质量优先：更充分审稿，耗时更长。'
+            }
+        ],
         reportGenerationState: 'idle',
         reportGenerationAction: 'generate',
         reportGenerationSessionId: '',
@@ -473,6 +489,7 @@ function deepVision() {
             this.visualPreset = this.resolveVisualPreset();
             this.applyDesignTokens('system', this.resolveEffectiveTheme('system'));
             this.initTheme();
+            this.loadReportProfilePreference();
             this.loadAuthAccountHistory();
             this.readAuthRedirectResult();
             this.registerDialogFocusWatchers();
@@ -504,6 +521,69 @@ function deepVision() {
                 this.setupVirtualList();
                 this.setupVirtualReportList();
             });
+        },
+
+        normalizeReportProfile(profile, fallback = 'balanced') {
+            const raw = String(profile || '').trim().toLowerCase();
+            if (raw === 'balanced' || raw === 'quality') return raw;
+            const fallbackValue = String(fallback || '').trim().toLowerCase();
+            if (!fallbackValue) return '';
+            if (fallbackValue === 'balanced' || fallbackValue === 'quality') return fallbackValue;
+            return 'balanced';
+        },
+
+        getReportProfileOptionMeta(profile) {
+            const normalized = this.normalizeReportProfile(profile, this.reportProfileDefault || 'balanced');
+            const meta = {
+                balanced: {
+                    value: 'balanced',
+                    title: '平衡档（稳定优先）',
+                    description: '推荐默认：响应更快、成功率更高。'
+                },
+                quality: {
+                    value: 'quality',
+                    title: '高质量慢档',
+                    description: '质量优先：更充分审稿，耗时更长。'
+                }
+            };
+            return meta[normalized] || meta.balanced;
+        },
+
+        applyReportProfileOptionsFromServer(options = []) {
+            const values = Array.isArray(options) ? options : [];
+            const normalizedValues = values
+                .map(item => this.normalizeReportProfile(item, ''))
+                .filter(item => item === 'balanced' || item === 'quality');
+            const dedupValues = Array.from(new Set(normalizedValues));
+            const finalValues = dedupValues.length > 0 ? dedupValues : ['balanced', 'quality'];
+            this.reportProfileOptions = finalValues.map(value => this.getReportProfileOptionMeta(value));
+        },
+
+        loadReportProfilePreference() {
+            this.reportProfileLoadedFromStorage = false;
+            try {
+                if (typeof window === 'undefined' || !window.localStorage) return;
+                const raw = window.localStorage.getItem(this.reportProfileStorageKey);
+                if (!raw) return;
+                const normalized = this.normalizeReportProfile(raw, '');
+                if (!normalized) return;
+                this.reportProfile = normalized;
+                this.reportProfileLoadedFromStorage = true;
+            } catch (error) {
+                // 本地存储不可用时保持默认值
+            }
+        },
+
+        saveReportProfilePreference() {
+            const normalized = this.normalizeReportProfile(this.reportProfile, this.reportProfileDefault || 'balanced');
+            this.reportProfile = normalized;
+            this.reportProfileLoadedFromStorage = true;
+            try {
+                if (typeof window === 'undefined' || !window.localStorage) return;
+                window.localStorage.setItem(this.reportProfileStorageKey, normalized);
+            } catch (error) {
+                // 忽略存储失败
+            }
         },
 
         async checkAuthStatus() {
@@ -1816,6 +1896,17 @@ function deepVision() {
                     }
                     if (Number.isFinite(Number(this.serverStatus.sms_cooldown_seconds))) {
                         this.smsCooldownSeconds = Math.max(1, Math.min(300, Number(this.serverStatus.sms_cooldown_seconds)));
+                    }
+                    const reportProfileDefault = this.normalizeReportProfile(
+                        this.serverStatus?.report_profile_default,
+                        this.reportProfileDefault || 'balanced'
+                    ) || 'balanced';
+                    this.reportProfileDefault = reportProfileDefault;
+                    this.applyReportProfileOptionsFromServer(this.serverStatus?.report_profile_options);
+                    if (!this.reportProfileLoadedFromStorage) {
+                        this.reportProfile = reportProfileDefault;
+                    } else {
+                        this.reportProfile = this.normalizeReportProfile(this.reportProfile, reportProfileDefault);
                     }
                     const depthConfig = this.serverStatus?.interview_depth_v2 || {};
                     this.interviewDepthV2 = {
@@ -3826,6 +3917,15 @@ function deepVision() {
             this.reportGenerationSessionId = nextSessionId;
             this.reportGenerationServerState = state;
             this.reportGenerationState = state === 'queued' ? 'submitting' : 'running';
+            if (typeof data.report_profile === 'string' && data.report_profile.trim()) {
+                const profileFromServer = this.normalizeReportProfile(
+                    data.report_profile,
+                    this.reportProfileDefault || 'balanced'
+                );
+                if (profileFromServer) {
+                    this.reportProfile = profileFromServer;
+                }
+            }
             this.reportGenerationRawProgress = Math.max(
                 this.reportGenerationRawProgress || 0,
                 normalizedProgress
@@ -4165,7 +4265,11 @@ function deepVision() {
                     return await this.apiCall(`/sessions/${sessionId}/generate-report`, {
                         method: 'POST',
                         body: JSON.stringify({
-                            action: action === 'regenerate' ? 'regenerate' : 'generate'
+                            action: action === 'regenerate' ? 'regenerate' : 'generate',
+                            report_profile: this.normalizeReportProfile(
+                                this.reportProfile,
+                                this.reportProfileDefault || 'balanced'
+                            ) || 'balanced'
                         })
                     });
                 } catch (error) {
@@ -4185,6 +4289,7 @@ function deepVision() {
             if (!this.currentSession || this.isGeneratingCurrentReport()) return;
             const sessionId = this.currentSession?.session_id || '';
             if (!sessionId) return;
+            this.saveReportProfilePreference();
 
             this.generatingReport = true;
             this.generatingReportSessionId = sessionId;

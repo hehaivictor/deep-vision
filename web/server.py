@@ -567,6 +567,21 @@ REPORT_V3_FAILOVER_ENABLED = _cfg_bool("REPORT_V3_FAILOVER_ENABLED", True)
 REPORT_V3_FAILOVER_LANE = _cfg_text("REPORT_V3_FAILOVER_LANE", "question").lower()
 if REPORT_V3_FAILOVER_LANE not in {"question", "report"}:
     REPORT_V3_FAILOVER_LANE = "question"
+REPORT_V3_DUAL_STAGE_ENABLED = _cfg_bool("REPORT_V3_DUAL_STAGE_ENABLED", True)
+REPORT_V3_DRAFT_PRIMARY_LANE = _cfg_text("REPORT_V3_DRAFT_PRIMARY_LANE", "question").strip().lower()
+if REPORT_V3_DRAFT_PRIMARY_LANE not in {"question", "report"}:
+    REPORT_V3_DRAFT_PRIMARY_LANE = "question"
+REPORT_V3_REVIEW_PRIMARY_LANE = _cfg_text("REPORT_V3_REVIEW_PRIMARY_LANE", "report").strip().lower()
+if REPORT_V3_REVIEW_PRIMARY_LANE not in {"question", "report"}:
+    REPORT_V3_REVIEW_PRIMARY_LANE = "report"
+REPORT_V3_FAILOVER_FORCE_SINGLE_LANE = _cfg_bool("REPORT_V3_FAILOVER_FORCE_SINGLE_LANE", True)
+REPORT_V3_EVIDENCE_SLIM_ENABLED = _cfg_bool("REPORT_V3_EVIDENCE_SLIM_ENABLED", True)
+REPORT_V3_EVIDENCE_DIM_QUOTA = _cfg_int("REPORT_V3_EVIDENCE_DIM_QUOTA", 6)
+REPORT_V3_EVIDENCE_DIM_QUOTA = max(1, min(REPORT_V3_EVIDENCE_DIM_QUOTA, 20))
+REPORT_V3_EVIDENCE_DEDUP_ENABLED = _cfg_bool("REPORT_V3_EVIDENCE_DEDUP_ENABLED", True)
+REPORT_V3_EVIDENCE_MIN_QUALITY = _cfg_float("REPORT_V3_EVIDENCE_MIN_QUALITY", 0.2)
+REPORT_V3_EVIDENCE_MIN_QUALITY = max(0.0, min(REPORT_V3_EVIDENCE_MIN_QUALITY, 0.9))
+REPORT_V3_EVIDENCE_KEEP_HARD_TRIGGERED = _cfg_bool("REPORT_V3_EVIDENCE_KEEP_HARD_TRIGGERED", True)
 GATEWAY_CIRCUIT_BREAKER_ENABLED = _cfg_bool("GATEWAY_CIRCUIT_BREAKER_ENABLED", True)
 GATEWAY_CIRCUIT_FAIL_THRESHOLD = _cfg_int("GATEWAY_CIRCUIT_FAIL_THRESHOLD", 2)
 GATEWAY_CIRCUIT_FAIL_THRESHOLD = max(1, min(GATEWAY_CIRCUIT_FAIL_THRESHOLD, 8))
@@ -574,6 +589,71 @@ GATEWAY_CIRCUIT_COOLDOWN_SECONDS = _cfg_float("GATEWAY_CIRCUIT_COOLDOWN_SECONDS"
 GATEWAY_CIRCUIT_COOLDOWN_SECONDS = max(30.0, min(GATEWAY_CIRCUIT_COOLDOWN_SECONDS, 900.0))
 GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = _cfg_float("GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS", 180.0)
 GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = max(30.0, min(GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS, 1200.0))
+
+
+def normalize_report_profile_choice(raw_profile: str, fallback: str = "") -> str:
+    profile = str(raw_profile or "").strip().lower()
+    if profile in {"balanced", "quality"}:
+        return profile
+    fallback_profile = str(fallback or "").strip().lower()
+    if fallback_profile in {"balanced", "quality"}:
+        return fallback_profile
+    return REPORT_V3_PROFILE
+
+
+def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
+    profile = normalize_report_profile_choice(profile_choice, fallback=REPORT_V3_PROFILE)
+
+    draft_timeout_default = min(REPORT_API_TIMEOUT, 140.0 if profile == "balanced" else 180.0)
+    draft_timeout = _cfg_float("REPORT_DRAFT_API_TIMEOUT", draft_timeout_default)
+    draft_timeout = max(30.0, min(draft_timeout, REPORT_API_TIMEOUT))
+
+    draft_tokens_default = 4200 if profile == "balanced" else 5500
+    draft_max_tokens = _cfg_int("REPORT_V3_DRAFT_MAX_TOKENS", draft_tokens_default)
+    draft_max_tokens = max(2500, draft_max_tokens)
+
+    facts_limit_default = 34 if profile == "balanced" else 48
+    draft_facts_limit = _cfg_int("REPORT_V3_DRAFT_FACTS_LIMIT", facts_limit_default)
+    draft_facts_limit = max(20, draft_facts_limit)
+
+    min_facts_limit_default = 18 if profile == "balanced" else 24
+    draft_min_facts_limit = _cfg_int("REPORT_V3_DRAFT_MIN_FACTS_LIMIT", min_facts_limit_default)
+    draft_min_facts_limit = max(10, min(draft_min_facts_limit, draft_facts_limit))
+
+    retry_count_default = 1 if profile == "balanced" else 2
+    draft_retry_count = _cfg_int("REPORT_V3_DRAFT_RETRY_COUNT", retry_count_default)
+    draft_retry_count = max(0, draft_retry_count)
+
+    backoff_default = 0.8 if profile == "balanced" else 1.5
+    draft_retry_backoff_seconds = _cfg_float("REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS", backoff_default)
+    draft_retry_backoff_seconds = max(0.0, draft_retry_backoff_seconds)
+
+    fast_fail_on_draft_empty = _cfg_bool("REPORT_V3_FAST_FAIL_ON_DRAFT_EMPTY", profile == "balanced")
+
+    review_tokens_default = 5200 if profile == "balanced" else 6000
+    review_max_tokens = _cfg_int("REPORT_V3_REVIEW_MAX_TOKENS", review_tokens_default)
+    review_max_tokens = max(2600, review_max_tokens)
+
+    review_rounds_default = 2 if profile == "balanced" else 3
+    review_base_rounds = _cfg_int("REPORT_V3_REVIEW_BASE_ROUNDS", review_rounds_default)
+    review_base_rounds = max(1, min(review_base_rounds, 4))
+
+    quality_fix_rounds = _cfg_int("REPORT_V3_QUALITY_FIX_ROUNDS", 1)
+    quality_fix_rounds = max(0, min(quality_fix_rounds, 2))
+
+    return {
+        "profile": profile,
+        "draft_timeout": float(draft_timeout),
+        "draft_max_tokens": int(draft_max_tokens),
+        "draft_facts_limit": int(draft_facts_limit),
+        "draft_min_facts_limit": int(draft_min_facts_limit),
+        "draft_retry_count": int(draft_retry_count),
+        "draft_retry_backoff_seconds": float(draft_retry_backoff_seconds),
+        "fast_fail_on_draft_empty": bool(fast_fail_on_draft_empty),
+        "review_max_tokens": int(review_max_tokens),
+        "review_base_rounds": int(review_base_rounds),
+        "quality_fix_rounds": int(quality_fix_rounds),
+    }
 
 # 手机验证码登录配置
 SMS_PROVIDER = _cfg_text("SMS_PROVIDER", "mock").lower()
@@ -722,6 +802,28 @@ def resolve_call_lane(call_type: str = "", model_name: str = "") -> str:
         return "report"
 
     return "question"
+
+
+def resolve_report_v3_phase_lane(phase: str, pipeline_lane: str = "") -> str:
+    """为 V3 不同阶段选择 lane；支持草案与审稿分离。"""
+    normalized_phase = str(phase or "").strip().lower()
+    if normalized_phase not in {"draft", "review"}:
+        normalized_phase = "draft"
+
+    normalized_pipeline_lane = str(pipeline_lane or "").strip().lower()
+    if normalized_pipeline_lane not in {"question", "report"}:
+        normalized_pipeline_lane = "report"
+
+    if not REPORT_V3_DUAL_STAGE_ENABLED:
+        return normalized_pipeline_lane
+
+    # 备用网关重试时优先单 lane，避免跨网关抖动导致不稳定。
+    if REPORT_V3_FAILOVER_FORCE_SINGLE_LANE and normalized_pipeline_lane != "report":
+        return normalized_pipeline_lane
+
+    if normalized_phase == "review":
+        return REPORT_V3_REVIEW_PRIMARY_LANE
+    return REPORT_V3_DRAFT_PRIMARY_LANE
 
 
 app = Flask(__name__, static_folder='.')
@@ -1713,6 +1815,79 @@ def _compute_percentile(values: list[float], percentile: float) -> float:
     idx = int((len(ordered) - 1) * percentile)
     idx = max(0, min(len(ordered) - 1, idx))
     return float(ordered[idx])
+
+
+def _build_stage_latency_profiles(calls: list[dict]) -> dict:
+    """按 stage/lane/model 统计时延分位与成功率。"""
+    if not isinstance(calls, list):
+        return {"sample_count": 0, "groups": [], "stages": {}}
+
+    grouped = {}
+    stage_grouped = {}
+    sample_count = 0
+
+    for item in calls:
+        if not isinstance(item, dict):
+            continue
+        stage = str(item.get("stage", "") or "").strip().lower()
+        if not stage:
+            continue
+
+        latency_ms = _safe_float(item.get("response_time_ms", 0.0), 0.0)
+        latency_ms = max(0.0, latency_ms)
+        lane = str(item.get("lane", "") or "").strip().lower() or "unknown"
+        model = str(item.get("model", "") or "").strip() or "unknown"
+        success = bool(item.get("success", False))
+
+        sample_count += 1
+        key = (stage, lane, model)
+        group = grouped.setdefault(key, {"latencies": [], "count": 0, "success": 0})
+        group["latencies"].append(latency_ms)
+        group["count"] += 1
+        if success:
+            group["success"] += 1
+
+        stage_group = stage_grouped.setdefault(stage, {"latencies": [], "count": 0, "success": 0})
+        stage_group["latencies"].append(latency_ms)
+        stage_group["count"] += 1
+        if success:
+            stage_group["success"] += 1
+
+    groups = []
+    for (stage, lane, model), bucket in grouped.items():
+        latencies = bucket["latencies"]
+        count = int(bucket["count"])
+        success = int(bucket["success"])
+        groups.append({
+            "stage": stage,
+            "lane": lane,
+            "model": model,
+            "count": count,
+            "success_rate": round(success / count * 100, 2) if count > 0 else 0.0,
+            "p50_ms": round(_compute_percentile(latencies, 0.50), 2),
+            "p95_ms": round(_compute_percentile(latencies, 0.95), 2),
+            "max_ms": round(max(latencies), 2) if latencies else 0.0,
+        })
+
+    groups.sort(key=lambda item: (item.get("stage", ""), item.get("lane", ""), item.get("model", "")))
+
+    stage_summary = {}
+    for stage, bucket in stage_grouped.items():
+        latencies = bucket["latencies"]
+        count = int(bucket["count"])
+        success = int(bucket["success"])
+        stage_summary[stage] = {
+            "count": count,
+            "success_rate": round(success / count * 100, 2) if count > 0 else 0.0,
+            "p50_ms": round(_compute_percentile(latencies, 0.50), 2),
+            "p95_ms": round(_compute_percentile(latencies, 0.95), 2),
+        }
+
+    return {
+        "sample_count": sample_count,
+        "groups": groups,
+        "stages": stage_summary,
+    }
 
 
 def get_list_metrics_snapshot() -> dict:
@@ -3562,6 +3737,7 @@ def build_report_generation_payload(record: Optional[dict]) -> dict:
         "report_path": record.get("report_path", ""),
         "ai_generated": record.get("ai_generated"),
         "v3_enabled": record.get("v3_enabled"),
+        "report_profile": normalize_report_profile_choice(record.get("report_profile", ""), fallback=REPORT_V3_PROFILE),
         "error": record.get("error", ""),
         "queue_position": _safe_int(record.get("queue_position", 0), 0),
         "queue_pending": _safe_int(record.get("queue_pending", 0), 0),
@@ -4039,6 +4215,9 @@ class MetricsCollector:
             if not isinstance(record, dict):
                 continue
             calls.append(record)
+            event_kind = str(record.get("event_kind", "api_call") or "api_call").strip().lower()
+            if event_kind != "api_call":
+                continue
             total_calls += 1
             if bool(record.get("timeout", False)):
                 total_timeouts += 1
@@ -4051,19 +4230,24 @@ class MetricsCollector:
         if len(calls) > 1000:
             calls = calls[-1000:]
 
+        api_calls = [
+            item for item in calls
+            if isinstance(item, dict) and str(item.get("event_kind", "api_call") or "api_call").strip().lower() == "api_call"
+        ]
+
         avg_response_time = 0.0
         avg_prompt_length = 0.0
         avg_queue_wait_ms = 0.0
-        if calls:
+        if api_calls:
             avg_response_time = round(
-                sum(float(c.get("response_time_ms", 0) or 0) for c in calls) / len(calls), 2
+                sum(float(c.get("response_time_ms", 0) or 0) for c in api_calls) / len(api_calls), 2
             )
             avg_prompt_length = round(
-                sum(float(c.get("prompt_length", 0) or 0) for c in calls) / len(calls), 2
+                sum(float(c.get("prompt_length", 0) or 0) for c in api_calls) / len(api_calls), 2
             )
             queue_wait_values = [
                 float(c.get("queue_wait_ms", 0) or 0)
-                for c in calls
+                for c in api_calls
                 if isinstance(c.get("queue_wait_ms", 0), (int, float))
             ]
             if queue_wait_values:
@@ -4161,16 +4345,22 @@ class MetricsCollector:
                        success: bool, timeout: bool = False, error_msg: str = None,
                        truncated_docs: list = None, max_tokens: int = None,
                        queue_wait_ms: float = 0.0, hedge_triggered: bool = False,
-                       cache_hit: bool = False):
+                       cache_hit: bool = False, lane: str = "", model: str = "",
+                       stage: str = "", event_kind: str = "api_call"):
         """记录 API 调用指标"""
         try:
             try:
                 normalized_queue_wait_ms = max(0.0, float(queue_wait_ms or 0.0))
             except Exception:
                 normalized_queue_wait_ms = 0.0
+            normalized_lane = str(lane or "").strip().lower()
+            normalized_model = str(model or "").strip()
+            normalized_stage = str(stage or "").strip().lower()
+            normalized_event_kind = str(event_kind or "api_call").strip().lower() or "api_call"
             call_record = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "type": call_type,  # "question" or "report"
+                "event_kind": normalized_event_kind,
                 "prompt_length": prompt_length,
                 "response_time_ms": round(response_time * 1000, 2),
                 "max_tokens": max_tokens,
@@ -4181,6 +4371,9 @@ class MetricsCollector:
                 "queue_wait_ms": round(normalized_queue_wait_ms, 2),
                 "hedge_triggered": bool(hedge_triggered),
                 "cache_hit": bool(cache_hit),
+                "lane": normalized_lane,
+                "model": normalized_model,
+                "stage": normalized_stage,
             }
 
             with self._pending_lock:
@@ -4222,7 +4415,17 @@ class MetricsCollector:
             if last_n:
                 calls = calls[-last_n:]
 
-            if not calls:
+            api_calls = [
+                c for c in calls
+                if str(c.get("event_kind", "api_call") or "api_call").strip().lower() == "api_call"
+            ]
+            stage_samples = [
+                c for c in calls
+                if str(c.get("stage", "") or "").strip()
+            ]
+            stage_profiles = _build_stage_latency_profiles(stage_samples)
+
+            if not api_calls:
                 return {
                     "period": f"最近 {last_n} 次调用" if last_n else "全部调用",
                     "total_calls": 0,
@@ -4257,31 +4460,32 @@ class MetricsCollector:
                         "avg_prompt_length": float(summary_data.get("avg_prompt_length", 0) or 0),
                         "avg_queue_wait_ms": float(summary_data.get("avg_queue_wait_ms", 0) or 0),
                     },
+                    "stage_profiles": stage_profiles,
                     "calls": [],
                     "message": "暂无数据"
                 }
 
             # 计算统计信息
-            total_calls = len(calls)
-            successful_calls = sum(1 for c in calls if bool(c.get("success")))
-            timeout_calls = sum(1 for c in calls if c.get("timeout", False))
-            truncation_events = sum(len(c.get("truncated_docs", [])) for c in calls)
-            cache_hit_calls = sum(1 for c in calls if bool(c.get("cache_hit", False)))
-            hedge_triggered_calls = sum(1 for c in calls if bool(c.get("hedge_triggered", False)))
+            total_calls = len(api_calls)
+            successful_calls = sum(1 for c in api_calls if bool(c.get("success")))
+            timeout_calls = sum(1 for c in api_calls if c.get("timeout", False))
+            truncation_events = sum(len(c.get("truncated_docs", [])) for c in api_calls)
+            cache_hit_calls = sum(1 for c in api_calls if bool(c.get("cache_hit", False)))
+            hedge_triggered_calls = sum(1 for c in api_calls if bool(c.get("hedge_triggered", False)))
 
             response_times = [
                 float(c.get("response_time_ms", 0))
-                for c in calls
+                for c in api_calls
                 if bool(c.get("success")) and isinstance(c.get("response_time_ms", 0), (int, float))
             ]
             prompt_lengths = [
                 float(c.get("prompt_length", 0))
-                for c in calls
+                for c in api_calls
                 if isinstance(c.get("prompt_length", 0), (int, float))
             ]
             queue_wait_values = [
                 float(c.get("queue_wait_ms", 0))
-                for c in calls
+                for c in api_calls
                 if isinstance(c.get("queue_wait_ms", 0), (int, float))
             ]
 
@@ -4319,7 +4523,8 @@ class MetricsCollector:
                 "avg_prompt_length": float(summary_data.get("avg_prompt_length", 0) or 0),
                 "avg_queue_wait_ms": float(summary_data.get("avg_queue_wait_ms", 0) or 0),
             }
-            stats["calls"] = calls
+            stats["stage_profiles"] = stage_profiles
+            stats["calls"] = api_calls
 
             return stats
 
@@ -4419,6 +4624,56 @@ def _record_cache_hit_metric(call_type: str) -> None:
             response_time=0.0,
             success=True,
             cache_hit=True,
+        )
+    except Exception:
+        pass
+
+
+def resolve_generation_stage(call_type: str = "") -> str:
+    lowered = str(call_type or "").strip().lower()
+    if not lowered:
+        return ""
+    if "report_v3_draft" in lowered:
+        return "draft_gen"
+    if "report_v3_review_round" in lowered:
+        return "review_gen"
+    return ""
+
+
+def record_pipeline_stage_metric(
+    stage: str,
+    success: bool,
+    elapsed_seconds: float,
+    lane: str = "",
+    model: str = "",
+    error_msg: str = "",
+) -> None:
+    normalized_stage = str(stage or "").strip().lower()
+    if not normalized_stage:
+        return
+
+    safe_elapsed_seconds = max(0.0, float(elapsed_seconds or 0.0))
+    safe_lane = str(lane or "").strip().lower()
+    safe_model = str(model or "").strip()
+    safe_error = summarize_error_for_log(error_msg, limit=160) if error_msg else None
+
+    try:
+        metrics_collector.record_api_call(
+            call_type=f"report_v3_stage_{normalized_stage}",
+            prompt_length=0,
+            response_time=safe_elapsed_seconds,
+            success=bool(success),
+            timeout=False,
+            error_msg=safe_error if not success else None,
+            truncated_docs=[],
+            max_tokens=0,
+            queue_wait_ms=0.0,
+            hedge_triggered=False,
+            cache_hit=False,
+            lane=safe_lane,
+            model=safe_model,
+            stage=normalized_stage,
+            event_kind="pipeline_stage",
         )
     except Exception:
         pass
@@ -8607,6 +8862,142 @@ def summarize_evidence_pack_for_debug(evidence_pack: dict) -> dict:
     }
 
 
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _fact_sort_key_for_prompt(fact: dict) -> int:
+    q_id = str(fact.get("q_id", "")).upper().strip()
+    if re.fullmatch(r"Q\d+", q_id):
+        try:
+            return int(q_id[1:])
+        except Exception:
+            pass
+    return 10 ** 9
+
+
+def _fact_signature_for_prompt(fact: dict) -> str:
+    dimension = str(fact.get("dimension", "")).strip().lower()
+    question = re.sub(r"\s+", " ", str(fact.get("question", "")).strip().lower())
+    answer = re.sub(r"\s+", " ", str(fact.get("answer", "")).strip().lower())
+    question = question[:80]
+    answer = answer[:120]
+    return f"{dimension}|{question}|{answer}"
+
+
+def select_slimmed_facts_for_prompt(evidence_pack: dict, facts_limit: int) -> list[dict]:
+    """按质量和信息密度选择证据，减少冗余输入。"""
+    raw_facts = evidence_pack.get("facts", [])
+    if not isinstance(raw_facts, list):
+        return []
+
+    normalized_limit = max(1, int(facts_limit or 1))
+    normalized_facts = [item for item in raw_facts if isinstance(item, dict)]
+    if not normalized_facts:
+        return []
+
+    if not REPORT_V3_EVIDENCE_SLIM_ENABLED:
+        return normalized_facts[:normalized_limit]
+
+    contradiction_refs = set()
+    for item in evidence_pack.get("contradictions", []):
+        if not isinstance(item, dict):
+            continue
+        contradiction_refs.update(_normalize_evidence_refs(item.get("evidence_refs", [])))
+
+    unknown_refs = set()
+    for item in evidence_pack.get("unknowns", []):
+        if not isinstance(item, dict):
+            continue
+        q_id = str(item.get("q_id", "")).upper().strip()
+        if re.fullmatch(r"Q\d+", q_id):
+            unknown_refs.add(q_id)
+
+    score_items = []
+    for idx, fact in enumerate(normalized_facts):
+        quality = max(0.0, min(1.0, _safe_float(fact.get("quality_score", 0.0), 0.0)))
+        q_id = str(fact.get("q_id", "")).upper().strip()
+        is_contradiction_ref = q_id in contradiction_refs
+        is_unknown_ref = q_id in unknown_refs
+        is_hard_triggered = bool(fact.get("hard_triggered", False))
+        is_follow_up = bool(fact.get("is_follow_up", False))
+
+        score = quality * 100.0
+        if is_hard_triggered:
+            score += 24.0
+        if is_contradiction_ref:
+            score += 22.0
+        if is_unknown_ref:
+            score += 12.0
+        if is_follow_up:
+            score += 8.0
+
+        score_items.append({
+            "idx": idx,
+            "fact": fact,
+            "q_id": q_id,
+            "score": score,
+            "quality": quality,
+            "is_mandatory": is_contradiction_ref or (REPORT_V3_EVIDENCE_KEEP_HARD_TRIGGERED and is_hard_triggered),
+            "signature": _fact_signature_for_prompt(fact),
+            "dimension": str(fact.get("dimension", "") or "__unknown__").strip().lower() or "__unknown__",
+        })
+
+    score_items.sort(key=lambda item: (-item["score"], item["idx"]))
+
+    selected = []
+    selected_signatures = set()
+    dimension_counter = {}
+    dim_quota = max(1, int(REPORT_V3_EVIDENCE_DIM_QUOTA))
+
+    def try_take(item: dict, bypass_quota: bool = False, bypass_quality: bool = False) -> bool:
+        if len(selected) >= normalized_limit:
+            return False
+        if REPORT_V3_EVIDENCE_DEDUP_ENABLED and item["signature"] in selected_signatures:
+            return False
+        if not bypass_quality and not item.get("is_mandatory", False):
+            if float(item.get("quality", 0.0) or 0.0) < REPORT_V3_EVIDENCE_MIN_QUALITY:
+                return False
+
+        dim_key = item.get("dimension", "__unknown__")
+        if not bypass_quota:
+            if int(dimension_counter.get(dim_key, 0) or 0) >= dim_quota:
+                return False
+
+        selected.append(item)
+        selected_signatures.add(item["signature"])
+        dimension_counter[dim_key] = int(dimension_counter.get(dim_key, 0) or 0) + 1
+        return True
+
+    # 第一轮：保留强信号事实（冲突/硬触发）
+    for item in score_items:
+        if not item.get("is_mandatory", False):
+            continue
+        if len(selected) >= normalized_limit:
+            break
+        try_take(item, bypass_quota=True, bypass_quality=True)
+
+    # 第二轮：按分数补齐，兼顾维度配额与最小质量。
+    for item in score_items:
+        if len(selected) >= normalized_limit:
+            break
+        try_take(item, bypass_quota=False, bypass_quality=False)
+
+    # 第三轮：若仍不足，放宽配额与质量门槛兜底补齐。
+    if len(selected) < normalized_limit:
+        for item in score_items:
+            if len(selected) >= normalized_limit:
+                break
+            try_take(item, bypass_quota=True, bypass_quality=True)
+
+    selected_facts = [item["fact"] for item in selected]
+    selected_facts.sort(key=_fact_sort_key_for_prompt)
+    return selected_facts
+
+
 def build_report_draft_prompt_v3(
     session: dict,
     evidence_pack: dict,
@@ -8635,8 +9026,9 @@ def build_report_draft_prompt_v3(
     unknown_limit = max(5, int(unknown_limit or 5))
     blindspot_limit = max(5, int(blindspot_limit or 5))
 
+    selected_facts = select_slimmed_facts_for_prompt(evidence_pack, facts_limit=facts_limit)
     facts_lines = []
-    for fact in evidence_pack.get("facts", [])[:facts_limit]:
+    for fact in selected_facts:
         question_text = (fact.get("question", "") or "").replace("\n", " ").strip()[:90]
         answer_text = (fact.get("answer", "") or "").replace("\n", " ").strip()[:150]
         facts_lines.append(
@@ -8644,6 +9036,7 @@ def build_report_draft_prompt_v3(
             f"Q: {question_text} | A: {answer_text} | quality={fact.get('quality_score', 0):.2f}"
         )
     facts_text = "\n".join(facts_lines) if facts_lines else "- 无有效问答证据"
+    facts_source_count = len(evidence_pack.get("facts", [])) if isinstance(evidence_pack.get("facts", []), list) else 0
 
     contradictions = evidence_pack.get("contradictions", [])
     contradiction_lines = [
@@ -8744,6 +9137,7 @@ def build_report_draft_prompt_v3(
 {dimension_text}
 
 ## 关键证据（按问答编号）
+（原始 {facts_source_count} 条，已筛选 {len(selected_facts)} 条高价值证据）
 {facts_text}
 
 ## 冲突信号
@@ -9607,26 +10001,34 @@ def generate_report_v3_pipeline(
     session_id: Optional[str] = None,
     preferred_lane: str = "",
     call_type_suffix: str = "",
+    report_profile: str = "",
     ) -> Optional[dict]:
     """执行 V3 报告生成流水线。失败时返回包含 reason 的调试结构。"""
     try:
+        runtime_cfg = get_report_v3_runtime_config(report_profile)
+        runtime_profile = runtime_cfg["profile"]
         pipeline_lane = str(preferred_lane or "report").strip().lower() or "report"
-        report_draft_max_tokens = min(MAX_TOKENS_REPORT, REPORT_V3_DRAFT_MAX_TOKENS)
-        report_review_max_tokens = min(MAX_TOKENS_REPORT, REPORT_V3_REVIEW_MAX_TOKENS)
+        draft_phase_lane = resolve_report_v3_phase_lane("draft", pipeline_lane=pipeline_lane)
+        review_phase_lane = resolve_report_v3_phase_lane("review", pipeline_lane=pipeline_lane)
+        phase_lanes = {"draft": draft_phase_lane, "review": review_phase_lane}
+        draft_phase_model = resolve_model_name_for_lane(call_type="report_v3_draft", selected_lane=draft_phase_lane)
+        review_phase_model = resolve_model_name_for_lane(call_type="report_v3_review_round_1", selected_lane=review_phase_lane)
+        report_draft_max_tokens = min(MAX_TOKENS_REPORT, runtime_cfg["draft_max_tokens"])
+        report_review_max_tokens = min(MAX_TOKENS_REPORT, runtime_cfg["review_max_tokens"])
 
         evidence_pack = build_report_evidence_pack(session)
 
         if session_id:
             update_report_generation_status(session_id, "building_prompt", message="正在构建证据包并生成结构化草案...")
 
-        draft_attempt_total = REPORT_V3_DRAFT_RETRY_COUNT + 1
+        draft_attempt_total = runtime_cfg["draft_retry_count"] + 1
         draft_parsed = None
         last_draft_reason = "draft_generation_failed"
         last_draft_raw = ""
         last_draft_call_type = "report_v3_draft"
-        last_facts_limit = REPORT_V3_DRAFT_FACTS_LIMIT
+        last_facts_limit = runtime_cfg["draft_facts_limit"]
         last_draft_tokens = report_draft_max_tokens
-        last_draft_timeout = float(REPORT_DRAFT_API_TIMEOUT)
+        last_draft_timeout = float(runtime_cfg["draft_timeout"])
         last_draft_prompt_length = 0
         last_draft_parse_meta = {}
 
@@ -9634,8 +10036,8 @@ def generate_report_v3_pipeline(
             round_no = attempt_index + 1
             is_first_attempt = attempt_index == 0
             current_facts_limit = max(
-                REPORT_V3_DRAFT_MIN_FACTS_LIMIT,
-                REPORT_V3_DRAFT_FACTS_LIMIT - (attempt_index * 12),
+                runtime_cfg["draft_min_facts_limit"],
+                runtime_cfg["draft_facts_limit"] - (attempt_index * 12),
             )
             current_contradiction_limit = max(8, 20 - (attempt_index * 5))
             current_unknown_limit = max(8, 20 - (attempt_index * 5))
@@ -9662,16 +10064,16 @@ def generate_report_v3_pipeline(
             current_prompt_length = len(draft_prompt)
             current_max_tokens = compute_adaptive_report_tokens(current_max_tokens, current_prompt_length, floor_tokens=2200)
             current_timeout = compute_adaptive_report_timeout(
-                REPORT_DRAFT_API_TIMEOUT,
+                runtime_cfg["draft_timeout"],
                 current_prompt_length,
-                timeout_cap=max(REPORT_API_TIMEOUT, REPORT_DRAFT_API_TIMEOUT + 45),
+                timeout_cap=max(REPORT_API_TIMEOUT, runtime_cfg["draft_timeout"] + 45),
             )
             draft_raw = call_claude(
                 draft_prompt,
                 max_tokens=current_max_tokens,
                 call_type=current_call_type,
                 timeout=current_timeout,
-                preferred_lane=preferred_lane,
+                preferred_lane=draft_phase_lane,
             )
 
             last_draft_call_type = current_call_type
@@ -9683,25 +10085,35 @@ def generate_report_v3_pipeline(
 
             if not draft_raw:
                 last_draft_reason = "draft_generation_failed"
-                if REPORT_V3_FAST_FAIL_ON_DRAFT_EMPTY and attempt_index == 0 and draft_attempt_total > 1:
+                if runtime_cfg["fast_fail_on_draft_empty"] and attempt_index == 0 and draft_attempt_total > 1:
                     if ENABLE_DEBUG_LOG:
                         print("⚠️ 草案首轮空响应，触发快速失败以尽快切换 failover 通道")
                     break
             else:
                 draft_parse_meta = {}
+                draft_parse_start = _time.perf_counter()
                 draft_parsed = parse_structured_json_response(
                     draft_raw,
                     required_keys=["overview", "needs", "analysis"],
                     require_all_keys=True,
                     parse_meta=draft_parse_meta,
                 )
+                draft_parse_elapsed = _time.perf_counter() - draft_parse_start
                 last_draft_parse_meta = draft_parse_meta
+                record_pipeline_stage_metric(
+                    stage="draft_parse",
+                    success=bool(draft_parsed),
+                    elapsed_seconds=draft_parse_elapsed,
+                    lane=draft_phase_lane,
+                    model=draft_phase_model,
+                    error_msg=str(draft_parse_meta.get("last_error", "") or ""),
+                )
                 if draft_parsed:
                     break
                 last_draft_reason = "draft_parse_failed"
 
-            if attempt_index < (draft_attempt_total - 1) and REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS > 0:
-                _time.sleep(min(5.0, REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS * round_no))
+            if attempt_index < (draft_attempt_total - 1) and runtime_cfg["draft_retry_backoff_seconds"] > 0:
+                _time.sleep(min(5.0, runtime_cfg["draft_retry_backoff_seconds"] * round_no))
 
         if not draft_parsed:
             return {
@@ -9709,6 +10121,7 @@ def generate_report_v3_pipeline(
                 "reason": last_draft_reason,
                 "error": (
                     f"draft_attempts_exhausted({draft_attempt_total}),"
+                    f"profile={runtime_profile},"
                     f"last_call_type={last_draft_call_type},"
                     f"facts_limit={last_facts_limit},"
                     f"max_tokens={last_draft_tokens},"
@@ -9717,7 +10130,9 @@ def generate_report_v3_pipeline(
                     f"raw_length={len(last_draft_raw)}"
                 ),
                 "parse_stage": "draft",
+                "profile": runtime_profile,
                 "lane": pipeline_lane,
+                "phase_lanes": phase_lanes,
                 "raw_excerpt": last_draft_raw[:360],
                 "repair_applied": bool(last_draft_parse_meta.get("repair_applied", False)),
                 "parse_meta": {
@@ -9733,8 +10148,8 @@ def generate_report_v3_pipeline(
 
         current_draft, local_issues = validate_report_draft_v3(draft_parsed, evidence_pack)
         review_issues = list(local_issues)
-        base_review_rounds = REPORT_V3_REVIEW_BASE_ROUNDS
-        quality_fix_rounds = REPORT_V3_QUALITY_FIX_ROUNDS
+        base_review_rounds = runtime_cfg["review_base_rounds"]
+        quality_fix_rounds = runtime_cfg["quality_fix_rounds"]
         total_round_budget = base_review_rounds + quality_fix_rounds
         remaining_quality_fix_rounds = quality_fix_rounds
         final_issues = list(local_issues)
@@ -9757,20 +10172,21 @@ def generate_report_v3_pipeline(
             review_timeout = compute_adaptive_report_timeout(
                 REPORT_API_TIMEOUT,
                 review_prompt_length,
-                timeout_cap=max(REPORT_API_TIMEOUT, REPORT_DRAFT_API_TIMEOUT + 60),
+                timeout_cap=max(REPORT_API_TIMEOUT, runtime_cfg["draft_timeout"] + 60),
             )
             review_raw = call_claude(
                 review_prompt,
                 max_tokens=review_max_tokens,
                 call_type=f"report_v3_review_round_{review_round + 1}{call_type_suffix}",
                 timeout=review_timeout,
-                preferred_lane=preferred_lane,
+                preferred_lane=review_phase_lane,
             )
             if not review_raw:
                 return {
                     "status": "failed",
                     "reason": "review_generation_failed",
                     "error": (
+                        f"profile={runtime_profile},"
                         f"review_round={review_round + 1},"
                         f"max_tokens={review_max_tokens},"
                         f"timeout={review_timeout},"
@@ -9778,7 +10194,9 @@ def generate_report_v3_pipeline(
                         "raw_length=0"
                     ),
                     "parse_stage": f"review_round_{review_round + 1}",
+                    "profile": runtime_profile,
                     "lane": pipeline_lane,
+                    "phase_lanes": phase_lanes,
                     "raw_excerpt": "",
                     "repair_applied": False,
                     "evidence_pack": evidence_pack,
@@ -9786,12 +10204,23 @@ def generate_report_v3_pipeline(
                 }
 
             review_parse_meta = {}
+            review_parse_start = _time.perf_counter()
             review_parsed = parse_report_review_response_v3(review_raw, parse_meta=review_parse_meta)
+            review_parse_elapsed = _time.perf_counter() - review_parse_start
+            record_pipeline_stage_metric(
+                stage="review_parse",
+                success=bool(review_parsed),
+                elapsed_seconds=review_parse_elapsed,
+                lane=review_phase_lane,
+                model=review_phase_model,
+                error_msg=str(review_parse_meta.get("last_error", "") or ""),
+            )
             if not review_parsed:
                 return {
                     "status": "failed",
                     "reason": "review_parse_failed",
                     "error": (
+                        f"profile={runtime_profile},"
                         f"review_round={review_round + 1},"
                         f"max_tokens={review_max_tokens},"
                         f"timeout={review_timeout},"
@@ -9799,7 +10228,9 @@ def generate_report_v3_pipeline(
                         f"raw_length={len(review_raw or '')}"
                     ),
                     "parse_stage": f"review_round_{review_round + 1}",
+                    "profile": runtime_profile,
                     "lane": pipeline_lane,
+                    "phase_lanes": phase_lanes,
                     "raw_excerpt": str(review_raw or "")[:360],
                     "repair_applied": bool(review_parse_meta.get("repair_applied", False)),
                     "parse_meta": {
@@ -9829,23 +10260,43 @@ def generate_report_v3_pipeline(
 
             passed = bool(review_parsed.get("passed", False)) and len(merged_issues) == 0
             if passed:
+                quality_gate_start = _time.perf_counter()
                 quality_meta = compute_report_quality_meta_v3(current_draft, evidence_pack, final_issues)
                 quality_gate_issues = build_quality_gate_issues_v3(quality_meta)
+                quality_gate_elapsed = _time.perf_counter() - quality_gate_start
                 if quality_gate_issues:
                     final_issues = quality_gate_issues
+                    record_pipeline_stage_metric(
+                        stage="quality_gate",
+                        success=False,
+                        elapsed_seconds=quality_gate_elapsed,
+                        lane=review_phase_lane,
+                        model=review_phase_model,
+                        error_msg=f"quality_issue_count={len(quality_gate_issues)}",
+                    )
                     if remaining_quality_fix_rounds <= 0:
                         break
                     remaining_quality_fix_rounds -= 1
                     review_issues = quality_gate_issues
                     continue
+                record_pipeline_stage_metric(
+                    stage="quality_gate",
+                    success=True,
+                    elapsed_seconds=quality_gate_elapsed,
+                    lane=review_phase_lane,
+                    model=review_phase_model,
+                    error_msg="",
+                )
 
                 report_content = render_report_from_draft_v3(session, current_draft, quality_meta)
                 return {
                     "status": "success",
+                    "profile": runtime_profile,
                     "report_content": report_content,
                     "quality_meta": quality_meta,
                     "evidence_pack": evidence_pack,
                     "review_issues": final_issues,
+                    "phase_lanes": phase_lanes,
                 }
 
             review_issues = merged_issues
@@ -9853,9 +10304,11 @@ def generate_report_v3_pipeline(
         return {
             "status": "failed",
             "reason": "review_not_passed_or_quality_gate_failed",
-            "error": f"final_issue_count={len(final_issues)}",
+            "error": f"profile={runtime_profile},final_issue_count={len(final_issues)}",
             "parse_stage": "quality_gate",
+            "profile": runtime_profile,
             "lane": pipeline_lane,
+            "phase_lanes": phase_lanes,
             "raw_excerpt": "",
             "repair_applied": False,
             "evidence_pack": evidence_pack,
@@ -9869,7 +10322,12 @@ def generate_report_v3_pipeline(
             "reason": "exception",
             "error": summarize_error_for_log(e, limit=200),
             "parse_stage": "exception",
+            "profile": normalize_report_profile_choice(report_profile, fallback=REPORT_V3_PROFILE),
             "lane": str(preferred_lane or "report").strip().lower() or "report",
+            "phase_lanes": {
+                "draft": resolve_report_v3_phase_lane("draft", pipeline_lane=str(preferred_lane or "report").strip().lower() or "report"),
+                "review": resolve_report_v3_phase_lane("review", pipeline_lane=str(preferred_lane or "report").strip().lower() or "report"),
+            },
             "raw_excerpt": "",
             "repair_applied": False,
             "evidence_pack": {},
@@ -10061,6 +10519,7 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
         model_name=model_name,
         selected_lane=selected_lane,
     )
+    generation_stage = resolve_generation_stage(call_type=call_type)
 
     start_time = time.time()
     success = False
@@ -10184,6 +10643,9 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
             queue_wait_ms=queue_wait_ms,
             hedge_triggered=hedge_triggered,
             cache_hit=cache_hit,
+            lane=selected_lane,
+            model=effective_model,
+            stage=generation_stage,
         )
 
     return response_text
@@ -12805,9 +13267,11 @@ def can_use_v3_failover_lane() -> bool:
     return target_client is not primary_client
 
 
-def run_report_generation_job(session_id: str, user_id: int, request_id: str) -> None:
+def run_report_generation_job(session_id: str, user_id: int, request_id: str, report_profile: str = "") -> None:
     """后台生成报告任务。"""
     try:
+        selected_report_profile = normalize_report_profile_choice(report_profile, fallback=REPORT_V3_PROFILE)
+        set_report_generation_metadata(session_id, {"report_profile": selected_report_profile})
         loaded = load_session_for_user(session_id, user_id, include_missing=True)
         session_file, session, state = loaded
         if state != "ok" or session_file is None or session is None:
@@ -12849,9 +13313,11 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
             if isinstance(result, dict):
                 return {
                     "reason": result.get("reason", "v3_pipeline_returned_empty"),
+                    "profile": result.get("profile", selected_report_profile),
                     "error": result.get("error", ""),
                     "parse_stage": result.get("parse_stage", ""),
                     "lane": result.get("lane", ""),
+                    "phase_lanes": result.get("phase_lanes", {}) if isinstance(result.get("phase_lanes", {}), dict) else {},
                     "raw_excerpt": str(result.get("raw_excerpt", "") or "")[:360],
                     "repair_applied": bool(result.get("repair_applied", False)),
                     "parse_meta": result.get("parse_meta", {}) if isinstance(result.get("parse_meta", {}), dict) else {},
@@ -12860,9 +13326,11 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
                 }
             return {
                 "reason": "v3_pipeline_returned_empty",
+                "profile": selected_report_profile,
                 "error": "",
                 "parse_stage": "",
                 "lane": "",
+                "phase_lanes": {},
                 "raw_excerpt": "",
                 "repair_applied": False,
                 "parse_meta": {},
@@ -12873,7 +13341,12 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
         # 检查是否有 Claude API
         if resolve_ai_client(call_type="report"):
             update_report_generation_status(session_id, "building_prompt", message="正在执行 V3 证据包构建与结构化草案...")
-            v3_result = generate_report_v3_pipeline(session, session_id=session_id, preferred_lane="report")
+            v3_result = generate_report_v3_pipeline(
+                session,
+                session_id=session_id,
+                preferred_lane="report",
+                report_profile=selected_report_profile,
+            )
 
             if v3_result and v3_result.get("report_content"):
                 report_content = v3_result["report_content"] + generate_interview_appendix(session)
@@ -12883,6 +13356,8 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
                     "generated_at": get_utc_now(),
                     "status": "success",
                     "reason": "v3_pipeline_passed",
+                    "profile": v3_result.get("profile", selected_report_profile),
+                    "phase_lanes": v3_result.get("phase_lanes", {}) if isinstance(v3_result.get("phase_lanes", {}), dict) else {},
                     "quality_meta": quality_meta,
                     "review_issues": (v3_result.get("review_issues", []) if isinstance(v3_result.get("review_issues", []), list) else [])[:60],
                     "evidence_pack_summary": summarize_evidence_pack_for_debug(v3_result.get("evidence_pack", {})),
@@ -12923,6 +13398,7 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
                     session_id=session_id,
                     preferred_lane=REPORT_V3_FAILOVER_LANE,
                     call_type_suffix=failover_suffix,
+                    report_profile=selected_report_profile,
                 )
                 if failover_result and failover_result.get("report_content"):
                     failover_success = True
@@ -12933,14 +13409,18 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
                         "generated_at": get_utc_now(),
                         "status": "success",
                         "reason": "v3_pipeline_passed_after_failover",
+                        "profile": failover_result.get("profile", selected_report_profile),
                         "failover_lane": REPORT_V3_FAILOVER_LANE,
                         "primary_failure_reason": primary_failure.get("reason", ""),
+                        "primary_profile": primary_failure.get("profile", selected_report_profile),
                         "primary_failure_error": primary_failure.get("error", ""),
                         "primary_parse_stage": primary_failure.get("parse_stage", ""),
                         "primary_lane": primary_failure.get("lane", ""),
+                        "primary_phase_lanes": primary_failure.get("phase_lanes", {}),
                         "primary_repair_applied": primary_failure.get("repair_applied", False),
                         "primary_parse_meta": primary_failure.get("parse_meta", {}),
                         "primary_raw_excerpt": primary_failure.get("raw_excerpt", ""),
+                        "phase_lanes": failover_result.get("phase_lanes", {}) if isinstance(failover_result.get("phase_lanes", {}), dict) else {},
                         "quality_meta": quality_meta,
                         "review_issues": (failover_result.get("review_issues", []) if isinstance(failover_result.get("review_issues", []), list) else [])[:60],
                         "evidence_pack_summary": summarize_evidence_pack_for_debug(failover_result.get("evidence_pack", {})),
@@ -12967,9 +13447,11 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
                 "generated_at": get_utc_now(),
                 "status": "failed",
                 "reason": primary_failure.get("reason", "v3_pipeline_returned_empty"),
+                "profile": primary_failure.get("profile", selected_report_profile),
                 "error": primary_failure.get("error", ""),
                 "parse_stage": primary_failure.get("parse_stage", ""),
                 "lane": primary_failure.get("lane", ""),
+                "phase_lanes": primary_failure.get("phase_lanes", {}),
                 "repair_applied": primary_failure.get("repair_applied", False),
                 "parse_meta": primary_failure.get("parse_meta", {}),
                 "raw_excerpt": primary_failure.get("raw_excerpt", ""),
@@ -12979,9 +13461,11 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
                 "failover_lane": REPORT_V3_FAILOVER_LANE if failover_attempted else "",
                 "failover_success": failover_success,
                 "failover_reason": failover_failure.get("reason", "") if failover_failure else "",
+                "failover_profile": failover_failure.get("profile", selected_report_profile) if failover_failure else "",
                 "failover_error": failover_failure.get("error", "") if failover_failure else "",
                 "failover_parse_stage": failover_failure.get("parse_stage", "") if failover_failure else "",
                 "failover_lane_effective": failover_failure.get("lane", "") if failover_failure else "",
+                "failover_phase_lanes": failover_failure.get("phase_lanes", {}) if failover_failure else {},
                 "failover_repair_applied": failover_failure.get("repair_applied", False) if failover_failure else False,
                 "failover_parse_meta": failover_failure.get("parse_meta", {}) if failover_failure else {},
                 "failover_raw_excerpt": failover_failure.get("raw_excerpt", "") if failover_failure else "",
@@ -13107,6 +13591,10 @@ def generate_report(session_id):
 
     data = request.get_json(silent=True) or {}
     action = "regenerate" if data.get("action") == "regenerate" else "generate"
+    raw_report_profile = str(data.get("report_profile", "") or "").strip().lower()
+    if raw_report_profile and raw_report_profile not in {"balanced", "quality"}:
+        return jsonify({"error": "report_profile 仅支持 balanced 或 quality"}), 400
+    report_profile = normalize_report_profile_choice(raw_report_profile, fallback=REPORT_V3_PROFILE)
 
     current_record = get_report_generation_record(session_id) or {}
     worker_alive = is_report_generation_worker_alive(session_id)
@@ -13123,6 +13611,7 @@ def generate_report(session_id):
             "success": True,
             "already_running": True,
             "action": current_record.get("action", action),
+            "report_profile": normalize_report_profile_choice(current_record.get("report_profile", ""), fallback=report_profile),
             "queue": {
                 "running": int(queue_snapshot.get("running", 0) or 0),
                 "pending": int(queue_snapshot.get("pending", 0) or 0),
@@ -13159,6 +13648,7 @@ def generate_report(session_id):
         "report_path": "",
         "ai_generated": None,
         "v3_enabled": None,
+        "report_profile": report_profile,
         "report_quality_meta": {},
         "error": "",
         "queue_position": 0,
@@ -13168,7 +13658,13 @@ def generate_report(session_id):
     update_report_generation_status(session_id, "queued")
 
     try:
-        worker = report_generation_executor.submit(run_report_generation_job, session_id, user_id, request_id)
+        worker = report_generation_executor.submit(
+            run_report_generation_job,
+            session_id,
+            user_id,
+            request_id,
+            report_profile,
+        )
     except Exception as exc:
         release_report_generation_slot()
         error_detail = str(exc)[:200] or "未知错误"
@@ -13190,6 +13686,7 @@ def generate_report(session_id):
         "success": True,
         "already_running": False,
         "action": action,
+        "report_profile": report_profile,
         "queue": {
             "running": int(queue_snapshot.get("running", 0) or 0),
             "pending": int(queue_snapshot.get("pending", 0) or 0),
@@ -14898,6 +15395,8 @@ def get_status():
             "sms_provider": SMS_PROVIDER,
             "sms_code_length": SMS_CODE_LENGTH,
             "sms_cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
+            "report_profile_default": REPORT_V3_PROFILE,
+            "report_profile_options": ["balanced", "quality"],
         })
 
     question_available = resolve_ai_client(call_type="question") is not None
@@ -14919,6 +15418,8 @@ def get_status():
         "ai_available": ai_available,
         "question_ai_available": question_ai_client is not None,
         "report_ai_available": report_ai_client is not None,
+        "report_profile_default": REPORT_V3_PROFILE,
+        "report_profile_options": ["balanced", "quality"],
         "interview_depth_v2": {
             "enabled": True,
             "modes": mode_names,
@@ -15152,6 +15653,8 @@ if __name__ == '__main__':
             f"draft_retries={REPORT_V3_DRAFT_RETRY_COUNT}, "
             f"review_tokens={REPORT_V3_REVIEW_MAX_TOKENS}, "
             f"review_rounds={REPORT_V3_REVIEW_BASE_ROUNDS}+{REPORT_V3_QUALITY_FIX_ROUNDS}, "
+            f"dual_stage={'on' if REPORT_V3_DUAL_STAGE_ENABLED else 'off'}"
+            f"(draft_lane={REPORT_V3_DRAFT_PRIMARY_LANE},review_lane={REPORT_V3_REVIEW_PRIMARY_LANE}), "
             f"circuit={'on' if GATEWAY_CIRCUIT_BREAKER_ENABLED else 'off'}"
             f"(threshold={GATEWAY_CIRCUIT_FAIL_THRESHOLD},"
             f"cooldown={int(GATEWAY_CIRCUIT_COOLDOWN_SECONDS)}s,"
