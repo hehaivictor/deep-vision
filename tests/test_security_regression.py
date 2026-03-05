@@ -411,6 +411,18 @@ class SecurityRegressionTests(unittest.TestCase):
 
             self.assertEqual(balanced_cfg.get("min_required_review_rounds"), 1)
             self.assertGreaterEqual(quality_cfg.get("min_required_review_rounds", 0), 2)
+
+            os.environ[env_key] = "0"
+            balanced_auto_cfg = self.server.get_report_v3_runtime_config("balanced")
+            quality_auto_cfg = self.server.get_report_v3_runtime_config("quality")
+            self.assertEqual(balanced_auto_cfg.get("min_required_review_rounds"), 1)
+            self.assertGreaterEqual(quality_auto_cfg.get("min_required_review_rounds", 0), 2)
+
+            os.environ[env_key] = "3"
+            balanced_forced_cfg = self.server.get_report_v3_runtime_config("balanced")
+            quality_forced_cfg = self.server.get_report_v3_runtime_config("quality")
+            self.assertEqual(balanced_forced_cfg.get("min_required_review_rounds"), 3)
+            self.assertEqual(quality_forced_cfg.get("min_required_review_rounds"), 3)
         finally:
             if old_value is None:
                 os.environ.pop(env_key, None)

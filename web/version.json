@@ -1,7 +1,16 @@
 {
-  "version": "2.11.0",
+  "version": "2.12.0",
   "releaseDate": "2026-03-06",
   "changelog": [
+    {
+      "version": "2.12.0",
+      "date": "2026-03-06",
+      "type": "minor",
+      "title": "增加最少审稿轮次配置并支持按档位默认回退",
+      "changes": [
+        "test(回归): 扩展最少审稿轮次配置行为用例"
+      ]
+    },
     {
       "version": "2.11.0",
       "date": "2026-03-06",

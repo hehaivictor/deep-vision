@@ -642,8 +642,11 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
     quality_fix_rounds = max(0, min(quality_fix_rounds, 2))
 
     min_review_rounds_default = 1 if profile == "balanced" else 2
-    min_required_review_rounds = _cfg_int("REPORT_V3_MIN_REVIEW_ROUNDS", min_review_rounds_default)
-    min_required_review_rounds = max(1, min(min_required_review_rounds, 4))
+    configured_min_required_review_rounds = _cfg_int("REPORT_V3_MIN_REVIEW_ROUNDS", min_review_rounds_default)
+    if configured_min_required_review_rounds <= 0:
+        min_required_review_rounds = min_review_rounds_default
+    else:
+        min_required_review_rounds = max(1, min(configured_min_required_review_rounds, 4))
 
     return {
         "profile": profile,
