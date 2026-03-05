@@ -180,6 +180,8 @@ ENABLE_AI = True
 
 # 是否启用调试日志
 ENABLE_DEBUG_LOG = True
+# 是否静默状态轮询接口访问日志（/api/status/thinking|web-search|report-generation）
+SUPPRESS_STATUS_POLL_ACCESS_LOG = True
 
 # 是否启用联网搜索（需要配置 ZHIPU_API_KEY）
 ENABLE_WEB_SEARCH = True
