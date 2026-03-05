@@ -238,6 +238,98 @@ class SecurityRegressionTests(unittest.TestCase):
         }
         self.assertTrue(self.server.should_retry_v3_with_failover(payload))
 
+    def test_build_v3_failure_log_context_contains_diagnostics(self):
+        failure_payload = {
+            "reason": "review_parse_failed",
+            "profile": "balanced",
+            "parse_stage": "review_round_1",
+            "lane": "report",
+            "phase_lanes": {"draft": "question", "review": "report"},
+            "error": "profile=balanced,review_round=1,timeout=210.0,raw_length=4096",
+            "salvage_attempted": True,
+            "salvage_success": False,
+            "salvage_note": "quality_gate_blocked",
+            "salvage_quality_issue_count": 3,
+        }
+
+        context_text = self.server.build_v3_failure_log_context(failure_payload)
+        self.assertIn("reason=review_parse_failed", context_text)
+        self.assertIn("profile=balanced", context_text)
+        self.assertIn("parse_stage=review_round_1", context_text)
+        self.assertIn("phase_lanes=draft=question,review=report", context_text)
+        self.assertIn("salvage_attempted=True", context_text)
+        self.assertIn("salvage_quality_issue_count=3", context_text)
+
+    def test_attempt_salvage_v3_review_failure_success(self):
+        backups = {
+            "validate_report_draft_v3": self.server.validate_report_draft_v3,
+            "compute_report_quality_meta_v3": self.server.compute_report_quality_meta_v3,
+            "build_quality_gate_issues_v3": self.server.build_quality_gate_issues_v3,
+            "render_report_from_draft_v3": self.server.render_report_from_draft_v3,
+        }
+        try:
+            self.server.validate_report_draft_v3 = lambda draft, _evidence: (draft, [])
+            self.server.compute_report_quality_meta_v3 = lambda _draft, _evidence, _issues: {
+                "overall_score": 86,
+                "structure_score": 85,
+                "coverage_score": 87,
+                "consistency_score": 88,
+                "citation_density": 0.32,
+                "metrics": {},
+                "quality_gate": {},
+            }
+            self.server.build_quality_gate_issues_v3 = lambda _meta: []
+            self.server.render_report_from_draft_v3 = lambda _session, _draft, _meta: "# 挽救报告"
+
+            failed_payload = {
+                "reason": "review_parse_failed",
+                "profile": "balanced",
+                "phase_lanes": {"draft": "question", "review": "report"},
+                "draft_snapshot": {"overview": "ok", "needs": [], "analysis": {}},
+                "evidence_pack": {"facts": [{"q_id": "Q1", "dimension": "customer_needs"}]},
+                "review_issues": [],
+            }
+            outcome = self.server.attempt_salvage_v3_review_failure({"topic": "测试"}, failed_payload)
+            self.assertTrue(outcome.get("attempted"))
+            self.assertTrue(outcome.get("success"))
+            self.assertEqual(outcome.get("note"), "quality_gate_passed")
+            self.assertEqual(outcome.get("report_content"), "# 挽救报告")
+            self.assertEqual(outcome.get("quality_gate_issue_count"), 0)
+        finally:
+            for name, fn in backups.items():
+                setattr(self.server, name, fn)
+
+    def test_attempt_salvage_v3_review_failure_blocked_by_quality_gate(self):
+        backups = {
+            "validate_report_draft_v3": self.server.validate_report_draft_v3,
+            "compute_report_quality_meta_v3": self.server.compute_report_quality_meta_v3,
+            "build_quality_gate_issues_v3": self.server.build_quality_gate_issues_v3,
+        }
+        try:
+            self.server.validate_report_draft_v3 = lambda draft, _evidence: (draft, [])
+            self.server.compute_report_quality_meta_v3 = lambda _draft, _evidence, _issues: {"overall_score": 60}
+            self.server.build_quality_gate_issues_v3 = lambda _meta: [
+                {"type": "quality_gate", "target": "summary", "message": "质量门禁未通过"}
+            ]
+
+            failed_payload = {
+                "reason": "review_generation_failed",
+                "profile": "quality",
+                "phase_lanes": {"draft": "question", "review": "report"},
+                "draft_snapshot": {"overview": "ok", "needs": [], "analysis": {}},
+                "evidence_pack": {"facts": [{"q_id": "Q1", "dimension": "customer_needs"}]},
+                "review_issues": [],
+            }
+            outcome = self.server.attempt_salvage_v3_review_failure({"topic": "测试"}, failed_payload)
+            self.assertTrue(outcome.get("attempted"))
+            self.assertFalse(outcome.get("success"))
+            self.assertEqual(outcome.get("note"), "quality_gate_blocked")
+            self.assertEqual(outcome.get("quality_gate_issue_count"), 1)
+            self.assertEqual(len(outcome.get("review_issues") or []), 1)
+        finally:
+            for name, fn in backups.items():
+                setattr(self.server, name, fn)
+
     def test_detect_unusable_legacy_report_content(self):
         unusable_text = (
             "我会为您生成一份专业的访谈报告。在创建文档之前，我需要先征得您的同意。"

@@ -10199,6 +10199,7 @@ def generate_report_v3_pipeline(
                     "phase_lanes": phase_lanes,
                     "raw_excerpt": "",
                     "repair_applied": False,
+                    "draft_snapshot": current_draft if isinstance(current_draft, dict) else {},
                     "evidence_pack": evidence_pack,
                     "review_issues": final_issues,
                 }
@@ -10233,6 +10234,7 @@ def generate_report_v3_pipeline(
                     "phase_lanes": phase_lanes,
                     "raw_excerpt": str(review_raw or "")[:360],
                     "repair_applied": bool(review_parse_meta.get("repair_applied", False)),
+                    "draft_snapshot": current_draft if isinstance(current_draft, dict) else {},
                     "parse_meta": {
                         "candidate_count": int(review_parse_meta.get("candidate_count", 0) or 0),
                         "parse_attempts": int(review_parse_meta.get("parse_attempts", 0) or 0),
@@ -13184,6 +13186,146 @@ def should_retry_v3_with_failover(v3_result: Optional[dict]) -> bool:
     return False
 
 
+def describe_v3_failure_reason(reason: str) -> str:
+    """将 V3 失败原因转换为更可读的中文标签。"""
+    normalized = str(reason or "").strip().lower()
+    reason_text_map = {
+        "draft_generation_failed": "草案生成超时/空响应",
+        "draft_parse_failed": "草案结构化解析失败",
+        "review_generation_failed": "审稿生成超时/空响应",
+        "review_parse_failed": "审稿结构化解析失败",
+        "review_not_passed_or_quality_gate_failed": "审稿或质量门禁未通过",
+        "exception": "流水线异常",
+        "v3_pipeline_returned_empty": "流水线返回为空",
+    }
+    return reason_text_map.get(normalized, "流水线未通过")
+
+
+def choose_v3_failure_log_icon(reason: str) -> str:
+    """按失败类型选择日志级别图标，避免将可预期回退全部标成告警。"""
+    normalized = str(reason or "").strip().lower()
+    if normalized in {
+        "draft_parse_failed",
+        "review_parse_failed",
+        "review_not_passed_or_quality_gate_failed",
+    }:
+        return "ℹ️"
+    return "⚠️"
+
+
+def format_v3_phase_lanes_for_log(phase_lanes: Optional[dict]) -> str:
+    if not isinstance(phase_lanes, dict):
+        return "-"
+    draft_lane = str(phase_lanes.get("draft", "") or "").strip() or "-"
+    review_lane = str(phase_lanes.get("review", "") or "").strip() or "-"
+    return f"draft={draft_lane},review={review_lane}"
+
+
+def build_v3_failure_log_context(v3_failure: Optional[dict]) -> str:
+    if not isinstance(v3_failure, dict):
+        return "reason=v3_pipeline_returned_empty,profile=-,parse_stage=-,lane=-,phase_lanes=-,error=-"
+
+    reason = str(v3_failure.get("reason", "v3_pipeline_returned_empty") or "v3_pipeline_returned_empty").strip()
+    profile = str(v3_failure.get("profile", "") or "").strip() or "-"
+    parse_stage = str(v3_failure.get("parse_stage", "") or "").strip() or "-"
+    lane = str(v3_failure.get("lane", "") or "").strip() or "-"
+    phase_lanes = format_v3_phase_lanes_for_log(v3_failure.get("phase_lanes", {}))
+    raw_error = str(v3_failure.get("error", "") or "").strip()
+    error = summarize_error_for_log(raw_error, limit=160) if raw_error else "-"
+    salvage_attempted = bool(v3_failure.get("salvage_attempted", False))
+    salvage_success = bool(v3_failure.get("salvage_success", False))
+    salvage_note = str(v3_failure.get("salvage_note", "") or "").strip()
+    salvage_error = str(v3_failure.get("salvage_error", "") or "").strip()
+    try:
+        salvage_quality_issue_count = int(v3_failure.get("salvage_quality_issue_count", 0) or 0)
+    except Exception:
+        salvage_quality_issue_count = 0
+
+    if salvage_note:
+        salvage_note = summarize_error_for_log(salvage_note, limit=120)
+    if salvage_error:
+        salvage_error = summarize_error_for_log(salvage_error, limit=120)
+
+    return (
+        f"reason={reason},profile={profile},parse_stage={parse_stage},lane={lane},phase_lanes={phase_lanes},"
+        f"error={error},salvage_attempted={salvage_attempted},salvage_success={salvage_success},"
+        f"salvage_quality_issue_count={salvage_quality_issue_count},"
+        f"salvage_note={salvage_note or '-'},salvage_error={salvage_error or '-'}"
+    )
+
+
+def attempt_salvage_v3_review_failure(session: dict, v3_result: Optional[dict]) -> dict:
+    """
+    在审稿阶段失败时尝试直接复用现有草案：
+    - 仅针对 review_generation_failed / review_parse_failed
+    - 若草案通过质量门禁，则直接产出，减少不必要回退和告警
+    """
+    outcome = {
+        "attempted": False,
+        "success": False,
+        "reason": str((v3_result or {}).get("reason", "") or "").strip().lower() if isinstance(v3_result, dict) else "",
+        "note": "",
+        "error": "",
+        "quality_gate_issue_count": 0,
+        "review_issues": [],
+        "profile": str((v3_result or {}).get("profile", "") or "").strip() if isinstance(v3_result, dict) else "",
+        "phase_lanes": (v3_result.get("phase_lanes", {}) if isinstance(v3_result, dict) and isinstance(v3_result.get("phase_lanes", {}), dict) else {}),
+        "evidence_pack": (v3_result.get("evidence_pack", {}) if isinstance(v3_result, dict) and isinstance(v3_result.get("evidence_pack", {}), dict) else {}),
+    }
+
+    if not isinstance(session, dict) or not isinstance(v3_result, dict):
+        return outcome
+
+    if outcome["reason"] not in {"review_generation_failed", "review_parse_failed"}:
+        return outcome
+
+    outcome["attempted"] = True
+    draft_snapshot = v3_result.get("draft_snapshot", {})
+    evidence_pack = outcome["evidence_pack"]
+    if not isinstance(draft_snapshot, dict) or not draft_snapshot:
+        outcome["note"] = "missing_draft_snapshot"
+        return outcome
+    if not isinstance(evidence_pack, dict) or not evidence_pack:
+        outcome["note"] = "missing_evidence_pack"
+        return outcome
+
+    try:
+        sanitized_draft, local_issues = validate_report_draft_v3(draft_snapshot, evidence_pack)
+        merged_issues = []
+        seen_keys = set()
+        for item in (v3_result.get("review_issues", []) if isinstance(v3_result.get("review_issues", []), list) else []) + list(local_issues):
+            if not isinstance(item, dict):
+                continue
+            key = f"{item.get('type')}|{item.get('target')}|{item.get('message')}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            merged_issues.append(item)
+
+        quality_meta = compute_report_quality_meta_v3(sanitized_draft, evidence_pack, merged_issues)
+        quality_gate_issues = build_quality_gate_issues_v3(quality_meta)
+        outcome["quality_gate_issue_count"] = len(quality_gate_issues)
+        if quality_gate_issues:
+            outcome["note"] = "quality_gate_blocked"
+            outcome["review_issues"] = quality_gate_issues[:60]
+            return outcome
+
+        report_content = render_report_from_draft_v3(session, sanitized_draft, quality_meta)
+        if not report_content:
+            outcome["note"] = "render_empty"
+            return outcome
+
+        outcome["success"] = True
+        outcome["note"] = "quality_gate_passed"
+        outcome["quality_meta"] = quality_meta if isinstance(quality_meta, dict) else {}
+        outcome["report_content"] = report_content
+        outcome["review_issues"] = merged_issues[:60]
+        return outcome
+    except Exception as exc:
+        outcome["error"] = summarize_error_for_log(exc, limit=200)
+        return outcome
+
+
 def is_unusable_legacy_report_content(content: Optional[str]) -> bool:
     """检测标准回退报告是否为无效的工具确认话术。"""
     text = str(content or "").strip()
@@ -13323,6 +13465,11 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
                     "parse_meta": result.get("parse_meta", {}) if isinstance(result.get("parse_meta", {}), dict) else {},
                     "review_issues": (result.get("review_issues", []) if isinstance(result.get("review_issues", []), list) else [])[:60],
                     "evidence_pack_summary": summarize_evidence_pack_for_debug(result.get("evidence_pack", {})),
+                    "salvage_attempted": bool(result.get("salvage_attempted", False)),
+                    "salvage_success": bool(result.get("salvage_success", False)),
+                    "salvage_note": str(result.get("salvage_note", "") or ""),
+                    "salvage_error": str(result.get("salvage_error", "") or ""),
+                    "salvage_quality_issue_count": int(result.get("salvage_quality_issue_count", 0) or 0),
                 }
             return {
                 "reason": "v3_pipeline_returned_empty",
@@ -13336,7 +13483,59 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
                 "parse_meta": {},
                 "review_issues": [],
                 "evidence_pack_summary": {},
+                "salvage_attempted": False,
+                "salvage_success": False,
+                "salvage_note": "",
+                "salvage_error": "",
+                "salvage_quality_issue_count": 0,
             }
+
+        def persist_v3_success_result(
+            result: dict,
+            status_reason: str,
+            saving_message: str,
+            extra_debug: Optional[dict] = None,
+        ) -> bool:
+            if not isinstance(result, dict):
+                return False
+            report_body = str(result.get("report_content", "") or "")
+            if not report_body.strip():
+                return False
+
+            report_content = report_body + generate_interview_appendix(session)
+            quality_meta = result.get("quality_meta", {})
+            if not isinstance(quality_meta, dict):
+                quality_meta = {}
+            session["last_report_quality_meta"] = quality_meta
+
+            debug_payload = {
+                "generated_at": get_utc_now(),
+                "status": "success",
+                "reason": status_reason,
+                "profile": result.get("profile", selected_report_profile),
+                "phase_lanes": result.get("phase_lanes", {}) if isinstance(result.get("phase_lanes", {}), dict) else {},
+                "quality_meta": quality_meta,
+                "review_issues": (result.get("review_issues", []) if isinstance(result.get("review_issues", []), list) else [])[:60],
+                "evidence_pack_summary": summarize_evidence_pack_for_debug(result.get("evidence_pack", {})),
+            }
+            if isinstance(extra_debug, dict):
+                debug_payload.update(extra_debug)
+            session["last_report_v3_debug"] = debug_payload
+
+            update_report_generation_status(session_id, "saving", message=saving_message)
+            report_file, filename = persist_report(report_content, quality_meta=quality_meta)
+            update_report_generation_status(session_id, "completed", active=False)
+            set_report_generation_metadata(session_id, {
+                "request_id": request_id,
+                "report_name": filename,
+                "report_path": str(report_file),
+                "ai_generated": True,
+                "v3_enabled": True,
+                "report_quality_meta": quality_meta,
+                "error": "",
+                "completed_at": get_utc_now(),
+            })
+            return True
 
         # 检查是否有 Claude API
         if resolve_ai_client(call_type="report"):
@@ -13349,34 +13548,46 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
             )
 
             if v3_result and v3_result.get("report_content"):
-                report_content = v3_result["report_content"] + generate_interview_appendix(session)
-                quality_meta = v3_result.get("quality_meta", {})
-                session["last_report_quality_meta"] = quality_meta
-                session["last_report_v3_debug"] = {
-                    "generated_at": get_utc_now(),
-                    "status": "success",
-                    "reason": "v3_pipeline_passed",
-                    "profile": v3_result.get("profile", selected_report_profile),
-                    "phase_lanes": v3_result.get("phase_lanes", {}) if isinstance(v3_result.get("phase_lanes", {}), dict) else {},
-                    "quality_meta": quality_meta,
-                    "review_issues": (v3_result.get("review_issues", []) if isinstance(v3_result.get("review_issues", []), list) else [])[:60],
-                    "evidence_pack_summary": summarize_evidence_pack_for_debug(v3_result.get("evidence_pack", {})),
-                }
+                if persist_v3_success_result(
+                    v3_result,
+                    status_reason="v3_pipeline_passed",
+                    saving_message="正在保存 V3 审稿增强报告...",
+                ):
+                    return
 
-                update_report_generation_status(session_id, "saving", message="正在保存 V3 审稿增强报告...")
-                report_file, filename = persist_report(report_content, quality_meta=quality_meta)
-                update_report_generation_status(session_id, "completed", active=False)
-                set_report_generation_metadata(session_id, {
-                    "request_id": request_id,
-                    "report_name": filename,
-                    "report_path": str(report_file),
-                    "ai_generated": True,
-                    "v3_enabled": True,
-                    "report_quality_meta": quality_meta if isinstance(quality_meta, dict) else {},
-                    "error": "",
-                    "completed_at": get_utc_now(),
-                })
-                return
+            primary_salvage = attempt_salvage_v3_review_failure(session, v3_result)
+            if isinstance(v3_result, dict):
+                v3_result["salvage_attempted"] = bool(primary_salvage.get("attempted", False))
+                v3_result["salvage_success"] = bool(primary_salvage.get("success", False))
+                v3_result["salvage_note"] = str(primary_salvage.get("note", "") or "")
+                v3_result["salvage_error"] = str(primary_salvage.get("error", "") or "")
+                v3_result["salvage_quality_issue_count"] = int(primary_salvage.get("quality_gate_issue_count", 0) or 0)
+
+            if primary_salvage.get("success"):
+                if ENABLE_DEBUG_LOG:
+                    print(
+                        "ℹ️ V3 审稿阶段失败后触发草案挽救成功，"
+                        f"reason={primary_salvage.get('reason', '-')},profile={primary_salvage.get('profile', selected_report_profile)}"
+                    )
+                primary_salvage_result = {
+                    "profile": primary_salvage.get("profile", selected_report_profile),
+                    "phase_lanes": primary_salvage.get("phase_lanes", {}),
+                    "report_content": primary_salvage.get("report_content", ""),
+                    "quality_meta": primary_salvage.get("quality_meta", {}),
+                    "review_issues": primary_salvage.get("review_issues", []),
+                    "evidence_pack": primary_salvage.get("evidence_pack", {}),
+                }
+                if persist_v3_success_result(
+                    primary_salvage_result,
+                    status_reason="v3_pipeline_salvaged_after_primary_failure",
+                    saving_message="V3 审稿异常已自动挽救，正在保存报告...",
+                    extra_debug={
+                        "salvage_mode": "primary",
+                        "salvage_from_reason": primary_salvage.get("reason", ""),
+                        "salvage_note": primary_salvage.get("note", ""),
+                    },
+                ):
+                    return
 
             primary_failure = build_v3_failure_debug(v3_result)
             failover_attempted = False
@@ -13386,11 +13597,18 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
             if REPORT_V3_FAILOVER_ENABLED and can_use_v3_failover_lane() and should_retry_v3_with_failover(v3_result):
                 failover_attempted = True
                 if ENABLE_DEBUG_LOG:
-                    print(f"⚠️ V3 主网关失败，尝试切换备用网关 lane={REPORT_V3_FAILOVER_LANE} 重试")
+                    print(
+                        f"{choose_v3_failure_log_icon(primary_failure.get('reason', ''))} V3 主网关未直接通过，"
+                        f"尝试切换备用网关 lane={REPORT_V3_FAILOVER_LANE} 重试；"
+                        f"{build_v3_failure_log_context(primary_failure)}"
+                    )
                 update_report_generation_status(
                     session_id,
                     "generating",
-                    message=f"V3 主网关失败，正在切换备用网关（{REPORT_V3_FAILOVER_LANE}）重试...",
+                    message=(
+                        f"V3 {describe_v3_failure_reason(primary_failure.get('reason', ''))}，"
+                        f"正在切换备用网关（{REPORT_V3_FAILOVER_LANE}）重试..."
+                    ),
                 )
                 failover_suffix = f"_failover_{REPORT_V3_FAILOVER_LANE}"
                 failover_result = generate_report_v3_pipeline(
@@ -13402,44 +13620,64 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
                 )
                 if failover_result and failover_result.get("report_content"):
                     failover_success = True
-                    report_content = failover_result["report_content"] + generate_interview_appendix(session)
-                    quality_meta = failover_result.get("quality_meta", {})
-                    session["last_report_quality_meta"] = quality_meta
-                    session["last_report_v3_debug"] = {
-                        "generated_at": get_utc_now(),
-                        "status": "success",
-                        "reason": "v3_pipeline_passed_after_failover",
-                        "profile": failover_result.get("profile", selected_report_profile),
-                        "failover_lane": REPORT_V3_FAILOVER_LANE,
-                        "primary_failure_reason": primary_failure.get("reason", ""),
-                        "primary_profile": primary_failure.get("profile", selected_report_profile),
-                        "primary_failure_error": primary_failure.get("error", ""),
-                        "primary_parse_stage": primary_failure.get("parse_stage", ""),
-                        "primary_lane": primary_failure.get("lane", ""),
-                        "primary_phase_lanes": primary_failure.get("phase_lanes", {}),
-                        "primary_repair_applied": primary_failure.get("repair_applied", False),
-                        "primary_parse_meta": primary_failure.get("parse_meta", {}),
-                        "primary_raw_excerpt": primary_failure.get("raw_excerpt", ""),
-                        "phase_lanes": failover_result.get("phase_lanes", {}) if isinstance(failover_result.get("phase_lanes", {}), dict) else {},
-                        "quality_meta": quality_meta,
-                        "review_issues": (failover_result.get("review_issues", []) if isinstance(failover_result.get("review_issues", []), list) else [])[:60],
-                        "evidence_pack_summary": summarize_evidence_pack_for_debug(failover_result.get("evidence_pack", {})),
-                    }
+                    if persist_v3_success_result(
+                        failover_result,
+                        status_reason="v3_pipeline_passed_after_failover",
+                        saving_message="备用网关重试成功，正在保存 V3 审稿增强报告...",
+                        extra_debug={
+                            "failover_lane": REPORT_V3_FAILOVER_LANE,
+                            "primary_failure_reason": primary_failure.get("reason", ""),
+                            "primary_profile": primary_failure.get("profile", selected_report_profile),
+                            "primary_failure_error": primary_failure.get("error", ""),
+                            "primary_parse_stage": primary_failure.get("parse_stage", ""),
+                            "primary_lane": primary_failure.get("lane", ""),
+                            "primary_phase_lanes": primary_failure.get("phase_lanes", {}),
+                            "primary_repair_applied": primary_failure.get("repair_applied", False),
+                            "primary_parse_meta": primary_failure.get("parse_meta", {}),
+                            "primary_raw_excerpt": primary_failure.get("raw_excerpt", ""),
+                            "primary_failure_context": build_v3_failure_log_context(primary_failure),
+                        },
+                    ):
+                        return
 
-                    update_report_generation_status(session_id, "saving", message="备用网关重试成功，正在保存 V3 审稿增强报告...")
-                    report_file, filename = persist_report(report_content, quality_meta=quality_meta)
-                    update_report_generation_status(session_id, "completed", active=False)
-                    set_report_generation_metadata(session_id, {
-                        "request_id": request_id,
-                        "report_name": filename,
-                        "report_path": str(report_file),
-                        "ai_generated": True,
-                        "v3_enabled": True,
-                        "report_quality_meta": quality_meta if isinstance(quality_meta, dict) else {},
-                        "error": "",
-                        "completed_at": get_utc_now(),
-                    })
-                    return
+                failover_salvage = attempt_salvage_v3_review_failure(session, failover_result)
+                if isinstance(failover_result, dict):
+                    failover_result["salvage_attempted"] = bool(failover_salvage.get("attempted", False))
+                    failover_result["salvage_success"] = bool(failover_salvage.get("success", False))
+                    failover_result["salvage_note"] = str(failover_salvage.get("note", "") or "")
+                    failover_result["salvage_error"] = str(failover_salvage.get("error", "") or "")
+                    failover_result["salvage_quality_issue_count"] = int(failover_salvage.get("quality_gate_issue_count", 0) or 0)
+
+                if failover_salvage.get("success"):
+                    failover_success = True
+                    if ENABLE_DEBUG_LOG:
+                        print(
+                            "ℹ️ V3 备用网关审稿阶段失败后触发草案挽救成功，"
+                            f"reason={failover_salvage.get('reason', '-')},profile={failover_salvage.get('profile', selected_report_profile)}"
+                        )
+                    failover_salvage_result = {
+                        "profile": failover_salvage.get("profile", selected_report_profile),
+                        "phase_lanes": failover_salvage.get("phase_lanes", {}),
+                        "report_content": failover_salvage.get("report_content", ""),
+                        "quality_meta": failover_salvage.get("quality_meta", {}),
+                        "review_issues": failover_salvage.get("review_issues", []),
+                        "evidence_pack": failover_salvage.get("evidence_pack", {}),
+                    }
+                    if persist_v3_success_result(
+                        failover_salvage_result,
+                        status_reason="v3_pipeline_salvaged_after_failover",
+                        saving_message="备用网关审稿异常已自动挽救，正在保存报告...",
+                        extra_debug={
+                            "salvage_mode": "failover",
+                            "failover_lane": REPORT_V3_FAILOVER_LANE,
+                            "salvage_from_reason": failover_salvage.get("reason", ""),
+                            "salvage_note": failover_salvage.get("note", ""),
+                            "primary_failure_reason": primary_failure.get("reason", ""),
+                            "primary_profile": primary_failure.get("profile", selected_report_profile),
+                            "primary_failure_context": build_v3_failure_log_context(primary_failure),
+                        },
+                    ):
+                        return
 
                 failover_failure = build_v3_failure_debug(failover_result)
 
@@ -13457,6 +13695,11 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
                 "raw_excerpt": primary_failure.get("raw_excerpt", ""),
                 "review_issues": primary_failure.get("review_issues", []),
                 "evidence_pack_summary": primary_failure.get("evidence_pack_summary", {}),
+                "salvage_attempted": primary_failure.get("salvage_attempted", False),
+                "salvage_success": primary_failure.get("salvage_success", False),
+                "salvage_note": primary_failure.get("salvage_note", ""),
+                "salvage_error": primary_failure.get("salvage_error", ""),
+                "salvage_quality_issue_count": primary_failure.get("salvage_quality_issue_count", 0),
                 "failover_attempted": failover_attempted,
                 "failover_lane": REPORT_V3_FAILOVER_LANE if failover_attempted else "",
                 "failover_success": failover_success,
@@ -13469,12 +13712,27 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
                 "failover_repair_applied": failover_failure.get("repair_applied", False) if failover_failure else False,
                 "failover_parse_meta": failover_failure.get("parse_meta", {}) if failover_failure else {},
                 "failover_raw_excerpt": failover_failure.get("raw_excerpt", "") if failover_failure else "",
+                "failover_salvage_attempted": failover_failure.get("salvage_attempted", False) if failover_failure else False,
+                "failover_salvage_success": failover_failure.get("salvage_success", False) if failover_failure else False,
+                "failover_salvage_note": failover_failure.get("salvage_note", "") if failover_failure else "",
+                "failover_salvage_error": failover_failure.get("salvage_error", "") if failover_failure else "",
+                "failover_salvage_quality_issue_count": failover_failure.get("salvage_quality_issue_count", 0) if failover_failure else 0,
+                "primary_failure_context": build_v3_failure_log_context(primary_failure),
+                "failover_failure_context": build_v3_failure_log_context(failover_failure) if failover_failure else "",
             }
 
             if ENABLE_DEBUG_LOG:
-                print("⚠️ V3 报告流程未通过，自动回退到标准报告生成流程")
+                print(
+                    f"{choose_v3_failure_log_icon(primary_failure.get('reason', ''))} V3 报告流程未通过，自动回退标准流程；"
+                    f"primary[{build_v3_failure_log_context(primary_failure)}]"
+                    + (f"; failover[{build_v3_failure_log_context(failover_failure)}]" if failover_failure else "")
+                )
 
-            update_report_generation_status(session_id, "generating", message="V3 流程失败，正在回退标准报告生成...")
+            update_report_generation_status(
+                session_id,
+                "generating",
+                message=f"V3 {describe_v3_failure_reason(primary_failure.get('reason', ''))}，正在回退标准报告生成...",
+            )
             prompt = build_report_prompt(session)
 
             if ENABLE_DEBUG_LOG:
@@ -13495,24 +13753,47 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
             )
 
             if is_unusable_legacy_report_content(report_content):
-                if ENABLE_DEBUG_LOG:
-                    print("⚠️ 标准回退报告疑似工具确认话术，尝试切备用网关重试一次")
+                fallback_primary_lane = resolve_call_lane(call_type="report_legacy_fallback")
+                fallback_primary_model = resolve_model_name_for_lane(
+                    call_type="report_legacy_fallback",
+                    selected_lane=fallback_primary_lane,
+                )
                 retry_lane = ""
                 if REPORT_V3_FAILOVER_ENABLED and can_use_v3_failover_lane():
                     retry_lane = REPORT_V3_FAILOVER_LANE
+                if ENABLE_DEBUG_LOG:
+                    print(
+                        "ℹ️ 标准回退报告命中工具确认话术，准备重试；"
+                        f"lane={fallback_primary_lane or '-'},model={fallback_primary_model or '-'},"
+                        f"prompt_length={len(prompt)},raw_length={len(str(report_content or ''))},"
+                        f"timeout={legacy_timeout:.1f}s,retry_lane={retry_lane or '-'}"
+                    )
                 if retry_lane:
+                    retry_call_type = f"report_legacy_fallback_retry_{retry_lane}"
+                    retry_model = resolve_model_name_for_lane(
+                        call_type=retry_call_type,
+                        selected_lane=retry_lane,
+                    )
                     retry_content = call_claude(
                         prompt,
                         max_tokens=min(MAX_TOKENS_REPORT, 7000),
-                        call_type=f"report_legacy_fallback_retry_{retry_lane}",
+                        call_type=retry_call_type,
                         timeout=legacy_timeout,
                         preferred_lane=retry_lane,
                     )
                     if not is_unusable_legacy_report_content(retry_content):
                         report_content = retry_content
                     else:
+                        if ENABLE_DEBUG_LOG:
+                            print(
+                                "⚠️ 标准回退报告重试后仍疑似工具确认话术；"
+                                f"retry_lane={retry_lane},retry_model={retry_model or '-'},"
+                                f"retry_raw_length={len(str(retry_content or ''))}"
+                            )
                         report_content = ""
                 else:
+                    if ENABLE_DEBUG_LOG:
+                        print("⚠️ 标准回退报告命中工具确认话术，但当前无可用备用网关可重试")
                     report_content = ""
 
             if report_content:

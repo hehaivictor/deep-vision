@@ -1,7 +1,17 @@
 {
-  "version": "2.10.0",
+  "version": "2.10.1",
   "releaseDate": "2026-03-06",
   "changelog": [
+    {
+      "version": "2.10.1",
+      "date": "2026-03-06",
+      "type": "patch",
+      "title": "定向优化告警与回退链路",
+      "changes": [
+        "refactor(日志): 告警补充 reason/profile/parse_stage/lane 诊断上下文",
+        "test(回归): 新增告警上下文与挽救分支覆盖用例"
+      ]
+    },
     {
       "version": "2.10.0",
       "date": "2026-03-06",
