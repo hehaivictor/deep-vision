@@ -11079,11 +11079,11 @@ def render_appendix_answer_block(log: dict) -> str:
     if other_selected and other_input:
         answer_lines.append(f"☑ 其他（自由输入）：{other_input}")
 
-    # 使用 Markdown 硬换行，避免触发列表渲染产生额外黑点。
+    # 使用 Markdown 硬换行，避免触发列表渲染产生额外黑点，并保证“回答：”与选项对齐。
     if answer_lines:
-        return "**回答**：\n" + "  \n".join(answer_lines)
+        return "**回答**：  \n" + "  \n".join(answer_lines)
 
-    return "**回答**：\n☑ （未填写）"
+    return "**回答**：  \n☑ （未填写）"
 
 
 def generate_interview_appendix(session: dict) -> str:
@@ -11097,15 +11097,15 @@ def generate_interview_appendix(session: dict) -> str:
     appendix += f"<summary>本次访谈共手机了 {len(interview_log)} 个问题的回答（点击展开/收起）</summary>\n\n"
 
     appendix_dim_info = get_dimension_info_for_session(session)
+    total_questions = len(interview_log)
     for i, log in enumerate(interview_log, 1):
         dim_name = appendix_dim_info.get(log.get('dimension', ''), {}).get('name', '未分类')
         question = str(log.get('question', '') or '').strip() or '（未记录问题）'
         answer_block = render_appendix_answer_block(log)
-        appendix += "<details>\n"
-        appendix += f"<summary>问题 {i}：{question}</summary>\n\n"
+        appendix += f"**【{dim_name}】问题 {i}：{question}**\n\n"
         appendix += f"{answer_block}\n\n"
-        appendix += f"**维度**: {dim_name}\n\n"
-        appendix += "</details>\n\n"
+        if i < total_questions:
+            appendix += "---\n\n"
 
     appendix += "</details>\n\n"
 
