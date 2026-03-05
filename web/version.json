@@ -1,7 +1,17 @@
 {
-  "version": "2.7.6",
+  "version": "2.7.7",
   "releaseDate": "2026-03-05",
   "changelog": [
+    {
+      "version": "2.7.7",
+      "date": "2026-03-05",
+      "type": "patch",
+      "title": "优化：补齐 Bearer 鉴权默认兜底",
+      "changes": [
+        "配置：未显式设置鉴权开关时按网关地址自动推断鉴权模式",
+        "兼容：aicodemirror 网关默认启用 Bearer，降低无 env/config 场景的接入门槛"
+      ]
+    },
     {
       "version": "2.7.6",
       "date": "2026-03-05",

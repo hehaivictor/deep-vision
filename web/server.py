@@ -246,6 +246,25 @@ def _first_non_empty(*values: str) -> str:
     return ""
 
 
+def _is_bearer_gateway_url(url: str) -> bool:
+    """判断网关是否默认使用 Authorization: Bearer。"""
+    lowered = str(url or "").strip().lower()
+    if not lowered:
+        return False
+    # aicodemirror 代理当前要求 Bearer 鉴权
+    return "aicodemirror.com" in lowered
+
+
+def _guess_bearer_auth_default() -> bool:
+    """在未显式配置鉴权开关时，基于网关地址推断默认鉴权模式。"""
+    candidates = [
+        _cfg_text("QUESTION_BASE_URL", ""),
+        _cfg_text("REPORT_BASE_URL", ""),
+        _cfg_text("ANTHROPIC_BASE_URL", str(ANTHROPIC_BASE_URL or "").strip()),
+    ]
+    return any(_is_bearer_gateway_url(url) for url in candidates if str(url or "").strip())
+
+
 # ============ 配置中心（集中管理） ============
 # 向后兼容：保留历史函数名，避免潜在外部引用断裂
 def _runtime_cfg(name: str, default):
@@ -347,7 +366,9 @@ QUESTION_MODEL_NAME = _cfg_text("QUESTION_MODEL_NAME", _base_model_name) or _bas
 REPORT_MODEL_NAME = _cfg_text("REPORT_MODEL_NAME", QUESTION_MODEL_NAME) or QUESTION_MODEL_NAME
 
 # 鉴权路由配置：兼容 Anthropic x-api-key 与 Bearer Authorization 两种网关模式
-_global_use_bearer_auth = _cfg_bool("ANTHROPIC_USE_BEARER_AUTH", False)
+# 未显式配置时，按网关地址自动推断（aicodemirror 默认 Bearer）。
+_auto_use_bearer_auth = _guess_bearer_auth_default()
+_global_use_bearer_auth = _cfg_bool("ANTHROPIC_USE_BEARER_AUTH", _auto_use_bearer_auth)
 QUESTION_USE_BEARER_AUTH = _cfg_bool("QUESTION_USE_BEARER_AUTH", _global_use_bearer_auth)
 REPORT_USE_BEARER_AUTH = _cfg_bool("REPORT_USE_BEARER_AUTH", QUESTION_USE_BEARER_AUTH)
 
