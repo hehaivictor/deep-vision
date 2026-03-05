@@ -1,7 +1,17 @@
 {
-  "version": "2.8.0",
+  "version": "2.8.1",
   "releaseDate": "2026-03-05",
   "changelog": [
+    {
+      "version": "2.8.1",
+      "date": "2026-03-05",
+      "type": "patch",
+      "title": "加固搜索决策模型路由回退保护",
+      "changes": [
+        "test: 新增报告网关复用场景的模型选择回归测试",
+        "test: 覆盖 summary 与 search_decision 的模型对齐断言"
+      ]
+    },
     {
       "version": "2.8.0",
       "date": "2026-03-05",

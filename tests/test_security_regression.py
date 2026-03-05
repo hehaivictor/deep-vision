@@ -172,6 +172,55 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertNotIn("question_model", payload)
         self.assertNotIn("report_model", payload)
 
+    def test_model_routing_aligns_with_reused_report_gateway(self):
+        keys = [
+            "QUESTION_MODEL_NAME",
+            "REPORT_MODEL_NAME",
+            "SUMMARY_MODEL_NAME",
+            "SEARCH_DECISION_MODEL_NAME",
+            "QUESTION_API_KEY",
+            "QUESTION_BASE_URL",
+            "QUESTION_USE_BEARER_AUTH",
+            "REPORT_API_KEY",
+            "REPORT_BASE_URL",
+            "REPORT_USE_BEARER_AUTH",
+            "SUMMARY_API_KEY",
+            "SUMMARY_BASE_URL",
+            "SUMMARY_USE_BEARER_AUTH",
+            "SEARCH_DECISION_API_KEY",
+            "SEARCH_DECISION_BASE_URL",
+            "SEARCH_DECISION_USE_BEARER_AUTH",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+
+        try:
+            self.server.QUESTION_MODEL_NAME = "glm-4.7"
+            self.server.REPORT_MODEL_NAME = "gpt-5.3-codex"
+            self.server.SUMMARY_MODEL_NAME = "glm-4.7"
+            self.server.SEARCH_DECISION_MODEL_NAME = "glm-4.7"
+
+            self.server.QUESTION_API_KEY = "question-key"
+            self.server.QUESTION_BASE_URL = "https://open.bigmodel.cn/api/anthropic"
+            self.server.QUESTION_USE_BEARER_AUTH = False
+
+            self.server.REPORT_API_KEY = "report-key"
+            self.server.REPORT_BASE_URL = "https://api.aicodemirror.com/api/codex/backend-api/codex"
+            self.server.REPORT_USE_BEARER_AUTH = True
+
+            # 摘要与搜索决策复用报告网关，但未单独配置模型（沿用问题模型）
+            self.server.SUMMARY_API_KEY = self.server.REPORT_API_KEY
+            self.server.SUMMARY_BASE_URL = self.server.REPORT_BASE_URL
+            self.server.SUMMARY_USE_BEARER_AUTH = self.server.REPORT_USE_BEARER_AUTH
+            self.server.SEARCH_DECISION_API_KEY = self.server.REPORT_API_KEY
+            self.server.SEARCH_DECISION_BASE_URL = self.server.REPORT_BASE_URL
+            self.server.SEARCH_DECISION_USE_BEARER_AUTH = self.server.REPORT_USE_BEARER_AUTH
+
+            self.assertEqual(self.server.resolve_model_name(call_type="summary"), "gpt-5.3-codex")
+            self.assertEqual(self.server.resolve_model_name(call_type="search_decision"), "gpt-5.3-codex")
+        finally:
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+
     def test_wechat_start_blocks_external_return_to(self):
         old_enabled = self.server.WECHAT_LOGIN_ENABLED
         old_app_id = self.server.WECHAT_APP_ID
