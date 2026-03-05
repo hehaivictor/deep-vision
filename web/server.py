@@ -41,6 +41,7 @@ from urllib.parse import quote, unquote, urlparse, parse_qsl, urlencode, urlunpa
 from flask import Flask, jsonify, request, send_from_directory, redirect, session, send_file, make_response
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash
+from werkzeug.serving import WSGIRequestHandler
 from werkzeug.utils import secure_filename
 
 
@@ -303,6 +304,7 @@ SERVER_PORT = max(1, SERVER_PORT)
 DEBUG_MODE = _cfg_bool("DEBUG_MODE", True)
 ENABLE_AI = _cfg_bool("ENABLE_AI", True)
 ENABLE_DEBUG_LOG = _cfg_bool("ENABLE_DEBUG_LOG", True)
+SUPPRESS_STATUS_POLL_ACCESS_LOG = _cfg_bool("SUPPRESS_STATUS_POLL_ACCESS_LOG", True)
 ENABLE_WEB_SEARCH = _cfg_bool("ENABLE_WEB_SEARCH", False)
 ZHIPU_API_KEY = _cfg_text("ZHIPU_API_KEY", "")
 ZHIPU_SEARCH_ENGINE = _cfg_text("ZHIPU_SEARCH_ENGINE", "search_pro") or "search_pro"
@@ -7927,6 +7929,23 @@ def _normalize_evidence_refs(raw_refs) -> list:
     return dedup
 
 
+_INLINE_EVIDENCE_MARKER_PATTERN = re.compile(
+    r"(?:\[\s*证据\s*[：:][^\]\n]*\]|[（(]\s*证据\s*[：:][^）)\n]*[）)])"
+)
+
+
+def strip_inline_evidence_markers(text: str) -> str:
+    """移除正文中的行内证据编号标记（如 [证据:Q1,Q2]、（证据:Q3））。"""
+    value = str(text or "")
+    if not value:
+        return ""
+
+    cleaned = _INLINE_EVIDENCE_MARKER_PATTERN.sub("", value)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def build_report_evidence_pack(session: dict) -> dict:
     """构建报告 V3 证据包。"""
     interview_log = session.get("interview_log", [])
@@ -8304,6 +8323,9 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
     """校验并标准化 V3 报告草案。"""
     issues = []
 
+    def sanitize_text(value) -> str:
+        return strip_inline_evidence_markers(str(value or "").strip())
+
     def add_issue(issue_type: str, severity: str, message: str, target: str):
         issues.append({
             "type": issue_type,
@@ -8317,7 +8339,7 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
         return {}, issues
 
     normalized = {
-        "overview": str(draft.get("overview", "")).strip(),
+        "overview": sanitize_text(draft.get("overview", "")),
         "needs": [],
         "analysis": {
             "customer_needs": "",
@@ -8366,7 +8388,7 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
     analysis = draft.get("analysis", {})
     if isinstance(analysis, dict):
         for key in normalized["analysis"]:
-            normalized["analysis"][key] = str(analysis.get(key, "")).strip()
+            normalized["analysis"][key] = sanitize_text(analysis.get(key, ""))
 
     visualizations = draft.get("visualizations", {})
     if isinstance(visualizations, dict):
@@ -8384,9 +8406,9 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
                 continue
             refs = normalize_evidence_refs_for_target(item.get("evidence_refs", []), f"needs[{idx}].evidence_refs")
             normalized_item = {
-                "name": str(item.get("name", "")).strip(),
+                "name": sanitize_text(item.get("name", "")),
                 "priority": str(item.get("priority", "P1")).strip().upper() or "P1",
-                "description": str(item.get("description", "")).strip(),
+                "description": sanitize_text(item.get("description", "")),
                 "evidence_refs": refs,
             }
             if not normalized_item["name"]:
@@ -8406,24 +8428,24 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
                 continue
             refs = normalize_evidence_refs_for_target(item.get("evidence_refs", []), f"{field}[{idx}].evidence_refs")
             normalized_item = dict(item)
-            normalized_item[id_field] = str(item.get(id_field, "")).strip()
+            normalized_item[id_field] = sanitize_text(item.get(id_field, ""))
             normalized_item["evidence_refs"] = refs
 
             if field in {"solutions", "actions"}:
-                normalized_item["owner"] = str(item.get("owner", "")).strip()
-                normalized_item["timeline"] = str(item.get("timeline", "")).strip()
-                normalized_item["metric"] = str(item.get("metric", "")).strip()
+                normalized_item["owner"] = sanitize_text(item.get("owner", ""))
+                normalized_item["timeline"] = sanitize_text(item.get("timeline", ""))
+                normalized_item["metric"] = sanitize_text(item.get("metric", ""))
                 if not (normalized_item["owner"] and normalized_item["timeline"] and normalized_item["metric"]):
                     add_issue("not_actionable", "medium", f"{field} 缺少 owner/timeline/metric", f"{field}[{idx}]")
 
             if field == "risks":
-                normalized_item["impact"] = str(item.get("impact", "")).strip()
-                normalized_item["mitigation"] = str(item.get("mitigation", "")).strip()
+                normalized_item["impact"] = sanitize_text(item.get("impact", ""))
+                normalized_item["mitigation"] = sanitize_text(item.get("mitigation", ""))
 
             if field == "open_questions":
-                normalized_item["reason"] = str(item.get("reason", "")).strip()
-                normalized_item["impact"] = str(item.get("impact", "")).strip()
-                normalized_item["suggested_follow_up"] = str(item.get("suggested_follow_up", "")).strip()
+                normalized_item["reason"] = sanitize_text(item.get("reason", ""))
+                normalized_item["impact"] = sanitize_text(item.get("impact", ""))
+                normalized_item["suggested_follow_up"] = sanitize_text(item.get("suggested_follow_up", ""))
 
             if field == "evidence_index":
                 confidence = str(item.get("confidence", "medium")).strip().lower()
@@ -14174,6 +14196,33 @@ def clear_summaries_cache():
         return jsonify({"error": f"清空缓存失败: {e}"}), 500
 
 
+def should_suppress_access_log(path: str) -> bool:
+    if not SUPPRESS_STATUS_POLL_ACCESS_LOG:
+        return False
+    normalized = str(path or "").strip()
+    if not normalized:
+        return False
+    suppress_prefixes = (
+        "/api/status/thinking/",
+        "/api/status/web-search",
+        "/api/status/report-generation/",
+    )
+    return any(normalized.startswith(prefix) for prefix in suppress_prefixes)
+
+
+class SelectiveAccessLogRequestHandler(WSGIRequestHandler):
+    """按路径过滤开发服务器访问日志，降低高频轮询噪音。"""
+
+    def log_request(self, code='-', size='-'):
+        try:
+            parsed_path = urlparse(str(getattr(self, "path", "") or "")).path
+            if should_suppress_access_log(parsed_path):
+                return
+        except Exception:
+            pass
+        return super().log_request(code, size)
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("Deep Vision Web Server - AI 驱动版本")
@@ -14208,5 +14257,12 @@ if __name__ == '__main__':
 
     print()
     print(f"访问: http://localhost:{SERVER_PORT}")
+    if SUPPRESS_STATUS_POLL_ACCESS_LOG:
+        print("访问日志过滤: 已启用（状态轮询接口静默）")
     print("=" * 60)
-    app.run(host=SERVER_HOST, port=SERVER_PORT, debug=DEBUG_MODE)
+    app.run(
+        host=SERVER_HOST,
+        port=SERVER_PORT,
+        debug=DEBUG_MODE,
+        request_handler=SelectiveAccessLogRequestHandler,
+    )

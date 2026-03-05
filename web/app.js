@@ -5359,7 +5359,7 @@ function deepVision() {
 
         getReportExportContent() {
             if (!this.reportContent) return '';
-            let content = this.reportContent;
+            let content = this.stripInlineEvidenceMarkers(this.reportContent);
             const appendixIndex = content.indexOf('## 附录：完整访谈记录');
             if (appendixIndex !== -1) {
                 content = content.slice(0, appendixIndex).trimEnd();
@@ -5373,13 +5373,22 @@ function deepVision() {
 
         getAppendixExportContent() {
             if (!this.reportContent) return '';
-            const content = String(this.reportContent || '');
+            const content = String(this.stripInlineEvidenceMarkers(this.reportContent) || '');
             const appendixIndex = content.indexOf('## 附录：完整访谈记录');
             if (appendixIndex === -1) return '';
 
             let appendix = content.slice(appendixIndex).trim();
             appendix = appendix.replace(/^\s*\*\*生成方式\*\*:[^\n]*\n?/gm, '');
             return appendix.trim();
+        },
+
+        stripInlineEvidenceMarkers(content = '') {
+            return String(content || '')
+                .replace(/\[\s*证据\s*[：:][^\]\n]*\]/g, '')
+                .replace(/[（(]\s*证据\s*[：:][^）)\n]*[）)]/g, '')
+                .replace(/[ \t]{2,}/g, ' ')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
         },
 
         getAppendixExportContentForDocx() {
@@ -6568,9 +6577,10 @@ function deepVision() {
 
         renderMarkdown(content) {
             if (!content) return '';
-            const sanitizedContent = String(content)
+            const sanitizedContent = this.stripInlineEvidenceMarkers(
+                String(content)
                 .replace(/^\s*\*\*生成方式\*\*:[^\n]*\n?/gm, '')
-                .trim();
+            );
 
             if (typeof marked !== 'undefined') {
                 // 使用 marked 渲染 Markdown
