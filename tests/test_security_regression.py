@@ -299,6 +299,145 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertLess(long_tokens, short_tokens)
         self.assertGreaterEqual(long_tokens, 2200)
 
+    def test_v3_balanced_profile_defaults(self):
+        self.assertEqual(self.server.REPORT_V3_PROFILE, "balanced")
+        self.assertEqual(self.server.REPORT_V3_DRAFT_RETRY_COUNT, 1)
+        self.assertTrue(self.server.REPORT_V3_FAST_FAIL_ON_DRAFT_EMPTY)
+        self.assertGreaterEqual(self.server.REPORT_V3_REVIEW_MAX_TOKENS, 2600)
+
+    def test_gateway_circuit_breaker_opens_and_resets_after_success(self):
+        keys = [
+            "GATEWAY_CIRCUIT_BREAKER_ENABLED",
+            "GATEWAY_CIRCUIT_FAIL_THRESHOLD",
+            "GATEWAY_CIRCUIT_COOLDOWN_SECONDS",
+            "GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+
+        try:
+            self.server.GATEWAY_CIRCUIT_BREAKER_ENABLED = True
+            self.server.GATEWAY_CIRCUIT_FAIL_THRESHOLD = 2
+            self.server.GATEWAY_CIRCUIT_COOLDOWN_SECONDS = 120.0
+            self.server.GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = 180.0
+            self.server.reset_gateway_circuit_state()
+
+            first = self.server.record_gateway_lane_failure("report", "http_5xx")
+            second = self.server.record_gateway_lane_failure("report", "timeout")
+            self.assertTrue(first.get("counted"))
+            self.assertTrue(second.get("circuit_opened"))
+            self.assertTrue(self.server.is_gateway_lane_in_cooldown("report"))
+
+            self.server.record_gateway_lane_success("report")
+            snapshot = self.server.get_gateway_circuit_snapshot("report")
+            self.assertEqual(snapshot.get("fail_count"), 0)
+            self.assertEqual(snapshot.get("cooldown_remaining_seconds"), 0.0)
+            self.assertFalse(self.server.is_gateway_lane_in_cooldown("report"))
+        finally:
+            self.server.reset_gateway_circuit_state()
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+
+    def test_resolve_ai_client_with_lane_skips_cooled_report_lane(self):
+        keys = [
+            "GATEWAY_CIRCUIT_BREAKER_ENABLED",
+            "GATEWAY_CIRCUIT_FAIL_THRESHOLD",
+            "GATEWAY_CIRCUIT_COOLDOWN_SECONDS",
+            "GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS",
+            "question_ai_client",
+            "report_ai_client",
+            "summary_ai_client",
+            "search_decision_ai_client",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+
+        try:
+            self.server.GATEWAY_CIRCUIT_BREAKER_ENABLED = True
+            self.server.GATEWAY_CIRCUIT_FAIL_THRESHOLD = 2
+            self.server.GATEWAY_CIRCUIT_COOLDOWN_SECONDS = 120.0
+            self.server.GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = 180.0
+            self.server.reset_gateway_circuit_state()
+
+            question_client = object()
+            report_client = object()
+            self.server.question_ai_client = question_client
+            self.server.report_ai_client = report_client
+            self.server.summary_ai_client = None
+            self.server.search_decision_ai_client = None
+
+            self.server.record_gateway_lane_failure("report", "http_5xx")
+            self.server.record_gateway_lane_failure("report", "timeout")
+
+            selected_client, selected_lane, meta = self.server.resolve_ai_client_with_lane(
+                call_type="report_v3_draft",
+                preferred_lane="report",
+            )
+            self.assertIs(selected_client, question_client)
+            self.assertEqual(selected_lane, "question")
+            self.assertIn("report", meta.get("skipped_open_lanes", []))
+        finally:
+            self.server.reset_gateway_circuit_state()
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+
+    def test_call_claude_switches_to_question_lane_when_report_cooled(self):
+        class _DummyMessages:
+            def __init__(self, text: str):
+                self.text = text
+                self.calls = 0
+
+            def create(self, **kwargs):
+                self.calls += 1
+                return types.SimpleNamespace(content=[{"type": "text", "text": self.text}])
+
+        class _DummyClient:
+            def __init__(self, text: str):
+                self.messages = _DummyMessages(text=text)
+
+        keys = [
+            "GATEWAY_CIRCUIT_BREAKER_ENABLED",
+            "GATEWAY_CIRCUIT_FAIL_THRESHOLD",
+            "GATEWAY_CIRCUIT_COOLDOWN_SECONDS",
+            "GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS",
+            "question_ai_client",
+            "report_ai_client",
+            "summary_ai_client",
+            "search_decision_ai_client",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+
+        try:
+            self.server.GATEWAY_CIRCUIT_BREAKER_ENABLED = True
+            self.server.GATEWAY_CIRCUIT_FAIL_THRESHOLD = 2
+            self.server.GATEWAY_CIRCUIT_COOLDOWN_SECONDS = 120.0
+            self.server.GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = 180.0
+            self.server.reset_gateway_circuit_state()
+
+            question_client = _DummyClient("question-lane-ok")
+            report_client = _DummyClient("report-lane-ok")
+            self.server.question_ai_client = question_client
+            self.server.report_ai_client = report_client
+            self.server.summary_ai_client = None
+            self.server.search_decision_ai_client = None
+
+            self.server.record_gateway_lane_failure("report", "http_5xx")
+            self.server.record_gateway_lane_failure("report", "timeout")
+            self.assertTrue(self.server.is_gateway_lane_in_cooldown("report"))
+
+            result = self.server.call_claude(
+                "请生成报告摘要",
+                max_tokens=256,
+                call_type="report_v3_draft",
+                preferred_lane="report",
+                timeout=10.0,
+            )
+            self.assertEqual(result, "question-lane-ok")
+            self.assertEqual(report_client.messages.calls, 0)
+            self.assertEqual(question_client.messages.calls, 1)
+        finally:
+            self.server.reset_gateway_circuit_state()
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+
     def test_ensure_flowchart_semantic_styles_adds_multicolor_classdefs(self):
         raw = (
             "flowchart TD\n"
@@ -323,6 +462,17 @@ class SecurityRegressionTests(unittest.TestCase):
         )
         styled = self.server.ensure_flowchart_semantic_styles(raw)
         self.assertEqual(styled, raw.strip())
+
+    def test_summarize_error_for_log_strips_html_payload(self):
+        raw_error = (
+            "<!DOCTYPE html><html><head><title>aicodemirror.com | 504: Gateway time-out</title></head>"
+            "<body><h1>Gateway time-out</h1><p>cloudflare details</p></body></html>"
+        )
+        compact = self.server.summarize_error_for_log(raw_error, limit=80)
+        self.assertNotIn("<html>", compact.lower())
+        self.assertIn("504", compact)
+        self.assertIn("Gateway time-out", compact)
+        self.assertLessEqual(len(compact), 80)
 
     def test_normalize_report_time_fields_rewrites_model_hallucinated_time(self):
         generated_at = datetime(2026, 3, 5, 23, 58, 0)

@@ -221,6 +221,27 @@ def _cfg_text(name: str, default: str = "") -> str:
     return str(_cfg_get(name, default) or "").strip()
 
 
+def summarize_error_for_log(error: object, limit: int = 240) -> str:
+    """压缩异常文本，避免在日志中输出整段 HTML/长响应体。"""
+    text = str(error or "").strip()
+    if not text:
+        return "未知错误"
+
+    # 去除 HTML 标签（例如网关 504 的整页 HTML 错误页）
+    stripped = re.sub(r"(?is)<script[^>]*>.*?</script>", " ", text)
+    stripped = re.sub(r"(?is)<style[^>]*>.*?</style>", " ", stripped)
+    stripped = re.sub(r"(?is)<[^>]+>", " ", stripped)
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    if stripped:
+        text = stripped
+
+    limit = max(32, int(limit or 240))
+    if len(text) > limit:
+        text = text[: limit - 1] + "…"
+
+    return text
+
+
 def _cfg_text_list(name: str, default: list[str]) -> list[str]:
     value = _cfg_get(name, default)
     if isinstance(value, (list, tuple, set)):
@@ -509,22 +530,50 @@ API_TIMEOUT = _cfg_float("API_TIMEOUT", 90.0)             # 通用 API 超时时
 REPORT_API_TIMEOUT = _cfg_float("REPORT_API_TIMEOUT", 210.0)  # 报告生成专用超时（秒）
 if REPORT_API_TIMEOUT < API_TIMEOUT:
     REPORT_API_TIMEOUT = API_TIMEOUT
-REPORT_DRAFT_API_TIMEOUT = _cfg_float("REPORT_DRAFT_API_TIMEOUT", min(REPORT_API_TIMEOUT, 180.0))
+REPORT_V3_PROFILE = _cfg_text("REPORT_V3_PROFILE", "balanced").strip().lower()
+if REPORT_V3_PROFILE not in {"balanced", "quality"}:
+    REPORT_V3_PROFILE = "balanced"
+report_default_draft_timeout = min(REPORT_API_TIMEOUT, 140.0 if REPORT_V3_PROFILE == "balanced" else 180.0)
+REPORT_DRAFT_API_TIMEOUT = _cfg_float("REPORT_DRAFT_API_TIMEOUT", report_default_draft_timeout)
 REPORT_DRAFT_API_TIMEOUT = max(30.0, min(REPORT_DRAFT_API_TIMEOUT, REPORT_API_TIMEOUT))
-REPORT_V3_DRAFT_MAX_TOKENS = _cfg_int("REPORT_V3_DRAFT_MAX_TOKENS", 5500)
+report_default_draft_tokens = 4200 if REPORT_V3_PROFILE == "balanced" else 5500
+REPORT_V3_DRAFT_MAX_TOKENS = _cfg_int("REPORT_V3_DRAFT_MAX_TOKENS", report_default_draft_tokens)
 REPORT_V3_DRAFT_MAX_TOKENS = max(2500, REPORT_V3_DRAFT_MAX_TOKENS)
-REPORT_V3_DRAFT_FACTS_LIMIT = _cfg_int("REPORT_V3_DRAFT_FACTS_LIMIT", 48)
+report_default_facts_limit = 34 if REPORT_V3_PROFILE == "balanced" else 48
+REPORT_V3_DRAFT_FACTS_LIMIT = _cfg_int("REPORT_V3_DRAFT_FACTS_LIMIT", report_default_facts_limit)
 REPORT_V3_DRAFT_FACTS_LIMIT = max(20, REPORT_V3_DRAFT_FACTS_LIMIT)
-REPORT_V3_DRAFT_MIN_FACTS_LIMIT = _cfg_int("REPORT_V3_DRAFT_MIN_FACTS_LIMIT", 24)
+report_default_min_facts_limit = 18 if REPORT_V3_PROFILE == "balanced" else 24
+REPORT_V3_DRAFT_MIN_FACTS_LIMIT = _cfg_int("REPORT_V3_DRAFT_MIN_FACTS_LIMIT", report_default_min_facts_limit)
 REPORT_V3_DRAFT_MIN_FACTS_LIMIT = max(10, min(REPORT_V3_DRAFT_MIN_FACTS_LIMIT, REPORT_V3_DRAFT_FACTS_LIMIT))
-REPORT_V3_DRAFT_RETRY_COUNT = _cfg_int("REPORT_V3_DRAFT_RETRY_COUNT", 2)
+report_default_retry_count = 1 if REPORT_V3_PROFILE == "balanced" else 2
+REPORT_V3_DRAFT_RETRY_COUNT = _cfg_int("REPORT_V3_DRAFT_RETRY_COUNT", report_default_retry_count)
 REPORT_V3_DRAFT_RETRY_COUNT = max(0, REPORT_V3_DRAFT_RETRY_COUNT)
-REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS = _cfg_float("REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS", 1.5)
+report_default_backoff = 0.8 if REPORT_V3_PROFILE == "balanced" else 1.5
+REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS = _cfg_float("REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS", report_default_backoff)
 REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS = max(0.0, REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS)
+REPORT_V3_FAST_FAIL_ON_DRAFT_EMPTY = _cfg_bool(
+    "REPORT_V3_FAST_FAIL_ON_DRAFT_EMPTY",
+    REPORT_V3_PROFILE == "balanced",
+)
+report_default_review_max_tokens = 5200 if REPORT_V3_PROFILE == "balanced" else 6000
+REPORT_V3_REVIEW_MAX_TOKENS = _cfg_int("REPORT_V3_REVIEW_MAX_TOKENS", report_default_review_max_tokens)
+REPORT_V3_REVIEW_MAX_TOKENS = max(2600, REPORT_V3_REVIEW_MAX_TOKENS)
+report_default_review_rounds = 2 if REPORT_V3_PROFILE == "balanced" else 3
+REPORT_V3_REVIEW_BASE_ROUNDS = _cfg_int("REPORT_V3_REVIEW_BASE_ROUNDS", report_default_review_rounds)
+REPORT_V3_REVIEW_BASE_ROUNDS = max(1, min(REPORT_V3_REVIEW_BASE_ROUNDS, 4))
+REPORT_V3_QUALITY_FIX_ROUNDS = _cfg_int("REPORT_V3_QUALITY_FIX_ROUNDS", 1)
+REPORT_V3_QUALITY_FIX_ROUNDS = max(0, min(REPORT_V3_QUALITY_FIX_ROUNDS, 2))
 REPORT_V3_FAILOVER_ENABLED = _cfg_bool("REPORT_V3_FAILOVER_ENABLED", True)
 REPORT_V3_FAILOVER_LANE = _cfg_text("REPORT_V3_FAILOVER_LANE", "question").lower()
 if REPORT_V3_FAILOVER_LANE not in {"question", "report"}:
     REPORT_V3_FAILOVER_LANE = "question"
+GATEWAY_CIRCUIT_BREAKER_ENABLED = _cfg_bool("GATEWAY_CIRCUIT_BREAKER_ENABLED", True)
+GATEWAY_CIRCUIT_FAIL_THRESHOLD = _cfg_int("GATEWAY_CIRCUIT_FAIL_THRESHOLD", 2)
+GATEWAY_CIRCUIT_FAIL_THRESHOLD = max(1, min(GATEWAY_CIRCUIT_FAIL_THRESHOLD, 8))
+GATEWAY_CIRCUIT_COOLDOWN_SECONDS = _cfg_float("GATEWAY_CIRCUIT_COOLDOWN_SECONDS", 120.0)
+GATEWAY_CIRCUIT_COOLDOWN_SECONDS = max(30.0, min(GATEWAY_CIRCUIT_COOLDOWN_SECONDS, 900.0))
+GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = _cfg_float("GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS", 180.0)
+GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = max(30.0, min(GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS, 1200.0))
 
 # 手机验证码登录配置
 SMS_PROVIDER = _cfg_text("SMS_PROVIDER", "mock").lower()
@@ -641,6 +690,21 @@ def resolve_model_name(call_type: str = "", model_name: str = "") -> str:
     if "report" in lowered:
         return _resolve_lane_model_name("report")
     return QUESTION_MODEL_NAME
+
+
+def resolve_model_name_for_lane(call_type: str = "", model_name: str = "", selected_lane: str = "") -> str:
+    """根据实际选中的 lane 选择模型，避免 fallback 时模型和网关不匹配。"""
+    explicit = str(model_name or "").strip()
+    if explicit:
+        return explicit
+
+    lane = str(selected_lane or "").strip().lower()
+    if lane in {"question", "report", "summary", "search_decision"}:
+        lane_model = _resolve_lane_model_name(lane)
+        if lane_model:
+            return lane_model
+
+    return resolve_model_name(call_type=call_type, model_name=model_name)
 
 
 def resolve_call_lane(call_type: str = "", model_name: str = "") -> str:
@@ -4366,6 +4430,152 @@ question_ai_client = None
 report_ai_client = None
 summary_ai_client = None
 search_decision_ai_client = None
+GATEWAY_CIRCUIT_LANES = ("question", "report", "summary", "search_decision")
+gateway_circuit_lock = threading.RLock()
+
+
+def _new_gateway_circuit_entry() -> dict:
+    return {
+        "fail_count": 0,
+        "first_fail_at": 0.0,
+        "cooldown_until": 0.0,
+        "last_error_type": "",
+    }
+
+
+gateway_circuit_state = {lane: _new_gateway_circuit_entry() for lane in GATEWAY_CIRCUIT_LANES}
+
+
+def _normalize_gateway_lane(lane: str) -> str:
+    normalized = str(lane or "").strip().lower()
+    if normalized in GATEWAY_CIRCUIT_LANES:
+        return normalized
+    return ""
+
+
+def _cleanup_gateway_circuit_entry_locked(entry: dict, now_ts: float) -> None:
+    cooldown_until = float(entry.get("cooldown_until", 0.0) or 0.0)
+    first_fail_at = float(entry.get("first_fail_at", 0.0) or 0.0)
+    if cooldown_until > 0 and now_ts >= cooldown_until:
+        entry.update(_new_gateway_circuit_entry())
+        return
+
+    if first_fail_at > 0 and (now_ts - first_fail_at) > GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS and cooldown_until <= 0:
+        entry.update(_new_gateway_circuit_entry())
+
+
+def reset_gateway_circuit_state(lanes: Optional[list[str]] = None) -> None:
+    """重置网关熔断状态（测试与运维排障使用）。"""
+    if lanes is None:
+        normalized_lanes = list(GATEWAY_CIRCUIT_LANES)
+    else:
+        normalized_lanes = [
+            lane_name
+            for lane_name in (_normalize_gateway_lane(item) for item in lanes)
+            if lane_name
+        ]
+
+    with gateway_circuit_lock:
+        for lane_name in normalized_lanes:
+            gateway_circuit_state[lane_name] = _new_gateway_circuit_entry()
+
+
+def get_gateway_circuit_snapshot(lane: str) -> dict:
+    lane_name = _normalize_gateway_lane(lane)
+    if not lane_name:
+        return {}
+
+    now_ts = _time.time()
+    with gateway_circuit_lock:
+        entry = gateway_circuit_state.setdefault(lane_name, _new_gateway_circuit_entry())
+        _cleanup_gateway_circuit_entry_locked(entry, now_ts)
+        return {
+            "fail_count": int(entry.get("fail_count", 0) or 0),
+            "first_fail_at": float(entry.get("first_fail_at", 0.0) or 0.0),
+            "cooldown_until": float(entry.get("cooldown_until", 0.0) or 0.0),
+            "last_error_type": str(entry.get("last_error_type", "") or ""),
+            "cooldown_remaining_seconds": max(0.0, float(entry.get("cooldown_until", 0.0) or 0.0) - now_ts),
+        }
+
+
+def is_gateway_lane_in_cooldown(lane: str, now_ts: float = None) -> bool:
+    lane_name = _normalize_gateway_lane(lane)
+    if not lane_name or not GATEWAY_CIRCUIT_BREAKER_ENABLED:
+        return False
+
+    current_ts = float(now_ts) if now_ts is not None else _time.time()
+    with gateway_circuit_lock:
+        entry = gateway_circuit_state.setdefault(lane_name, _new_gateway_circuit_entry())
+        _cleanup_gateway_circuit_entry_locked(entry, current_ts)
+        return float(entry.get("cooldown_until", 0.0) or 0.0) > current_ts
+
+
+def classify_gateway_failure_kind(raw_error_message: str) -> str:
+    lowered = str(raw_error_message or "").strip().lower()
+    if not lowered:
+        return "unknown"
+    if "timeout" in lowered or "timed out" in lowered:
+        return "timeout"
+    if "<html" in lowered or "<!doctype html" in lowered:
+        return "html_payload"
+    if re.search(r"\b5\d{2}\b", lowered) or "gateway time-out" in lowered or "gateway timeout" in lowered:
+        return "http_5xx"
+    return "other"
+
+
+def _should_count_circuit_failure(error_kind: str) -> bool:
+    return str(error_kind or "").strip().lower() in {"timeout", "http_5xx", "html_payload"}
+
+
+def record_gateway_lane_failure(lane: str, error_kind: str, now_ts: float = None) -> dict:
+    lane_name = _normalize_gateway_lane(lane)
+    normalized_error = str(error_kind or "").strip().lower() or "unknown"
+    if not lane_name:
+        return {"counted": False, "lane": "", "error_kind": normalized_error}
+    if not GATEWAY_CIRCUIT_BREAKER_ENABLED:
+        return {"counted": False, "lane": lane_name, "error_kind": normalized_error}
+    if not _should_count_circuit_failure(normalized_error):
+        return {"counted": False, "lane": lane_name, "error_kind": normalized_error}
+
+    current_ts = float(now_ts) if now_ts is not None else _time.time()
+    with gateway_circuit_lock:
+        entry = gateway_circuit_state.setdefault(lane_name, _new_gateway_circuit_entry())
+        _cleanup_gateway_circuit_entry_locked(entry, current_ts)
+
+        first_fail_at = float(entry.get("first_fail_at", 0.0) or 0.0)
+        if first_fail_at <= 0 or (current_ts - first_fail_at) > GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS:
+            entry["first_fail_at"] = current_ts
+            entry["fail_count"] = 0
+
+        entry["fail_count"] = int(entry.get("fail_count", 0) or 0) + 1
+        entry["last_error_type"] = normalized_error
+
+        circuit_opened = False
+        if entry["fail_count"] >= GATEWAY_CIRCUIT_FAIL_THRESHOLD:
+            entry["cooldown_until"] = max(
+                float(entry.get("cooldown_until", 0.0) or 0.0),
+                current_ts + GATEWAY_CIRCUIT_COOLDOWN_SECONDS,
+            )
+            circuit_opened = True
+
+        cooldown_until = float(entry.get("cooldown_until", 0.0) or 0.0)
+        return {
+            "counted": True,
+            "lane": lane_name,
+            "error_kind": normalized_error,
+            "fail_count": int(entry.get("fail_count", 0) or 0),
+            "cooldown_until": cooldown_until,
+            "cooldown_remaining_seconds": max(0.0, cooldown_until - current_ts),
+            "circuit_opened": circuit_opened,
+        }
+
+
+def record_gateway_lane_success(lane: str) -> None:
+    lane_name = _normalize_gateway_lane(lane)
+    if not lane_name:
+        return
+    with gateway_circuit_lock:
+        gateway_circuit_state[lane_name] = _new_gateway_circuit_entry()
 
 # 检查 API Key 是否有效
 def is_valid_api_key(api_key: str) -> bool:
@@ -4507,26 +4717,95 @@ else:
         print("❌ AI 客户端初始化前置条件不满足")
 
 
-def resolve_ai_client(call_type: str = "", model_name: str = "", preferred_lane: str = ""):
-    """按调用类型选择客户端；支持显式指定 lane，目标客户端不可用时回退到另一侧。"""
+def _lane_client_by_name(lane: str):
+    lane_name = str(lane or "").strip().lower()
+    if lane_name == "question":
+        return question_ai_client
+    if lane_name == "report":
+        return report_ai_client
+    if lane_name == "summary":
+        return summary_ai_client
+    if lane_name == "search_decision":
+        return search_decision_ai_client
+    return None
+
+
+def _lane_candidates_for_client_resolution(call_type: str = "", model_name: str = "", preferred_lane: str = "") -> list[str]:
     forced_lane = str(preferred_lane or "").strip().lower()
     if forced_lane == "search_decision":
-        return search_decision_ai_client or summary_ai_client or question_ai_client or report_ai_client
+        return ["search_decision", "summary", "question", "report"]
     if forced_lane == "summary":
-        return summary_ai_client or report_ai_client or question_ai_client or search_decision_ai_client
+        return ["summary", "report", "question", "search_decision"]
     if forced_lane == "report":
-        return report_ai_client or question_ai_client
+        return ["report", "question"]
     if forced_lane == "question":
-        return question_ai_client or report_ai_client
+        return ["question", "report"]
 
     lane = resolve_call_lane(call_type=call_type, model_name=model_name)
     if lane == "search_decision":
-        return search_decision_ai_client or summary_ai_client or question_ai_client or report_ai_client
+        return ["search_decision", "summary", "question", "report"]
     if lane == "summary":
-        return summary_ai_client or report_ai_client or question_ai_client or search_decision_ai_client
+        return ["summary", "report", "question", "search_decision"]
     if lane == "report":
-        return report_ai_client or question_ai_client
-    return question_ai_client or report_ai_client or summary_ai_client or search_decision_ai_client
+        return ["report", "question"]
+    return ["question", "report", "summary", "search_decision"]
+
+
+def resolve_ai_client_with_lane(
+    call_type: str = "",
+    model_name: str = "",
+    preferred_lane: str = "",
+    respect_circuit_breaker: bool = True,
+) -> tuple[Optional[object], str, dict]:
+    """按调用类型选择客户端，并返回命中的 lane 与熔断元信息。"""
+    candidates = _lane_candidates_for_client_resolution(
+        call_type=call_type,
+        model_name=model_name,
+        preferred_lane=preferred_lane,
+    )
+    requested_lane = candidates[0] if candidates else ""
+    skip_open = bool(respect_circuit_breaker and GATEWAY_CIRCUIT_BREAKER_ENABLED)
+    skipped_open_lanes = []
+    fallback_pool = []
+
+    for lane_name in candidates:
+        client = _lane_client_by_name(lane_name)
+        if not client:
+            continue
+        fallback_pool.append((lane_name, client))
+        if skip_open and is_gateway_lane_in_cooldown(lane_name):
+            skipped_open_lanes.append(lane_name)
+            continue
+        return client, lane_name, {
+            "requested_lane": requested_lane,
+            "skipped_open_lanes": skipped_open_lanes,
+            "forced_open_lane": "",
+        }
+
+    if fallback_pool:
+        # 所有候选 lane 均处于冷却时，选择第一个可用客户端避免彻底不可用。
+        lane_name, client = fallback_pool[0]
+        return client, lane_name, {
+            "requested_lane": requested_lane,
+            "skipped_open_lanes": skipped_open_lanes,
+            "forced_open_lane": lane_name if skipped_open_lanes else "",
+        }
+
+    return None, "", {
+        "requested_lane": requested_lane,
+        "skipped_open_lanes": skipped_open_lanes,
+        "forced_open_lane": "",
+    }
+
+
+def resolve_ai_client(call_type: str = "", model_name: str = "", preferred_lane: str = ""):
+    """兼容历史接口，仅返回客户端对象。"""
+    client, _, _ = resolve_ai_client_with_lane(
+        call_type=call_type,
+        model_name=model_name,
+        preferred_lane=preferred_lane,
+    )
+    return client
 
 
 def _content_block_field(block, field: str):
@@ -9328,12 +9607,12 @@ def generate_report_v3_pipeline(
     session_id: Optional[str] = None,
     preferred_lane: str = "",
     call_type_suffix: str = "",
-) -> Optional[dict]:
+    ) -> Optional[dict]:
     """执行 V3 报告生成流水线。失败时返回包含 reason 的调试结构。"""
     try:
         pipeline_lane = str(preferred_lane or "report").strip().lower() or "report"
         report_draft_max_tokens = min(MAX_TOKENS_REPORT, REPORT_V3_DRAFT_MAX_TOKENS)
-        report_review_max_tokens = min(MAX_TOKENS_REPORT, 6000)
+        report_review_max_tokens = min(MAX_TOKENS_REPORT, REPORT_V3_REVIEW_MAX_TOKENS)
 
         evidence_pack = build_report_evidence_pack(session)
 
@@ -9404,6 +9683,10 @@ def generate_report_v3_pipeline(
 
             if not draft_raw:
                 last_draft_reason = "draft_generation_failed"
+                if REPORT_V3_FAST_FAIL_ON_DRAFT_EMPTY and attempt_index == 0 and draft_attempt_total > 1:
+                    if ENABLE_DEBUG_LOG:
+                        print("⚠️ 草案首轮空响应，触发快速失败以尽快切换 failover 通道")
+                    break
             else:
                 draft_parse_meta = {}
                 draft_parsed = parse_structured_json_response(
@@ -9450,8 +9733,8 @@ def generate_report_v3_pipeline(
 
         current_draft, local_issues = validate_report_draft_v3(draft_parsed, evidence_pack)
         review_issues = list(local_issues)
-        base_review_rounds = 3  # 初审 + 最多2轮定向修复
-        quality_fix_rounds = 1  # 质量门禁不达标时额外补修1轮
+        base_review_rounds = REPORT_V3_REVIEW_BASE_ROUNDS
+        quality_fix_rounds = REPORT_V3_QUALITY_FIX_ROUNDS
         total_round_budget = base_review_rounds + quality_fix_rounds
         remaining_quality_fix_rounds = quality_fix_rounds
         final_issues = list(local_issues)
@@ -9466,6 +9749,11 @@ def generate_report_v3_pipeline(
 
             review_prompt = build_report_review_prompt_v3(session, evidence_pack, current_draft, review_issues)
             review_prompt_length = len(review_prompt)
+            review_max_tokens = compute_adaptive_report_tokens(
+                report_review_max_tokens,
+                review_prompt_length,
+                floor_tokens=2400,
+            )
             review_timeout = compute_adaptive_report_timeout(
                 REPORT_API_TIMEOUT,
                 review_prompt_length,
@@ -9473,7 +9761,7 @@ def generate_report_v3_pipeline(
             )
             review_raw = call_claude(
                 review_prompt,
-                max_tokens=report_review_max_tokens,
+                max_tokens=review_max_tokens,
                 call_type=f"report_v3_review_round_{review_round + 1}{call_type_suffix}",
                 timeout=review_timeout,
                 preferred_lane=preferred_lane,
@@ -9484,6 +9772,7 @@ def generate_report_v3_pipeline(
                     "reason": "review_generation_failed",
                     "error": (
                         f"review_round={review_round + 1},"
+                        f"max_tokens={review_max_tokens},"
                         f"timeout={review_timeout},"
                         f"prompt_length={review_prompt_length},"
                         "raw_length=0"
@@ -9504,6 +9793,7 @@ def generate_report_v3_pipeline(
                     "reason": "review_parse_failed",
                     "error": (
                         f"review_round={review_round + 1},"
+                        f"max_tokens={review_max_tokens},"
                         f"timeout={review_timeout},"
                         f"prompt_length={review_prompt_length},"
                         f"raw_length={len(review_raw or '')}"
@@ -9573,11 +9863,11 @@ def generate_report_v3_pipeline(
         }
     except Exception as e:
         if ENABLE_DEBUG_LOG:
-            print(f"⚠️ V3 报告流程失败: {e}")
+            print(f"⚠️ V3 报告流程失败: {summarize_error_for_log(e, limit=260)}")
         return {
             "status": "failed",
             "reason": "exception",
-            "error": str(e)[:200],
+            "error": summarize_error_for_log(e, limit=200),
             "parse_stage": "exception",
             "lane": str(preferred_lane or "report").strip().lower() or "report",
             "raw_excerpt": "",
@@ -9621,14 +9911,16 @@ async def call_claude_async(prompt: str, max_tokens: int = None,
 
         return response_text
     except Exception as e:
-        error_msg = str(e)
+        raw_error_msg = str(e)
+        error_msg = summarize_error_for_log(raw_error_msg, limit=280)
         print(f"❌ Claude API 异步调用失败: {error_msg}")
 
-        if "timeout" in error_msg.lower():
+        lower_error = raw_error_msg.lower()
+        if "timeout" in lower_error:
             print(f"   原因: API 调用超时（超过{API_TIMEOUT}秒）")
-        elif "rate" in error_msg.lower():
+        elif "rate" in lower_error:
             print(f"   原因: API 请求频率限制")
-        elif "authentication" in error_msg.lower() or "api key" in error_msg.lower():
+        elif "authentication" in lower_error or "api key" in lower_error:
             print(f"   原因: API Key 认证失败")
 
         return None
@@ -9728,10 +10020,14 @@ def describe_image_with_vision(image_path: Path, filename: str) -> str:
             else:
                 return f"[图片: {filename}] (描述生成失败: 空响应)"
         else:
-            error_msg = response.json().get("error", {}).get("message", response.text[:200])
+            try:
+                error_msg = response.json().get("error", {}).get("message", response.text[:200])
+            except Exception:
+                error_msg = response.text[:200]
+            compact_error_msg = summarize_error_for_log(error_msg, limit=160)
             if ENABLE_DEBUG_LOG:
-                print(f"❌ 视觉 API 调用失败: {error_msg}")
-            return f"[图片: {filename}] (API 错误: {error_msg[:100]})"
+                print(f"❌ 视觉 API 调用失败: {compact_error_msg}")
+            return f"[图片: {filename}] (API 错误: {compact_error_msg[:100]})"
 
     except requests.exceptions.Timeout:
         return f"[图片: {filename}] (API 超时)"
@@ -9748,7 +10044,11 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
     """同步调用 Claude API，带超时控制和容错机制"""
     import time
 
-    effective_client = resolve_ai_client(call_type=call_type, model_name=model_name, preferred_lane=preferred_lane)
+    effective_client, selected_lane, lane_meta = resolve_ai_client_with_lane(
+        call_type=call_type,
+        model_name=model_name,
+        preferred_lane=preferred_lane,
+    )
     if not effective_client:
         return None
 
@@ -9756,7 +10056,11 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
         max_tokens = MAX_TOKENS_DEFAULT
 
     effective_timeout = timeout if timeout is not None else API_TIMEOUT
-    effective_model = resolve_model_name(call_type=call_type, model_name=model_name)
+    effective_model = resolve_model_name_for_lane(
+        call_type=call_type,
+        model_name=model_name,
+        selected_lane=selected_lane,
+    )
 
     start_time = time.time()
     success = False
@@ -9764,10 +10068,23 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
     error_message = None
     response_text = None
     queue_wait_ms = 0.0
+    skipped_open_lanes = []
+    forced_open_lane = ""
+    if isinstance(lane_meta, dict):
+        skipped_open_lanes = list(lane_meta.get("skipped_open_lanes", []) or [])
+        forced_open_lane = str(lane_meta.get("forced_open_lane", "") or "")
 
     try:
         if ENABLE_DEBUG_LOG:
-            print(f"🤖 调用 Claude API，model={effective_model}，max_tokens={max_tokens}，timeout={effective_timeout}s")
+            print(
+                f"🤖 调用 Claude API，lane={selected_lane or 'unknown'}，"
+                f"model={effective_model}，max_tokens={max_tokens}，timeout={effective_timeout}s"
+            )
+            if skipped_open_lanes:
+                if forced_open_lane:
+                    print(f"⚠️ 熔断告警：候选 lane 处于冷却，临时继续使用 {forced_open_lane}")
+                else:
+                    print(f"ℹ️ 熔断切换：跳过冷却 lane={','.join(skipped_open_lanes)}")
 
         # 使用配置的超时时间
         with ai_call_priority_slot(call_type) as priority_meta:
@@ -9787,28 +10104,42 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
         if not response_text:
             raise ValueError("模型响应中未包含可用文本内容")
         success = True
+        record_gateway_lane_success(selected_lane)
 
         if ENABLE_DEBUG_LOG:
             print(f"✅ API 响应成功，长度: {len(response_text)} 字符")
 
     except Exception as e:
-        error_message = str(e)
+        raw_error_message = str(e)
+        error_message = summarize_error_for_log(raw_error_message, limit=320)
         print(f"❌ Claude API 调用失败: {error_message}")
+        error_kind = classify_gateway_failure_kind(raw_error_message)
+        circuit_meta = record_gateway_lane_failure(selected_lane, error_kind)
+        if circuit_meta.get("circuit_opened"):
+            cooldown_seconds = int(round(float(circuit_meta.get("cooldown_remaining_seconds", 0.0) or 0.0)))
+            cooldown_seconds = max(1, cooldown_seconds)
+            print(
+                f"⚠️ 网关熔断触发: lane={selected_lane}, "
+                f"error={error_kind}, cooldown={cooldown_seconds}s"
+            )
 
         # 详细的错误分类和容错处理
-        if "timeout" in error_message.lower():
+        lower_error = raw_error_message.lower()
+        call_type_lower = str(call_type or "").lower()
+        is_report_call = call_type_lower.startswith("report")
+        if "timeout" in lower_error:
             timeout_occurred = True
             print(f"   原因: API 调用超时（超过{effective_timeout}秒）")
 
-            # 超时容错：如果允许重试，尝试减少 prompt 长度
-            if retry_on_timeout and len(prompt) > 5000:
+            # 超时容错：报告链路由上层统一重试/切换，避免在底层递归重试导致总耗时暴涨。
+            should_retry_with_shrink = retry_on_timeout and len(prompt) > 5000 and not is_report_call
+            if should_retry_with_shrink:
                 print(f"   🔄 尝试容错重试：截断 prompt 后重试...")
                 # 截断 prompt 到原来的 70%
                 truncated_prompt = prompt[:int(len(prompt) * 0.7)]
                 truncated_prompt += "\n\n[注意：由于内容过长，部分上下文已被截断，请基于已有信息进行回答]"
 
                 # 报告生成更容易触发长响应超时，重试时同步收敛输出长度并放宽超时
-                is_report_call = "report" in (call_type or "").lower()
                 retry_max_tokens = max_tokens
                 retry_timeout = effective_timeout
                 if is_report_call:
@@ -9833,9 +10164,9 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
                 if response_text:
                     success = True
 
-        elif "rate" in error_message.lower():
+        elif "rate" in lower_error:
             print(f"   原因: API 请求频率限制")
-        elif "authentication" in error_message.lower() or "api key" in error_message.lower():
+        elif "authentication" in lower_error or "api key" in lower_error:
             print(f"   原因: API Key 认证失败")
 
     finally:
@@ -14812,6 +15143,20 @@ if __name__ == '__main__':
         print(f"搜索决策模型: {SEARCH_DECISION_MODEL_NAME}")
         print(f"搜索决策网关: {'可用' if search_decision_ai_client else '不可用'} @ {search_decision_endpoint}")
         print(f"搜索决策缓存: TTL={SEARCH_DECISION_CACHE_TTL_SECONDS}s, MAX={SEARCH_DECISION_CACHE_MAX_ENTRIES}")
+        print(
+            "V3 配置: "
+            f"profile={REPORT_V3_PROFILE}, "
+            f"draft_timeout={REPORT_DRAFT_API_TIMEOUT}s, "
+            f"draft_tokens={REPORT_V3_DRAFT_MAX_TOKENS}, "
+            f"facts_limit={REPORT_V3_DRAFT_FACTS_LIMIT}, "
+            f"draft_retries={REPORT_V3_DRAFT_RETRY_COUNT}, "
+            f"review_tokens={REPORT_V3_REVIEW_MAX_TOKENS}, "
+            f"review_rounds={REPORT_V3_REVIEW_BASE_ROUNDS}+{REPORT_V3_QUALITY_FIX_ROUNDS}, "
+            f"circuit={'on' if GATEWAY_CIRCUIT_BREAKER_ENABLED else 'off'}"
+            f"(threshold={GATEWAY_CIRCUIT_FAIL_THRESHOLD},"
+            f"cooldown={int(GATEWAY_CIRCUIT_COOLDOWN_SECONDS)}s,"
+            f"window={int(GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS)}s)"
+        )
 
     # 搜索功能状态
     search_enabled = ENABLE_WEB_SEARCH and ZHIPU_API_KEY and ZHIPU_API_KEY != "your-zhipu-api-key-here"
