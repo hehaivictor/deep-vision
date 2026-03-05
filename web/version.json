@@ -1,7 +1,17 @@
 {
-  "version": "2.7.5",
+  "version": "2.7.6",
   "releaseDate": "2026-03-05",
   "changelog": [
+    {
+      "version": "2.7.6",
+      "date": "2026-03-05",
+      "type": "patch",
+      "title": "修复：支持网关 Bearer 鉴权调用",
+      "changes": [
+        "配置：新增问题与报告通道的 Bearer 鉴权开关",
+        "优化：将鉴权模式纳入客户端复用签名并输出初始化日志"
+      ]
+    },
     {
       "version": "2.7.5",
       "date": "2026-03-05",

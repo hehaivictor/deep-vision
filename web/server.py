@@ -346,6 +346,11 @@ _base_model_name = _cfg_text("MODEL_NAME", str(MODEL_NAME or "").strip())
 QUESTION_MODEL_NAME = _cfg_text("QUESTION_MODEL_NAME", _base_model_name) or _base_model_name
 REPORT_MODEL_NAME = _cfg_text("REPORT_MODEL_NAME", QUESTION_MODEL_NAME) or QUESTION_MODEL_NAME
 
+# 鉴权路由配置：兼容 Anthropic x-api-key 与 Bearer Authorization 两种网关模式
+_global_use_bearer_auth = _cfg_bool("ANTHROPIC_USE_BEARER_AUTH", False)
+QUESTION_USE_BEARER_AUTH = _cfg_bool("QUESTION_USE_BEARER_AUTH", _global_use_bearer_auth)
+REPORT_USE_BEARER_AUTH = _cfg_bool("REPORT_USE_BEARER_AUTH", QUESTION_USE_BEARER_AUTH)
+
 # 网关路由配置：支持问题/报告分别使用不同 API Key 和 Base URL
 _cfg_question_api_key = _first_non_empty(
     _cfg_text("QUESTION_API_KEY", ""),
@@ -3404,24 +3409,31 @@ def is_valid_api_key(api_key: str) -> bool:
     return True
 
 
-def _create_anthropic_client(api_key: str, base_url: str):
+def _create_anthropic_client(api_key: str, base_url: str, use_bearer_auth: bool = False):
     kwargs = {"api_key": api_key}
     if base_url:
         kwargs["base_url"] = base_url
+    if use_bearer_auth:
+        kwargs["default_headers"] = {"Authorization": f"Bearer {api_key}"}
     return anthropic.Anthropic(**kwargs)
 
 
-def _init_lane_client(lane_name: str, api_key: str, base_url: str, test_model: str):
+def _init_lane_client(lane_name: str, api_key: str, base_url: str, test_model: str, use_bearer_auth: bool = False):
     if not is_valid_api_key(api_key):
         print(f"⚠️  {lane_name} 网关 API Key 未配置或为占位值，跳过初始化")
         return None
 
     try:
-        client = _create_anthropic_client(api_key=api_key, base_url=base_url)
+        client = _create_anthropic_client(
+            api_key=api_key,
+            base_url=base_url,
+            use_bearer_auth=use_bearer_auth,
+        )
         endpoint = base_url or "(Anthropic 官方默认地址)"
         print(f"✅ {lane_name} 网关客户端已初始化")
         print(f"   模型: {test_model}")
         print(f"   Base URL: {endpoint}")
+        print(f"   鉴权模式: {'Bearer Authorization' if use_bearer_auth else 'Anthropic x-api-key'}")
 
         # 连接测试失败不阻断服务，保留客户端以便后续重试
         try:
@@ -3442,14 +3454,15 @@ def _init_lane_client(lane_name: str, api_key: str, base_url: str, test_model: s
 
 
 if ENABLE_AI and HAS_ANTHROPIC:
-    question_signature = (QUESTION_API_KEY, QUESTION_BASE_URL)
-    report_signature = (REPORT_API_KEY, REPORT_BASE_URL)
+    question_signature = (QUESTION_API_KEY, QUESTION_BASE_URL, QUESTION_USE_BEARER_AUTH)
+    report_signature = (REPORT_API_KEY, REPORT_BASE_URL, REPORT_USE_BEARER_AUTH)
 
     question_ai_client = _init_lane_client(
         lane_name="问题",
         api_key=QUESTION_API_KEY,
         base_url=QUESTION_BASE_URL,
-        test_model=QUESTION_MODEL_NAME
+        test_model=QUESTION_MODEL_NAME,
+        use_bearer_auth=QUESTION_USE_BEARER_AUTH,
     )
 
     if report_signature == question_signature:
@@ -3461,7 +3474,8 @@ if ENABLE_AI and HAS_ANTHROPIC:
             lane_name="报告",
             api_key=REPORT_API_KEY,
             base_url=REPORT_BASE_URL,
-            test_model=REPORT_MODEL_NAME
+            test_model=REPORT_MODEL_NAME,
+            use_bearer_auth=REPORT_USE_BEARER_AUTH,
         )
 
     claude_client = question_ai_client or report_ai_client
