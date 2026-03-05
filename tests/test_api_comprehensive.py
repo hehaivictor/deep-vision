@@ -700,6 +700,8 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(get_report_resp.status_code, 200)
         content = get_report_resp.get_json().get("content", "")
         self.assertIn("访谈报告", content)
+        self.assertIn("**生成日期**:", content)
+        self.assertIn("**报告编号**: deep-vision-", content)
         self.assertIn("问题 1：需求是什么？", content)
         self.assertIn("】问题 1：需求是什么？", content)
         self.assertNotIn("Q1:", content)

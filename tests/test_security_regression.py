@@ -1,6 +1,7 @@
 import io
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import types
@@ -398,6 +399,24 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertGreaterEqual(self.server.REPORT_V3_REVIEW_MAX_TOKENS, 2600)
         self.assertTrue(self.server.REPORT_V3_DUAL_STAGE_ENABLED)
 
+    def test_report_v3_runtime_min_review_rounds_by_profile(self):
+        env_key = "REPORT_V3_MIN_REVIEW_ROUNDS"
+        old_value = os.environ.get(env_key)
+        try:
+            if env_key in os.environ:
+                del os.environ[env_key]
+
+            balanced_cfg = self.server.get_report_v3_runtime_config("balanced")
+            quality_cfg = self.server.get_report_v3_runtime_config("quality")
+
+            self.assertEqual(balanced_cfg.get("min_required_review_rounds"), 1)
+            self.assertGreaterEqual(quality_cfg.get("min_required_review_rounds", 0), 2)
+        finally:
+            if old_value is None:
+                os.environ.pop(env_key, None)
+            else:
+                os.environ[env_key] = old_value
+
     def test_resolve_report_v3_phase_lane_defaults_and_failover_behavior(self):
         keys = [
             "REPORT_V3_DUAL_STAGE_ENABLED",
@@ -422,6 +441,84 @@ class SecurityRegressionTests(unittest.TestCase):
         finally:
             for key, value in backup.items():
                 setattr(self.server, key, value)
+
+    def test_generate_report_v3_pipeline_quality_requires_at_least_two_review_rounds(self):
+        env_keys = [
+            "REPORT_V3_REVIEW_BASE_ROUNDS",
+            "REPORT_V3_QUALITY_FIX_ROUNDS",
+            "REPORT_V3_MIN_REVIEW_ROUNDS",
+        ]
+        env_backup = {key: os.environ.get(key) for key in env_keys}
+        fn_keys = [
+            "build_report_evidence_pack",
+            "build_report_draft_prompt_v3",
+            "parse_structured_json_response",
+            "validate_report_draft_v3",
+            "build_report_review_prompt_v3",
+            "parse_report_review_response_v3",
+            "compute_report_quality_meta_v3",
+            "build_quality_gate_issues_v3",
+            "render_report_from_draft_v3",
+            "call_claude",
+        ]
+        fn_backup = {key: getattr(self.server, key) for key in fn_keys}
+        review_call_types = []
+        try:
+            os.environ["REPORT_V3_REVIEW_BASE_ROUNDS"] = "2"
+            os.environ["REPORT_V3_QUALITY_FIX_ROUNDS"] = "0"
+            os.environ["REPORT_V3_MIN_REVIEW_ROUNDS"] = "2"
+
+            self.server.build_report_evidence_pack = lambda _session: {"facts": [{"q_id": "Q1"}], "overall_coverage": 1.0}
+            self.server.build_report_draft_prompt_v3 = lambda *_args, **_kwargs: "draft prompt"
+            self.server.parse_structured_json_response = lambda *_args, **_kwargs: {
+                "overview": "ok",
+                "needs": [],
+                "analysis": {},
+            }
+            self.server.validate_report_draft_v3 = lambda draft, _evidence: (draft, [])
+            self.server.build_report_review_prompt_v3 = lambda *_args, **_kwargs: "review prompt"
+            self.server.parse_report_review_response_v3 = lambda _raw, parse_meta=None: {
+                "passed": True,
+                "issues": [],
+                "revised_draft": {"overview": "ok", "needs": [], "analysis": {}},
+            }
+            self.server.compute_report_quality_meta_v3 = lambda *_args, **_kwargs: {
+                "mode": "v3_structured_reviewed",
+                "evidence_coverage": 1.0,
+                "consistency": 1.0,
+                "actionability": 1.0,
+                "overall": 1.0,
+            }
+            self.server.build_quality_gate_issues_v3 = lambda *_args, **_kwargs: []
+            self.server.render_report_from_draft_v3 = lambda *_args, **_kwargs: "# mock report"
+
+            def _fake_call_claude(_prompt, **kwargs):
+                call_type = str(kwargs.get("call_type", "") or "")
+                if call_type.startswith("report_v3_review_round_"):
+                    review_call_types.append(call_type)
+                return "{\"ok\":true}"
+
+            self.server.call_claude = _fake_call_claude
+
+            result = self.server.generate_report_v3_pipeline(
+                {"topic": "测试"},
+                report_profile="quality",
+                preferred_lane="report",
+            )
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result.get("status"), "success")
+            self.assertEqual(len(review_call_types), 2)
+            self.assertEqual(result.get("review_rounds_executed"), 2)
+            self.assertEqual(result.get("min_required_review_rounds"), 2)
+        finally:
+            for key, value in fn_backup.items():
+                setattr(self.server, key, value)
+            for key, value in env_backup.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_select_slimmed_facts_for_prompt_prioritizes_signal_and_dedup(self):
         keys = [
@@ -690,14 +787,18 @@ class SecurityRegressionTests(unittest.TestCase):
             "| 报告生成时间 | 2025年6月 |\n"
             "**访谈日期**: 2024-01-01\n"
             "报告生成时间：2025年6月\n"
+            "报告编号：V-2024-001 访谈主题：B2C 生成日期：2024年\n"
         )
 
         normalized = self.server.normalize_report_time_fields(raw, generated_at=generated_at)
 
-        self.assertIn("| 报告生成时间 | 2026年3月 |", normalized)
+        self.assertIn("| 报告生成时间 | 2026年03月05日 23:58 |", normalized)
         self.assertIn("**访谈日期**: 2026-03-05", normalized)
-        self.assertIn("报告生成时间：2026年3月", normalized)
+        self.assertIn("报告生成时间：2026年03月05日 23:58", normalized)
+        self.assertIn("报告编号：deep-vision-20260305-2358", normalized)
+        self.assertIn("生成日期：2026年03月05日 23:58", normalized)
         self.assertNotIn("2025年6月", normalized)
+        self.assertNotIn("V-2024-001", normalized)
 
     def test_generate_interview_appendix_keeps_original_order_and_checkbox_markers(self):
         session = {

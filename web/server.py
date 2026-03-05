@@ -641,6 +641,10 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
     quality_fix_rounds = _cfg_int("REPORT_V3_QUALITY_FIX_ROUNDS", 1)
     quality_fix_rounds = max(0, min(quality_fix_rounds, 2))
 
+    min_review_rounds_default = 1 if profile == "balanced" else 2
+    min_required_review_rounds = _cfg_int("REPORT_V3_MIN_REVIEW_ROUNDS", min_review_rounds_default)
+    min_required_review_rounds = max(1, min(min_required_review_rounds, 4))
+
     return {
         "profile": profile,
         "draft_timeout": float(draft_timeout),
@@ -653,6 +657,7 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
         "review_max_tokens": int(review_max_tokens),
         "review_base_rounds": int(review_base_rounds),
         "quality_fix_rounds": int(quality_fix_rounds),
+        "min_required_review_rounds": int(min_required_review_rounds),
     }
 
 # 手机验证码登录配置
@@ -9664,11 +9669,28 @@ def ensure_flowchart_semantic_styles(mermaid_text: str) -> str:
     return source + "\n" + "\n".join(style_lines + class_lines)
 
 
+def build_report_temporal_fields(generated_at: Optional[datetime] = None) -> dict:
+    """统一构建报告时间与编号字段，避免多处格式不一致。"""
+    current = generated_at if isinstance(generated_at, datetime) else datetime.now()
+    if current.tzinfo is not None:
+        local_now = current.astimezone()
+    else:
+        local_now = current
+
+    return {
+        "interview_date": local_now.strftime("%Y-%m-%d"),
+        "generated_datetime_cn": local_now.strftime("%Y年%m月%d日 %H:%M"),
+        "generated_datetime_iso_minute": local_now.strftime("%Y-%m-%d %H:%M"),
+        "report_id": f"deep-vision-{local_now.strftime('%Y%m%d-%H%M')}",
+    }
+
+
 def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) -> str:
     """将 V3 结构化草案渲染为 Markdown 报告。"""
     topic = session.get("topic", "未命名项目")
     now = datetime.now()
-    report_id = f"deep-vision-{now.strftime('%Y%m%d')}"
+    temporal_fields = build_report_temporal_fields(now)
+    report_id = temporal_fields["report_id"]
 
     needs = draft.get("needs", []) if isinstance(draft.get("needs", []), list) else []
     solutions = draft.get("solutions", []) if isinstance(draft.get("solutions", []), list) else []
@@ -9818,7 +9840,8 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
     lines = [
         f"# {topic} 访谈报告",
         "",
-        f"**访谈日期**: {now.strftime('%Y-%m-%d')}",
+        f"**访谈日期**: {temporal_fields['interview_date']}",
+        f"**生成日期**: {temporal_fields['generated_datetime_cn']}",
         f"**报告编号**: {report_id}",
         "",
         "---",
@@ -10151,15 +10174,17 @@ def generate_report_v3_pipeline(
         base_review_rounds = runtime_cfg["review_base_rounds"]
         quality_fix_rounds = runtime_cfg["quality_fix_rounds"]
         total_round_budget = base_review_rounds + quality_fix_rounds
+        min_required_review_rounds = max(1, min(total_round_budget, int(runtime_cfg.get("min_required_review_rounds", 1) or 1)))
         remaining_quality_fix_rounds = quality_fix_rounds
         final_issues = list(local_issues)
 
         for review_round in range(total_round_budget):
+            review_round_no = review_round + 1
             if session_id:
                 update_report_generation_status(
                     session_id,
                     "generating",
-                    message=f"正在执行报告一致性审稿（第{review_round + 1}/{total_round_budget}轮）..."
+                    message=f"正在执行报告一致性审稿（第{review_round_no}/{total_round_budget}轮）..."
                 )
 
             review_prompt = build_report_review_prompt_v3(session, evidence_pack, current_draft, review_issues)
@@ -10185,15 +10210,15 @@ def generate_report_v3_pipeline(
                 return {
                     "status": "failed",
                     "reason": "review_generation_failed",
-                    "error": (
-                        f"profile={runtime_profile},"
-                        f"review_round={review_round + 1},"
-                        f"max_tokens={review_max_tokens},"
-                        f"timeout={review_timeout},"
-                        f"prompt_length={review_prompt_length},"
+                        "error": (
+                            f"profile={runtime_profile},"
+                            f"review_round={review_round_no},"
+                            f"max_tokens={review_max_tokens},"
+                            f"timeout={review_timeout},"
+                            f"prompt_length={review_prompt_length},"
                         "raw_length=0"
                     ),
-                    "parse_stage": f"review_round_{review_round + 1}",
+                        "parse_stage": f"review_round_{review_round_no}",
                     "profile": runtime_profile,
                     "lane": pipeline_lane,
                     "phase_lanes": phase_lanes,
@@ -10220,15 +10245,15 @@ def generate_report_v3_pipeline(
                 return {
                     "status": "failed",
                     "reason": "review_parse_failed",
-                    "error": (
-                        f"profile={runtime_profile},"
-                        f"review_round={review_round + 1},"
-                        f"max_tokens={review_max_tokens},"
-                        f"timeout={review_timeout},"
-                        f"prompt_length={review_prompt_length},"
+                        "error": (
+                            f"profile={runtime_profile},"
+                            f"review_round={review_round_no},"
+                            f"max_tokens={review_max_tokens},"
+                            f"timeout={review_timeout},"
+                            f"prompt_length={review_prompt_length},"
                         f"raw_length={len(review_raw or '')}"
                     ),
-                    "parse_stage": f"review_round_{review_round + 1}",
+                        "parse_stage": f"review_round_{review_round_no}",
                     "profile": runtime_profile,
                     "lane": pipeline_lane,
                     "phase_lanes": phase_lanes,
@@ -10290,6 +10315,19 @@ def generate_report_v3_pipeline(
                     error_msg="",
                 )
 
+                # quality 档可配置要求至少执行 N 轮审稿，避免“一轮即停”导致表述粗糙。
+                if review_round_no < min_required_review_rounds:
+                    review_issues = [{
+                        "type": "extra_review_round",
+                        "target": "overall",
+                        "message": (
+                            f"当前已通过质量门禁，但仅完成第{review_round_no}轮审稿。"
+                            f"请继续进行第{review_round_no + 1}轮深度润色，"
+                            "重点提升表达清晰度、证据衔接与行动可执行性。"
+                        ),
+                    }]
+                    continue
+
                 report_content = render_report_from_draft_v3(session, current_draft, quality_meta)
                 return {
                     "status": "success",
@@ -10299,6 +10337,8 @@ def generate_report_v3_pipeline(
                     "evidence_pack": evidence_pack,
                     "review_issues": final_issues,
                     "phase_lanes": phase_lanes,
+                    "review_rounds_executed": review_round_no,
+                    "min_required_review_rounds": min_required_review_rounds,
                 }
 
             review_issues = merged_issues
@@ -13360,38 +13400,100 @@ def normalize_report_time_fields(content: str, generated_at: Optional[datetime] 
     if not text.strip():
         return text
 
-    now = generated_at or datetime.now()
-    date_text = now.strftime("%Y-%m-%d")
-    month_text = f"{now.year}年{now.month}月"
+    temporal_fields = build_report_temporal_fields(generated_at=generated_at)
+    interview_date = temporal_fields["interview_date"]
+    generated_datetime_cn = temporal_fields["generated_datetime_cn"]
+    report_id = temporal_fields["report_id"]
 
-    normalized = text
-    normalized = re.sub(
+    lines = text.splitlines()
+    if not lines:
+        return text
+    # 仅处理报告头部，避免误改正文提及的历史时间。
+    head_limit = min(len(lines), 80)
+    head_text = "\n".join(lines[:head_limit])
+    tail_text = "\n".join(lines[head_limit:])
+
+    normalized_head = head_text
+
+    # 表格字段统一
+    normalized_head = re.sub(
         r"(?im)^(\|\s*报告生成时间\s*\|)\s*[^|\n]*\|",
-        rf"\g<1> {month_text} |",
-        normalized,
+        rf"\g<1> {generated_datetime_cn} |",
+        normalized_head,
     )
-    normalized = re.sub(
-        r"(?im)^(\*\*报告生成时间\*\*\s*[:：]\s*)[^\n]+$",
-        rf"\g<1>{month_text}",
-        normalized,
+    normalized_head = re.sub(
+        r"(?im)^(\|\s*生成日期\s*\|)\s*[^|\n]*\|",
+        rf"\g<1> {generated_datetime_cn} |",
+        normalized_head,
     )
-    normalized = re.sub(
-        r"(?im)^(\s*报告生成时间\s*[:：]\s*)[^\n]+$",
-        rf"\g<1>{month_text}",
-        normalized,
+    normalized_head = re.sub(
+        r"(?im)^(\|\s*访谈日期\s*\|)\s*[^|\n]*\|",
+        rf"\g<1> {interview_date} |",
+        normalized_head,
     )
-    normalized = re.sub(
-        r"(?im)^(\*\*访谈日期\*\*\s*[:：]\s*)[^\n]+$",
-        rf"\g<1>{date_text}",
-        normalized,
-    )
-    normalized = re.sub(
-        r"(?im)^(\s*访谈日期\s*[:：]\s*)[^\n]+$",
-        rf"\g<1>{date_text}",
-        normalized,
+    normalized_head = re.sub(
+        r"(?im)^(\|\s*报告编号\s*\|)\s*[^|\n]*\|",
+        rf"\g<1> {report_id} |",
+        normalized_head,
     )
 
-    return normalized
+    # 独立行字段统一
+    normalized_head = re.sub(
+        r"(?im)^(\*\*报告生成时间\*\*\s*[:：]\s*)[^\n]+$",
+        rf"\g<1>{generated_datetime_cn}",
+        normalized_head,
+    )
+    normalized_head = re.sub(
+        r"(?im)^(\s*报告生成时间\s*[:：]\s*)[^\n]+$",
+        rf"\g<1>{generated_datetime_cn}",
+        normalized_head,
+    )
+    normalized_head = re.sub(
+        r"(?im)^(\*\*生成日期\*\*\s*[:：]\s*)[^\n]+$",
+        rf"\g<1>{generated_datetime_cn}",
+        normalized_head,
+    )
+    normalized_head = re.sub(
+        r"(?im)^(\s*生成日期\s*[:：]\s*)[^\n]+$",
+        rf"\g<1>{generated_datetime_cn}",
+        normalized_head,
+    )
+    normalized_head = re.sub(
+        r"(?im)^(\*\*访谈日期\*\*\s*[:：]\s*)[^\n]+$",
+        rf"\g<1>{interview_date}",
+        normalized_head,
+    )
+    normalized_head = re.sub(
+        r"(?im)^(\s*访谈日期\s*[:：]\s*)[^\n]+$",
+        rf"\g<1>{interview_date}",
+        normalized_head,
+    )
+    normalized_head = re.sub(
+        r"(?im)^(\*\*报告编号\*\*\s*[:：]\s*)[^\n]+$",
+        rf"\g<1>{report_id}",
+        normalized_head,
+    )
+
+    # 行内复合字段（如：报告编号：xxx 访谈主题：yyy 生成日期：zzz）统一
+    normalized_head = re.sub(
+        r"(?im)(报告编号\s*[:：]\s*)([A-Za-z0-9][A-Za-z0-9_\-]*)",
+        rf"\g<1>{report_id}",
+        normalized_head,
+    )
+    normalized_head = re.sub(
+        r"(?im)(生成日期\s*[:：]\s*)([^\n]*)$",
+        rf"\g<1>{generated_datetime_cn}",
+        normalized_head,
+    )
+    normalized_head = re.sub(
+        r"(?im)(报告生成时间\s*[:：]\s*)([^\n]*)$",
+        rf"\g<1>{generated_datetime_cn}",
+        normalized_head,
+    )
+
+    if tail_text:
+        return f"{normalized_head}\n{tail_text}"
+    return normalized_head
 
 
 def can_use_v3_failover_lane() -> bool:
@@ -13514,6 +13616,8 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
                 "reason": status_reason,
                 "profile": result.get("profile", selected_report_profile),
                 "phase_lanes": result.get("phase_lanes", {}) if isinstance(result.get("phase_lanes", {}), dict) else {},
+                "review_rounds_executed": int(result.get("review_rounds_executed", 0) or 0),
+                "min_required_review_rounds": int(result.get("min_required_review_rounds", 0) or 0),
                 "quality_meta": quality_meta,
                 "review_issues": (result.get("review_issues", []) if isinstance(result.get("review_issues", []), list) else [])[:60],
                 "evidence_pack_summary": summarize_evidence_pack_for_debug(result.get("evidence_pack", {})),
@@ -14066,11 +14170,13 @@ def generate_simple_report(session: dict) -> str:
     topic = session.get("topic", "未命名项目")
     interview_log = session.get("interview_log", [])
     now = datetime.now()
+    temporal_fields = build_report_temporal_fields(now)
 
     content = f"""# {topic} 访谈报告
 
-**访谈日期**: {now.strftime('%Y-%m-%d')}
-**报告编号**: deep-vision-{now.strftime('%Y%m%d')}
+**访谈日期**: {temporal_fields['interview_date']}
+**生成日期**: {temporal_fields['generated_datetime_cn']}
+**报告编号**: {temporal_fields['report_id']}
 
 ---
 
@@ -15233,6 +15339,11 @@ def get_report(filename):
         return response, status_code
 
     content = report_file.read_text(encoding="utf-8")
+    try:
+        generated_at = datetime.fromtimestamp(report_file.stat().st_mtime)
+    except Exception:
+        generated_at = None
+    content = normalize_report_time_fields(content, generated_at=generated_at)
     return jsonify({"name": filename, "content": content})
 
 
