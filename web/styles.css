@@ -746,6 +746,9 @@ textarea {
 
 .markdown-body pre {
     @apply p-4 rounded-lg overflow-x-auto mb-4;
+    background: #f8fafc !important;
+    color: #111827 !important;
+    border: 1px solid #e5e7eb !important;
 }
 
 /* 响应式优化 - 减少动画 */
@@ -1991,8 +1994,9 @@ html[data-theme="dark"] .markdown-body code {
 }
 
 html[data-theme="dark"] .markdown-body pre {
-    background: #141a21 !important;
-    color: #dce5ef !important;
+    background: #1f2937 !important;
+    color: #e5e7eb !important;
+    border-color: #374151 !important;
 }
 
 html[data-theme="dark"] .markdown-body blockquote {

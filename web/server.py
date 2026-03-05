@@ -305,6 +305,7 @@ DEBUG_MODE = _cfg_bool("DEBUG_MODE", True)
 ENABLE_AI = _cfg_bool("ENABLE_AI", True)
 ENABLE_DEBUG_LOG = _cfg_bool("ENABLE_DEBUG_LOG", True)
 SUPPRESS_STATUS_POLL_ACCESS_LOG = _cfg_bool("SUPPRESS_STATUS_POLL_ACCESS_LOG", True)
+FOCUS_GENERATION_ACCESS_LOG = _cfg_bool("FOCUS_GENERATION_ACCESS_LOG", True)
 ENABLE_WEB_SEARCH = _cfg_bool("ENABLE_WEB_SEARCH", False)
 ZHIPU_API_KEY = _cfg_text("ZHIPU_API_KEY", "")
 ZHIPU_SEARCH_ENGINE = _cfg_text("ZHIPU_SEARCH_ENGINE", "search_pro") or "search_pro"
@@ -7813,6 +7814,28 @@ flowchart LR
 - 保持结构简洁，避免过度复杂的嵌套
 - 带标签的连接线使用 `-->|标签文字|` 格式（标签在箭头后面）
 
+### 5. 图表配色与视觉层次（必须）
+- 禁止整张图仅使用单一颜色或同色浅深渐变，至少使用 3 种语义色。
+- flowchart/架构图必须包含 `classDef` + `class`，并按语义分层：
+  - `核心链路`：蓝色系（如 `#2563EB`）
+  - `决策节点`：橙色系（如 `#D97706`）
+  - `风险/异常`：红色系（如 `#DC2626`）
+  - `支撑/辅助`：绿色系（如 `#16A34A`）
+- 可直接参考以下写法（示例）：
+```mermaid
+flowchart TD
+    A[核心入口] --> B{决策判断}
+    B -->|通过| C[核心流程]
+    B -->|阻塞| D[风险处理]
+    classDef dvCore fill:#DBEAFE,stroke:#2563EB,color:#1E3A8A,stroke-width:1.4px
+    classDef dvDecision fill:#FEF3C7,stroke:#D97706,color:#7C2D12,stroke-width:1.4px
+    classDef dvRisk fill:#FEE2E2,stroke:#DC2626,color:#7F1D1D,stroke-width:1.4px
+    classDef dvSupport fill:#DCFCE7,stroke:#16A34A,color:#14532D,stroke-width:1.4px
+    class A,C dvCore
+    class B dvDecision
+    class D dvRisk
+```
+
 ## 重要提醒
 - 所有内容必须严格基于访谈记录，不得编造
 - 使用 Markdown 格式，Mermaid 代码块使用 ```mermaid 标记
@@ -7867,50 +7890,187 @@ def _extract_first_json_object(raw_text: str) -> Optional[str]:
     return None
 
 
-def parse_structured_json_response(raw_text: str, required_keys: Optional[list] = None) -> Optional[dict]:
-    """解析结构化 JSON 响应（兼容代码块与混杂文本）。"""
+def _repair_json_candidate(candidate: str) -> tuple[str, bool]:
+    """尝试修复常见 JSON 格式问题，返回 (修复后文本, 是否应用修复)。"""
+    text = str(candidate or "").strip()
+    if not text:
+        return "", False
+
+    repaired = False
+    normalized = text.replace("\ufeff", "").strip()
+    quote_fixed = (
+        normalized
+        .replace("“", "\"")
+        .replace("”", "\"")
+        .replace("‘", "'")
+        .replace("’", "'")
+    )
+    if quote_fixed != normalized:
+        normalized = quote_fixed
+        repaired = True
+
+    # 移除 markdown 代码块包裹残留
+    fenced = re.sub(r"^\s*```(?:json)?\s*", "", normalized, flags=re.IGNORECASE).strip()
+    fenced = re.sub(r"\s*```\s*$", "", fenced).strip()
+    if fenced != normalized:
+        normalized = fenced
+        repaired = True
+
+    # 删除常见尾逗号
+    trailing_fixed = re.sub(r",\s*([}\]])", r"\1", normalized)
+    if trailing_fixed != normalized:
+        normalized = trailing_fixed
+        repaired = True
+
+    # 修复字符串内部未转义控制字符（常见于模型直接输出多行文本字段）
+    control_fixed_parts = []
+    in_string = False
+    escape_next = False
+    control_fixed = False
+    for ch in normalized:
+        if escape_next:
+            control_fixed_parts.append(ch)
+            escape_next = False
+            continue
+
+        if ch == "\\":
+            control_fixed_parts.append(ch)
+            escape_next = True
+            continue
+
+        if ch == "\"":
+            control_fixed_parts.append(ch)
+            in_string = not in_string
+            continue
+
+        if in_string and ord(ch) < 0x20:
+            control_fixed = True
+            if ch == "\n":
+                control_fixed_parts.append("\\n")
+            elif ch == "\r":
+                control_fixed_parts.append("\\r")
+            elif ch == "\t":
+                control_fixed_parts.append("\\t")
+            else:
+                # 其它控制字符统一替换为空格，避免破坏 JSON 语法
+                control_fixed_parts.append(" ")
+            continue
+
+        control_fixed_parts.append(ch)
+
+    if control_fixed:
+        normalized = "".join(control_fixed_parts)
+        repaired = True
+
+    # 若候选中仍混有额外文本，尝试提取首个 JSON 对象
+    if not (normalized.startswith("{") and normalized.endswith("}")):
+        extracted = _extract_first_json_object(normalized)
+        if extracted:
+            normalized = extracted.strip()
+            repaired = True
+
+    return normalized, repaired
+
+
+def parse_structured_json_response(
+    raw_text: str,
+    required_keys: Optional[list] = None,
+    require_all_keys: bool = True,
+    parse_meta: Optional[dict] = None,
+) -> Optional[dict]:
+    """解析结构化 JSON 响应（兼容代码块与混杂文本，并支持修复常见格式问题）。"""
     if not raw_text:
         return None
 
+    if isinstance(parse_meta, dict):
+        parse_meta.clear()
+        parse_meta.update({
+            "candidate_count": 0,
+            "parse_attempts": 0,
+            "repair_applied": False,
+            "selected_source": "",
+            "missing_keys": [],
+            "last_error": "",
+        })
+
     text = raw_text.strip()
     candidates = []
+    seen_candidates = set()
+
+    def _append_candidate(value: str, source: str) -> None:
+        candidate = str(value or "").strip()
+        if not candidate:
+            return
+        dedup_key = candidate[:4096]
+        if dedup_key in seen_candidates:
+            return
+        seen_candidates.add(dedup_key)
+        candidates.append((candidate, source))
 
     if text.startswith('{') and text.endswith('}'):
-        candidates.append(text)
+        _append_candidate(text, "raw_text")
 
     if "```json" in text:
         try:
             json_start = text.find("```json") + 7
             json_end = text.find("```", json_start)
             if json_end > json_start:
-                candidates.append(text[json_start:json_end].strip())
+                _append_candidate(text[json_start:json_end].strip(), "json_fence")
         except Exception:
             pass
 
     if "```" in text:
         try:
             blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)```", text)
-            candidates.extend([block.strip() for block in blocks if block.strip()])
+            for block in blocks:
+                _append_candidate(block.strip(), "generic_fence")
         except Exception:
             pass
 
     extracted = _extract_first_json_object(text)
     if extracted:
-        candidates.append(extracted)
+        _append_candidate(extracted, "extract_first_object")
 
-    for candidate in candidates:
-        try:
-            parsed = json.loads(candidate)
-            if not isinstance(parsed, dict):
+    if isinstance(parse_meta, dict):
+        parse_meta["candidate_count"] = len(candidates)
+
+    for candidate, source in candidates:
+        attempts = [(candidate, False, source)]
+        repaired_candidate, repaired = _repair_json_candidate(candidate)
+        if repaired and repaired_candidate and repaired_candidate != candidate:
+            attempts.append((repaired_candidate, True, f"{source}:repaired"))
+
+        for attempt_text, repaired_flag, attempt_source in attempts:
+            if isinstance(parse_meta, dict):
+                parse_meta["parse_attempts"] = int(parse_meta.get("parse_attempts", 0) or 0) + 1
+
+            try:
+                parsed = json.loads(attempt_text)
+                if not isinstance(parsed, dict):
+                    continue
+
+                if required_keys:
+                    if require_all_keys:
+                        missing_keys = [key for key in required_keys if key not in parsed]
+                        if missing_keys:
+                            if isinstance(parse_meta, dict):
+                                parse_meta["missing_keys"] = missing_keys
+                            continue
+                    elif not any(key in parsed for key in required_keys):
+                        if isinstance(parse_meta, dict):
+                            parse_meta["missing_keys"] = list(required_keys)
+                        continue
+
+                if isinstance(parse_meta, dict):
+                    parse_meta["repair_applied"] = bool(repaired_flag)
+                    parse_meta["selected_source"] = attempt_source
+                    parse_meta["missing_keys"] = []
+                    parse_meta["last_error"] = ""
+                return parsed
+            except Exception as parse_error:
+                if isinstance(parse_meta, dict):
+                    parse_meta["last_error"] = str(parse_error)[:200]
                 continue
-            if not required_keys:
-                return parsed
-            if all(key in parsed for key in required_keys):
-                return parsed
-            if any(key in parsed for key in required_keys):
-                return parsed
-        except Exception:
-            continue
 
     return None
 
@@ -8245,9 +8405,9 @@ def build_report_draft_prompt_v3(
         },
         "visualizations": {
             "priority_quadrant_mermaid": "quadrantChart ...",
-            "business_flow_mermaid": "flowchart TD ...",
+            "business_flow_mermaid": "flowchart TD ...（含 classDef/class，至少3种语义配色）",
             "demand_pie_mermaid": "pie title ...",
-            "architecture_mermaid": "flowchart LR ..."
+            "architecture_mermaid": "flowchart LR ...（含 classDef/class，至少3种语义配色）"
         },
         "solutions": [
             {
@@ -8324,6 +8484,11 @@ def build_report_draft_prompt_v3(
 5. 若存在盲区，必须在 open_questions 中体现对应补问。
 6. visualizations 字段中请输出 Mermaid 语法正文（不要包裹```mermaid代码块）。
 7. 不得编造证据编号，不得引用不存在的 Q 编号。
+8. 禁止输出任何工具流程话术：如“请确认是否继续”“需要先征得同意”“我会创建文件”等。
+9. 禁止输出 markdown 代码块、注释、额外解释或前后缀文本。
+10. 顶层字段必须仅包含：overview/needs/analysis/visualizations/solutions/risks/actions/open_questions/evidence_index。
+11. business_flow_mermaid 与 architecture_mermaid 必须包含 `classDef` 和 `class`，至少包含 3 类语义色（核心/决策/风险/支撑）。
+12. Mermaid 图表禁止整图单色，节点与分组需要有明显层次对比。
 
 ## JSON 模板（字段必须完整）
 {json.dumps(schema_example, ensure_ascii=False, indent=2)}
@@ -8471,13 +8636,21 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
 
             normalized[field].append(normalized_item)
 
-    combined_text = json.dumps(normalized, ensure_ascii=False)
-
     contradictions = evidence_pack.get("contradictions", [])
+    contradiction_ref_pool = set()
+    for field in ["risks", "open_questions", "actions", "solutions", "evidence_index"]:
+        values = normalized.get(field, [])
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            contradiction_ref_pool.update(_normalize_evidence_refs(item.get("evidence_refs", [])))
+
     unresolved_conflicts = 0
     for item in contradictions:
-        refs = item.get("evidence_refs", [])
-        if refs and not any(ref in combined_text for ref in refs):
+        refs = _normalize_evidence_refs(item.get("evidence_refs", []))
+        if refs and not any(ref in contradiction_ref_pool for ref in refs):
             unresolved_conflicts += 1
     if unresolved_conflicts > 0:
         add_issue(
@@ -8487,11 +8660,32 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
             "risks/open_questions"
         )
 
+    blindspot_text_segments = []
+    blindspot_text_segments.extend(str(value or "") for value in normalized.get("analysis", {}).values())
+    for field in ["open_questions", "actions", "solutions", "risks"]:
+        values = normalized.get(field, [])
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            blindspot_text_segments.extend([
+                str(item.get("question", "") or ""),
+                str(item.get("reason", "") or ""),
+                str(item.get("impact", "") or ""),
+                str(item.get("suggested_follow_up", "") or ""),
+                str(item.get("action", "") or ""),
+                str(item.get("description", "") or ""),
+                str(item.get("risk", "") or ""),
+                str(item.get("mitigation", "") or ""),
+            ])
+    blindspot_corpus = " ".join(blindspot_text_segments).lower()
+
     blindspots = evidence_pack.get("blindspots", [])
     unresolved_blindspots = []
     for item in blindspots:
         aspect = str(item.get("aspect", "")).strip()
-        if aspect and aspect not in combined_text:
+        if aspect and aspect.lower() not in blindspot_corpus:
             unresolved_blindspots.append(aspect)
     if unresolved_blindspots:
         sample = "、".join(unresolved_blindspots[:5])
@@ -8570,15 +8764,22 @@ def build_report_review_prompt_v3(session: dict, evidence_pack: dict, draft: dic
 - 必须包含 passed、issues、revised_draft 三个字段。
 - revised_draft 必须保留原有结构，并修复可修复问题。
 - 若仍有问题，issues 需完整列出。
+- 禁止输出“请确认是否继续”“我会创建文件”等工具执行话术。
+- 禁止输出 markdown 代码块与额外说明，禁止前后缀文本。
 
 ## 输出模板
 {json.dumps(response_schema, ensure_ascii=False, indent=2)}
 """
 
 
-def parse_report_review_response_v3(raw_text: str) -> Optional[dict]:
+def parse_report_review_response_v3(raw_text: str, parse_meta: Optional[dict] = None) -> Optional[dict]:
     """解析 V3 审稿响应。"""
-    parsed = parse_structured_json_response(raw_text, required_keys=["passed", "issues"])
+    parsed = parse_structured_json_response(
+        raw_text,
+        required_keys=["passed", "issues", "revised_draft"],
+        require_all_keys=True,
+        parse_meta=parse_meta,
+    )
     if not parsed:
         return None
 
@@ -8721,6 +8922,75 @@ def build_report_quality_meta_fallback(session: dict, mode: str) -> dict:
     }
 
 
+def ensure_flowchart_semantic_styles(mermaid_text: str) -> str:
+    """为 flowchart/graph 自动补充语义配色，避免单色图。"""
+    source = str(mermaid_text or "").strip()
+    if not source:
+        return source
+
+    if not re.match(r"(?is)^\s*(flowchart|graph)\b", source):
+        return source
+
+    if re.search(r"(?im)^\s*classDef\s+", source):
+        return source
+
+    node_ids: list[str] = []
+    for match in re.finditer(r"\b([A-Za-z][A-Za-z0-9_]*)\s*(?=[\[\(\{])", source):
+        node_id = match.group(1)
+        if node_id not in node_ids:
+            node_ids.append(node_id)
+
+    if not node_ids:
+        return source
+
+    core_keywords = ("核心", "关键", "主流程", "目标", "里程碑", "方案", "主链路")
+    decision_keywords = ("判断", "决策", "分流", "校验", "审核", "网关", "验证")
+    risk_keywords = ("风险", "阻塞", "失败", "告警", "异常", "流失", "中断", "问题")
+
+    class_buckets: dict[str, list[str]] = {
+        "dvCore": [],
+        "dvDecision": [],
+        "dvRisk": [],
+        "dvSupport": [],
+    }
+
+    for idx, node_id in enumerate(node_ids):
+        label_match = re.search(rf"(?m)^\s*{re.escape(node_id)}\s*[\[\(\{{]([^\]\)\}}]+)", source)
+        label = str(label_match.group(1) if label_match else node_id)
+        if any(keyword in label for keyword in risk_keywords):
+            class_buckets["dvRisk"].append(node_id)
+            continue
+        if any(keyword in label for keyword in decision_keywords):
+            class_buckets["dvDecision"].append(node_id)
+            continue
+        if any(keyword in label for keyword in core_keywords):
+            class_buckets["dvCore"].append(node_id)
+            continue
+
+        # 无明显语义标签时按顺序分散到不同语义色，避免单色图。
+        slot = idx % 3
+        if slot == 0:
+            class_buckets["dvCore"].append(node_id)
+        elif slot == 1:
+            class_buckets["dvDecision"].append(node_id)
+        else:
+            class_buckets["dvSupport"].append(node_id)
+
+    style_lines = [
+        "classDef dvCore fill:#DBEAFE,stroke:#2563EB,color:#1E3A8A,stroke-width:1.4px",
+        "classDef dvDecision fill:#FEF3C7,stroke:#D97706,color:#7C2D12,stroke-width:1.4px",
+        "classDef dvRisk fill:#FEE2E2,stroke:#DC2626,color:#7F1D1D,stroke-width:1.4px",
+        "classDef dvSupport fill:#DCFCE7,stroke:#16A34A,color:#14532D,stroke-width:1.4px",
+    ]
+    class_lines = [
+        f"class {','.join(nodes)} {class_name}"
+        for class_name, nodes in class_buckets.items()
+        if nodes
+    ]
+
+    return source + "\n" + "\n".join(style_lines + class_lines)
+
+
 def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) -> str:
     """将 V3 结构化草案渲染为 Markdown 报告。"""
     topic = session.get("topic", "未命名项目")
@@ -8805,11 +9075,20 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
     flow_mermaid = clean_mermaid(
         visuals.get("business_flow_mermaid", ""),
         """flowchart TD
-    A[开始] --> B[需求澄清]
-    B --> C[方案评估]
-    C --> D[执行计划]
-    D --> E[结束]"""
+    A[触发访谈场景] --> B{需求是否明确}
+    B -->|是| C[输出方案建议]
+    B -->|否| D[补充追问与证据]
+    C --> E[形成行动计划]
+    D --> C
+    classDef dvCore fill:#DBEAFE,stroke:#2563EB,color:#1E3A8A,stroke-width:1.4px
+    classDef dvDecision fill:#FEF3C7,stroke:#D97706,color:#7C2D12,stroke-width:1.4px
+    classDef dvRisk fill:#FEE2E2,stroke:#DC2626,color:#7F1D1D,stroke-width:1.4px
+    classDef dvSupport fill:#DCFCE7,stroke:#16A34A,color:#14532D,stroke-width:1.4px
+    class A,C,E dvCore
+    class B dvDecision
+    class D dvSupport"""
     )
+    flow_mermaid = ensure_flowchart_semantic_styles(flow_mermaid)
 
     pie_mermaid = clean_mermaid(
         visuals.get("demand_pie_mermaid", ""),
@@ -8823,10 +9102,19 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
     architecture_mermaid = clean_mermaid(
         visuals.get("architecture_mermaid", ""),
         """flowchart LR
-    A[前端入口] --> B[业务服务]
-    B --> C[(数据存储)]
-    B --> D[第三方服务]"""
+    A[前端入口] --> B[应用网关]
+    B --> C[业务服务]
+    C --> D[(数据存储)]
+    C --> E[第三方服务]
+    classDef dvCore fill:#DBEAFE,stroke:#2563EB,color:#1E3A8A,stroke-width:1.4px
+    classDef dvDecision fill:#FEF3C7,stroke:#D97706,color:#7C2D12,stroke-width:1.4px
+    classDef dvRisk fill:#FEE2E2,stroke:#DC2626,color:#7F1D1D,stroke-width:1.4px
+    classDef dvSupport fill:#DCFCE7,stroke:#16A34A,color:#14532D,stroke-width:1.4px
+    class A,C dvCore
+    class B dvDecision
+    class D,E dvSupport"""
     )
+    architecture_mermaid = ensure_flowchart_semantic_styles(architecture_mermaid)
 
     needs_table = []
     if needs:
@@ -8998,6 +9286,43 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
     return "\n".join(lines)
 
 
+def compute_adaptive_report_timeout(base_timeout: float, prompt_length: int, timeout_cap: Optional[float] = None) -> float:
+    """按 Prompt 长度动态调整报告调用超时，长上下文适当放宽，短上下文保持收敛。"""
+    normalized_base = max(30.0, float(base_timeout or REPORT_API_TIMEOUT))
+    length = max(0, int(prompt_length or 0))
+
+    extra = 0.0
+    if length >= 12000:
+        extra = 45.0
+    elif length >= 9000:
+        extra = 30.0
+    elif length >= 7000:
+        extra = 18.0
+    elif length >= 5000:
+        extra = 10.0
+
+    cap = float(timeout_cap if timeout_cap is not None else max(REPORT_API_TIMEOUT, normalized_base))
+    cap = max(normalized_base, cap)
+    return max(30.0, min(cap, normalized_base + extra))
+
+
+def compute_adaptive_report_tokens(base_tokens: int, prompt_length: int, floor_tokens: int = 2200) -> int:
+    """按 Prompt 长度动态收敛草案 token 上限，降低长上下文的超时风险。"""
+    normalized_base = max(int(floor_tokens), int(base_tokens or floor_tokens))
+    length = max(0, int(prompt_length or 0))
+
+    ratio = 1.0
+    if length >= 12000:
+        ratio = 0.78
+    elif length >= 9000:
+        ratio = 0.86
+    elif length >= 7000:
+        ratio = 0.92
+
+    adjusted = int(normalized_base * ratio)
+    return max(int(floor_tokens), min(int(MAX_TOKENS_REPORT), adjusted))
+
+
 def generate_report_v3_pipeline(
     session: dict,
     session_id: Optional[str] = None,
@@ -9006,6 +9331,7 @@ def generate_report_v3_pipeline(
 ) -> Optional[dict]:
     """执行 V3 报告生成流水线。失败时返回包含 reason 的调试结构。"""
     try:
+        pipeline_lane = str(preferred_lane or "report").strip().lower() or "report"
         report_draft_max_tokens = min(MAX_TOKENS_REPORT, REPORT_V3_DRAFT_MAX_TOKENS)
         report_review_max_tokens = min(MAX_TOKENS_REPORT, 6000)
 
@@ -9021,6 +9347,9 @@ def generate_report_v3_pipeline(
         last_draft_call_type = "report_v3_draft"
         last_facts_limit = REPORT_V3_DRAFT_FACTS_LIMIT
         last_draft_tokens = report_draft_max_tokens
+        last_draft_timeout = float(REPORT_DRAFT_API_TIMEOUT)
+        last_draft_prompt_length = 0
+        last_draft_parse_meta = {}
 
         for attempt_index in range(draft_attempt_total):
             round_no = attempt_index + 1
@@ -9051,26 +9380,39 @@ def generate_report_v3_pipeline(
                 unknown_limit=current_unknown_limit,
                 blindspot_limit=current_blindspot_limit,
             )
+            current_prompt_length = len(draft_prompt)
+            current_max_tokens = compute_adaptive_report_tokens(current_max_tokens, current_prompt_length, floor_tokens=2200)
+            current_timeout = compute_adaptive_report_timeout(
+                REPORT_DRAFT_API_TIMEOUT,
+                current_prompt_length,
+                timeout_cap=max(REPORT_API_TIMEOUT, REPORT_DRAFT_API_TIMEOUT + 45),
+            )
             draft_raw = call_claude(
                 draft_prompt,
                 max_tokens=current_max_tokens,
                 call_type=current_call_type,
-                timeout=REPORT_DRAFT_API_TIMEOUT,
+                timeout=current_timeout,
                 preferred_lane=preferred_lane,
             )
 
             last_draft_call_type = current_call_type
             last_facts_limit = current_facts_limit
             last_draft_tokens = current_max_tokens
+            last_draft_timeout = float(current_timeout)
+            last_draft_prompt_length = current_prompt_length
             last_draft_raw = draft_raw or ""
 
             if not draft_raw:
                 last_draft_reason = "draft_generation_failed"
             else:
+                draft_parse_meta = {}
                 draft_parsed = parse_structured_json_response(
                     draft_raw,
                     required_keys=["overview", "needs", "analysis"],
+                    require_all_keys=True,
+                    parse_meta=draft_parse_meta,
                 )
+                last_draft_parse_meta = draft_parse_meta
                 if draft_parsed:
                     break
                 last_draft_reason = "draft_parse_failed"
@@ -9087,8 +9429,21 @@ def generate_report_v3_pipeline(
                     f"last_call_type={last_draft_call_type},"
                     f"facts_limit={last_facts_limit},"
                     f"max_tokens={last_draft_tokens},"
+                    f"timeout={last_draft_timeout},"
+                    f"prompt_length={last_draft_prompt_length},"
                     f"raw_length={len(last_draft_raw)}"
                 ),
+                "parse_stage": "draft",
+                "lane": pipeline_lane,
+                "raw_excerpt": last_draft_raw[:360],
+                "repair_applied": bool(last_draft_parse_meta.get("repair_applied", False)),
+                "parse_meta": {
+                    "candidate_count": int(last_draft_parse_meta.get("candidate_count", 0) or 0),
+                    "parse_attempts": int(last_draft_parse_meta.get("parse_attempts", 0) or 0),
+                    "selected_source": str(last_draft_parse_meta.get("selected_source", "") or ""),
+                    "missing_keys": list(last_draft_parse_meta.get("missing_keys", []) or []),
+                    "last_error": str(last_draft_parse_meta.get("last_error", "") or ""),
+                },
                 "evidence_pack": evidence_pack,
                 "review_issues": [],
             }
@@ -9110,26 +9465,60 @@ def generate_report_v3_pipeline(
                 )
 
             review_prompt = build_report_review_prompt_v3(session, evidence_pack, current_draft, review_issues)
+            review_prompt_length = len(review_prompt)
+            review_timeout = compute_adaptive_report_timeout(
+                REPORT_API_TIMEOUT,
+                review_prompt_length,
+                timeout_cap=max(REPORT_API_TIMEOUT, REPORT_DRAFT_API_TIMEOUT + 60),
+            )
             review_raw = call_claude(
                 review_prompt,
                 max_tokens=report_review_max_tokens,
                 call_type=f"report_v3_review_round_{review_round + 1}{call_type_suffix}",
-                timeout=REPORT_API_TIMEOUT,
+                timeout=review_timeout,
                 preferred_lane=preferred_lane,
             )
             if not review_raw:
                 return {
                     "status": "failed",
                     "reason": "review_generation_failed",
+                    "error": (
+                        f"review_round={review_round + 1},"
+                        f"timeout={review_timeout},"
+                        f"prompt_length={review_prompt_length},"
+                        "raw_length=0"
+                    ),
+                    "parse_stage": f"review_round_{review_round + 1}",
+                    "lane": pipeline_lane,
+                    "raw_excerpt": "",
+                    "repair_applied": False,
                     "evidence_pack": evidence_pack,
                     "review_issues": final_issues,
                 }
 
-            review_parsed = parse_report_review_response_v3(review_raw)
+            review_parse_meta = {}
+            review_parsed = parse_report_review_response_v3(review_raw, parse_meta=review_parse_meta)
             if not review_parsed:
                 return {
                     "status": "failed",
                     "reason": "review_parse_failed",
+                    "error": (
+                        f"review_round={review_round + 1},"
+                        f"timeout={review_timeout},"
+                        f"prompt_length={review_prompt_length},"
+                        f"raw_length={len(review_raw or '')}"
+                    ),
+                    "parse_stage": f"review_round_{review_round + 1}",
+                    "lane": pipeline_lane,
+                    "raw_excerpt": str(review_raw or "")[:360],
+                    "repair_applied": bool(review_parse_meta.get("repair_applied", False)),
+                    "parse_meta": {
+                        "candidate_count": int(review_parse_meta.get("candidate_count", 0) or 0),
+                        "parse_attempts": int(review_parse_meta.get("parse_attempts", 0) or 0),
+                        "selected_source": str(review_parse_meta.get("selected_source", "") or ""),
+                        "missing_keys": list(review_parse_meta.get("missing_keys", []) or []),
+                        "last_error": str(review_parse_meta.get("last_error", "") or ""),
+                    },
                     "evidence_pack": evidence_pack,
                     "review_issues": final_issues,
                 }
@@ -9174,6 +9563,11 @@ def generate_report_v3_pipeline(
         return {
             "status": "failed",
             "reason": "review_not_passed_or_quality_gate_failed",
+            "error": f"final_issue_count={len(final_issues)}",
+            "parse_stage": "quality_gate",
+            "lane": pipeline_lane,
+            "raw_excerpt": "",
+            "repair_applied": False,
             "evidence_pack": evidence_pack,
             "review_issues": final_issues,
         }
@@ -9184,6 +9578,10 @@ def generate_report_v3_pipeline(
             "status": "failed",
             "reason": "exception",
             "error": str(e)[:200],
+            "parse_stage": "exception",
+            "lane": str(preferred_lane or "report").strip().lower() or "report",
+            "raw_excerpt": "",
+            "repair_applied": False,
             "evidence_pack": {},
             "review_issues": [],
         }
@@ -11985,7 +12383,80 @@ def should_retry_v3_with_failover(v3_result: Optional[dict]) -> bool:
     if any(hint in error for hint in network_hints):
         return True
 
-    return reason == "draft_parse_failed" and "raw_length=0" in error
+    # 解析失败通常与网关输出风格相关（例如返回额外说明/包装文本），
+    # 在备用网关上重试一次通常有收益。
+    if reason in {"draft_parse_failed", "review_parse_failed"}:
+        return True
+
+    return False
+
+
+def is_unusable_legacy_report_content(content: Optional[str]) -> bool:
+    """检测标准回退报告是否为无效的工具确认话术。"""
+    text = str(content or "").strip()
+    if not text:
+        return True
+
+    head = text[:900]
+    blocked_markers = [
+        "在创建文档之前，我需要先征得您的同意",
+        "是否允许我创建这份访谈报告文档",
+        "请确认是否继续",
+        "如果同意，我会：",
+        "创建文件名为",
+    ]
+    if any(marker in head for marker in blocked_markers):
+        return True
+
+    # 最小章节完整性：至少要有 4 个二级标题，且具备基本分析语义。
+    section_count = len(re.findall(r"(?m)^##\s+", text))
+    numbered_section_count = len(re.findall(r"(?m)^##\s*[1-9][\\.、]", text))
+    quality_keywords = ["访谈概述", "需求摘要", "分析", "风险", "行动", "建议"]
+    keyword_hits = sum(1 for item in quality_keywords if item in text)
+    if section_count < 4 and numbered_section_count < 3 and keyword_hits < 3:
+        return True
+
+    return False
+
+
+def normalize_report_time_fields(content: str, generated_at: Optional[datetime] = None) -> str:
+    """标准化报告中的时间字段，避免模型产出过期/幻觉时间。"""
+    text = str(content or "")
+    if not text.strip():
+        return text
+
+    now = generated_at or datetime.now()
+    date_text = now.strftime("%Y-%m-%d")
+    month_text = f"{now.year}年{now.month}月"
+
+    normalized = text
+    normalized = re.sub(
+        r"(?im)^(\|\s*报告生成时间\s*\|)\s*[^|\n]*\|",
+        rf"\g<1> {month_text} |",
+        normalized,
+    )
+    normalized = re.sub(
+        r"(?im)^(\*\*报告生成时间\*\*\s*[:：]\s*)[^\n]+$",
+        rf"\g<1>{month_text}",
+        normalized,
+    )
+    normalized = re.sub(
+        r"(?im)^(\s*报告生成时间\s*[:：]\s*)[^\n]+$",
+        rf"\g<1>{month_text}",
+        normalized,
+    )
+    normalized = re.sub(
+        r"(?im)^(\*\*访谈日期\*\*\s*[:：]\s*)[^\n]+$",
+        rf"\g<1>{date_text}",
+        normalized,
+    )
+    normalized = re.sub(
+        r"(?im)^(\s*访谈日期\s*[:：]\s*)[^\n]+$",
+        rf"\g<1>{date_text}",
+        normalized,
+    )
+
+    return normalized
 
 
 def can_use_v3_failover_lane() -> bool:
@@ -12027,7 +12498,8 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
             date_str = datetime.now().strftime("%Y%m%d")
             filename = f"deep-vision-{date_str}-{topic_slug}.md"
             report_file = REPORTS_DIR / filename
-            report_file.write_text(content, encoding="utf-8")
+            normalized_content = normalize_report_time_fields(content)
+            report_file.write_text(normalized_content, encoding="utf-8")
             set_report_owner_id(filename, user_id)
 
             latest_session = safe_load_session(session_file)
@@ -12047,12 +12519,22 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
                 return {
                     "reason": result.get("reason", "v3_pipeline_returned_empty"),
                     "error": result.get("error", ""),
+                    "parse_stage": result.get("parse_stage", ""),
+                    "lane": result.get("lane", ""),
+                    "raw_excerpt": str(result.get("raw_excerpt", "") or "")[:360],
+                    "repair_applied": bool(result.get("repair_applied", False)),
+                    "parse_meta": result.get("parse_meta", {}) if isinstance(result.get("parse_meta", {}), dict) else {},
                     "review_issues": (result.get("review_issues", []) if isinstance(result.get("review_issues", []), list) else [])[:60],
                     "evidence_pack_summary": summarize_evidence_pack_for_debug(result.get("evidence_pack", {})),
                 }
             return {
                 "reason": "v3_pipeline_returned_empty",
                 "error": "",
+                "parse_stage": "",
+                "lane": "",
+                "raw_excerpt": "",
+                "repair_applied": False,
+                "parse_meta": {},
                 "review_issues": [],
                 "evidence_pack_summary": {},
             }
@@ -12123,6 +12605,11 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
                         "failover_lane": REPORT_V3_FAILOVER_LANE,
                         "primary_failure_reason": primary_failure.get("reason", ""),
                         "primary_failure_error": primary_failure.get("error", ""),
+                        "primary_parse_stage": primary_failure.get("parse_stage", ""),
+                        "primary_lane": primary_failure.get("lane", ""),
+                        "primary_repair_applied": primary_failure.get("repair_applied", False),
+                        "primary_parse_meta": primary_failure.get("parse_meta", {}),
+                        "primary_raw_excerpt": primary_failure.get("raw_excerpt", ""),
                         "quality_meta": quality_meta,
                         "review_issues": (failover_result.get("review_issues", []) if isinstance(failover_result.get("review_issues", []), list) else [])[:60],
                         "evidence_pack_summary": summarize_evidence_pack_for_debug(failover_result.get("evidence_pack", {})),
@@ -12150,6 +12637,11 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
                 "status": "failed",
                 "reason": primary_failure.get("reason", "v3_pipeline_returned_empty"),
                 "error": primary_failure.get("error", ""),
+                "parse_stage": primary_failure.get("parse_stage", ""),
+                "lane": primary_failure.get("lane", ""),
+                "repair_applied": primary_failure.get("repair_applied", False),
+                "parse_meta": primary_failure.get("parse_meta", {}),
+                "raw_excerpt": primary_failure.get("raw_excerpt", ""),
                 "review_issues": primary_failure.get("review_issues", []),
                 "evidence_pack_summary": primary_failure.get("evidence_pack_summary", {}),
                 "failover_attempted": failover_attempted,
@@ -12157,6 +12649,11 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
                 "failover_success": failover_success,
                 "failover_reason": failover_failure.get("reason", "") if failover_failure else "",
                 "failover_error": failover_failure.get("error", "") if failover_failure else "",
+                "failover_parse_stage": failover_failure.get("parse_stage", "") if failover_failure else "",
+                "failover_lane_effective": failover_failure.get("lane", "") if failover_failure else "",
+                "failover_repair_applied": failover_failure.get("repair_applied", False) if failover_failure else False,
+                "failover_parse_meta": failover_failure.get("parse_meta", {}) if failover_failure else {},
+                "failover_raw_excerpt": failover_failure.get("raw_excerpt", "") if failover_failure else "",
             }
 
             if ENABLE_DEBUG_LOG:
@@ -12170,12 +12667,38 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str) ->
                 interview_count = len(session.get("interview_log", []))
                 print(f"📊 回退报告 Prompt 统计：总长度={len(prompt)}字符，参考资料={ref_docs_count}个，访谈记录={interview_count}条")
 
+            legacy_timeout = compute_adaptive_report_timeout(
+                REPORT_API_TIMEOUT,
+                len(prompt),
+                timeout_cap=max(REPORT_API_TIMEOUT, REPORT_DRAFT_API_TIMEOUT + 60),
+            )
             report_content = call_claude(
                 prompt,
                 max_tokens=min(MAX_TOKENS_REPORT, 7000),
                 call_type="report_legacy_fallback",
-                timeout=REPORT_API_TIMEOUT,
+                timeout=legacy_timeout,
             )
+
+            if is_unusable_legacy_report_content(report_content):
+                if ENABLE_DEBUG_LOG:
+                    print("⚠️ 标准回退报告疑似工具确认话术，尝试切备用网关重试一次")
+                retry_lane = ""
+                if REPORT_V3_FAILOVER_ENABLED and can_use_v3_failover_lane():
+                    retry_lane = REPORT_V3_FAILOVER_LANE
+                if retry_lane:
+                    retry_content = call_claude(
+                        prompt,
+                        max_tokens=min(MAX_TOKENS_REPORT, 7000),
+                        call_type=f"report_legacy_fallback_retry_{retry_lane}",
+                        timeout=legacy_timeout,
+                        preferred_lane=retry_lane,
+                    )
+                    if not is_unusable_legacy_report_content(retry_content):
+                        report_content = retry_content
+                    else:
+                        report_content = ""
+                else:
+                    report_content = ""
 
             if report_content:
                 report_content = report_content + generate_interview_appendix(session)
@@ -12370,7 +12893,8 @@ def render_appendix_answer_block(log: dict) -> str:
     """将附录回答渲染为“全选项 + 勾选态 + 其他输入”格式。"""
     if not isinstance(log, dict):
         text = str(log or "").strip()
-        return f"**回答**：\n☑ {text or '（未填写）'}"
+        safe_text = html.escape(text or "（未填写）")
+        return f"<div><strong>回答：</strong></div>\n<div>☑ {safe_text}</div>"
 
     answer_text = str(log.get("answer", "") or "").strip()
     option_list = []
@@ -12393,11 +12917,13 @@ def render_appendix_answer_block(log: dict) -> str:
     if other_selected and other_input:
         answer_lines.append(f"☑ 其他（自由输入）：{other_input}")
 
-    # 使用 Markdown 硬换行，避免触发列表渲染产生额外黑点，并保证“回答：”与选项对齐。
+    # 附录位于 <details> HTML 区块内，Markdown 换行在部分渲染器中会失效。
+    # 这里直接输出块级 HTML，确保选项稳定按“自上而下”逐行展示。
     if answer_lines:
-        return "**回答**：  \n" + "  \n".join(answer_lines)
+        rendered_lines = "\n".join(f"<div>{html.escape(line)}</div>" for line in answer_lines)
+        return f"<div><strong>回答：</strong></div>\n{rendered_lines}"
 
-    return "**回答**：  \n☑ （未填写）"
+    return "<div><strong>回答：</strong></div>\n<div>☑ （未填写）</div>"
 
 
 def generate_interview_appendix(session: dict) -> str:
@@ -14207,12 +14733,42 @@ def clear_summaries_cache():
         return jsonify({"error": f"清空缓存失败: {e}"}), 500
 
 
-def should_suppress_access_log(path: str) -> bool:
-    if not SUPPRESS_STATUS_POLL_ACCESS_LOG:
+def is_generation_relevant_access_log(path: str, method: str = "GET") -> bool:
+    """访问日志白名单：仅保留问题生成/回答提交/报告生成相关关键接口。"""
+    normalized = str(path or "").strip()
+    verb = str(method or "GET").upper()
+    if not normalized:
         return False
+
+    if verb == "POST" and normalized == "/api/sessions":
+        return True
+
+    return bool(re.match(
+        r"^/api/sessions/[^/]+/(next-question|submit-answer|generate-report|undo-answer|skip-follow-up|complete-dimension|restart-interview|documents)$",
+        normalized,
+    ))
+
+
+def should_suppress_access_log(path: str, method: str = "GET", code='-') -> bool:
     normalized = str(path or "").strip()
     if not normalized:
         return False
+
+    # 错误请求始终保留，便于排障。
+    try:
+        status_code = int(str(code))
+    except Exception:
+        status_code = 0
+    if status_code >= 400:
+        return False
+
+    # 聚焦模式：仅保留问题/报告生成关键路径访问日志，其余静默。
+    if FOCUS_GENERATION_ACCESS_LOG:
+        return not is_generation_relevant_access_log(normalized, method)
+
+    if not SUPPRESS_STATUS_POLL_ACCESS_LOG:
+        return False
+
     suppress_prefixes = (
         "/api/status/thinking/",
         "/api/status/web-search",
@@ -14227,7 +14783,8 @@ class SelectiveAccessLogRequestHandler(WSGIRequestHandler):
     def log_request(self, code='-', size='-'):
         try:
             parsed_path = urlparse(str(getattr(self, "path", "") or "")).path
-            if should_suppress_access_log(parsed_path):
+            method = str(getattr(self, "command", "GET") or "GET").upper()
+            if should_suppress_access_log(parsed_path, method=method, code=code):
                 return
         except Exception:
             pass
@@ -14268,7 +14825,9 @@ if __name__ == '__main__':
 
     print()
     print(f"访问: http://localhost:{SERVER_PORT}")
-    if SUPPRESS_STATUS_POLL_ACCESS_LOG:
+    if FOCUS_GENERATION_ACCESS_LOG:
+        print("访问日志过滤: 已启用（仅保留问题/报告生成关键接口）")
+    elif SUPPRESS_STATUS_POLL_ACCESS_LOG:
         print("访问日志过滤: 已启用（状态轮询接口静默）")
     print("=" * 60)
     app.run(

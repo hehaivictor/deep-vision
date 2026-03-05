@@ -6584,10 +6584,11 @@ function deepVision() {
                 String(content)
                 .replace(/^\s*\*\*生成方式\*\*:[^\n]*\n?/gm, '')
             );
+            const normalizedContent = this.normalizeLegacyAppendixAnswerLayout(sanitizedContent);
 
             if (typeof marked !== 'undefined') {
                 // 使用 marked 渲染 Markdown
-                let html = marked.parse(sanitizedContent);
+                let html = marked.parse(normalizedContent);
 
                 // 检测并转换 Mermaid 代码块
                 // 匹配 <pre><code class="language-mermaid">...</code></pre>
@@ -6619,7 +6620,7 @@ function deepVision() {
             }
 
             // 简单的 Markdown 渲染（无 marked.js 时的回退）
-            const fallbackHtml = sanitizedContent
+            const fallbackHtml = normalizedContent
                 .replace(/^### (.*$)/gm, '<h3>$1</h3>')
                 .replace(/^## (.*$)/gm, '<h2>$1</h2>')
                 .replace(/^# (.*$)/gm, '<h1>$1</h1>')
@@ -6628,6 +6629,24 @@ function deepVision() {
                 .replace(/^- (.*$)/gm, '<li>$1</li>')
                 .replace(/\n/g, '<br>');
             return this.sanitizeMarkdownHtml(fallbackHtml);
+        },
+
+        normalizeLegacyAppendixAnswerLayout(markdownText) {
+            const source = String(markdownText || '');
+            if (!source) return '';
+
+            return source.replace(
+                /\*\*回答\*\*：\s*\n((?:[ \t]*[☐☑].*(?:\n|$))+)/g,
+                (match, linesBlock) => {
+                    const lines = String(linesBlock || '')
+                        .split('\n')
+                        .map(line => line.trim())
+                        .filter(Boolean);
+                    if (lines.length === 0) return match;
+                    const htmlLines = lines.map(line => `<div>${line}</div>`).join('\n');
+                    return `<div><strong>回答：</strong></div>\n${htmlLines}\n`;
+                }
+            );
         },
 
         // 渲染页面中的所有 Mermaid 图表

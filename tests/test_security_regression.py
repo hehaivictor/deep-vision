@@ -6,6 +6,7 @@ import tempfile
 import types
 import unittest
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 
@@ -220,6 +221,191 @@ class SecurityRegressionTests(unittest.TestCase):
         finally:
             for key, value in backup.items():
                 setattr(self.server, key, value)
+
+    def test_should_retry_v3_failover_when_draft_parse_failed(self):
+        payload = {
+            "status": "failed",
+            "reason": "draft_parse_failed",
+            "error": "draft_attempts_exhausted(2),raw_length=10453",
+        }
+        self.assertTrue(self.server.should_retry_v3_with_failover(payload))
+
+    def test_should_retry_v3_failover_when_review_parse_failed(self):
+        payload = {
+            "status": "failed",
+            "reason": "review_parse_failed",
+            "error": "review_round=1,raw_length=4096",
+        }
+        self.assertTrue(self.server.should_retry_v3_with_failover(payload))
+
+    def test_detect_unusable_legacy_report_content(self):
+        unusable_text = (
+            "我会为您生成一份专业的访谈报告。在创建文档之前，我需要先征得您的同意。"
+            "请确认是否继续？如果同意，我会：创建文件名为 `xxx.md`。"
+        )
+        self.assertTrue(self.server.is_unusable_legacy_report_content(unusable_text))
+
+        usable_text = (
+            "# 需求访谈报告\\n\\n"
+            "## 1. 访谈概述\\n"
+            "本次访谈围绕企业知识库建设展开。\\n\\n"
+            "## 2. 需求摘要\\n"
+            "- 统一检索标准\\n\\n"
+            "## 3. 详细需求分析\\n"
+            "从用户侧和技术侧展开分析。\\n\\n"
+            "## 4. 风险与行动\\n"
+            "列出风险、建议与下一步行动。"
+        )
+        self.assertFalse(self.server.is_unusable_legacy_report_content(usable_text))
+
+    def test_parse_structured_json_response_supports_repair(self):
+        raw_text = """```json
+{
+  "overview": "ok",
+  "needs": [],
+  "analysis": {},
+}
+```"""
+        parse_meta = {}
+        parsed = self.server.parse_structured_json_response(
+            raw_text,
+            required_keys=["overview", "needs", "analysis"],
+            require_all_keys=True,
+            parse_meta=parse_meta,
+        )
+        self.assertIsInstance(parsed, dict)
+        self.assertTrue(parse_meta.get("repair_applied"))
+
+    def test_parse_structured_json_response_repairs_unescaped_newline(self):
+        raw_text = "{\n\"overview\":\"第一行\n第二行\",\"needs\":[],\"analysis\":{}}\n"
+        parse_meta = {}
+        parsed = self.server.parse_structured_json_response(
+            raw_text,
+            required_keys=["overview", "needs", "analysis"],
+            require_all_keys=True,
+            parse_meta=parse_meta,
+        )
+        self.assertIsInstance(parsed, dict)
+        self.assertIn("第一行", parsed.get("overview", ""))
+        self.assertTrue(parse_meta.get("repair_applied"))
+
+    def test_adaptive_report_timeout_and_tokens(self):
+        short_timeout = self.server.compute_adaptive_report_timeout(120.0, 3000, timeout_cap=180.0)
+        long_timeout = self.server.compute_adaptive_report_timeout(120.0, 13000, timeout_cap=180.0)
+        self.assertGreater(long_timeout, short_timeout)
+
+        short_tokens = self.server.compute_adaptive_report_tokens(4800, 3000)
+        long_tokens = self.server.compute_adaptive_report_tokens(4800, 13000)
+        self.assertLess(long_tokens, short_tokens)
+        self.assertGreaterEqual(long_tokens, 2200)
+
+    def test_ensure_flowchart_semantic_styles_adds_multicolor_classdefs(self):
+        raw = (
+            "flowchart TD\n"
+            "    A[开始] --> B{判断}\n"
+            "    B -->|通过| C[核心流程]\n"
+            "    B -->|阻塞| D[风险处理]\n"
+        )
+        styled = self.server.ensure_flowchart_semantic_styles(raw)
+
+        self.assertIn("classDef dvCore", styled)
+        self.assertIn("classDef dvDecision", styled)
+        self.assertIn("classDef dvRisk", styled)
+        self.assertIn("classDef dvSupport", styled)
+        self.assertIn("class ", styled)
+
+    def test_ensure_flowchart_semantic_styles_keeps_existing_classdef(self):
+        raw = (
+            "flowchart TD\n"
+            "    A[开始] --> B[结束]\n"
+            "    classDef custom fill:#DBEAFE,stroke:#2563EB,color:#1E3A8A\n"
+            "    class A,B custom\n"
+        )
+        styled = self.server.ensure_flowchart_semantic_styles(raw)
+        self.assertEqual(styled, raw.strip())
+
+    def test_normalize_report_time_fields_rewrites_model_hallucinated_time(self):
+        generated_at = datetime(2026, 3, 5, 23, 58, 0)
+        raw = (
+            "| 报告生成时间 | 2025年6月 |\n"
+            "**访谈日期**: 2024-01-01\n"
+            "报告生成时间：2025年6月\n"
+        )
+
+        normalized = self.server.normalize_report_time_fields(raw, generated_at=generated_at)
+
+        self.assertIn("| 报告生成时间 | 2026年3月 |", normalized)
+        self.assertIn("**访谈日期**: 2026-03-05", normalized)
+        self.assertIn("报告生成时间：2026年3月", normalized)
+        self.assertNotIn("2025年6月", normalized)
+
+    def test_generate_interview_appendix_keeps_original_order_and_checkbox_markers(self):
+        session = {
+            "dimensions": {"customer_needs": {"coverage": 0, "items": []}},
+            "interview_log": [
+                {
+                    "timestamp": "2026-03-05T12:00:02Z",
+                    "dimension": "customer_needs",
+                    "question": "第二题",
+                    "answer": "B",
+                    "options": ["A", "B"],
+                    "other_selected": False,
+                    "other_answer_text": "",
+                },
+                {
+                    "timestamp": "2026-03-05T12:00:01Z",
+                    "dimension": "customer_needs",
+                    "question": "第一题",
+                    "answer": "X",
+                    "options": ["A", "B"],
+                    "other_selected": True,
+                    "other_answer_text": "X",
+                },
+            ],
+        }
+
+        appendix = self.server.generate_interview_appendix(session)
+
+        pos_q1 = appendix.find("问题 1：第二题")
+        pos_q2 = appendix.find("问题 2：第一题")
+        self.assertTrue(pos_q1 >= 0 and pos_q2 > pos_q1)
+        self.assertIn("<div><strong>回答：</strong></div>\n<div>☐ A</div>\n<div>☑ B</div>", appendix)
+        self.assertIn("<div>☑ 其他（自由输入）：X</div>", appendix)
+        self.assertIn("☐ A", appendix)
+        self.assertIn("☑ B", appendix)
+
+    def test_validate_report_draft_contradiction_check_uses_structured_refs(self):
+        evidence_pack = {
+            "facts": [{"q_id": "Q1"}],
+            "contradictions": [{"detail": "Q1 与后续回答冲突", "evidence_refs": ["Q1"]}],
+            "blindspots": [],
+        }
+        draft_with_refs = {
+            "overview": "概述",
+            "needs": [{"name": "需求A", "priority": "P1", "description": "描述", "evidence_refs": ["Q1"]}],
+            "analysis": {
+                "customer_needs": "分析",
+                "business_flow": "分析",
+                "tech_constraints": "分析",
+                "project_constraints": "分析",
+            },
+            "visualizations": {},
+            "solutions": [],
+            "risks": [{"risk": "冲突风险", "impact": "高", "mitigation": "处理", "evidence_refs": ["Q1"]}],
+            "actions": [],
+            "open_questions": [],
+            "evidence_index": [{"claim": "结论", "confidence": "high", "evidence_refs": ["Q1"]}],
+        }
+        _, issues_with_refs = self.server.validate_report_draft_v3(draft_with_refs, evidence_pack)
+        issue_types_with_refs = [item.get("type") for item in issues_with_refs if isinstance(item, dict)]
+        self.assertNotIn("unresolved_contradiction", issue_types_with_refs)
+
+        draft_without_refs = dict(draft_with_refs)
+        draft_without_refs["risks"] = [{"risk": "冲突风险", "impact": "高", "mitigation": "处理", "evidence_refs": []}]
+        draft_without_refs["evidence_index"] = []
+        _, issues_without_refs = self.server.validate_report_draft_v3(draft_without_refs, evidence_pack)
+        issue_types_without_refs = [item.get("type") for item in issues_without_refs if isinstance(item, dict)]
+        self.assertIn("unresolved_contradiction", issue_types_without_refs)
 
     def test_wechat_start_blocks_external_return_to(self):
         old_enabled = self.server.WECHAT_LOGIN_ENABLED
