@@ -7932,16 +7932,27 @@ def _normalize_evidence_refs(raw_refs) -> list:
 _INLINE_EVIDENCE_MARKER_PATTERN = re.compile(
     r"(?:\[\s*证据\s*[：:][^\]\n]*\]|[（(]\s*证据\s*[：:][^）)\n]*[）)])"
 )
+_PAREN_Q_REF_LIST_PATTERN = re.compile(
+    r"[（(]\s*Q\d+(?:\s*[,，、/]\s*Q\d+)*\s*[）)]",
+    flags=re.IGNORECASE,
+)
+_BRACKET_Q_REF_LIST_PATTERN = re.compile(
+    r"\[\s*Q\d+(?:\s*[,，、/]\s*Q\d+)*\s*\]",
+    flags=re.IGNORECASE,
+)
 
 
 def strip_inline_evidence_markers(text: str) -> str:
-    """移除正文中的行内证据编号标记（如 [证据:Q1,Q2]、（证据:Q3））。"""
+    """移除正文中的行内证据编号标记（如 [证据:Q1,Q2]、（证据:Q3）、(Q1,Q2)）。"""
     value = str(text or "")
     if not value:
         return ""
 
     cleaned = _INLINE_EVIDENCE_MARKER_PATTERN.sub("", value)
+    cleaned = _PAREN_Q_REF_LIST_PATTERN.sub("", cleaned)
+    cleaned = _BRACKET_Q_REF_LIST_PATTERN.sub("", cleaned)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+([，。！？；：,.!?;:])", r"\1", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 

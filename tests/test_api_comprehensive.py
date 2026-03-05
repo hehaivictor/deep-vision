@@ -755,27 +755,28 @@ class ComprehensiveApiTests(unittest.TestCase):
                 self.server.release_report_generation_slot()
 
     def test_strip_inline_evidence_markers_for_report_text(self):
-        raw_text = "核心结论[证据:Q1,Q4]。流程观察（证据：Q10，Q12）。补充说明(证据:Q19)。"
+        raw_text = "核心结论[证据:Q1,Q4]。流程观察（证据：Q10，Q12）。补充说明(证据:Q19)。附加结论（Q4，Q7，Q8，Q9）。"
         cleaned = self.server.strip_inline_evidence_markers(raw_text)
 
-        self.assertEqual(cleaned, "核心结论。流程观察。补充说明。")
+        self.assertEqual(cleaned, "核心结论。流程观察。补充说明。附加结论。")
         self.assertNotIn("证据", cleaned)
         self.assertNotIn("Q1", cleaned)
+        self.assertNotIn("Q7", cleaned)
 
     def test_validate_report_draft_removes_inline_evidence_markers(self):
         draft = {
-            "overview": "这是概述[证据:Q1,Q2]。",
+            "overview": "这是概述[证据:Q1,Q2]（Q1, Q2）。",
             "needs": [
                 {
                     "name": "需求名称（证据：Q1）",
                     "priority": "P0",
-                    "description": "需求描述(证据:Q2)",
+                    "description": "需求描述(证据:Q2)（Q2）",
                     "evidence_refs": ["Q1", "Q2"],
                 }
             ],
             "analysis": {
                 "customer_needs": "客户视角[证据:Q1]",
-                "business_flow": "流程视角（证据：Q2）",
+                "business_flow": "流程视角（证据：Q2）（Q2）",
                 "tech_constraints": "技术约束",
                 "project_constraints": "项目约束",
             },

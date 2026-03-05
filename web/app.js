@@ -5386,7 +5386,10 @@ function deepVision() {
             return String(content || '')
                 .replace(/\[\s*证据\s*[：:][^\]\n]*\]/g, '')
                 .replace(/[（(]\s*证据\s*[：:][^）)\n]*[）)]/g, '')
+                .replace(/[（(]\s*Q\d+(?:\s*[,，、/]\s*Q\d+)*\s*[）)]/gi, '')
+                .replace(/\[\s*Q\d+(?:\s*[,，、/]\s*Q\d+)*\s*\]/gi, '')
                 .replace(/[ \t]{2,}/g, ' ')
+                .replace(/\s+([，。！？；：,.!?;:])/g, '$1')
                 .replace(/\n{3,}/g, '\n\n')
                 .trim();
         },
