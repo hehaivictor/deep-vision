@@ -1,7 +1,16 @@
 {
-  "version": "2.16.0",
+  "version": "2.17.0",
   "releaseDate": "2026-03-06",
   "changelog": [
+    {
+      "version": "2.17.0",
+      "date": "2026-03-06",
+      "type": "minor",
+      "title": "新增账号隔离风险审计脚本",
+      "changes": [
+        "新增账号隔离风险审计脚本"
+      ]
+    },
     {
       "version": "2.16.0",
       "date": "2026-03-06",
