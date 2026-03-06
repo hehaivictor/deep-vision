@@ -611,6 +611,140 @@ class ComprehensiveApiTests(unittest.TestCase):
         get_after_delete = self.client.get(f"/api/scenarios/{scenario_id}")
         self.assertEqual(get_after_delete.status_code, 404)
 
+    def test_custom_scenario_create_with_custom_report_schema(self):
+        self._register()
+        create_resp = self.client.post(
+            "/api/scenarios/custom",
+            json={
+                "name": "自定义报告场景",
+                "description": "验证 report.schema 入库与归一化",
+                "dimensions": [
+                    {"name": "维度A", "description": "描述A", "key_aspects": ["目标", "痛点"]},
+                ],
+                "report": {
+                    "type": "standard",
+                    "template": "custom",
+                    "schema": {
+                        "version": "v1",
+                        "sections": [
+                            {
+                                "section_id": "exec_summary",
+                                "title": "执行摘要",
+                                "component": "paragraph",
+                                "source": "overview",
+                                "required": True,
+                            },
+                            {
+                                "section_id": "priority_matrix",
+                                "title": "优先级矩阵",
+                                "component": "mermaid",
+                                "source": "priority_matrix",
+                                "required": True,
+                            },
+                            {
+                                "section_id": "action_plan",
+                                "title": "行动计划",
+                                "component": "table",
+                                "source": "actions",
+                                "required": False,
+                            },
+                        ],
+                    },
+                },
+            },
+        )
+        self.assertEqual(create_resp.status_code, 200, create_resp.get_data(as_text=True))
+        payload = create_resp.get_json()
+        scenario_id = payload["scenario_id"]
+        scenario = payload["scenario"]
+        report_cfg = scenario.get("report", {})
+        self.assertEqual(report_cfg.get("template"), self.server.REPORT_TEMPLATE_CUSTOM_V1)
+        self.assertEqual(report_cfg.get("type"), "standard")
+        self.assertIsInstance(report_cfg.get("schema"), dict)
+        self.assertEqual(report_cfg["schema"].get("version"), "v1")
+        self.assertEqual(len(report_cfg["schema"].get("sections", [])), 3)
+
+        list_resp = self.client.get("/api/scenarios")
+        self.assertEqual(list_resp.status_code, 200)
+        matched = next((item for item in (list_resp.get_json() or []) if item.get("id") == scenario_id), None)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched.get("report_template"), self.server.REPORT_TEMPLATE_CUSTOM_V1)
+        self.assertTrue(matched.get("has_custom_report_schema"))
+
+        delete_resp = self.client.delete(f"/api/scenarios/custom/{scenario_id}")
+        self.assertEqual(delete_resp.status_code, 200)
+
+    def test_report_template_validate_and_preview_api(self):
+        self._register()
+
+        schema = {
+            "version": "v1",
+            "sections": [
+                {
+                    "section_id": "summary",
+                    "title": "执行摘要",
+                    "component": "paragraph",
+                    "source": "overview",
+                    "required": True,
+                },
+                {
+                    "section_id": "matrix",
+                    "title": "优先级矩阵",
+                    "component": "mermaid",
+                    "source": "priority_matrix",
+                    "required": True,
+                },
+                {
+                    "section_id": "actions",
+                    "title": "行动计划",
+                    "component": "table",
+                    "source": "actions",
+                    "required": False,
+                },
+            ],
+        }
+
+        validate_ok = self.client.post("/api/report-templates/validate", json={"schema": schema})
+        self.assertEqual(validate_ok.status_code, 200, validate_ok.get_data(as_text=True))
+        validated = validate_ok.get_json()
+        self.assertTrue(validated.get("success"))
+        self.assertEqual(validated.get("schema", {}).get("version"), "v1")
+        self.assertEqual(len(validated.get("schema", {}).get("sections", [])), 3)
+
+        validate_bad = self.client.post(
+            "/api/report-templates/validate",
+            json={
+                "schema": {
+                    "sections": [
+                        {
+                            "section_id": "bad",
+                            "title": "无效章节",
+                            "component": "html",
+                            "source": "overview",
+                        }
+                    ]
+                }
+            },
+        )
+        self.assertEqual(validate_bad.status_code, 400)
+        bad_payload = validate_bad.get_json() or {}
+        self.assertFalse(bad_payload.get("success"))
+        self.assertTrue(bad_payload.get("details"))
+
+        preview_resp = self.client.post(
+            "/api/report-templates/preview",
+            json={"topic": "模板预览测试", "schema": schema},
+        )
+        self.assertEqual(preview_resp.status_code, 200, preview_resp.get_data(as_text=True))
+        preview_payload = preview_resp.get_json()
+        self.assertTrue(preview_payload.get("success"))
+        markdown = preview_payload.get("preview_markdown", "")
+        self.assertIn("# 模板预览测试 访谈报告", markdown)
+        self.assertIn("## 1. 执行摘要", markdown)
+        self.assertIn("## 2. 优先级矩阵", markdown)
+        self.assertIn("```mermaid", markdown)
+        self.assertIn("| 编号 | 行动项 | Owner | 时间计划 | 验收指标 | 证据 |", markdown)
+
     def test_metrics_and_summaries_authenticated(self):
         self._register()
 

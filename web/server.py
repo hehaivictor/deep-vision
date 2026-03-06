@@ -689,6 +689,247 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
         "salvage_on_quality_gate_failure": bool(salvage_on_quality_gate_failure),
     }
 
+
+REPORT_TEMPLATE_STANDARD_V1 = "standard_v1"
+REPORT_TEMPLATE_ASSESSMENT_V1 = "assessment_v1"
+REPORT_TEMPLATE_CUSTOM_V1 = "custom_v1"
+REPORT_TEMPLATE_ALLOWED = {
+    REPORT_TEMPLATE_STANDARD_V1,
+    REPORT_TEMPLATE_ASSESSMENT_V1,
+    REPORT_TEMPLATE_CUSTOM_V1,
+}
+REPORT_TEMPLATE_ALIAS = {
+    "": REPORT_TEMPLATE_STANDARD_V1,
+    "default": REPORT_TEMPLATE_STANDARD_V1,
+    "standard": REPORT_TEMPLATE_STANDARD_V1,
+    "standard_v1": REPORT_TEMPLATE_STANDARD_V1,
+    "assessment": REPORT_TEMPLATE_ASSESSMENT_V1,
+    "assessment_v1": REPORT_TEMPLATE_ASSESSMENT_V1,
+    "custom": REPORT_TEMPLATE_CUSTOM_V1,
+    "custom_v1": REPORT_TEMPLATE_CUSTOM_V1,
+}
+CUSTOM_REPORT_COMPONENTS = {"paragraph", "table", "mermaid", "list"}
+CUSTOM_REPORT_ALLOWED_SOURCES = {
+    "overview",
+    "needs",
+    "priority_matrix",
+    "priority_list",
+    "solutions",
+    "risks",
+    "actions",
+    "open_questions",
+    "evidence_index",
+    "analysis.customer_needs",
+    "analysis.business_flow",
+    "analysis.tech_constraints",
+    "analysis.project_constraints",
+    "visualizations.priority_quadrant_mermaid",
+    "visualizations.business_flow_mermaid",
+    "visualizations.demand_pie_mermaid",
+    "visualizations.architecture_mermaid",
+}
+CUSTOM_SECTION_SOURCE_HINTS = {
+    "overview": ("paragraph", "overview"),
+    "requirements_summary": ("table", "needs"),
+    "detailed_analysis": ("paragraph", "analysis.customer_needs"),
+    "visualizations": ("mermaid", "visualizations.business_flow_mermaid"),
+    "recommendations": ("table", "solutions"),
+    "risks": ("table", "risks"),
+    "next_steps": ("table", "actions"),
+    "appendix": ("list", "open_questions"),
+    "candidate_overview": ("paragraph", "overview"),
+    "ability_scores": ("table", "needs"),
+    "radar_chart": ("mermaid", "visualizations.priority_quadrant_mermaid"),
+    "dimension_analysis": ("paragraph", "analysis.customer_needs"),
+    "strengths": ("list", "solutions"),
+    "weaknesses": ("list", "risks"),
+    "recommendation_level": ("paragraph", "analysis.project_constraints"),
+    "hiring_suggestion": ("table", "actions"),
+    "follow_up_questions": ("table", "open_questions"),
+}
+
+
+def normalize_report_template_name(raw_template: str, report_type: str = "") -> str:
+    template = str(raw_template or "").strip().lower()
+    normalized_type = str(report_type or "").strip().lower()
+
+    mapped = REPORT_TEMPLATE_ALIAS.get(template, "")
+    if mapped:
+        return mapped
+
+    if normalized_type == "assessment":
+        return REPORT_TEMPLATE_ASSESSMENT_V1
+    return REPORT_TEMPLATE_STANDARD_V1
+
+
+def _build_default_custom_report_schema() -> dict:
+    return {
+        "version": "v1",
+        "sections": [
+            {
+                "section_id": "summary",
+                "title": "执行摘要",
+                "component": "paragraph",
+                "source": "overview",
+                "required": True,
+            },
+            {
+                "section_id": "needs",
+                "title": "核心需求",
+                "component": "table",
+                "source": "needs",
+                "required": True,
+            },
+            {
+                "section_id": "solutions",
+                "title": "方案建议",
+                "component": "table",
+                "source": "solutions",
+                "required": True,
+            },
+            {
+                "section_id": "risks",
+                "title": "风险评估",
+                "component": "table",
+                "source": "risks",
+                "required": True,
+            },
+            {
+                "section_id": "actions",
+                "title": "行动计划",
+                "component": "table",
+                "source": "actions",
+                "required": True,
+            },
+            {
+                "section_id": "open_questions",
+                "title": "未决问题",
+                "component": "table",
+                "source": "open_questions",
+                "required": False,
+            },
+        ],
+    }
+
+
+def _infer_custom_section_config(raw_item, index: int) -> Optional[dict]:
+    if isinstance(raw_item, str):
+        key = str(raw_item or "").strip().lower()
+        component, source = CUSTOM_SECTION_SOURCE_HINTS.get(key, ("paragraph", "overview"))
+        return {
+            "section_id": key or f"section_{index}",
+            "title": str(raw_item or f"章节{index}").strip() or f"章节{index}",
+            "component": component,
+            "source": source,
+            "required": False,
+        }
+
+    if not isinstance(raw_item, dict):
+        return None
+
+    section_id = str(raw_item.get("section_id") or raw_item.get("id") or f"section_{index}").strip()
+    title = str(raw_item.get("title") or section_id or f"章节{index}").strip()
+    component = str(raw_item.get("component") or "paragraph").strip().lower()
+    source = str(raw_item.get("source") or "overview").strip()
+    required = bool(raw_item.get("required", False))
+
+    return {
+        "section_id": section_id or f"section_{index}",
+        "title": title or f"章节{index}",
+        "component": component or "paragraph",
+        "source": source or "overview",
+        "required": required,
+    }
+
+
+def normalize_custom_report_schema(raw_schema, fallback_sections=None) -> tuple[dict, list]:
+    """
+    规范化并校验用户自定义报告结构。
+    仅支持声明式组件，禁止执行模板语法。
+    """
+    schema = raw_schema if isinstance(raw_schema, dict) else {}
+    sections_raw = schema.get("sections")
+    if not isinstance(sections_raw, list) or not sections_raw:
+        sections_raw = fallback_sections if isinstance(fallback_sections, list) else []
+
+    normalized_sections = []
+    issues = []
+    seen_ids = set()
+
+    for idx, raw_item in enumerate(sections_raw[:24], 1):
+        section = _infer_custom_section_config(raw_item, idx)
+        if not section:
+            issues.append(f"第 {idx} 个章节配置格式无效")
+            continue
+
+        section_id = str(section.get("section_id", "")).strip()
+        if not section_id:
+            section_id = f"section_{idx}"
+            section["section_id"] = section_id
+        if section_id in seen_ids:
+            issues.append(f"章节标识重复：{section_id}")
+            continue
+        seen_ids.add(section_id)
+
+        component = str(section.get("component", "")).strip().lower()
+        if component not in CUSTOM_REPORT_COMPONENTS:
+            issues.append(f"章节 {section_id} 的 component 不支持：{component}")
+            continue
+
+        source = str(section.get("source", "")).strip()
+        if source not in CUSTOM_REPORT_ALLOWED_SOURCES:
+            issues.append(f"章节 {section_id} 的 source 不支持：{source}")
+            continue
+
+        section["component"] = component
+        section["source"] = source
+        section["title"] = str(section.get("title", "")).strip() or section_id
+        section["required"] = bool(section.get("required", False))
+        normalized_sections.append(section)
+
+    if not normalized_sections:
+        normalized_sections = _build_default_custom_report_schema()["sections"]
+
+    return {
+        "version": str(schema.get("version") or "v1"),
+        "sections": normalized_sections,
+    }, issues
+
+
+def summarize_custom_report_schema_for_prompt(schema: dict) -> str:
+    if not isinstance(schema, dict):
+        return "- 未提供章节配置"
+    sections = schema.get("sections", [])
+    if not isinstance(sections, list) or not sections:
+        return "- 未提供章节配置"
+
+    lines = []
+    for idx, item in enumerate(sections[:20], 1):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title", "") or item.get("section_id", f"章节{idx}")).strip()
+        component = str(item.get("component", "paragraph")).strip().lower()
+        source = str(item.get("source", "overview")).strip()
+        required = "必填" if bool(item.get("required", False)) else "可选"
+        lines.append(f"- {idx}. {title}（{component} / {source} / {required}）")
+
+    return "\n".join(lines) if lines else "- 未提供章节配置"
+
+
+def resolve_report_template_for_session(session: dict, evidence_pack: Optional[dict] = None) -> str:
+    report_cfg = (session or {}).get("scenario_config", {}).get("report", {})
+    if not isinstance(report_cfg, dict):
+        report_cfg = {}
+
+    report_type = str((evidence_pack or {}).get("report_type") or report_cfg.get("type") or "standard").strip().lower()
+    template_raw = report_cfg.get("template")
+    normalized = normalize_report_template_name(template_raw, report_type=report_type)
+
+    if normalized == REPORT_TEMPLATE_STANDARD_V1 and isinstance(report_cfg.get("schema"), dict):
+        # 兼容老数据：若提供了 schema 但未显式声明 template，则自动走 custom 模板。
+        return REPORT_TEMPLATE_CUSTOM_V1
+    return normalized
+
 # 手机验证码登录配置
 SMS_PROVIDER = _cfg_text("SMS_PROVIDER", "mock").lower()
 if SMS_PROVIDER not in {"mock", "jdcloud"}:
@@ -8162,9 +8403,11 @@ xychart-beta
 
 def build_report_prompt(session: dict) -> str:
     """构建报告生成 prompt"""
-    # 检查是否为评估类型报告
-    report_type = session.get("scenario_config", {}).get("report", {}).get("type", "standard")
-    if report_type == "assessment":
+    scenario_config = session.get("scenario_config", {}) if isinstance(session.get("scenario_config", {}), dict) else {}
+    report_cfg = scenario_config.get("report", {}) if isinstance(scenario_config.get("report", {}), dict) else {}
+    template_name = resolve_report_template_for_session(session)
+
+    if template_name == REPORT_TEMPLATE_ASSESSMENT_V1:
         return build_assessment_report_prompt(session)
 
     topic = session.get("topic", "未知项目")
@@ -8245,7 +8488,35 @@ def build_report_prompt(session: dict) -> str:
         else:
             prompt += "*该维度暂无收集数据*\n"
 
-    prompt += """
+    if template_name == REPORT_TEMPLATE_CUSTOM_V1:
+        normalized_schema, schema_issues = normalize_custom_report_schema(
+            report_cfg.get("schema"),
+            fallback_sections=report_cfg.get("sections"),
+        )
+        section_blueprint = summarize_custom_report_schema_for_prompt(normalized_schema)
+        schema_issue_notice = ""
+        if schema_issues:
+            schema_issue_notice = "\n- 原始模板存在异常配置，已自动回退为可解析章节。"
+
+        prompt += f"""
+## 报告要求
+
+请根据用户的自定义模板输出完整 Markdown 报告（不包含附录，附录会由系统自动追加）。
+
+### 用户自定义章节蓝图（必须按顺序输出）
+{section_blueprint}
+
+### 输出约束
+1. 必须按蓝图顺序输出章节，不新增或省略章节标题。
+2. component 为 `paragraph` 时输出结构化段落；为 `table` 时输出 Markdown 表格；为 `list` 时输出列表；为 `mermaid` 时输出 ```mermaid 代码块。
+3. 关键结论优先引用问答证据（Q数字），不得编造访谈事实。
+4. 若某章节信息不足，明确写出“暂无数据”或“待补充”，不得空章节。
+5. flowchart 连接线标签必须使用 `A -->|标签| B` 语法。
+6. 报告末尾使用署名：*此报告由 Deep Vision 深瞳生成*{schema_issue_notice}
+
+请生成完整的报告："""
+    else:
+        prompt += """
 ## 报告要求
 
 请生成一份专业的访谈报告，包含以下章节：
@@ -8829,9 +9100,23 @@ def build_report_evidence_pack(session: dict) -> dict:
     total_formal = len([fact for fact in facts if not fact.get("is_follow_up", False)])
     total_follow_up = len([fact for fact in facts if fact.get("is_follow_up", False)])
 
+    report_template = resolve_report_template_for_session(session)
+    report_cfg = (session.get("scenario_config", {}) or {}).get("report", {})
+    if not isinstance(report_cfg, dict):
+        report_cfg = {}
+    report_schema = {}
+    if report_template == REPORT_TEMPLATE_CUSTOM_V1:
+        normalized_schema, _schema_issues = normalize_custom_report_schema(
+            report_cfg.get("schema"),
+            fallback_sections=report_cfg.get("sections"),
+        )
+        report_schema = normalized_schema
+
     return {
         "topic": session.get("topic", "未知主题"),
         "report_type": session.get("scenario_config", {}).get("report", {}).get("type", "standard"),
+        "report_template": report_template,
+        "report_schema": report_schema,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "facts": facts,
         "contradictions": contradictions,
@@ -9032,6 +9317,265 @@ def select_slimmed_facts_for_prompt(evidence_pack: dict, facts_limit: int) -> li
     return selected_facts
 
 
+def build_report_draft_prompt_assessment_v1(
+    session: dict,
+    evidence_pack: dict,
+    facts_limit: int = 48,
+    contradiction_limit: int = 12,
+    unknown_limit: int = 12,
+    blindspot_limit: int = 12,
+) -> str:
+    """assessment_v1 草案提示词：强调候选人能力评估与录用建议。"""
+    topic = session.get("topic", "候选人评估")
+    description = session.get("description", "")
+    selected_facts = select_slimmed_facts_for_prompt(evidence_pack, facts_limit=max(8, int(facts_limit or 8)))
+    facts_lines = []
+    for fact in selected_facts:
+        question_text = (fact.get("question", "") or "").replace("\n", " ").strip()[:90]
+        answer_text = (fact.get("answer", "") or "").replace("\n", " ").strip()[:150]
+        facts_lines.append(
+            f"- {fact.get('q_id')} [{fact.get('dimension_name', '未分类')}] "
+            f"Q: {question_text} | A: {answer_text} | quality={fact.get('quality_score', 0):.2f}"
+        )
+    facts_text = "\n".join(facts_lines) if facts_lines else "- 无有效问答证据"
+
+    dimension_lines = []
+    for dim_key, dim_meta in (evidence_pack.get("dimension_coverage", {}) or {}).items():
+        missing = "、".join(dim_meta.get("missing_aspects", [])[:4]) if dim_meta.get("missing_aspects") else "无"
+        dimension_lines.append(
+            f"- {dim_meta.get('name', dim_key)}: 覆盖{dim_meta.get('coverage_percent', 0)}%，"
+            f"正式题 {dim_meta.get('formal_count', 0)}，追问 {dim_meta.get('follow_up_count', 0)}，未覆盖方面：{missing}"
+        )
+    dimension_text = "\n".join(dimension_lines) if dimension_lines else "- 暂无维度覆盖数据"
+
+    contradictions = evidence_pack.get("contradictions", [])
+    contradiction_lines = [
+        f"- {item.get('detail')}（证据: {', '.join(item.get('evidence_refs', []))}）"
+        for item in contradictions[:max(5, int(contradiction_limit or 5))]
+    ]
+    contradiction_text = "\n".join(contradiction_lines) if contradiction_lines else "- 未发现明显冲突"
+
+    unknowns = evidence_pack.get("unknowns", [])
+    unknown_lines = [
+        f"- {item.get('q_id')} [{item.get('dimension')}] {item.get('reason')}"
+        for item in unknowns[:max(5, int(unknown_limit or 5))]
+    ]
+    unknown_text = "\n".join(unknown_lines) if unknown_lines else "- 未发现明显模糊回答"
+
+    blindspots = evidence_pack.get("blindspots", [])
+    blindspot_lines = [
+        f"- {item.get('dimension')}: {item.get('aspect')}"
+        for item in blindspots[:max(5, int(blindspot_limit or 5))]
+    ]
+    blindspot_text = "\n".join(blindspot_lines) if blindspot_lines else "- 暂无盲区"
+
+    schema_example = {
+        "overview": "候选人概览（1-2段）",
+        "needs": [
+            {
+                "name": "能力项结论（如问题拆解能力）",
+                "priority": "P0",
+                "description": "该能力项的表现结论与证据摘要",
+                "evidence_refs": ["Q1", "Q3"]
+            }
+        ],
+        "analysis": {
+            "customer_needs": "能力优势分析",
+            "business_flow": "思维结构与推理链分析",
+            "tech_constraints": "经验边界与风险意识分析",
+            "project_constraints": "录用约束、岗位匹配与团队协作分析"
+        },
+        "visualizations": {
+            "priority_quadrant_mermaid": "可选，能力优先矩阵",
+            "business_flow_mermaid": "可选，思维流程图",
+            "demand_pie_mermaid": "可选，能力分布图",
+            "architecture_mermaid": "可选，胜任力结构图"
+        },
+        "solutions": [
+            {
+                "title": "录用/培养建议",
+                "description": "建议说明",
+                "owner": "用人经理",
+                "timeline": "试用期1个月/3个月",
+                "metric": "阶段性能力达成指标",
+                "evidence_refs": ["Q2", "Q8"]
+            }
+        ],
+        "risks": [
+            {
+                "risk": "录用风险项",
+                "impact": "风险影响",
+                "mitigation": "缓解措施",
+                "evidence_refs": ["Q6"]
+            }
+        ],
+        "actions": [
+            {
+                "action": "后续评估/培养行动",
+                "owner": "面试官/导师",
+                "timeline": "短期+中期里程碑",
+                "metric": "可量化验收标准",
+                "evidence_refs": ["Q4"]
+            }
+        ],
+        "open_questions": [
+            {
+                "question": "需补充验证的问题",
+                "reason": "为何未决",
+                "impact": "影响范围",
+                "suggested_follow_up": "建议补充追问",
+                "evidence_refs": ["Q7"]
+            }
+        ],
+        "evidence_index": [
+            {
+                "claim": "关键评估结论",
+                "confidence": "high",
+                "evidence_refs": ["Q1", "Q5"]
+            }
+        ]
+    }
+
+    return f"""你是一名资深面试评估顾问。请基于证据包输出结构化草案 JSON，不要输出 JSON 之外任何文字。
+
+## 任务类型
+- 报告类型：面试评估
+- 主题：{topic}
+{f"- 背景：{description}" if description else ""}
+
+## 维度覆盖快照
+{dimension_text}
+
+## 关键证据（问答编号）
+{facts_text}
+
+## 冲突信号
+{contradiction_text}
+
+## 模糊与不确定信号
+{unknown_text}
+
+## 盲区清单
+{blindspot_text}
+
+## 输出要求
+1. 顶层字段必须严格为：overview/needs/analysis/visualizations/solutions/risks/actions/open_questions/evidence_index。
+2. 关键结论必须绑定 evidence_refs（Q数字）。
+3. solutions/actions 必须包含 owner、timeline、metric。
+4. actions 至少 2 条，且覆盖短期与中期里程碑。
+5. 内容风格偏“评估结论+培养建议”，避免需求文案口吻。
+6. 禁止输出工具执行话术、markdown代码块与额外前后缀文本。
+
+## JSON 模板（字段必须完整）
+{json.dumps(schema_example, ensure_ascii=False, indent=2)}
+"""
+
+
+def build_report_draft_prompt_custom_v1(
+    session: dict,
+    evidence_pack: dict,
+    facts_limit: int = 56,
+    contradiction_limit: int = 16,
+    unknown_limit: int = 16,
+    blindspot_limit: int = 16,
+) -> str:
+    """custom_v1 草案提示词：按用户章节蓝图约束表达焦点。"""
+    report_cfg = (session.get("scenario_config", {}) or {}).get("report", {})
+    schema_raw = report_cfg.get("schema") if isinstance(report_cfg, dict) else {}
+    normalized_schema, _issues = normalize_custom_report_schema(schema_raw, fallback_sections=report_cfg.get("sections") if isinstance(report_cfg, dict) else None)
+    section_blueprint = summarize_custom_report_schema_for_prompt(normalized_schema)
+
+    topic = session.get("topic", "未知主题")
+    description = session.get("description", "")
+    selected_facts = select_slimmed_facts_for_prompt(evidence_pack, facts_limit=max(10, int(facts_limit or 10)))
+    facts_lines = []
+    for fact in selected_facts:
+        question_text = (fact.get("question", "") or "").replace("\n", " ").strip()[:90]
+        answer_text = (fact.get("answer", "") or "").replace("\n", " ").strip()[:150]
+        facts_lines.append(
+            f"- {fact.get('q_id')} [{fact.get('dimension_name', '未分类')}] "
+            f"Q: {question_text} | A: {answer_text} | quality={fact.get('quality_score', 0):.2f}"
+        )
+    facts_text = "\n".join(facts_lines) if facts_lines else "- 无有效问答证据"
+
+    contradictions = evidence_pack.get("contradictions", [])
+    contradiction_lines = [
+        f"- {item.get('detail')}（证据: {', '.join(item.get('evidence_refs', []))}）"
+        for item in contradictions[:max(5, int(contradiction_limit or 5))]
+    ]
+    contradiction_text = "\n".join(contradiction_lines) if contradiction_lines else "- 未发现明显冲突"
+
+    unknowns = evidence_pack.get("unknowns", [])
+    unknown_lines = [
+        f"- {item.get('q_id')} [{item.get('dimension')}] {item.get('reason')}"
+        for item in unknowns[:max(5, int(unknown_limit or 5))]
+    ]
+    unknown_text = "\n".join(unknown_lines) if unknown_lines else "- 未发现明显模糊回答"
+
+    blindspots = evidence_pack.get("blindspots", [])
+    blindspot_lines = [
+        f"- {item.get('dimension')}: {item.get('aspect')}"
+        for item in blindspots[:max(5, int(blindspot_limit or 5))]
+    ]
+    blindspot_text = "\n".join(blindspot_lines) if blindspot_lines else "- 暂无盲区"
+
+    schema_example = {
+        "overview": "执行摘要",
+        "needs": [],
+        "analysis": {
+            "customer_needs": "",
+            "business_flow": "",
+            "tech_constraints": "",
+            "project_constraints": ""
+        },
+        "visualizations": {
+            "priority_quadrant_mermaid": "",
+            "business_flow_mermaid": "",
+            "demand_pie_mermaid": "",
+            "architecture_mermaid": ""
+        },
+        "solutions": [],
+        "risks": [],
+        "actions": [],
+        "open_questions": [],
+        "evidence_index": []
+    }
+
+    return f"""你是一名企业咨询顾问，需要基于证据包输出结构化草案 JSON。
+
+## 任务类型
+- 报告类型：用户自定义模板
+- 主题：{topic}
+{f"- 背景：{description}" if description else ""}
+
+## 用户定义章节蓝图（渲染时会按此输出）
+{section_blueprint}
+
+## 关键证据（问答编号）
+{facts_text}
+
+## 冲突信号
+{contradiction_text}
+
+## 模糊与不确定信号
+{unknown_text}
+
+## 盲区清单
+{blindspot_text}
+
+## 输出要求
+1. 只输出合法 JSON，禁止任何前后缀文本。
+2. 顶层字段必须严格为：overview/needs/analysis/visualizations/solutions/risks/actions/open_questions/evidence_index。
+3. 关键结论必须绑定 evidence_refs（Q数字）。
+4. solutions/actions 必须包含 owner、timeline、metric。
+5. open_questions 要优先覆盖盲区与冲突。
+6. 文案需简洁可交付，避免口语化、避免空泛叙述。
+
+## JSON 模板（字段必须完整）
+{json.dumps(schema_example, ensure_ascii=False, indent=2)}
+"""
+
+
 def build_report_draft_prompt_v3(
     session: dict,
     evidence_pack: dict,
@@ -9041,6 +9585,26 @@ def build_report_draft_prompt_v3(
     blindspot_limit: int = 20,
 ) -> str:
     """构建 V3 报告草案生成 Prompt（结构化 JSON）。"""
+    template_name = resolve_report_template_for_session(session, evidence_pack=evidence_pack)
+    if template_name == REPORT_TEMPLATE_ASSESSMENT_V1:
+        return build_report_draft_prompt_assessment_v1(
+            session,
+            evidence_pack,
+            facts_limit=facts_limit,
+            contradiction_limit=contradiction_limit,
+            unknown_limit=unknown_limit,
+            blindspot_limit=blindspot_limit,
+        )
+    if template_name == REPORT_TEMPLATE_CUSTOM_V1:
+        return build_report_draft_prompt_custom_v1(
+            session,
+            evidence_pack,
+            facts_limit=facts_limit,
+            contradiction_limit=contradiction_limit,
+            unknown_limit=unknown_limit,
+            blindspot_limit=blindspot_limit,
+        )
+
     topic = session.get("topic", "未知主题")
     description = session.get("description", "")
     report_type = evidence_pack.get("report_type", "standard")
@@ -9210,9 +9774,61 @@ def build_report_draft_prompt_v3(
 """
 
 
+def resolve_custom_report_source_value_v3(draft: dict, source: str) -> object:
+    source_key = str(source or "").strip()
+    if not source_key:
+        return ""
+
+    if source_key == "overview":
+        return draft.get("overview", "")
+    if source_key in {"needs", "solutions", "risks", "actions", "open_questions", "evidence_index"}:
+        value = draft.get(source_key, [])
+        return value if isinstance(value, list) else []
+    if source_key == "priority_list":
+        value = draft.get("needs", [])
+        return value if isinstance(value, list) else []
+    if source_key == "priority_matrix":
+        visuals = draft.get("visualizations", {})
+        if isinstance(visuals, dict):
+            return str(visuals.get("priority_quadrant_mermaid", "") or "").strip()
+        return ""
+
+    if source_key.startswith("analysis."):
+        _, _, field = source_key.partition(".")
+        analysis = draft.get("analysis", {})
+        if isinstance(analysis, dict):
+            return analysis.get(field, "")
+        return ""
+
+    if source_key.startswith("visualizations."):
+        _, _, field = source_key.partition(".")
+        visuals = draft.get("visualizations", {})
+        if isinstance(visuals, dict):
+            return visuals.get(field, "")
+        return ""
+
+    return ""
+
+
+def is_custom_report_source_empty_v3(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not str(value or "").strip()
+    if isinstance(value, list):
+        return len(value) == 0
+    if isinstance(value, dict):
+        return len(value) == 0
+    return False
+
+
 def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, list]:
     """校验并标准化 V3 报告草案。"""
     issues = []
+    template_name = normalize_report_template_name(
+        (evidence_pack or {}).get("report_template", ""),
+        report_type=(evidence_pack or {}).get("report_type", "standard"),
+    )
 
     def sanitize_text(value) -> str:
         return strip_inline_evidence_markers(str(value or "").strip())
@@ -9415,6 +10031,27 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
             f"仍有未覆盖盲区未进入草案：{sample}",
             "open_questions"
         )
+
+    if template_name == REPORT_TEMPLATE_CUSTOM_V1:
+        report_schema = (evidence_pack or {}).get("report_schema", {})
+        normalized_schema, schema_issues = normalize_custom_report_schema(report_schema)
+        for item in schema_issues:
+            add_issue("custom_schema_error", "high", str(item), "report_schema")
+        for section in normalized_schema.get("sections", []):
+            if not isinstance(section, dict):
+                continue
+            if not bool(section.get("required", False)):
+                continue
+            source = str(section.get("source", "")).strip()
+            section_id = str(section.get("section_id", "") or source).strip() or "unknown"
+            value = resolve_custom_report_source_value_v3(normalized, source)
+            if is_custom_report_source_empty_v3(value):
+                add_issue(
+                    "custom_required_section_empty",
+                    "high",
+                    f"自定义模板必填章节缺少内容：{section.get('title', section_id)}",
+                    f"custom_sections[{section_id}]",
+                )
 
     return normalized, issues
 
@@ -10592,8 +11229,496 @@ def _build_architecture_mermaid_from_data_v3(analysis: dict, actions: list, risk
     class G dvSupport"""
 
 
+def _format_report_item_refs_v3(item: dict, limit: int = 6) -> str:
+    refs = _normalize_evidence_refs((item or {}).get("evidence_refs", []))
+    if not refs:
+        return "-"
+    return "、".join(refs[:max(1, int(limit or 1))])
+
+
+def _build_priority_matrix_mermaid_for_custom_v3(needs: list) -> str:
+    if not isinstance(needs, list) or not needs:
+        return """quadrantChart
+    title 优先级矩阵
+    x-axis 紧急程度（左低） --> 紧急程度（右高）
+    y-axis 重要程度（下低） --> 重要程度（上高）
+    quadrant-1 立即执行
+    quadrant-2 计划执行
+    quadrant-3 低优先级
+    quadrant-4 可委派
+    Req1: [0.78, 0.82]
+    Req2: [0.62, 0.72]"""
+
+    anchor = {
+        "P0": (0.85, 0.88),
+        "P1": (0.68, 0.73),
+        "P2": (0.72, 0.42),
+        "P3": (0.35, 0.30),
+    }
+    lines = [
+        "quadrantChart",
+        "    title 优先级矩阵",
+        "    x-axis 紧急程度（左低） --> 紧急程度（右高）",
+        "    y-axis 重要程度（下低） --> 重要程度（上高）",
+        "    quadrant-1 立即执行",
+        "    quadrant-2 计划执行",
+        "    quadrant-3 低优先级",
+        "    quadrant-4 可委派",
+    ]
+    for idx, item in enumerate(needs[:12], 1):
+        priority = str((item or {}).get("priority", "P1")).strip().upper()
+        if priority not in anchor:
+            priority = "P1"
+        base_x, base_y = anchor[priority]
+        offset = ((idx % 4) - 1.5) * 0.03
+        x = max(0.05, min(0.95, base_x + offset))
+        y = max(0.05, min(0.95, base_y - offset * 0.7))
+        lines.append(f"    Req{idx}: [{x:.2f}, {y:.2f}]")
+    return "\n".join(lines)
+
+
+def _render_priority_table_from_needs_v3(needs: list) -> list[str]:
+    groups = {"P0": [], "P1": [], "P2": [], "P3": []}
+    for item in needs if isinstance(needs, list) else []:
+        if not isinstance(item, dict):
+            continue
+        p = str(item.get("priority", "P1")).strip().upper()
+        if p not in groups:
+            p = "P1"
+        groups[p].append(_normalize_markdown_cell_v3(item.get("name", "未命名需求"), max_len=30))
+    return [
+        "| 优先级 | 需求项 | 说明 |",
+        "|:---:|:---|:---|",
+        f"| 🔴 P0 立即执行 | {'、'.join(groups['P0']) if groups['P0'] else '-'} | 重要且紧急，需优先投入 |",
+        f"| 🟡 P1 计划执行 | {'、'.join(groups['P1']) if groups['P1'] else '-'} | 重要但可分阶段推进 |",
+        f"| 🟢 P2 可委派 | {'、'.join(groups['P2']) if groups['P2'] else '-'} | 影响有限，可并行安排 |",
+        f"| ⚪ P3 低优先级 | {'、'.join(groups['P3']) if groups['P3'] else '-'} | 可延后处理并持续观察 |",
+    ]
+
+
+def _render_custom_table_from_source_v3(source: str, draft: dict) -> list[str]:
+    source_key = str(source or "").strip()
+    if source_key == "needs":
+        rows = draft.get("needs", []) if isinstance(draft.get("needs", []), list) else []
+        lines = ["| 编号 | 优先级 | 需求项 | 描述 | 证据 |", "|:---:|:---:|:---|:---|:---|"]
+        for idx, item in enumerate(rows, 1):
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "| "
+                f"{idx} | "
+                f"{_normalize_markdown_cell_v3(item.get('priority', 'P1'), fallback='P1', max_len=8)} | "
+                f"{_normalize_markdown_cell_v3(item.get('name', ''), fallback='-')} | "
+                f"{_normalize_markdown_cell_v3(item.get('description', ''), fallback='-')} | "
+                f"{_normalize_markdown_cell_v3(_format_report_item_refs_v3(item), max_len=30)} |"
+            )
+        if len(lines) == 2:
+            lines.append("| - | - | 暂无结构化核心需求 | - | - |")
+        return lines
+
+    if source_key == "priority_list":
+        return _render_priority_table_from_needs_v3(draft.get("needs", []))
+
+    if source_key == "solutions":
+        rows = draft.get("solutions", []) if isinstance(draft.get("solutions", []), list) else []
+        lines = ["| 编号 | 方案建议 | 说明 | Owner | 时间计划 | 验收指标 | 证据 |", "|:---:|:---|:---|:---|:---|:---|:---|"]
+        for idx, item in enumerate(rows, 1):
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "| "
+                f"{idx} | "
+                f"{_normalize_markdown_cell_v3(item.get('title', ''), fallback='-')} | "
+                f"{_normalize_markdown_cell_v3(item.get('description', ''), fallback='-')} | "
+                f"{_normalize_markdown_cell_v3(item.get('owner', '待定'), max_len=20)} | "
+                f"{_normalize_markdown_cell_v3(item.get('timeline', '待定'), max_len=24)} | "
+                f"{_normalize_markdown_cell_v3(item.get('metric', '待定'), max_len=30)} | "
+                f"{_normalize_markdown_cell_v3(_format_report_item_refs_v3(item), max_len=30)} |"
+            )
+        if len(lines) == 2:
+            lines.append("| - | 暂无结构化方案建议 | - | - | - | - | - |")
+        return lines
+
+    if source_key == "risks":
+        rows = draft.get("risks", []) if isinstance(draft.get("risks", []), list) else []
+        lines = ["| 编号 | 风险项 | 影响 | 缓解措施 | 证据 |", "|:---:|:---|:---|:---|:---|"]
+        for idx, item in enumerate(rows, 1):
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "| "
+                f"{idx} | "
+                f"{_normalize_markdown_cell_v3(item.get('risk', ''), fallback='-')} | "
+                f"{_normalize_markdown_cell_v3(item.get('impact', ''), fallback='-')} | "
+                f"{_normalize_markdown_cell_v3(item.get('mitigation', ''), fallback='-')} | "
+                f"{_normalize_markdown_cell_v3(_format_report_item_refs_v3(item), max_len=30)} |"
+            )
+        if len(lines) == 2:
+            lines.append("| - | 暂无结构化风险项 | - | - | - |")
+        return lines
+
+    if source_key == "actions":
+        rows = draft.get("actions", []) if isinstance(draft.get("actions", []), list) else []
+        lines = ["| 编号 | 行动项 | Owner | 时间计划 | 验收指标 | 证据 |", "|:---:|:---|:---|:---|:---|:---|"]
+        for idx, item in enumerate(rows, 1):
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "| "
+                f"{idx} | "
+                f"{_normalize_markdown_cell_v3(item.get('action', ''), fallback='-')} | "
+                f"{_normalize_markdown_cell_v3(item.get('owner', '待定'), max_len=20)} | "
+                f"{_normalize_markdown_cell_v3(item.get('timeline', '待定'), max_len=24)} | "
+                f"{_normalize_markdown_cell_v3(item.get('metric', '待定'), max_len=30)} | "
+                f"{_normalize_markdown_cell_v3(_format_report_item_refs_v3(item), max_len=30)} |"
+            )
+        if len(lines) == 2:
+            lines.append("| - | 暂无结构化下一步行动 | - | - | - | - |")
+        return lines
+
+    if source_key == "open_questions":
+        rows = draft.get("open_questions", []) if isinstance(draft.get("open_questions", []), list) else []
+        lines = ["| 编号 | 未决问题 | 原因 | 影响 | 建议补问 | 证据 |", "|:---:|:---|:---|:---|:---|:---|"]
+        for idx, item in enumerate(rows, 1):
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "| "
+                f"{idx} | "
+                f"{_normalize_markdown_cell_v3(item.get('question', ''), fallback='-')} | "
+                f"{_normalize_markdown_cell_v3(item.get('reason', ''), fallback='-')} | "
+                f"{_normalize_markdown_cell_v3(item.get('impact', ''), fallback='-')} | "
+                f"{_normalize_markdown_cell_v3(item.get('suggested_follow_up', ''), fallback='-')} | "
+                f"{_normalize_markdown_cell_v3(_format_report_item_refs_v3(item), max_len=30)} |"
+            )
+        if len(lines) == 2:
+            lines.append("| - | 暂无未决问题 | - | - | - | - |")
+        return lines
+
+    if source_key == "evidence_index":
+        rows = draft.get("evidence_index", []) if isinstance(draft.get("evidence_index", []), list) else []
+        lines = ["| 编号 | 关键结论 | 置信度 | 证据 |", "|:---:|:---|:---:|:---|"]
+        for idx, item in enumerate(rows, 1):
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                "| "
+                f"{idx} | "
+                f"{_normalize_markdown_cell_v3(item.get('claim', ''), fallback='-')} | "
+                f"{_normalize_markdown_cell_v3(item.get('confidence', 'medium'), max_len=8)} | "
+                f"{_normalize_markdown_cell_v3(_format_report_item_refs_v3(item), max_len=30)} |"
+            )
+        if len(lines) == 2:
+            lines.append("| - | 暂无证据索引 | - | - |")
+        return lines
+
+    # 未识别 source 时回退成文本占位。
+    return ["暂无可渲染表格数据。"]
+
+
+def _render_custom_list_from_source_v3(source: str, draft: dict) -> list[str]:
+    source_key = str(source or "").strip()
+    value = resolve_custom_report_source_value_v3(draft, source_key)
+    items = value if isinstance(value, list) else []
+    if not items:
+        return ["- 暂无数据"]
+
+    label_field = {
+        "needs": "name",
+        "solutions": "title",
+        "risks": "risk",
+        "actions": "action",
+        "open_questions": "question",
+        "evidence_index": "claim",
+    }.get(source_key, "")
+
+    lines = []
+    for item in items[:20]:
+        if isinstance(item, dict):
+            if label_field:
+                label = _normalize_markdown_cell_v3(item.get(label_field, ""), fallback="-", max_len=80)
+            else:
+                label = _normalize_markdown_cell_v3(json.dumps(item, ensure_ascii=False), fallback="-", max_len=120)
+        else:
+            label = _normalize_markdown_cell_v3(item, fallback="-", max_len=120)
+        lines.append(f"- {label}")
+    return lines if lines else ["- 暂无数据"]
+
+
+def render_report_from_draft_custom_v1(session: dict, draft: dict, quality_meta: dict) -> str:
+    topic = session.get("topic", "未命名项目")
+    temporal_fields = build_report_temporal_fields(datetime.now())
+    report_cfg = (session.get("scenario_config", {}) or {}).get("report", {})
+    if not isinstance(report_cfg, dict):
+        report_cfg = {}
+    custom_schema, _schema_issues = normalize_custom_report_schema(
+        report_cfg.get("schema"),
+        fallback_sections=report_cfg.get("sections"),
+    )
+
+    needs = draft.get("needs", []) if isinstance(draft.get("needs", []), list) else []
+    actions = draft.get("actions", []) if isinstance(draft.get("actions", []), list) else []
+    risks = draft.get("risks", []) if isinstance(draft.get("risks", []), list) else []
+    analysis = draft.get("analysis", {}) if isinstance(draft.get("analysis", {}), dict) else {}
+    visuals = draft.get("visualizations", {}) if isinstance(draft.get("visualizations", {}), dict) else {}
+
+    generated_visuals = {
+        "visualizations.priority_quadrant_mermaid": _build_priority_matrix_mermaid_for_custom_v3(needs),
+        "visualizations.business_flow_mermaid": _build_business_flow_mermaid_from_data_v3(needs, actions, risks),
+        "visualizations.demand_pie_mermaid": _build_demand_pie_mermaid_from_data_v3(needs),
+        "visualizations.architecture_mermaid": _build_architecture_mermaid_from_data_v3(analysis, actions, risks),
+    }
+
+    lines = [
+        f"# {topic} 访谈报告",
+        "",
+        f"**访谈日期**: {temporal_fields['interview_date']}",
+        f"**生成日期**: {temporal_fields['generated_datetime_cn']}",
+        f"**报告编号**: {temporal_fields['report_id']}",
+        "",
+        "---",
+        "",
+    ]
+
+    for idx, section in enumerate(custom_schema.get("sections", []), 1):
+        if not isinstance(section, dict):
+            continue
+        title = str(section.get("title", "") or section.get("section_id", f"章节{idx}")).strip()
+        source = str(section.get("source", "overview")).strip()
+        component = str(section.get("component", "paragraph")).strip().lower()
+        if not title:
+            title = f"章节 {idx}"
+
+        lines.append(f"## {idx}. {title}")
+        lines.append("")
+
+        if component == "paragraph":
+            if source == "priority_list":
+                lines.extend(_render_priority_table_from_needs_v3(needs))
+            elif source == "priority_matrix":
+                lines.append("```mermaid")
+                lines.append(generated_visuals["visualizations.priority_quadrant_mermaid"])
+                lines.append("```")
+            else:
+                value = resolve_custom_report_source_value_v3(draft, source)
+                if isinstance(value, list):
+                    if value and isinstance(value[0], dict):
+                        excerpt = "；".join(
+                            _normalize_markdown_cell_v3(
+                                item.get("name") or item.get("title") or item.get("risk") or item.get("action") or item.get("question") or item.get("claim") or "",
+                                fallback="-",
+                                max_len=50,
+                            )
+                            for item in value[:4] if isinstance(item, dict)
+                        )
+                        lines.append(excerpt or "暂无数据。")
+                    else:
+                        lines.append("；".join(_normalize_markdown_cell_v3(item, fallback="-", max_len=50) for item in value[:6]) or "暂无数据。")
+                else:
+                    lines.append(_normalize_markdown_cell_v3(value, fallback="暂无数据。", max_len=3000))
+        elif component == "table":
+            lines.extend(_render_custom_table_from_source_v3(source, draft))
+        elif component == "mermaid":
+            mermaid_value = ""
+            if source == "priority_matrix":
+                mermaid_value = generated_visuals["visualizations.priority_quadrant_mermaid"]
+            elif source.startswith("visualizations."):
+                mermaid_value = str(resolve_custom_report_source_value_v3(draft, source) or "").strip()
+                if not mermaid_value:
+                    mermaid_value = generated_visuals.get(source, "")
+            else:
+                mermaid_value = str(resolve_custom_report_source_value_v3(draft, source) or "").strip()
+            mermaid_value = mermaid_value or generated_visuals.get("visualizations.business_flow_mermaid", "")
+            if source in {"visualizations.business_flow_mermaid", "visualizations.architecture_mermaid"}:
+                mermaid_value = ensure_flowchart_semantic_styles(mermaid_value)
+            lines.append("```mermaid")
+            lines.append(mermaid_value)
+            lines.append("```")
+        else:
+            lines.extend(_render_custom_list_from_source_v3(source, draft))
+
+        lines.append("")
+
+    lines.extend([
+        "*此报告由 Deep Vision 深瞳生成*",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def render_report_from_draft_assessment_v1(session: dict, draft: dict, quality_meta: dict) -> str:
+    topic = session.get("topic", "候选人评估")
+    temporal_fields = build_report_temporal_fields(datetime.now())
+    scenario_cfg = session.get("scenario_config", {}) if isinstance(session.get("scenario_config", {}), dict) else {}
+    assessment_cfg = scenario_cfg.get("assessment", {}) if isinstance(scenario_cfg.get("assessment", {}), dict) else {}
+    dim_cfgs = scenario_cfg.get("dimensions", []) if isinstance(scenario_cfg.get("dimensions", []), list) else []
+    dim_states = session.get("dimensions", {}) if isinstance(session.get("dimensions", {}), dict) else {}
+
+    score_rows = []
+    total_weighted = 0.0
+    total_weight = 0.0
+    for dim in dim_cfgs:
+        if not isinstance(dim, dict):
+            continue
+        dim_id = str(dim.get("id", "")).strip()
+        dim_name = str(dim.get("name", dim_id)).strip() or dim_id
+        weight = _safe_float(dim.get("weight", 0.25), 0.25)
+        state = dim_states.get(dim_id, {}) if isinstance(dim_states.get(dim_id, {}), dict) else {}
+        score = _safe_float(state.get("score"), 0.0)
+        if score <= 0:
+            # 兼容未打分场景：给出中性分，避免整页空白。
+            score = 3.0
+        total_weighted += score * weight
+        total_weight += weight
+        score_rows.append({
+            "id": dim_id,
+            "name": dim_name,
+            "weight": max(0.0, weight),
+            "score": max(0.0, min(5.0, score)),
+        })
+
+    if not score_rows:
+        score_rows = [
+            {"id": "overall", "name": "综合表现", "weight": 1.0, "score": 3.0},
+        ]
+        total_weighted = 3.0
+        total_weight = 1.0
+
+    final_score = round(total_weighted / total_weight, 2) if total_weight > 0 else 0.0
+    levels = assessment_cfg.get("recommendation_levels", []) if isinstance(assessment_cfg.get("recommendation_levels", []), list) else []
+    levels_sorted = sorted([item for item in levels if isinstance(item, dict)], key=lambda item: _safe_float(item.get("threshold", 0), 0), reverse=True)
+    recommendation = {"level": "C", "name": "待定", "description": "建议补充评估后决策"}
+    for level in levels_sorted:
+        if final_score >= _safe_float(level.get("threshold", 0), 0):
+            recommendation = {
+                "level": str(level.get("level", "C")),
+                "name": str(level.get("name", "待定")),
+                "description": str(level.get("description", "")).strip(),
+            }
+            break
+
+    score_table = [
+        "| 维度 | 得分 | 权重 | 加权得分 |",
+        "|:---|:---:|:---:|:---:|",
+    ]
+    for row in score_rows:
+        weighted = round(row["score"] * row["weight"], 2)
+        score_table.append(
+            f"| {_normalize_markdown_cell_v3(row['name'], fallback='维度')} | "
+            f"{row['score']:.2f} | {row['weight']*100:.0f}% | {weighted:.2f} |"
+        )
+    score_table.append(f"| **综合得分** | **{final_score:.2f}** | 100% | **{final_score:.2f}** |")
+
+    radar_labels = ", ".join(f'"{_normalize_mermaid_label_v3(row["name"], fallback=f"维度{idx+1}", max_len=12)}"' for idx, row in enumerate(score_rows))
+    radar_values = ", ".join(f"{row['score']:.2f}" for row in score_rows)
+    radar_mermaid = "\n".join([
+        "xychart-beta",
+        '    title "能力评分分布"',
+        f"    x-axis [{radar_labels}]",
+        '    y-axis "得分" 0 --> 5',
+        f"    bar [{radar_values}]",
+    ])
+
+    needs = draft.get("needs", []) if isinstance(draft.get("needs", []), list) else []
+    risks = draft.get("risks", []) if isinstance(draft.get("risks", []), list) else []
+    actions = draft.get("actions", []) if isinstance(draft.get("actions", []), list) else []
+    open_questions = draft.get("open_questions", []) if isinstance(draft.get("open_questions", []), list) else []
+    analysis = draft.get("analysis", {}) if isinstance(draft.get("analysis", {}), dict) else {}
+
+    strengths = []
+    for item in needs[:3]:
+        if isinstance(item, dict):
+            strengths.append(f"- {_normalize_markdown_cell_v3(item.get('name', ''), fallback='能力亮点')}：{_normalize_markdown_cell_v3(item.get('description', ''), fallback='-')}")
+    if not strengths:
+        strengths = ["- 暂无显著优势提炼，请补充评估证据。"]
+
+    weaknesses = []
+    for item in risks[:3]:
+        if isinstance(item, dict):
+            weaknesses.append(f"- {_normalize_markdown_cell_v3(item.get('risk', ''), fallback='待提升项')}：{_normalize_markdown_cell_v3(item.get('impact', ''), fallback='-')}")
+    if not weaknesses:
+        weaknesses = ["- 暂无明确风险项，建议补充压力场景追问。"]
+
+    actions_table = _render_custom_table_from_source_v3("actions", {"actions": actions})
+    open_questions_table = _render_custom_table_from_source_v3("open_questions", {"open_questions": open_questions})
+
+    lines = [
+        f"# {topic} 面试评估报告",
+        "",
+        f"**评估日期**: {temporal_fields['interview_date']}",
+        f"**生成日期**: {temporal_fields['generated_datetime_cn']}",
+        f"**报告编号**: {temporal_fields['report_id']}",
+        "",
+        "---",
+        "",
+        "## 1. 候选人概览",
+        "",
+        _normalize_markdown_cell_v3(draft.get("overview", "暂无候选人概览。"), fallback="暂无候选人概览。", max_len=3000),
+        "",
+        f"- 综合得分：**{final_score:.2f}/5.00**",
+        f"- 推荐等级：**{recommendation.get('name', '待定')}（{recommendation.get('level', 'C')}）**",
+        "",
+        "## 2. 能力得分总览",
+        "",
+        *score_table,
+        "",
+        "## 3. 能力分布图",
+        "",
+        "```mermaid",
+        radar_mermaid,
+        "```",
+        "",
+        "## 4. 维度分析",
+        "",
+        "### 4.1 优势能力分析",
+        _normalize_markdown_cell_v3(analysis.get("customer_needs", "暂无分析。"), fallback="暂无分析。", max_len=2000),
+        "",
+        "### 4.2 思维与结构分析",
+        _normalize_markdown_cell_v3(analysis.get("business_flow", "暂无分析。"), fallback="暂无分析。", max_len=2000),
+        "",
+        "### 4.3 经验边界与风险意识",
+        _normalize_markdown_cell_v3(analysis.get("tech_constraints", "暂无分析。"), fallback="暂无分析。", max_len=2000),
+        "",
+        "### 4.4 岗位匹配与协作约束",
+        _normalize_markdown_cell_v3(analysis.get("project_constraints", "暂无分析。"), fallback="暂无分析。", max_len=2000),
+        "",
+        "## 5. 核心优势",
+        "",
+        *strengths,
+        "",
+        "## 6. 待提升领域",
+        "",
+        *weaknesses,
+        "",
+        "## 7. 推荐意见",
+        "",
+        f"- 推荐等级：**{recommendation.get('name', '待定')}（{recommendation.get('level', 'C')}）**",
+        f"- 结论说明：{_normalize_markdown_cell_v3(recommendation.get('description', '') or '建议结合后续补面结果进行决策。', fallback='建议结合后续补面结果进行决策。', max_len=800)}",
+        "",
+        "## 8. 后续跟进计划",
+        "",
+        "### 8.1 行动计划",
+        "",
+        *actions_table,
+        "",
+        "### 8.2 补充评估问题",
+        "",
+        *open_questions_table,
+        "",
+        "*此报告由 Deep Vision 深瞳生成*",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) -> str:
     """将 V3 结构化草案渲染为 Markdown 报告。"""
+    template_name = resolve_report_template_for_session(session)
+    if template_name == REPORT_TEMPLATE_ASSESSMENT_V1:
+        return render_report_from_draft_assessment_v1(session, draft, quality_meta)
+    if template_name == REPORT_TEMPLATE_CUSTOM_V1:
+        return render_report_from_draft_custom_v1(session, draft, quality_meta)
+
     topic = session.get("topic", "未命名项目")
     now = datetime.now()
     temporal_fields = build_report_temporal_fields(now)
@@ -11678,6 +12803,148 @@ def static_files(filename):
     return send_from_directory(str(WEB_DIR), relative_path)
 
 
+# ============ 报告模板 API ============
+
+def build_custom_template_preview_draft() -> dict:
+    return {
+        "overview": "本次访谈聚焦可疑通知触发后的核实体验，目标是识别误拦导致的信任流失路径。",
+        "needs": [
+            {
+                "name": "误拦用户心理归因还原",
+                "priority": "P0",
+                "description": "构建可解释的放弃支付/申诉因果链路，减少误判体验损耗。",
+                "evidence_refs": ["Q1", "Q4"],
+            },
+            {
+                "name": "核实流程可读性优化",
+                "priority": "P1",
+                "description": "降低核实步骤理解门槛，减少用户操作中断。",
+                "evidence_refs": ["Q6", "Q8"],
+            },
+        ],
+        "analysis": {
+            "customer_needs": "用户希望核实流程中提示语更具体、风险等级更明确。",
+            "business_flow": "从通知到核实再到恢复支付的链路存在 2 处高摩擦节点。",
+            "tech_constraints": "需兼容现有风控引擎与多端展示规范，避免高风险操作降级。",
+            "project_constraints": "需在 2 个迭代内上线首版，并控制新增埋点成本。",
+        },
+        "visualizations": {
+            "priority_quadrant_mermaid": "",
+            "business_flow_mermaid": "",
+            "demand_pie_mermaid": "",
+            "architecture_mermaid": "",
+        },
+        "solutions": [
+            {
+                "title": "核实入口分层提示",
+                "description": "按风险等级动态调整提示语与操作路径。",
+                "owner": "产品经理",
+                "timeline": "2周内完成方案并联调",
+                "metric": "核实放弃率下降 15%",
+                "evidence_refs": ["Q3", "Q9"],
+            }
+        ],
+        "risks": [
+            {
+                "risk": "提示语过度简化导致误解",
+                "impact": "高风险用户可能误判安全状态",
+                "mitigation": "关键路径保留二次确认并提供解释弹层",
+                "evidence_refs": ["Q10"],
+            }
+        ],
+        "actions": [
+            {
+                "action": "补充核实链路埋点与漏斗看板",
+                "owner": "数据分析",
+                "timeline": "本周完成埋点设计，下周上线",
+                "metric": "埋点完整率 > 95%",
+                "evidence_refs": ["Q12", "Q13"],
+            },
+            {
+                "action": "灰度上线核实文案 A/B 方案",
+                "owner": "增长运营",
+                "timeline": "2-4周灰度验证",
+                "metric": "核实完成率提升 10%",
+                "evidence_refs": ["Q14"],
+            },
+        ],
+        "open_questions": [
+            {
+                "question": "不同年龄段用户对风险文案的理解差异",
+                "reason": "现有样本主要集中在中青年",
+                "impact": "可能影响文案泛化效果",
+                "suggested_follow_up": "增加高龄样本并拆分渠道分析",
+                "evidence_refs": ["Q15"],
+            }
+        ],
+        "evidence_index": [
+            {
+                "claim": "当前核实流程存在高摩擦节点",
+                "confidence": "high",
+                "evidence_refs": ["Q6", "Q8", "Q10"],
+            }
+        ],
+    }
+
+
+@app.route('/api/report-templates/validate', methods=['POST'])
+def validate_report_template_schema():
+    data = request.get_json() or {}
+    schema_input = data.get("schema")
+    sections_input = data.get("sections")
+    normalized_schema, issues = normalize_custom_report_schema(schema_input, fallback_sections=sections_input)
+    if issues:
+        return jsonify({
+            "success": False,
+            "error": "模板结构校验失败",
+            "details": issues,
+            "schema": normalized_schema,
+        }), 400
+    return jsonify({"success": True, "schema": normalized_schema})
+
+
+@app.route('/api/report-templates/preview', methods=['POST'])
+def preview_report_template_schema():
+    data = request.get_json() or {}
+    schema_input = data.get("schema")
+    sections_input = data.get("sections")
+    normalized_schema, issues = normalize_custom_report_schema(schema_input, fallback_sections=sections_input)
+    if issues:
+        return jsonify({
+            "success": False,
+            "error": "模板结构校验失败",
+            "details": issues,
+            "schema": normalized_schema,
+        }), 400
+
+    draft = data.get("draft")
+    if not isinstance(draft, dict):
+        draft = build_custom_template_preview_draft()
+    quality_meta = data.get("quality_meta")
+    if not isinstance(quality_meta, dict):
+        quality_meta = {}
+
+    session_stub = {
+        "topic": str(data.get("topic") or "自定义模板预览"),
+        "scenario_config": {
+            "report": {
+                "type": "standard",
+                "template": REPORT_TEMPLATE_CUSTOM_V1,
+                "schema": normalized_schema,
+            }
+        },
+        "dimensions": {},
+        "interview_log": [],
+    }
+    markdown = render_report_from_draft_custom_v1(session_stub, draft, quality_meta)
+
+    return jsonify({
+        "success": True,
+        "schema": normalized_schema,
+        "preview_markdown": markdown,
+    })
+
+
 # ============ 场景 API ============
 
 @app.route('/api/scenarios', methods=['GET'])
@@ -11702,7 +12969,12 @@ def list_scenarios():
                 }
                 for d in s.get("dimensions", [])
             ],
-            "report_type": s.get("report", {}).get("type", "standard")
+            "report_type": s.get("report", {}).get("type", "standard"),
+            "report_template": normalize_report_template_name(
+                s.get("report", {}).get("template", ""),
+                report_type=s.get("report", {}).get("type", "standard"),
+            ),
+            "has_custom_report_schema": isinstance(s.get("report", {}).get("schema"), dict),
         }
         for s in scenarios
     ])
@@ -11824,7 +13096,7 @@ def generate_scenario_with_ai():
                 dim["key_aspects"] = []
 
         # 添加默认的 report 配置
-        generated["report"] = {"type": "standard"}
+        generated["report"] = {"type": "standard", "template": "default"}
 
         return jsonify({
             "success": True,
@@ -11870,12 +13142,39 @@ def create_custom_scenario():
         dim.setdefault("min_questions", 2)
         dim.setdefault("max_questions", 4)
 
+    report_payload = data.get("report", {"type": "standard", "template": "default"})
+    if not isinstance(report_payload, dict):
+        return jsonify({"error": "report 配置格式无效"}), 400
+
+    report_type = str(report_payload.get("type") or "standard").strip().lower()
+    if report_type not in {"standard", "assessment"}:
+        report_type = "standard"
+    report_template = normalize_report_template_name(report_payload.get("template", ""), report_type=report_type)
+    if report_template not in REPORT_TEMPLATE_ALLOWED:
+        return jsonify({"error": "report.template 不支持"}), 400
+
+    normalized_report = {"type": report_type}
+    if report_template == REPORT_TEMPLATE_STANDARD_V1:
+        normalized_report["template"] = "default"
+    elif report_template == REPORT_TEMPLATE_ASSESSMENT_V1:
+        normalized_report["template"] = "assessment"
+    else:
+        normalized_report["template"] = REPORT_TEMPLATE_CUSTOM_V1
+        schema_input = report_payload.get("schema")
+        normalized_schema, schema_issues = normalize_custom_report_schema(
+            schema_input,
+            fallback_sections=report_payload.get("sections"),
+        )
+        if schema_issues:
+            return jsonify({"error": "report.schema 校验失败", "details": schema_issues}), 400
+        normalized_report["schema"] = normalized_schema
+
     scenario = {
         "name": name,
         "description": data.get("description", "").strip(),
         "icon": data.get("icon", "clipboard-list"),
         "dimensions": dimensions,
-        "report": data.get("report", {"type": "standard"}),
+        "report": normalized_report,
     }
 
     scenario_id = scenario_loader.save_custom_scenario(scenario)

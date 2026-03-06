@@ -1097,6 +1097,105 @@ class SecurityRegressionTests(unittest.TestCase):
         finally:
             self.server.REPORT_V3_RENDER_MERMAID_FROM_DATA = old_flag
 
+    def test_render_report_from_draft_v3_dispatches_assessment_and_custom_template(self):
+        backup_assessment = self.server.render_report_from_draft_assessment_v1
+        backup_custom = self.server.render_report_from_draft_custom_v1
+        try:
+            self.server.render_report_from_draft_assessment_v1 = lambda *_args, **_kwargs: "# assessment dispatch"
+            self.server.render_report_from_draft_custom_v1 = lambda *_args, **_kwargs: "# custom dispatch"
+
+            assessment = self.server.render_report_from_draft_v3(
+                {
+                    "scenario_config": {
+                        "report": {"type": "assessment", "template": "assessment"},
+                    }
+                },
+                {},
+                {},
+            )
+            self.assertEqual(assessment, "# assessment dispatch")
+
+            custom = self.server.render_report_from_draft_v3(
+                {
+                    "scenario_config": {
+                        "report": {
+                            "type": "standard",
+                            "template": "custom_v1",
+                            "schema": {
+                                "sections": [
+                                    {
+                                        "section_id": "summary",
+                                        "title": "执行摘要",
+                                        "component": "paragraph",
+                                        "source": "overview",
+                                    }
+                                ]
+                            },
+                        },
+                    }
+                },
+                {},
+                {},
+            )
+            self.assertEqual(custom, "# custom dispatch")
+        finally:
+            self.server.render_report_from_draft_assessment_v1 = backup_assessment
+            self.server.render_report_from_draft_custom_v1 = backup_custom
+
+    def test_build_report_prompt_supports_custom_template_blueprint(self):
+        session = {
+            "topic": "自定义回退报告测试",
+            "description": "验证 legacy prompt 在 custom_v1 下按蓝图输出",
+            "scenario_config": {
+                "dimensions": [
+                    {
+                        "id": "customer_needs",
+                        "name": "客户需求",
+                        "key_aspects": ["目标", "动机"],
+                    }
+                ],
+                "report": {
+                    "type": "standard",
+                    "template": "custom_v1",
+                    "schema": {
+                        "sections": [
+                            {
+                                "section_id": "summary",
+                                "title": "执行摘要",
+                                "component": "paragraph",
+                                "source": "overview",
+                                "required": True,
+                            },
+                            {
+                                "section_id": "actions",
+                                "title": "行动计划",
+                                "component": "table",
+                                "source": "actions",
+                                "required": True,
+                            },
+                        ]
+                    },
+                },
+            },
+            "interview_log": [
+                {
+                    "dimension": "customer_needs",
+                    "question": "你当前最大的业务挑战是什么？",
+                    "answer": "跨部门协作效率低，交付周期不稳定。",
+                }
+            ],
+            "dimensions": {
+                "customer_needs": {"coverage": 30},
+            },
+        }
+
+        prompt = self.server.build_report_prompt(session)
+        self.assertIn("用户自定义章节蓝图", prompt)
+        self.assertIn("执行摘要", prompt)
+        self.assertIn("行动计划", prompt)
+        self.assertIn("为 `table` 时输出 Markdown 表格", prompt)
+        self.assertIn("你当前最大的业务挑战是什么？", prompt)
+
     def test_summarize_error_for_log_strips_html_payload(self):
         raw_error = (
             "<!DOCTYPE html><html><head><title>aicodemirror.com | 504: Gateway time-out</title></head>"

@@ -1,7 +1,19 @@
 {
-  "version": "2.13.0",
+  "version": "2.14.0",
   "releaseDate": "2026-03-06",
   "changelog": [
+    {
+      "version": "2.14.0",
+      "date": "2026-03-06",
+      "type": "minor",
+      "title": "按场景模板分发报告版式并支持自定义模板校验预览",
+      "changes": [
+        "feat(模板): 新增 standard_v1/assessment_v1/custom_v1 三类模板分发与会话模板解析能力",
+        "feat(API): 新增自定义模板校验与预览接口，支持 schema 白名单校验与预览 markdown 输出",
+        "feat(渲染): 报告 V3 草案、校验与渲染接入 custom/assessment 模板分支，并补齐必填章节门禁",
+        "test(回归): 增加自定义场景 schema 入库、模板接口与模板分发渲染的回归测试"
+      ]
+    },
     {
       "version": "2.13.0",
       "date": "2026-03-06",
