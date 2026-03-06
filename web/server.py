@@ -2763,6 +2763,58 @@ def get_auth_db_connection() -> sqlite3.Connection:
     return conn
 
 
+AUTH_META_INSTANCE_KEY = "auth_instance_id"
+auth_instance_cache = {
+    "db_path": "",
+    "value": "",
+}
+auth_instance_cache_lock = threading.Lock()
+
+
+def get_auth_instance_id(force_refresh: bool = False) -> str:
+    """返回当前鉴权库实例标识，用于拦截跨实例会话串号。"""
+    db_path = str(AUTH_DB_PATH.resolve())
+    if not force_refresh:
+        with auth_instance_cache_lock:
+            if auth_instance_cache.get("db_path") == db_path and auth_instance_cache.get("value"):
+                return str(auth_instance_cache.get("value"))
+
+    with get_auth_db_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_meta (
+                meta_key TEXT PRIMARY KEY,
+                meta_value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        row = conn.execute(
+            "SELECT meta_value FROM auth_meta WHERE meta_key = ? LIMIT 1",
+            (AUTH_META_INSTANCE_KEY,),
+        ).fetchone()
+        value = str((row["meta_value"] if row else "") or "").strip()
+        if not value:
+            value = secrets.token_hex(16)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                """
+                INSERT INTO auth_meta (meta_key, meta_value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(meta_key) DO UPDATE SET
+                    meta_value = excluded.meta_value,
+                    updated_at = excluded.updated_at
+                """,
+                (AUTH_META_INSTANCE_KEY, value, now_iso),
+            )
+            conn.commit()
+
+    with auth_instance_cache_lock:
+        auth_instance_cache["db_path"] = db_path
+        auth_instance_cache["value"] = value
+    return value
+
+
 def init_auth_db() -> None:
     with get_auth_db_connection() as conn:
         conn.execute(
@@ -2819,6 +2871,8 @@ def init_auth_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sms_codes_phone_scene ON auth_sms_codes(phone, scene)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sms_codes_created_at ON auth_sms_codes(created_at)")
         conn.commit()
+    # 初始化并缓存鉴权库实例标识（多实例时用于识别“错库会话”）。
+    get_auth_instance_id(force_refresh=True)
 
 
 def normalize_phone_number(raw_phone: str) -> str:
@@ -3650,6 +3704,19 @@ def get_current_user() -> Optional[sqlite3.Row]:
     if not user_id:
         return None
 
+    current_instance_id = str(get_auth_instance_id() or "").strip()
+    session_instance_id = str(session.get("auth_instance_id", "") or "").strip()
+    if current_instance_id:
+        if not session_instance_id:
+            session["auth_instance_id"] = current_instance_id
+        elif session_instance_id != current_instance_id:
+            if ENABLE_DEBUG_LOG:
+                _safe_log(
+                    f"⚠️ 检测到跨实例登录态，已清理会话: session_instance={session_instance_id}, current_instance={current_instance_id}"
+                )
+            session.clear()
+            return None
+
     try:
         user_id_int = int(user_id)
     except (TypeError, ValueError):
@@ -3668,6 +3735,7 @@ def login_user(user_row: sqlite3.Row) -> None:
     session.clear()
     session.permanent = True
     session["user_id"] = int(user_row["id"])
+    session["auth_instance_id"] = str(get_auth_instance_id() or "")
 
 
 def require_login(func):
@@ -16090,6 +16158,11 @@ def normalize_report_time_fields(content: str, generated_at: Optional[datetime] 
         normalized_head,
     )
     normalized_head = re.sub(
+        r"(?im)^(\|\s*访谈时间\s*\|)\s*[^|\n]*\|",
+        rf"\g<1> {interview_date} |",
+        normalized_head,
+    )
+    normalized_head = re.sub(
         r"(?im)^(\|\s*报告编号\s*\|)\s*[^|\n]*\|",
         rf"\g<1> {report_id} |",
         normalized_head,
@@ -16127,10 +16200,30 @@ def normalize_report_time_fields(content: str, generated_at: Optional[datetime] 
         normalized_head,
     )
     normalized_head = re.sub(
+        r"(?im)^(\s*访谈时间\s*[:：]\s*)[^\n]+$",
+        rf"\g<1>{interview_date}",
+        normalized_head,
+    )
+    normalized_head = re.sub(
         r"(?im)^(\*\*报告编号\*\*\s*[:：]\s*)[^\n]+$",
         rf"\g<1>{report_id}",
         normalized_head,
     )
+
+    # 兼容 Markdown 列表项（-/*/+）和可选加粗标签字段，防止模型输出年份幻觉值残留。
+    line_field_rules = [
+        ("报告生成时间", generated_datetime_cn),
+        ("生成日期", generated_datetime_cn),
+        ("访谈日期", interview_date),
+        ("访谈时间", interview_date),
+        ("报告编号", report_id),
+    ]
+    for label, target_value in line_field_rules:
+        normalized_head = re.sub(
+            rf"(?im)^(\s*(?:[-*+•·]\s+)(?:\*\*)?{label}(?:\*\*)?\s*[:：]\s*)[^\n]+$",
+            rf"\g<1>{target_value}",
+            normalized_head,
+        )
 
     # 行内复合字段（如：报告编号：xxx 访谈主题：yyy 生成日期：zzz）统一
     normalized_head = re.sub(
@@ -16146,6 +16239,11 @@ def normalize_report_time_fields(content: str, generated_at: Optional[datetime] 
     normalized_head = re.sub(
         r"(?im)(报告生成时间\s*[:：]\s*)([^\n]*)$",
         rf"\g<1>{generated_datetime_cn}",
+        normalized_head,
+    )
+    normalized_head = re.sub(
+        r"(?im)(访谈时间\s*[:：]\s*)([^\n]*)$",
+        rf"\g<1>{interview_date}",
         normalized_head,
     )
 

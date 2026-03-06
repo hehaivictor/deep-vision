@@ -1346,7 +1346,9 @@ class SecurityRegressionTests(unittest.TestCase):
         generated_at = datetime(2026, 3, 5, 23, 58, 0)
         raw = (
             "| 报告生成时间 | 2025年6月 |\n"
+            "| 访谈时间 | 2024年 |\n"
             "**访谈日期**: 2024-01-01\n"
+            "- 访谈时间： 2024年\n"
             "报告生成时间：2025年6月\n"
             "报告编号：V-2024-001 访谈主题：B2C 生成日期：2024年\n"
         )
@@ -1354,12 +1356,15 @@ class SecurityRegressionTests(unittest.TestCase):
         normalized = self.server.normalize_report_time_fields(raw, generated_at=generated_at)
 
         self.assertIn("| 报告生成时间 | 2026年03月05日 23:58 |", normalized)
+        self.assertIn("| 访谈时间 | 2026-03-05 |", normalized)
         self.assertIn("**访谈日期**: 2026-03-05", normalized)
+        self.assertIn("- 访谈时间： 2026-03-05", normalized)
         self.assertIn("报告生成时间：2026年03月05日 23:58", normalized)
         self.assertIn("报告编号：deep-vision-20260305-2358", normalized)
         self.assertIn("生成日期：2026年03月05日 23:58", normalized)
         self.assertNotIn("2025年6月", normalized)
         self.assertNotIn("V-2024-001", normalized)
+        self.assertNotIn("访谈时间： 2024年", normalized)
 
     def test_generate_interview_appendix_keeps_original_order_and_checkbox_markers(self):
         session = {
