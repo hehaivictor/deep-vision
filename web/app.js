@@ -71,13 +71,13 @@ function deepVision() {
         reportProfileOptions: [
             {
                 value: 'balanced',
-                title: '平衡档（稳定优先）',
-                description: '推荐默认：响应更快、成功率更高。'
+                title: '平衡模式（推荐）',
+                description: '速度更快，适合日常快速生成。'
             },
             {
                 value: 'quality',
-                title: '高质量慢档',
-                description: '质量优先：更充分审稿，耗时更长。'
+                title: '精审模式（质量优先）',
+                description: '内容更严谨，但等待时间更长。'
             }
         ],
         reportGenerationState: 'idle',
@@ -537,13 +537,13 @@ function deepVision() {
             const meta = {
                 balanced: {
                     value: 'balanced',
-                    title: '平衡档（稳定优先）',
-                    description: '推荐默认：响应更快、成功率更高。'
+                    title: '平衡模式（推荐）',
+                    description: '速度更快，适合日常快速生成。'
                 },
                 quality: {
                     value: 'quality',
-                    title: '高质量慢档',
-                    description: '质量优先：更充分审稿，耗时更长。'
+                    title: '精审模式（质量优先）',
+                    description: '内容更严谨，但等待时间更长。'
                 }
             };
             return meta[normalized] || meta.balanced;
