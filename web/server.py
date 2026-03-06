@@ -575,6 +575,15 @@ REPORT_V3_REVIEW_PRIMARY_LANE = _cfg_text("REPORT_V3_REVIEW_PRIMARY_LANE", "repo
 if REPORT_V3_REVIEW_PRIMARY_LANE not in {"question", "report"}:
     REPORT_V3_REVIEW_PRIMARY_LANE = "report"
 REPORT_V3_FAILOVER_FORCE_SINGLE_LANE = _cfg_bool("REPORT_V3_FAILOVER_FORCE_SINGLE_LANE", True)
+REPORT_V3_QUALITY_FORCE_SINGLE_LANE = _cfg_bool("REPORT_V3_QUALITY_FORCE_SINGLE_LANE", True)
+REPORT_V3_QUALITY_PRIMARY_LANE = _cfg_text("REPORT_V3_QUALITY_PRIMARY_LANE", "report").strip().lower()
+if REPORT_V3_QUALITY_PRIMARY_LANE not in {"question", "report"}:
+    REPORT_V3_QUALITY_PRIMARY_LANE = "report"
+REPORT_V3_RENDER_MERMAID_FROM_DATA = _cfg_bool("REPORT_V3_RENDER_MERMAID_FROM_DATA", True)
+REPORT_V3_WEAK_BINDING_ENABLED = _cfg_bool("REPORT_V3_WEAK_BINDING_ENABLED", True)
+REPORT_V3_WEAK_BINDING_MIN_SCORE = _cfg_float("REPORT_V3_WEAK_BINDING_MIN_SCORE", 0.46)
+REPORT_V3_WEAK_BINDING_MIN_SCORE = max(0.2, min(REPORT_V3_WEAK_BINDING_MIN_SCORE, 0.9))
+REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE = _cfg_bool("REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE", True)
 REPORT_V3_EVIDENCE_SLIM_ENABLED = _cfg_bool("REPORT_V3_EVIDENCE_SLIM_ENABLED", True)
 REPORT_V3_EVIDENCE_DIM_QUOTA = _cfg_int("REPORT_V3_EVIDENCE_DIM_QUOTA", 6)
 REPORT_V3_EVIDENCE_DIM_QUOTA = max(1, min(REPORT_V3_EVIDENCE_DIM_QUOTA, 20))
@@ -648,6 +657,17 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
     else:
         min_required_review_rounds = max(1, min(configured_min_required_review_rounds, 4))
 
+    quality_force_single_lane = _cfg_bool("REPORT_V3_QUALITY_FORCE_SINGLE_LANE", True)
+    quality_primary_lane = _cfg_text("REPORT_V3_QUALITY_PRIMARY_LANE", "report").strip().lower()
+    if quality_primary_lane not in {"question", "report"}:
+        quality_primary_lane = "report"
+
+    render_mermaid_from_data = _cfg_bool("REPORT_V3_RENDER_MERMAID_FROM_DATA", True)
+    weak_binding_enabled = _cfg_bool("REPORT_V3_WEAK_BINDING_ENABLED", True)
+    weak_binding_min_score = _cfg_float("REPORT_V3_WEAK_BINDING_MIN_SCORE", 0.46)
+    weak_binding_min_score = max(0.2, min(weak_binding_min_score, 0.9))
+    salvage_on_quality_gate_failure = _cfg_bool("REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE", True)
+
     return {
         "profile": profile,
         "draft_timeout": float(draft_timeout),
@@ -661,6 +681,12 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
         "review_base_rounds": int(review_base_rounds),
         "quality_fix_rounds": int(quality_fix_rounds),
         "min_required_review_rounds": int(min_required_review_rounds),
+        "quality_force_single_lane": bool(quality_force_single_lane),
+        "quality_primary_lane": quality_primary_lane,
+        "render_mermaid_from_data": bool(render_mermaid_from_data),
+        "weak_binding_enabled": bool(weak_binding_enabled),
+        "weak_binding_min_score": float(weak_binding_min_score),
+        "salvage_on_quality_gate_failure": bool(salvage_on_quality_gate_failure),
     }
 
 # 手机验证码登录配置
@@ -9084,10 +9110,10 @@ def build_report_draft_prompt_v3(
             "project_constraints": "项目约束分析"
         },
         "visualizations": {
-            "priority_quadrant_mermaid": "quadrantChart ...",
-            "business_flow_mermaid": "flowchart TD ...（含 classDef/class，至少3种语义配色）",
-            "demand_pie_mermaid": "pie title ...",
-            "architecture_mermaid": "flowchart LR ...（含 classDef/class，至少3种语义配色）"
+            "priority_quadrant_mermaid": "可选，quadrantChart ...",
+            "business_flow_mermaid": "可选，flowchart TD ...",
+            "demand_pie_mermaid": "可选，pie title ...",
+            "architecture_mermaid": "可选，flowchart LR ..."
         },
         "solutions": [
             {
@@ -9163,13 +9189,21 @@ def build_report_draft_prompt_v3(
 3. solutions/actions 每一项必须包含 owner、timeline、metric。
 4. 若存在冲突信号，必须在 risks 或 open_questions 中显式处理。
 5. 若存在盲区，必须在 open_questions 中体现对应补问。
-6. visualizations 字段中请输出 Mermaid 语法正文（不要包裹```mermaid代码块）。
+6. visualizations 字段可选；即使填写也仅作为补充参考，最终图表由后端按结构化数据渲染。
 7. 不得编造证据编号，不得引用不存在的 Q 编号。
 8. 禁止输出任何工具流程话术：如“请确认是否继续”“需要先征得同意”“我会创建文件”等。
 9. 禁止输出 markdown 代码块、注释、额外解释或前后缀文本。
 10. 顶层字段必须仅包含：overview/needs/analysis/visualizations/solutions/risks/actions/open_questions/evidence_index。
-11. business_flow_mermaid 与 architecture_mermaid 必须包含 `classDef` 和 `class`，至少包含 3 类语义色（核心/决策/风险/支撑）。
-12. Mermaid 图表禁止整图单色，节点与分组需要有明显层次对比。
+11. 草案采用“咨询交付风格”：描述简洁、结论先行、避免口语与空泛表述。
+12. actions 至少 3 条（证据不足时至少 2 条），且 timeline 需覆盖短期与中期里程碑。
+13. needs/solutions/risks/actions 要满足表格化呈现：每项字段完整，单项表达尽量控制在 70 字内。
+
+## 风格锁定模板（审稿会按此门禁）
+- 2.需求摘要：needs 必须可直接渲染为表格（优先级/需求项/描述/证据）。
+- 5.方案建议：solutions 必须可直接渲染为表格（标题/说明/owner/timeline/metric/证据）。
+- 6.风险评估：risks 必须可直接渲染为表格（风险/影响/缓解/证据）。
+- 7.下一步行动：actions 必须可直接渲染为表格（行动/owner/timeline/metric/证据），并体现里程碑层次。
+- open_questions 必须对齐盲区或冲突，避免泛化问题。
 
 ## JSON 模板（字段必须完整）
 {json.dumps(schema_example, ensure_ascii=False, indent=2)}
@@ -9267,6 +9301,7 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
                 "priority": str(item.get("priority", "P1")).strip().upper() or "P1",
                 "description": sanitize_text(item.get("description", "")),
                 "evidence_refs": refs,
+                "evidence_binding_mode": str(item.get("evidence_binding_mode", "") or "").strip().lower(),
             }
             if not normalized_item["name"]:
                 add_issue("structure_error", "medium", "needs.name 不能为空", f"needs[{idx}].name")
@@ -9287,6 +9322,7 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
             normalized_item = dict(item)
             normalized_item[id_field] = sanitize_text(item.get(id_field, ""))
             normalized_item["evidence_refs"] = refs
+            normalized_item["evidence_binding_mode"] = str(item.get("evidence_binding_mode", "") or "").strip().lower()
 
             if field in {"solutions", "actions"}:
                 normalized_item["owner"] = sanitize_text(item.get("owner", ""))
@@ -9312,7 +9348,10 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
 
             if not normalized_item.get(id_field):
                 add_issue("structure_error", "medium", f"{field}.{id_field} 不能为空", f"{field}[{idx}].{id_field}")
-            if not refs:
+            if field == "open_questions" and not refs:
+                if normalized_item.get("evidence_binding_mode") != "weak_inferred":
+                    normalized_item["evidence_binding_mode"] = "pending_follow_up"
+            elif not refs:
                 add_issue("no_evidence", "high", f"{field} 缺少证据引用", f"{field}[{idx}]")
 
             normalized[field].append(normalized_item)
@@ -9427,6 +9466,10 @@ def build_report_review_prompt_v3(session: dict, evidence_pack: dict, draft: dic
 2. unresolved_contradiction：冲突证据没有被解释或处理。
 3. not_actionable：行动建议缺少 owner/timeline/metric。
 4. blindspot：盲区没有进入 open_questions 或行动计划。
+5. style_template_violation：章节模板偏离（数量不足、字段缺失、难以表格化）。
+6. quality_gate_expression：表达结构不完整（概述、分析、建议、行动衔接弱）。
+7. quality_gate_table：needs/solutions/risks/actions 的表格化可读性不足。
+8. quality_gate_milestone：行动缺少短中期里程碑覆盖。
 
 ## 冲突证据
 {contradiction_text}
@@ -9445,6 +9488,9 @@ def build_report_review_prompt_v3(session: dict, evidence_pack: dict, draft: dic
 - 必须包含 passed、issues、revised_draft 三个字段。
 - revised_draft 必须保留原有结构，并修复可修复问题。
 - 若仍有问题，issues 需完整列出。
+- 优先修复风格锁定问题：补齐可表格化字段，避免段落堆叠和口语化表述。
+- actions 至少 3 条（证据不足可 2 条），timeline 需覆盖短期和中期。
+- 不要引入模板外新字段作为硬门槛（例如 needs.acceptance_criteria 不是必填）。
 - 禁止输出“请确认是否继续”“我会创建文件”等工具执行话术。
 - 禁止输出 markdown 代码块与额外说明，禁止前后缀文本。
 
@@ -9488,6 +9534,406 @@ def parse_report_review_response_v3(raw_text: str, parse_meta: Optional[dict] = 
     }
 
 
+REVIEW_BLOCKING_ISSUE_TYPES_V3 = {
+    "no_evidence",
+    "unresolved_contradiction",
+    "not_actionable",
+    "blindspot",
+    "structure_error",
+    "invalid_evidence_ref",
+}
+REVIEW_GATE_MANAGED_ISSUE_PREFIXES_V3 = ("quality_gate_",)
+REVIEW_GATE_MANAGED_ISSUE_TYPES_V3 = {"style_template_violation"}
+
+
+def _extract_issue_field_index_v3(target: str) -> tuple[str, int]:
+    text = str(target or "").strip()
+    match = re.match(r"^(needs|solutions|risks|actions|open_questions|evidence_index)\[(\d+)\]", text)
+    if not match:
+        return "", -1
+    return match.group(1), int(match.group(2))
+
+
+def _issue_target_exists_v3(target: str, draft: dict) -> bool:
+    field, index = _extract_issue_field_index_v3(target)
+    if not field:
+        return True
+    values = draft.get(field, []) if isinstance(draft, dict) else []
+    if not isinstance(values, list):
+        return False
+    return 0 <= index < len(values)
+
+
+def _normalize_review_issue_payload_v3(item: dict) -> dict:
+    return {
+        "type": str(item.get("type", "unknown")).strip().lower() or "unknown",
+        "severity": str(item.get("severity", "medium")).strip().lower() or "medium",
+        "message": str(item.get("message", "")).strip(),
+        "target": str(item.get("target", "unknown")).strip(),
+    }
+
+
+def filter_model_review_issues_v3(model_issues: list, draft: dict) -> list:
+    """过滤模型审稿问题：仅保留阻断型结构问题，避免模板幻觉导致误拦截。"""
+    if not isinstance(model_issues, list):
+        return []
+
+    filtered = []
+    for raw_item in model_issues:
+        if not isinstance(raw_item, dict):
+            continue
+        issue = _normalize_review_issue_payload_v3(raw_item)
+        issue_type = issue.get("type", "")
+        message_lower = issue.get("message", "").lower()
+        target = issue.get("target", "")
+
+        if issue_type.startswith(REVIEW_GATE_MANAGED_ISSUE_PREFIXES_V3) or issue_type in REVIEW_GATE_MANAGED_ISSUE_TYPES_V3:
+            continue
+        if "acceptance_criteria" in message_lower:
+            continue
+        if issue_type not in REVIEW_BLOCKING_ISSUE_TYPES_V3:
+            continue
+        if issue_type == "no_evidence" and str(target).startswith("open_questions"):
+            continue
+        if not _issue_target_exists_v3(target, draft):
+            continue
+        filtered.append(issue)
+    return filtered
+
+
+def merge_review_and_local_issues_v3(model_issues: list, local_issues: list, draft: dict) -> tuple[list, list]:
+    """合并模型问题与本地校验问题，并去重。"""
+    filtered_model_issues = filter_model_review_issues_v3(model_issues, draft)
+
+    merged = []
+    seen_keys = set()
+    for item in filtered_model_issues + (local_issues if isinstance(local_issues, list) else []):
+        if not isinstance(item, dict):
+            continue
+        normalized = _normalize_review_issue_payload_v3(item)
+        key = f"{normalized.get('type')}|{normalized.get('target')}|{normalized.get('message')}"
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        merged.append(normalized)
+    return merged, filtered_model_issues
+
+
+def _tokenize_similarity_text_v3(text: str) -> set[str]:
+    source = str(text or "").strip().lower()
+    if not source:
+        return set()
+
+    tokens = set(re.findall(r"[a-z0-9_]{2,}", source))
+    for chunk in re.findall(r"[\u4e00-\u9fff]{2,12}", source):
+        tokens.add(chunk)
+        for idx in range(len(chunk) - 1):
+            tokens.add(chunk[idx: idx + 2])
+    return {token for token in tokens if token}
+
+
+def _infer_item_dimension_key_v3(field: str, item: dict, evidence_pack: dict) -> str:
+    if not isinstance(item, dict) or not isinstance(evidence_pack, dict):
+        return ""
+
+    dimension_coverage = evidence_pack.get("dimension_coverage", {})
+    if not isinstance(dimension_coverage, dict):
+        return ""
+
+    explicit = str(item.get("dimension", "") or "").strip()
+    if explicit in dimension_coverage:
+        return explicit
+
+    text_corpus = " ".join([
+        str(item.get("title", "") or ""),
+        str(item.get("description", "") or ""),
+        str(item.get("risk", "") or ""),
+        str(item.get("action", "") or ""),
+        str(item.get("question", "") or ""),
+        str(item.get("reason", "") or ""),
+        str(item.get("impact", "") or ""),
+    ]).lower()
+    if not text_corpus:
+        return ""
+
+    best_key = ""
+    best_hits = 0
+    for dim_key, dim_meta in dimension_coverage.items():
+        if not isinstance(dim_meta, dict):
+            continue
+        vocab = [
+            dim_key,
+            str(dim_meta.get("name", "") or ""),
+            *(dim_meta.get("missing_aspects", []) if isinstance(dim_meta.get("missing_aspects", []), list) else []),
+        ]
+        hits = 0
+        for token in vocab:
+            token_text = str(token or "").strip().lower()
+            if token_text and token_text in text_corpus:
+                hits += 1
+        if hits > best_hits:
+            best_hits = hits
+            best_key = dim_key
+    return best_key
+
+
+def infer_weak_evidence_refs_v3(
+    field: str,
+    item: dict,
+    evidence_pack: dict,
+    min_score: float = REPORT_V3_WEAK_BINDING_MIN_SCORE,
+) -> dict:
+    """仅对风险/行动/未决问题执行保守弱绑定，避免无证据硬结论。"""
+    if not REPORT_V3_WEAK_BINDING_ENABLED:
+        return {"refs": [], "score": 0.0}
+    if field not in {"risks", "actions", "open_questions"}:
+        return {"refs": [], "score": 0.0}
+    if not isinstance(item, dict) or not isinstance(evidence_pack, dict):
+        return {"refs": [], "score": 0.0}
+
+    facts = evidence_pack.get("facts", [])
+    if not isinstance(facts, list) or not facts:
+        return {"refs": [], "score": 0.0}
+
+    text_fields = {
+        "risks": ["risk", "impact", "mitigation"],
+        "actions": ["action", "owner", "timeline", "metric"],
+        "open_questions": ["question", "reason", "impact", "suggested_follow_up"],
+    }
+    item_text = " ".join(str(item.get(key, "") or "") for key in text_fields.get(field, []))
+    item_tokens = _tokenize_similarity_text_v3(item_text)
+    if not item_tokens:
+        return {"refs": [], "score": 0.0}
+
+    preferred_dimension = _infer_item_dimension_key_v3(field, item, evidence_pack)
+    quality_snapshot = evidence_pack.get("quality_snapshot", {})
+    avg_quality = _safe_float((quality_snapshot or {}).get("average_quality_score", 0.0), default=0.0)
+
+    best = None
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        q_id = str(fact.get("q_id", "") or "").upper().strip()
+        if not re.fullmatch(r"Q\d+", q_id):
+            continue
+
+        fact_text = " ".join([
+            str(fact.get("question", "") or ""),
+            str(fact.get("answer", "") or ""),
+            str(fact.get("dimension_name", "") or ""),
+            str(fact.get("dimension", "") or ""),
+        ])
+        fact_tokens = _tokenize_similarity_text_v3(fact_text)
+        if not fact_tokens:
+            continue
+
+        overlap = len(item_tokens & fact_tokens)
+        if overlap <= 0:
+            continue
+
+        coverage = overlap / max(3, min(len(item_tokens), 14))
+        precision = overlap / max(4, min(len(fact_tokens), 18))
+        quality_score = max(0.0, min(1.0, _safe_float(fact.get("quality_score", 0.0), default=0.0)))
+        dim_bonus = 0.12 if preferred_dimension and str(fact.get("dimension", "") or "") == preferred_dimension else 0.0
+        hard_bonus = 0.04 if bool(fact.get("hard_triggered", False)) else 0.0
+        score = 0.62 * coverage + 0.18 * precision + 0.16 * quality_score + dim_bonus + hard_bonus
+
+        if best is None or score > best["score"]:
+            best = {"score": score, "q_id": q_id}
+
+    if not best:
+        return {"refs": [], "score": 0.0}
+
+    threshold = float(min_score or REPORT_V3_WEAK_BINDING_MIN_SCORE)
+    if field == "actions":
+        threshold += 0.04
+    if preferred_dimension:
+        threshold -= 0.03
+    if avg_quality <= 0.30:
+        threshold += 0.02
+    threshold = max(0.25, min(threshold, 0.92))
+
+    if best["score"] + 1e-9 < threshold:
+        return {"refs": [], "score": round(best["score"], 3)}
+
+    return {"refs": [best["q_id"]], "score": round(best["score"], 3)}
+
+
+def _demote_item_to_open_question_v3(field: str, item: dict) -> dict:
+    title_map = {
+        "risks": str(item.get("risk", "") or "").strip() or "该风险项",
+        "actions": str(item.get("action", "") or "").strip() or "该行动项",
+    }
+    title = title_map.get(field, "该结论项")
+    impact_text = str(item.get("impact", "") or item.get("description", "") or "").strip()
+    follow_up = (
+        f"请补充“{title}”对应的直接访谈证据（原话、场景、量化口径）"
+        if title
+        else "请补充对应的直接访谈证据（原话、场景、量化口径）"
+    )
+    return {
+        "question": f"“{title}”当前缺少可追溯证据，是否应作为待验证假设？",
+        "reason": "该项为推断结论，当前没有可靠 evidence_refs，已自动降级为待补问问题",
+        "impact": impact_text or "可能影响结论可信度与行动优先级",
+        "suggested_follow_up": follow_up,
+        "evidence_refs": [],
+        "evidence_binding_mode": "pending_follow_up",
+        "inference_origin_field": field,
+    }
+
+
+def _deduplicate_structured_list_v3(items: list, id_fields: list[str]) -> list:
+    if not isinstance(items, list):
+        return []
+
+    deduped = []
+    seen = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        signature_parts = []
+        for key in id_fields:
+            signature_parts.append(re.sub(r"\s+", " ", str(item.get(key, "") or "").strip().lower()))
+        signature = "|".join(signature_parts)
+        if not signature or signature in seen:
+            continue
+        seen.add(signature)
+        deduped.append(item)
+    return deduped
+
+
+def apply_deterministic_report_repairs_v3(
+    draft: dict,
+    evidence_pack: dict,
+    issues: list,
+    runtime_profile: str = "",
+) -> dict:
+    """
+    规则化修复器（确定性）：
+    1) 对 risks/actions/open_questions 的 no_evidence 尝试保守弱绑定
+    2) 无法绑定的 risks/actions 自动降级为 open_questions
+    3) evidence_index 中无证据条目直接清理
+    4) 去重，减少模型重复条目导致的误拦截
+    """
+    if not isinstance(draft, dict):
+        return {"draft": {}, "changed": False, "notes": []}
+
+    working = copy.deepcopy(draft)
+    notes = []
+    changed = False
+    remove_index_map = {"risks": set(), "actions": set(), "open_questions": set(), "evidence_index": set()}
+
+    runtime_profile = normalize_report_profile_choice(runtime_profile, fallback=REPORT_V3_PROFILE)
+    weak_binding_floor = REPORT_V3_WEAK_BINDING_MIN_SCORE
+    if runtime_profile == "quality":
+        weak_binding_floor = max(weak_binding_floor, 0.48)
+
+    for issue in (issues if isinstance(issues, list) else []):
+        if not isinstance(issue, dict):
+            continue
+        issue_type = str(issue.get("type", "") or "").strip().lower()
+        if issue_type != "no_evidence":
+            continue
+
+        field, index = _extract_issue_field_index_v3(str(issue.get("target", "") or ""))
+        if field not in {"risks", "actions", "open_questions", "evidence_index"} or index < 0:
+            continue
+
+        values = working.get(field, [])
+        if not isinstance(values, list) or index >= len(values):
+            continue
+        item = values[index]
+        if not isinstance(item, dict):
+            continue
+
+        refs = _normalize_evidence_refs(item.get("evidence_refs", []))
+        if refs:
+            continue
+
+        if field == "evidence_index":
+            remove_index_map[field].add(index)
+            changed = True
+            notes.append(f"移除无证据索引项 {field}[{index}]")
+            continue
+
+        weak_bind = infer_weak_evidence_refs_v3(
+            field,
+            item,
+            evidence_pack,
+            min_score=weak_binding_floor,
+        )
+        weak_refs = _normalize_evidence_refs(weak_bind.get("refs", []))
+        if weak_refs:
+            item["evidence_refs"] = weak_refs
+            item["evidence_binding_mode"] = "weak_inferred"
+            item["evidence_binding_score"] = float(weak_bind.get("score", 0.0) or 0.0)
+            changed = True
+            notes.append(f"{field}[{index}] 弱绑定证据 {','.join(weak_refs)}")
+            continue
+
+        if field in {"risks", "actions"}:
+            open_questions = working.get("open_questions", [])
+            if not isinstance(open_questions, list):
+                open_questions = []
+            open_questions.append(_demote_item_to_open_question_v3(field, item))
+            working["open_questions"] = open_questions
+            remove_index_map[field].add(index)
+            changed = True
+            notes.append(f"{field}[{index}] 降级为 open_questions")
+
+    for field, index_set in remove_index_map.items():
+        if not index_set:
+            continue
+        values = working.get(field, [])
+        if not isinstance(values, list):
+            continue
+        filtered = [item for idx, item in enumerate(values) if idx not in index_set]
+        if len(filtered) != len(values):
+            working[field] = filtered
+            changed = True
+
+    # 统一清洗 evidence_refs：去重 + 移除无效 Q 编号。
+    valid_q_refs = {
+        str(fact.get("q_id", "")).upper().strip()
+        for fact in (evidence_pack.get("facts", []) if isinstance(evidence_pack.get("facts", []), list) else [])
+        if isinstance(fact, dict) and re.fullmatch(r"Q\d+", str(fact.get("q_id", "")).upper().strip())
+    }
+    for field in ["needs", "solutions", "risks", "actions", "open_questions", "evidence_index"]:
+        values = working.get(field, [])
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            refs = _normalize_evidence_refs(item.get("evidence_refs", []))
+            if valid_q_refs:
+                refs = [ref for ref in refs if ref in valid_q_refs]
+            if refs != _normalize_evidence_refs(item.get("evidence_refs", [])):
+                item["evidence_refs"] = refs
+                changed = True
+
+    # 统一去重，降低重复条目带来的伪问题。
+    dedup_rules = {
+        "needs": ["name", "description"],
+        "solutions": ["title", "description"],
+        "risks": ["risk", "impact"],
+        "actions": ["action", "timeline"],
+        "open_questions": ["question", "reason"],
+        "evidence_index": ["claim"],
+    }
+    for field, keys in dedup_rules.items():
+        values = working.get(field, [])
+        if not isinstance(values, list):
+            continue
+        deduped = _deduplicate_structured_list_v3(values, keys)
+        if len(deduped) != len(values):
+            working[field] = deduped
+            changed = True
+            notes.append(f"{field} 去重 {len(values) - len(deduped)} 项")
+
+    return {"draft": working, "changed": changed, "notes": notes[:30]}
+
+
 def _collect_claim_entries_for_quality(draft: dict) -> list:
     """收集草案中的可计量结论条目。"""
     claim_entries = []
@@ -9501,6 +9947,7 @@ def _collect_claim_entries_for_quality(draft: dict) -> list:
             claim_entries.append({
                 "field": field,
                 "evidence_refs": _normalize_evidence_refs(item.get("evidence_refs", [])),
+                "evidence_binding_mode": str(item.get("evidence_binding_mode", "") or "").strip().lower(),
                 "owner": str(item.get("owner", "")).strip(),
                 "timeline": str(item.get("timeline", "")).strip(),
                 "metric": str(item.get("metric", "")).strip(),
@@ -9512,12 +9959,67 @@ REPORT_V3_QUALITY_THRESHOLDS = {
     "evidence_coverage": 0.9,
     "consistency": 0.8,
     "actionability": 0.8,
+    "expression_structure": 0.82,
+    "table_readiness": 0.78,
+    "action_acceptance": 0.75,
+    "milestone_coverage": 0.65,
+    "max_weak_binding_ratio": 0.35,
 }
+
+
+def _profile_quality_gate_thresholds_v3(profile: str, base_thresholds: Optional[dict] = None) -> dict:
+    """按档位返回质量门禁阈值。quality 更严格，balanced 适度放宽。"""
+    thresholds = dict(REPORT_V3_QUALITY_THRESHOLDS)
+    if isinstance(base_thresholds, dict):
+        thresholds.update(base_thresholds)
+
+    normalized_profile = normalize_report_profile_choice(profile, fallback="balanced")
+    if normalized_profile == "quality":
+        return thresholds
+
+    # balanced 档适度放宽表达与模板门禁，避免小样本访谈被过度拦截。
+    relaxed = dict(thresholds)
+    relaxed["expression_structure"] = min(float(relaxed.get("expression_structure", 0.82) or 0.82), 0.72)
+    relaxed["table_readiness"] = min(float(relaxed.get("table_readiness", 0.78) or 0.78), 0.68)
+    relaxed["action_acceptance"] = min(float(relaxed.get("action_acceptance", 0.75) or 0.75), 0.65)
+    relaxed["milestone_coverage"] = min(float(relaxed.get("milestone_coverage", 0.65) or 0.65), 0.45)
+    relaxed["max_weak_binding_ratio"] = max(float(relaxed.get("max_weak_binding_ratio", 0.35) or 0.35), 0.45)
+    return relaxed
+
+
+def _adapt_quality_gate_thresholds_by_evidence_v3(limit: dict, quality_meta: dict) -> dict:
+    """根据证据可靠性动态收敛/放宽部分表达类门禁。"""
+    adapted = dict(limit)
+    evidence_context = quality_meta.get("evidence_context", {}) if isinstance(quality_meta, dict) else {}
+    if not isinstance(evidence_context, dict):
+        return adapted
+
+    unknown_ratio = max(0.0, min(1.0, _safe_float(evidence_context.get("unknown_ratio", 0.0), default=0.0)))
+    avg_quality = max(0.0, min(1.0, _safe_float(evidence_context.get("average_quality_score", 0.0), default=0.0)))
+    facts_count = max(0, int(evidence_context.get("facts_count", 0) or 0))
+
+    if facts_count <= 0:
+        return adapted
+
+    # 仅对表达/模板类门禁做有限放宽，证据覆盖与一致性门禁保持刚性。
+    tension = 0.0
+    if unknown_ratio > 0.60:
+        tension += min(0.12, (unknown_ratio - 0.60) * 0.30)
+    if avg_quality < 0.32:
+        tension += min(0.08, (0.32 - avg_quality) * 0.45)
+    tension = max(0.0, min(tension, 0.18))
+    if tension <= 0.0:
+        return adapted
+
+    for key in ("actionability", "expression_structure", "table_readiness", "action_acceptance", "milestone_coverage"):
+        current = float(adapted.get(key, 0.0) or 0.0)
+        adapted[key] = max(0.45, current - tension)
+    adapted["max_weak_binding_ratio"] = min(0.60, max(float(adapted.get("max_weak_binding_ratio", 0.35) or 0.35), 0.35 + tension))
+    return adapted
 
 
 def build_quality_gate_issues_v3(quality_meta: dict, thresholds: Optional[dict] = None) -> list:
     """根据质量阈值构建门禁问题列表。"""
-    limit = thresholds or REPORT_V3_QUALITY_THRESHOLDS
     if not isinstance(quality_meta, dict):
         return [{
             "type": "quality_gate_missing",
@@ -9526,10 +10028,21 @@ def build_quality_gate_issues_v3(quality_meta: dict, thresholds: Optional[dict] 
             "target": "quality_meta",
         }]
 
+    runtime_profile = normalize_report_profile_choice(
+        str(quality_meta.get("runtime_profile", "") or ""),
+        fallback="balanced",
+    )
+    limit = _profile_quality_gate_thresholds_v3(runtime_profile, base_thresholds=thresholds)
+    limit = _adapt_quality_gate_thresholds_by_evidence_v3(limit, quality_meta)
+
     checks = [
         ("evidence_coverage", "quality_gate_evidence", "证据覆盖率", "needs/solutions/actions/risks/open_questions/evidence_index"),
         ("consistency", "quality_gate_consistency", "冲突解释完成度", "risks/open_questions"),
         ("actionability", "quality_gate_actionability", "可执行建议占比", "solutions/actions"),
+        ("expression_structure", "quality_gate_expression", "表达结构完整度", "overview/analysis/needs/solutions/risks/actions"),
+        ("table_readiness", "quality_gate_table", "表格化可读性", "needs/solutions/risks/actions"),
+        ("action_acceptance", "quality_gate_acceptance", "行动验收口径完备度", "actions.metric"),
+        ("milestone_coverage", "quality_gate_milestone", "行动里程碑覆盖度", "actions.timeline"),
     ]
 
     issues = []
@@ -9543,15 +10056,123 @@ def build_quality_gate_issues_v3(quality_meta: dict, thresholds: Optional[dict] 
                 "message": f"{label}低于门槛（当前{current:.1%}，要求≥{required:.1%}）",
                 "target": target,
             })
+
+    weak_binding_ratio = max(0.0, min(1.0, _safe_float(quality_meta.get("weak_binding_ratio", 0.0), default=0.0)))
+    weak_binding_limit = max(0.0, min(1.0, _safe_float(limit.get("max_weak_binding_ratio", 0.35), default=0.35)))
+    if weak_binding_ratio > weak_binding_limit + 1e-9:
+        issues.append({
+            "type": "quality_gate_weak_binding",
+            "severity": "high" if runtime_profile == "quality" else "medium",
+            "message": f"弱证据绑定占比过高（当前{weak_binding_ratio:.1%}，允许≤{weak_binding_limit:.1%}）",
+            "target": "risks/actions/open_questions",
+        })
+
+    template_minimums = quality_meta.get("template_minimums", {})
+    list_counts = quality_meta.get("list_counts", {})
+    if isinstance(template_minimums, dict) and isinstance(list_counts, dict):
+        display_names = {
+            "needs": "核心需求",
+            "solutions": "方案建议",
+            "risks": "风险项",
+            "actions": "行动项",
+            "open_questions": "未决问题",
+        }
+        deficits = []
+        for key, label in display_names.items():
+            required = int(template_minimums.get(key, 0) or 0)
+            current = int(list_counts.get(key, 0) or 0)
+            if required > 0 and current < required:
+                deficits.append(f"{label}≥{required}（当前{current}）")
+
+        if deficits:
+            severity = "high" if runtime_profile == "quality" else "medium"
+            issues.append({
+                "type": "style_template_violation",
+                "severity": severity,
+                "message": "风格模板未达标：" + "，".join(deficits),
+                "target": "needs/solutions/risks/actions/open_questions",
+            })
     return issues
+
+
+def _compute_table_row_readiness_v3(items: list, required_fields: list[str]) -> float:
+    """计算列表字段在表格化输出场景中的行完整度。"""
+    if not isinstance(items, list) or not items:
+        return 0.0
+
+    scores = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        filled = 0
+        for field in required_fields:
+            value = item.get(field, "")
+            if field == "evidence_refs":
+                if _normalize_evidence_refs(value):
+                    filled += 1
+            elif str(value or "").strip():
+                filled += 1
+        scores.append(filled / len(required_fields))
+
+    if not scores:
+        return 0.0
+    return sum(scores) / len(scores)
+
+
+def _is_action_metric_measurable_v3(metric_text: str) -> bool:
+    text = str(metric_text or "").strip()
+    if not text:
+        return False
+
+    patterns = [
+        r"\d", r"%", r"sla", r"分钟", r"小时", r"天", r"周", r"月", r"季度", r"年",
+        r"完成率", r"通过率", r"转化", r"留存", r"时延", r"成本", r"上线", r"缺陷",
+        r"coverage", r"latency", r"uptime", r"kpi", r"okr",
+    ]
+    lowered = text.lower()
+    return any(re.search(pattern, lowered, re.IGNORECASE) for pattern in patterns)
+
+
+def _classify_action_timeline_bucket_v3(timeline_text: str) -> str:
+    text = str(timeline_text or "").strip().lower()
+    if not text:
+        return "unknown"
+
+    short_markers = ["今日", "今天", "本周", "当周", "本月", "立即", "立刻", "短期", "1周", "2周", "一周", "两周", "7天", "14天", "week"]
+    mid_markers = ["中期", "一个月", "两个月", "三个月", "1个月", "2个月", "3个月", "季度", "q1", "q2", "q3", "q4", "month"]
+    long_markers = ["长期", "半年", "6个月", "一年", "12个月", "年度", "year"]
+
+    if any(marker in text for marker in long_markers):
+        return "long"
+    if any(marker in text for marker in mid_markers):
+        return "mid"
+    if any(marker in text for marker in short_markers):
+        return "short"
+    return "unknown"
 
 
 def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: list) -> dict:
     """计算 V3 报告质量元数据。"""
     claim_entries = _collect_claim_entries_for_quality(draft)
     claim_total = len(claim_entries)
-    evidence_covered = len([entry for entry in claim_entries if entry.get("evidence_refs")])
-    evidence_coverage = (evidence_covered / claim_total) if claim_total > 0 else 0.0
+    weighted_evidence_score = 0.0
+    evidence_covered = 0
+    weak_binding_count = 0
+    for entry in claim_entries:
+        refs = entry.get("evidence_refs", [])
+        if not refs:
+            continue
+        evidence_covered += 1
+        binding_mode = str(entry.get("evidence_binding_mode", "") or "").strip().lower()
+        if binding_mode == "weak_inferred":
+            weak_binding_count += 1
+            weighted_evidence_score += 0.45
+        elif binding_mode == "pending_follow_up":
+            weighted_evidence_score += 0.0
+        else:
+            weighted_evidence_score += 1.0
+    evidence_coverage = (weighted_evidence_score / claim_total) if claim_total > 0 else 0.0
+    weak_binding_ratio = (weak_binding_count / evidence_covered) if evidence_covered > 0 else 0.0
 
     contradiction_total = len(evidence_pack.get("contradictions", []))
     unresolved_contradictions = len([item for item in issues if item.get("type") == "unresolved_contradiction"])
@@ -9568,16 +10189,153 @@ def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: lis
     ])
     actionability = (actionable_count / actionable_total) if actionable_total > 0 else 0.0
 
-    overall = 0.4 * evidence_coverage + 0.3 * consistency + 0.3 * actionability
+    needs = draft.get("needs", []) if isinstance(draft.get("needs", []), list) else []
+    solutions = draft.get("solutions", []) if isinstance(draft.get("solutions", []), list) else []
+    risks = draft.get("risks", []) if isinstance(draft.get("risks", []), list) else []
+    actions = draft.get("actions", []) if isinstance(draft.get("actions", []), list) else []
+    open_questions = draft.get("open_questions", []) if isinstance(draft.get("open_questions", []), list) else []
+    analysis = draft.get("analysis", {}) if isinstance(draft.get("analysis", {}), dict) else {}
+
+    facts_count = len(evidence_pack.get("facts", [])) if isinstance(evidence_pack.get("facts", []), list) else 0
+    blindspot_count = len(evidence_pack.get("blindspots", [])) if isinstance(evidence_pack.get("blindspots", []), list) else 0
+    unknown_count = len(evidence_pack.get("unknowns", [])) if isinstance(evidence_pack.get("unknowns", []), list) else 0
+    quality_snapshot = evidence_pack.get("quality_snapshot", {}) if isinstance(evidence_pack.get("quality_snapshot", {}), dict) else {}
+    avg_quality_score = max(0.0, min(1.0, _safe_float(quality_snapshot.get("average_quality_score", 0.0), default=0.0)))
+    unknown_ratio = (unknown_count / facts_count) if facts_count > 0 else 0.0
+
+    template_minimums = {
+        "needs": 2 if facts_count >= 8 else 1,
+        "solutions": 2 if facts_count >= 8 else 1,
+        "risks": 1,
+        "actions": 3 if facts_count >= 10 else 2,
+        "open_questions": 1 if (blindspot_count > 0 or unknown_count > 0) else 0,
+    }
+    if unknown_ratio >= 0.65 or avg_quality_score <= 0.30:
+        template_minimums["actions"] = min(template_minimums["actions"], 2)
+        template_minimums["solutions"] = min(template_minimums["solutions"], 1 if facts_count < 14 else 2)
+        if unknown_count > 0:
+            template_minimums["open_questions"] = max(template_minimums["open_questions"], 2 if facts_count >= 10 else 1)
+
+    list_counts = {
+        "needs": len(needs),
+        "solutions": len(solutions),
+        "risks": len(risks),
+        "actions": len(actions),
+        "open_questions": len(open_questions),
+    }
+
+    overview_ok = bool(str(draft.get("overview", "") or "").strip())
+    analysis_fields = ["customer_needs", "business_flow", "tech_constraints", "project_constraints"]
+    analysis_filled = sum(1 for key in analysis_fields if str(analysis.get(key, "") or "").strip())
+
+    expression_checks = [
+        overview_ok,
+        analysis_filled >= 3,
+        list_counts["needs"] >= template_minimums["needs"],
+        list_counts["solutions"] >= template_minimums["solutions"],
+        list_counts["risks"] >= template_minimums["risks"],
+        list_counts["actions"] >= template_minimums["actions"],
+    ]
+    if template_minimums["open_questions"] > 0:
+        expression_checks.append(list_counts["open_questions"] >= template_minimums["open_questions"])
+    expression_structure = sum(1 for passed in expression_checks if passed) / len(expression_checks)
+
+    needs_row_readiness = _compute_table_row_readiness_v3(
+        needs,
+        ["name", "priority", "description", "evidence_refs"],
+    )
+    solutions_row_readiness = _compute_table_row_readiness_v3(
+        solutions,
+        ["title", "description", "owner", "timeline", "metric", "evidence_refs"],
+    )
+    risks_row_readiness = _compute_table_row_readiness_v3(
+        risks,
+        ["risk", "impact", "mitigation", "evidence_refs"],
+    )
+    actions_row_readiness = _compute_table_row_readiness_v3(
+        actions,
+        ["action", "owner", "timeline", "metric", "evidence_refs"],
+    )
+    table_row_readiness = (
+        needs_row_readiness
+        + solutions_row_readiness
+        + risks_row_readiness
+        + actions_row_readiness
+    ) / 4.0
+    table_presence_score = (
+        sum(1 for field in ("needs", "solutions", "risks", "actions") if list_counts.get(field, 0) > 0) / 4.0
+    )
+    table_readiness = 0.6 * table_row_readiness + 0.4 * table_presence_score
+
+    measurable_actions = 0
+    timeline_buckets = set()
+    for item in actions:
+        if not isinstance(item, dict):
+            continue
+        metric_text = str(item.get("metric", "") or "").strip()
+        owner_text = str(item.get("owner", "") or "").strip()
+        timeline_text = str(item.get("timeline", "") or "").strip()
+        if owner_text and timeline_text and _is_action_metric_measurable_v3(metric_text):
+            measurable_actions += 1
+        bucket = _classify_action_timeline_bucket_v3(timeline_text)
+        if bucket != "unknown":
+            timeline_buckets.add(bucket)
+
+    action_total = len(actions)
+    action_acceptance = (measurable_actions / action_total) if action_total > 0 else 0.0
+    if action_total <= 0:
+        milestone_coverage = 0.0
+    elif "short" in timeline_buckets and "mid" in timeline_buckets and action_total >= 3:
+        milestone_coverage = 1.0
+    elif len(timeline_buckets) >= 2:
+        milestone_coverage = 0.78
+    elif len(timeline_buckets) == 1:
+        milestone_coverage = 0.48 if action_total >= 2 else 0.32
+    else:
+        milestone_coverage = 0.2 if action_total >= 2 else 0.0
+
+    overall = (
+        0.24 * evidence_coverage
+        + 0.18 * consistency
+        + 0.16 * actionability
+        + 0.14 * expression_structure
+        + 0.12 * table_readiness
+        + 0.08 * action_acceptance
+        + 0.08 * milestone_coverage
+    )
 
     return {
         "mode": "v3_structured_reviewed",
         "evidence_coverage": round(evidence_coverage, 3),
         "consistency": round(consistency, 3),
         "actionability": round(actionability, 3),
+        "expression_structure": round(expression_structure, 3),
+        "table_readiness": round(table_readiness, 3),
+        "action_acceptance": round(action_acceptance, 3),
+        "milestone_coverage": round(milestone_coverage, 3),
         "overall": round(overall, 3),
         "claim_total": claim_total,
         "claim_with_evidence": evidence_covered,
+        "weak_binding_count": weak_binding_count,
+        "weak_binding_ratio": round(weak_binding_ratio, 3),
+        "analysis_section_filled": analysis_filled,
+        "list_counts": list_counts,
+        "template_minimums": template_minimums,
+        "table_row_readiness": {
+            "needs": round(needs_row_readiness, 3),
+            "solutions": round(solutions_row_readiness, 3),
+            "risks": round(risks_row_readiness, 3),
+            "actions": round(actions_row_readiness, 3),
+        },
+        "evidence_context": {
+            "facts_count": facts_count,
+            "unknown_count": unknown_count,
+            "blindspots_count": blindspot_count,
+            "unknown_ratio": round(unknown_ratio, 3),
+            "average_quality_score": round(avg_quality_score, 3),
+        },
+        "timeline_buckets": sorted(timeline_buckets),
+        "measurable_actions": measurable_actions,
         "review_issue_count": len(issues),
     }
 
@@ -9589,16 +10347,47 @@ def build_report_quality_meta_fallback(session: dict, mode: str) -> dict:
     contradiction_total = len(evidence_pack.get("contradictions", []))
     consistency = 1.0 if contradiction_total == 0 else 0.6
     actionability = 0.4
-    overall = 0.4 * evidence_coverage + 0.3 * consistency + 0.3 * actionability
+    expression_structure = 0.55
+    table_readiness = 0.5
+    action_acceptance = 0.45
+    milestone_coverage = 0.4
+    overall = (
+        0.24 * evidence_coverage
+        + 0.18 * consistency
+        + 0.16 * actionability
+        + 0.14 * expression_structure
+        + 0.12 * table_readiness
+        + 0.08 * action_acceptance
+        + 0.08 * milestone_coverage
+    )
 
     return {
         "mode": mode,
         "evidence_coverage": round(evidence_coverage, 3),
         "consistency": round(consistency, 3),
         "actionability": round(actionability, 3),
+        "expression_structure": round(expression_structure, 3),
+        "table_readiness": round(table_readiness, 3),
+        "action_acceptance": round(action_acceptance, 3),
+        "milestone_coverage": round(milestone_coverage, 3),
         "overall": round(overall, 3),
         "claim_total": 0,
         "claim_with_evidence": 0,
+        "weak_binding_count": 0,
+        "weak_binding_ratio": 0.0,
+        "analysis_section_filled": 0,
+        "list_counts": {},
+        "template_minimums": {},
+        "table_row_readiness": {},
+        "evidence_context": {
+            "facts_count": len(evidence_pack.get("facts", [])) if isinstance(evidence_pack.get("facts", []), list) else 0,
+            "unknown_count": len(evidence_pack.get("unknowns", [])) if isinstance(evidence_pack.get("unknowns", []), list) else 0,
+            "blindspots_count": len(evidence_pack.get("blindspots", [])) if isinstance(evidence_pack.get("blindspots", []), list) else 0,
+            "unknown_ratio": 0.0,
+            "average_quality_score": 0.0,
+        },
+        "timeline_buckets": [],
+        "measurable_actions": 0,
         "review_issue_count": 0,
     }
 
@@ -9688,6 +10477,121 @@ def build_report_temporal_fields(generated_at: Optional[datetime] = None) -> dic
     }
 
 
+def _normalize_markdown_cell_v3(value: object, fallback: str = "-", max_len: int = 88) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    text = re.sub(r"\s+", " ", text)
+    text = text.replace("|", "/").replace("`", "'")
+    if not text:
+        return fallback
+    if len(text) > max_len:
+        return text[: max_len - 3] + "..."
+    return text
+
+
+def _normalize_mermaid_label_v3(value: object, fallback: str, max_len: int = 16) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"[<>{}\[\]\"`|]", "", text)
+    text = text.replace(":", "-")
+    if not text:
+        text = fallback
+    if len(text) > max_len:
+        text = text[: max_len - 3] + "..."
+    return text
+
+
+def _build_business_flow_mermaid_from_data_v3(needs: list, actions: list, risks: list) -> str:
+    lead_need = _normalize_mermaid_label_v3(
+        (needs[0].get("name", "") if needs and isinstance(needs[0], dict) else ""),
+        "核心需求",
+    )
+    lead_action = _normalize_mermaid_label_v3(
+        (actions[0].get("action", "") if actions and isinstance(actions[0], dict) else ""),
+        "行动落地",
+    )
+    lead_risk = _normalize_mermaid_label_v3(
+        (risks[0].get("risk", "") if risks and isinstance(risks[0], dict) else ""),
+        "风险治理",
+    )
+
+    return f"""flowchart TD
+    A[访谈输入] --> B{{需求是否明确}}
+    B -->|明确| C[梳理 {lead_need}]
+    B -->|不明确| D[补充追问取证]
+    D --> C
+    C --> E[形成方案建议]
+    E --> F[执行 {lead_action}]
+    E --> G[治理 {lead_risk}]
+    F --> H[结果复盘]
+    G --> H
+    classDef dvCore fill:#DBEAFE,stroke:#2563EB,color:#1E3A8A,stroke-width:1.4px
+    classDef dvDecision fill:#FEF3C7,stroke:#D97706,color:#7C2D12,stroke-width:1.4px
+    classDef dvRisk fill:#FEE2E2,stroke:#DC2626,color:#7F1D1D,stroke-width:1.4px
+    classDef dvSupport fill:#DCFCE7,stroke:#16A34A,color:#14532D,stroke-width:1.4px
+    class A,C,E,F,H dvCore
+    class B dvDecision
+    class G dvRisk
+    class D dvSupport"""
+
+
+def _build_demand_pie_mermaid_from_data_v3(needs: list) -> str:
+    priority_counts = {"P0": 0, "P1": 0, "P2": 0, "P3": 0}
+    for item in needs:
+        if not isinstance(item, dict):
+            continue
+        priority = str(item.get("priority", "P1")).strip().upper()
+        if priority not in priority_counts:
+            priority = "P1"
+        priority_counts[priority] += 1
+
+    total = sum(priority_counts.values())
+    if total <= 0:
+        return """pie title 需求优先级分布
+    "P0 立即执行" : 35
+    "P1 计划执行" : 30
+    "P2 可委派" : 20
+    "P3 低优先级" : 15"""
+
+    return "\n".join([
+        "pie title 需求优先级分布",
+        f'    "P0 立即执行" : {max(1, priority_counts["P0"])}',
+        f'    "P1 计划执行" : {max(1, priority_counts["P1"])}',
+        f'    "P2 可委派" : {max(1, priority_counts["P2"])}',
+        f'    "P3 低优先级" : {max(1, priority_counts["P3"])}',
+    ])
+
+
+def _build_architecture_mermaid_from_data_v3(analysis: dict, actions: list, risks: list) -> str:
+    tech_focus = _normalize_mermaid_label_v3(analysis.get("tech_constraints", ""), "技术约束")
+    action_focus = _normalize_mermaid_label_v3(
+        (actions[0].get("owner", "") if actions and isinstance(actions[0], dict) else ""),
+        "执行协同",
+    )
+    risk_focus = _normalize_mermaid_label_v3(
+        (risks[0].get("risk", "") if risks and isinstance(risks[0], dict) else ""),
+        "风险控制",
+    )
+
+    return f"""flowchart LR
+    A[访谈输入层] --> B[结构化分析引擎]
+    B --> C[需求证据池]
+    C --> D[方案策略层]
+    D --> E[执行编排-{action_focus}]
+    D --> F[风险治理-{risk_focus}]
+    B --> G[约束校验-{tech_focus}]
+    E --> H[(指标看板)]
+    F --> H
+    G --> H
+    classDef dvCore fill:#DBEAFE,stroke:#2563EB,color:#1E3A8A,stroke-width:1.4px
+    classDef dvDecision fill:#FEF3C7,stroke:#D97706,color:#7C2D12,stroke-width:1.4px
+    classDef dvRisk fill:#FEE2E2,stroke:#DC2626,color:#7F1D1D,stroke-width:1.4px
+    classDef dvSupport fill:#DCFCE7,stroke:#16A34A,color:#14532D,stroke-width:1.4px
+    class A,C,D,E,H dvCore
+    class B dvDecision
+    class F dvRisk
+    class G dvSupport"""
+
+
 def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) -> str:
     """将 V3 结构化草案渲染为 Markdown 报告。"""
     topic = session.get("topic", "未命名项目")
@@ -9709,6 +10613,12 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
 
     def clamp_score(value: float) -> float:
         return max(0.05, min(0.95, value))
+
+    def format_refs(item: dict) -> str:
+        refs = _normalize_evidence_refs(item.get("evidence_refs", []))
+        if not refs:
+            return "-"
+        return "、".join(refs[:6])
 
     def build_priority_matrix_for_needs(needs_items: list) -> tuple[str, list]:
         """构建优先级矩阵 Mermaid 及图例中的数据点说明。"""
@@ -9745,9 +10655,7 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
             y = clamp_score(base_y - spread * 0.7)
             point_lines.append(f"    Req{index}: [{x:.2f}, {y:.2f}]")
 
-            name = str(item.get("name", "")).strip() or f"需求{index}"
-            if len(name) > 28:
-                name = name[:28] + "..."
+            name = _normalize_markdown_cell_v3(item.get("name", ""), fallback=f"需求{index}", max_len=28)
             point_legend.append(f"- `Req{index}` = {name}")
 
         matrix = "\n".join([
@@ -9763,73 +10671,55 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
         ])
         return matrix, point_legend
 
-    priority_quadrant_mermaid_from_draft = clean_mermaid(
-        visuals.get("priority_quadrant_mermaid", ""),
-        "",
-    )
     generated_priority_quadrant_mermaid, priority_point_legend = build_priority_matrix_for_needs(needs)
-    priority_quadrant_mermaid = priority_quadrant_mermaid_from_draft or generated_priority_quadrant_mermaid
 
-    flow_mermaid = clean_mermaid(
-        visuals.get("business_flow_mermaid", ""),
-        """flowchart TD
-    A[触发访谈场景] --> B{需求是否明确}
-    B -->|是| C[输出方案建议]
-    B -->|否| D[补充追问与证据]
-    C --> E[形成行动计划]
-    D --> C
-    classDef dvCore fill:#DBEAFE,stroke:#2563EB,color:#1E3A8A,stroke-width:1.4px
-    classDef dvDecision fill:#FEF3C7,stroke:#D97706,color:#7C2D12,stroke-width:1.4px
-    classDef dvRisk fill:#FEE2E2,stroke:#DC2626,color:#7F1D1D,stroke-width:1.4px
-    classDef dvSupport fill:#DCFCE7,stroke:#16A34A,color:#14532D,stroke-width:1.4px
-    class A,C,E dvCore
-    class B dvDecision
-    class D dvSupport"""
-    )
+    if REPORT_V3_RENDER_MERMAID_FROM_DATA:
+        priority_quadrant_mermaid = generated_priority_quadrant_mermaid
+        flow_mermaid = _build_business_flow_mermaid_from_data_v3(needs, actions, risks)
+        pie_mermaid = _build_demand_pie_mermaid_from_data_v3(needs)
+        architecture_mermaid = _build_architecture_mermaid_from_data_v3(analysis, actions, risks)
+    else:
+        priority_quadrant_mermaid = clean_mermaid(visuals.get("priority_quadrant_mermaid", ""), "") or generated_priority_quadrant_mermaid
+        flow_mermaid = clean_mermaid(
+            visuals.get("business_flow_mermaid", ""),
+            _build_business_flow_mermaid_from_data_v3(needs, actions, risks),
+        )
+        pie_mermaid = clean_mermaid(
+            visuals.get("demand_pie_mermaid", ""),
+            _build_demand_pie_mermaid_from_data_v3(needs),
+        )
+        architecture_mermaid = clean_mermaid(
+            visuals.get("architecture_mermaid", ""),
+            _build_architecture_mermaid_from_data_v3(analysis, actions, risks),
+        )
+
     flow_mermaid = ensure_flowchart_semantic_styles(flow_mermaid)
-
-    pie_mermaid = clean_mermaid(
-        visuals.get("demand_pie_mermaid", ""),
-        """pie title 需求分布
-    "核心功能" : 40
-    "流程优化" : 30
-    "技术约束" : 20
-    "风险治理" : 10"""
-    )
-
-    architecture_mermaid = clean_mermaid(
-        visuals.get("architecture_mermaid", ""),
-        """flowchart LR
-    A[前端入口] --> B[应用网关]
-    B --> C[业务服务]
-    C --> D[(数据存储)]
-    C --> E[第三方服务]
-    classDef dvCore fill:#DBEAFE,stroke:#2563EB,color:#1E3A8A,stroke-width:1.4px
-    classDef dvDecision fill:#FEF3C7,stroke:#D97706,color:#7C2D12,stroke-width:1.4px
-    classDef dvRisk fill:#FEE2E2,stroke:#DC2626,color:#7F1D1D,stroke-width:1.4px
-    classDef dvSupport fill:#DCFCE7,stroke:#16A34A,color:#14532D,stroke-width:1.4px
-    class A,C dvCore
-    class B dvDecision
-    class D,E dvSupport"""
-    )
     architecture_mermaid = ensure_flowchart_semantic_styles(architecture_mermaid)
 
-    needs_table = []
+    needs_table = [
+        "| 编号 | 优先级 | 需求项 | 描述 | 证据 |",
+        "|:---:|:---:|:---|:---|:---|",
+    ]
     if needs:
-        needs_table.append("| 优先级 | 需求项 | 描述 |")
-        needs_table.append("|:---:|:---|:---|")
-        for item in needs:
+        for idx, item in enumerate(needs, 1):
             needs_table.append(
-                f"| {item.get('priority', 'P1')} | {item.get('name', '')} | {item.get('description', '')} |"
+                "| "
+                f"{idx} | "
+                f"{_normalize_markdown_cell_v3(item.get('priority', 'P1'), fallback='P1', max_len=8)} | "
+                f"{_normalize_markdown_cell_v3(item.get('name', ''))} | "
+                f"{_normalize_markdown_cell_v3(item.get('description', ''))} | "
+                f"{_normalize_markdown_cell_v3(format_refs(item), max_len=30)} |"
             )
     else:
-        needs_table.append("暂无结构化核心需求。")
+        needs_table.append("| - | - | 暂无结构化核心需求 | - | - |")
 
     priority_group = {"P0": [], "P1": [], "P2": [], "P3": []}
     for item in needs:
+        if not isinstance(item, dict):
+            continue
         priority = str(item.get("priority", "P1")).upper()
         priority = priority if priority in priority_group else "P1"
-        priority_group[priority].append(item.get("name", "未命名需求"))
+        priority_group[priority].append(_normalize_markdown_cell_v3(item.get("name", "未命名需求"), max_len=28))
 
     priority_table = [
         "| 优先级 | 需求项 | 说明 |",
@@ -9839,6 +10729,78 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
         f"| 🟢 P2 可委派 | {'、'.join(priority_group['P2']) if priority_group['P2'] else '-'} | 影响有限，可并行安排 |",
         f"| ⚪ P3 低优先级 | {'、'.join(priority_group['P3']) if priority_group['P3'] else '-'} | 可延后处理并持续观察 |",
     ]
+
+    solutions_table = [
+        "| 编号 | 方案建议 | 说明 | Owner | 时间计划 | 验收指标 | 证据 |",
+        "|:---:|:---|:---|:---|:---|:---|:---|",
+    ]
+    if solutions:
+        for idx, item in enumerate(solutions, 1):
+            solutions_table.append(
+                "| "
+                f"{idx} | "
+                f"{_normalize_markdown_cell_v3(item.get('title', ''))} | "
+                f"{_normalize_markdown_cell_v3(item.get('description', ''))} | "
+                f"{_normalize_markdown_cell_v3(item.get('owner', '待定'), max_len=20)} | "
+                f"{_normalize_markdown_cell_v3(item.get('timeline', '待定'), max_len=24)} | "
+                f"{_normalize_markdown_cell_v3(item.get('metric', '待定'), max_len=30)} | "
+                f"{_normalize_markdown_cell_v3(format_refs(item), max_len=30)} |"
+            )
+    else:
+        solutions_table.append("| - | 暂无结构化方案建议 | - | - | - | - | - |")
+
+    risks_table = [
+        "| 编号 | 风险项 | 影响 | 缓解措施 | 证据 |",
+        "|:---:|:---|:---|:---|:---|",
+    ]
+    if risks:
+        for idx, item in enumerate(risks, 1):
+            risks_table.append(
+                "| "
+                f"{idx} | "
+                f"{_normalize_markdown_cell_v3(item.get('risk', ''))} | "
+                f"{_normalize_markdown_cell_v3(item.get('impact', ''), max_len=40)} | "
+                f"{_normalize_markdown_cell_v3(item.get('mitigation', ''), max_len=48)} | "
+                f"{_normalize_markdown_cell_v3(format_refs(item), max_len=30)} |"
+            )
+    else:
+        risks_table.append("| - | 暂无结构化风险项 | - | - | - |")
+
+    actions_table = [
+        "| 编号 | 行动项 | Owner | 时间计划 | 验收指标 | 证据 |",
+        "|:---:|:---|:---|:---|:---|:---|",
+    ]
+    if actions:
+        for idx, item in enumerate(actions, 1):
+            actions_table.append(
+                "| "
+                f"{idx} | "
+                f"{_normalize_markdown_cell_v3(item.get('action', ''))} | "
+                f"{_normalize_markdown_cell_v3(item.get('owner', '待定'), max_len=20)} | "
+                f"{_normalize_markdown_cell_v3(item.get('timeline', '待定'), max_len=24)} | "
+                f"{_normalize_markdown_cell_v3(item.get('metric', '待定'), max_len=30)} | "
+                f"{_normalize_markdown_cell_v3(format_refs(item), max_len=30)} |"
+            )
+    else:
+        actions_table.append("| - | 暂无结构化下一步行动 | - | - | - | - |")
+
+    open_questions_table = [
+        "| 编号 | 未决问题 | 原因 | 影响 | 建议补问 | 证据 |",
+        "|:---:|:---|:---|:---|:---|:---|",
+    ]
+    if open_questions:
+        for idx, item in enumerate(open_questions, 1):
+            open_questions_table.append(
+                "| "
+                f"{idx} | "
+                f"{_normalize_markdown_cell_v3(item.get('question', ''))} | "
+                f"{_normalize_markdown_cell_v3(item.get('reason', ''), max_len=36)} | "
+                f"{_normalize_markdown_cell_v3(item.get('impact', ''), max_len=36)} | "
+                f"{_normalize_markdown_cell_v3(item.get('suggested_follow_up', ''), max_len=42)} | "
+                f"{_normalize_markdown_cell_v3(format_refs(item), max_len=30)} |"
+            )
+    else:
+        open_questions_table.append("| - | 暂无未决问题 | - | - | - | - |")
 
     lines = [
         f"# {topic} 访谈报告",
@@ -9851,21 +10813,22 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
         "",
         "## 1. 访谈概述",
         "",
-        draft.get("overview", "暂无概述信息。"),
+        "### 1.1 执行摘要",
+        _normalize_markdown_cell_v3(draft.get("overview", "暂无概述信息。"), fallback="暂无概述信息。", max_len=3000),
         "",
         "## 2. 需求摘要",
         "",
-        "### 核心需求列表",
+        "### 2.1 核心需求列表（表格）",
         "",
         *needs_table,
         "",
-        "### 优先级矩阵（Mermaid）",
+        "### 2.2 优先级矩阵（Mermaid）",
         "",
         "```mermaid",
         priority_quadrant_mermaid,
         "```",
         "",
-        "### 图例说明",
+        "### 2.3 图例说明",
         "",
         "- 横轴：紧急程度（左低右高）",
         "- 纵轴：重要程度（下低上高）",
@@ -9876,111 +10839,66 @@ def render_report_from_draft_v3(session: dict, draft: dict, quality_meta: dict) 
         "- 数据点对应关系：",
         *(priority_point_legend if priority_point_legend else ["- 本次无可映射的需求点"]),
         "",
-        "### 优先级清单",
+        "### 2.4 优先级清单（表格）",
         "",
         *priority_table,
         "",
         "## 3. 详细需求分析",
         "",
-        "### 客户/用户需求",
-        analysis.get("customer_needs", "暂无分析。"),
+        "### 3.1 客户/用户需求",
+        _normalize_markdown_cell_v3(analysis.get("customer_needs", "暂无分析。"), fallback="暂无分析。", max_len=2000),
         "",
-        "### 业务流程",
-        analysis.get("business_flow", "暂无分析。"),
+        "### 3.2 业务流程",
+        _normalize_markdown_cell_v3(analysis.get("business_flow", "暂无分析。"), fallback="暂无分析。", max_len=2000),
         "",
-        "### 技术约束",
-        analysis.get("tech_constraints", "暂无分析。"),
+        "### 3.3 技术约束",
+        _normalize_markdown_cell_v3(analysis.get("tech_constraints", "暂无分析。"), fallback="暂无分析。", max_len=2000),
         "",
-        "### 项目约束",
-        analysis.get("project_constraints", "暂无分析。"),
+        "### 3.4 项目约束",
+        _normalize_markdown_cell_v3(analysis.get("project_constraints", "暂无分析。"), fallback="暂无分析。", max_len=2000),
         "",
         "## 4. 可视化分析",
         "",
-        "### 业务流程图",
+        "### 4.1 业务流程图",
         "```mermaid",
         flow_mermaid,
         "```",
         "",
-        "### 需求分类饼图",
+        "### 4.2 需求分类饼图",
         "```mermaid",
         pie_mermaid,
         "```",
         "",
-        "### 部署架构图",
+        "### 4.3 部署架构图",
         "```mermaid",
         architecture_mermaid,
         "```",
         "",
         "## 5. 方案建议",
         "",
-    ]
-
-    if solutions:
-        for idx, item in enumerate(solutions, 1):
-            lines.extend([
-                f"### 建议 {idx}: {item.get('title', '未命名建议')}",
-                f"- 说明：{item.get('description', '')}",
-                f"- Owner：{item.get('owner', '') or '待定'}",
-                f"- 时间：{item.get('timeline', '') or '待定'}",
-                f"- 指标：{item.get('metric', '') or '待定'}",
-                "",
-            ])
-    else:
-        lines.append("暂无结构化方案建议。")
-        lines.append("")
-
-    lines.extend([
+        "### 5.1 建议清单（表格）",
+        "",
+        *solutions_table,
+        "",
         "## 6. 风险评估",
         "",
-    ])
-    if risks:
-        for idx, item in enumerate(risks, 1):
-            lines.extend([
-                f"### 风险 {idx}: {item.get('risk', '未命名风险')}",
-                f"- 影响：{item.get('impact', '')}",
-                f"- 应对：{item.get('mitigation', '')}",
-                "",
-            ])
-    else:
-        lines.append("暂无结构化风险项。")
-        lines.append("")
-
-    lines.extend([
+        "### 6.1 风险清单（表格）",
+        "",
+        *risks_table,
+        "",
         "## 7. 下一步行动",
         "",
-    ])
-    if actions:
-        for idx, item in enumerate(actions, 1):
-            lines.extend([
-                f"### 行动 {idx}: {item.get('action', '未命名行动')}",
-                f"- Owner：{item.get('owner', '') or '待定'}",
-                f"- 时间：{item.get('timeline', '') or '待定'}",
-                f"- 指标：{item.get('metric', '') or '待定'}",
-                "",
-            ])
-    else:
-        lines.append("暂无结构化下一步行动。")
-        lines.append("")
-
-    lines.append("### 未决问题清单")
-    lines.append("")
-    if open_questions:
-        for idx, item in enumerate(open_questions, 1):
-            lines.extend([
-                f"{idx}. **问题**：{item.get('question', '')}",
-                f"   - 原因：{item.get('reason', '')}",
-                f"   - 影响：{item.get('impact', '')}",
-                f"   - 建议补问：{item.get('suggested_follow_up', '')}",
-                "",
-            ])
-    else:
-        lines.append("暂无未决问题。")
-        lines.append("")
-
-    lines.extend([
+        "### 7.1 行动计划（表格）",
+        "",
+        *actions_table,
+        "",
+        "### 7.2 未决问题（表格）",
+        "",
+        *open_questions_table,
+        "",
         "*此报告由 Deep Vision 深瞳生成*",
         "",
-    ])
+    ]
 
     return "\n".join(lines)
 
@@ -10034,8 +10952,16 @@ def generate_report_v3_pipeline(
         runtime_cfg = get_report_v3_runtime_config(report_profile)
         runtime_profile = runtime_cfg["profile"]
         pipeline_lane = str(preferred_lane or "report").strip().lower() or "report"
-        draft_phase_lane = resolve_report_v3_phase_lane("draft", pipeline_lane=pipeline_lane)
-        review_phase_lane = resolve_report_v3_phase_lane("review", pipeline_lane=pipeline_lane)
+        if runtime_profile == "quality" and bool(runtime_cfg.get("quality_force_single_lane", True)):
+            preferred_quality_lane = str(runtime_cfg.get("quality_primary_lane", "report") or "report").strip().lower()
+            if preferred_quality_lane not in {"question", "report"}:
+                preferred_quality_lane = "report"
+            forced_lane = pipeline_lane if pipeline_lane != "report" else preferred_quality_lane
+            draft_phase_lane = forced_lane
+            review_phase_lane = forced_lane
+        else:
+            draft_phase_lane = resolve_report_v3_phase_lane("draft", pipeline_lane=pipeline_lane)
+            review_phase_lane = resolve_report_v3_phase_lane("review", pipeline_lane=pipeline_lane)
         phase_lanes = {"draft": draft_phase_lane, "review": review_phase_lane}
         draft_phase_model = resolve_model_name_for_lane(call_type="report_v3_draft", selected_lane=draft_phase_lane)
         review_phase_model = resolve_model_name_for_lane(call_type="report_v3_review_round_1", selected_lane=review_phase_lane)
@@ -10173,6 +11099,17 @@ def generate_report_v3_pipeline(
             }
 
         current_draft, local_issues = validate_report_draft_v3(draft_parsed, evidence_pack)
+        pre_review_repair = apply_deterministic_report_repairs_v3(
+            current_draft,
+            evidence_pack,
+            local_issues,
+            runtime_profile=runtime_profile,
+        )
+        if pre_review_repair.get("changed"):
+            current_draft, local_issues = validate_report_draft_v3(
+                pre_review_repair.get("draft", current_draft),
+                evidence_pack,
+            )
         review_issues = list(local_issues)
         base_review_rounds = runtime_cfg["review_base_rounds"]
         quality_fix_rounds = runtime_cfg["quality_fix_rounds"]
@@ -10278,20 +11215,33 @@ def generate_report_v3_pipeline(
                 current_draft = review_parsed["revised_draft"]
 
             current_draft, local_issues = validate_report_draft_v3(current_draft, evidence_pack)
-            merged_issues = []
-            seen_keys = set()
-            for item in (review_parsed.get("issues", []) + local_issues):
-                key = f"{item.get('type')}|{item.get('target')}|{item.get('message')}"
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-                merged_issues.append(item)
+            repair_seed_issues = (review_parsed.get("issues", []) if isinstance(review_parsed.get("issues", []), list) else []) + list(local_issues)
+            round_repair = apply_deterministic_report_repairs_v3(
+                current_draft,
+                evidence_pack,
+                repair_seed_issues,
+                runtime_profile=runtime_profile,
+            )
+            if round_repair.get("changed"):
+                current_draft, local_issues = validate_report_draft_v3(
+                    round_repair.get("draft", current_draft),
+                    evidence_pack,
+                )
+
+            merged_issues, filtered_model_issues = merge_review_and_local_issues_v3(
+                review_parsed.get("issues", []),
+                local_issues,
+                current_draft,
+            )
             final_issues = merged_issues
 
-            passed = bool(review_parsed.get("passed", False)) and len(merged_issues) == 0
+            model_signaled_pass = bool(review_parsed.get("passed", False))
+            passed = len(merged_issues) == 0 and (model_signaled_pass or len(filtered_model_issues) == 0)
             if passed:
                 quality_gate_start = _time.perf_counter()
                 quality_meta = compute_report_quality_meta_v3(current_draft, evidence_pack, final_issues)
+                if isinstance(quality_meta, dict):
+                    quality_meta["runtime_profile"] = runtime_profile
                 quality_gate_issues = build_quality_gate_issues_v3(quality_meta)
                 quality_gate_elapsed = _time.perf_counter() - quality_gate_start
                 if quality_gate_issues:
@@ -10357,6 +11307,7 @@ def generate_report_v3_pipeline(
             "raw_excerpt": "",
             "repair_applied": False,
             "evidence_pack": evidence_pack,
+            "draft_snapshot": current_draft if isinstance(current_draft, dict) else {},
             "review_issues": final_issues,
         }
     except Exception as e:
@@ -13300,7 +14251,8 @@ def build_v3_failure_log_context(v3_failure: Optional[dict]) -> str:
 def attempt_salvage_v3_review_failure(session: dict, v3_result: Optional[dict]) -> dict:
     """
     在审稿阶段失败时尝试直接复用现有草案：
-    - 仅针对 review_generation_failed / review_parse_failed
+    - 针对 review_generation_failed / review_parse_failed
+    - 可选覆盖 review_not_passed_or_quality_gate_failed（启用保守规则修复）
     - 若草案通过质量门禁，则直接产出，减少不必要回退和告警
     """
     outcome = {
@@ -13319,7 +14271,11 @@ def attempt_salvage_v3_review_failure(session: dict, v3_result: Optional[dict]) 
     if not isinstance(session, dict) or not isinstance(v3_result, dict):
         return outcome
 
-    if outcome["reason"] not in {"review_generation_failed", "review_parse_failed"}:
+    salvage_reasons = {"review_generation_failed", "review_parse_failed"}
+    if REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE:
+        salvage_reasons.add("review_not_passed_or_quality_gate_failed")
+
+    if outcome["reason"] not in salvage_reasons:
         return outcome
 
     outcome["attempted"] = True
@@ -13334,18 +14290,29 @@ def attempt_salvage_v3_review_failure(session: dict, v3_result: Optional[dict]) 
 
     try:
         sanitized_draft, local_issues = validate_report_draft_v3(draft_snapshot, evidence_pack)
-        merged_issues = []
-        seen_keys = set()
-        for item in (v3_result.get("review_issues", []) if isinstance(v3_result.get("review_issues", []), list) else []) + list(local_issues):
-            if not isinstance(item, dict):
-                continue
-            key = f"{item.get('type')}|{item.get('target')}|{item.get('message')}"
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            merged_issues.append(item)
+        review_issues_raw = v3_result.get("review_issues", []) if isinstance(v3_result.get("review_issues", []), list) else []
+        repair_seed_issues = list(review_issues_raw) + list(local_issues)
+        salvage_repair = apply_deterministic_report_repairs_v3(
+            sanitized_draft,
+            evidence_pack,
+            repair_seed_issues,
+            runtime_profile=outcome.get("profile", REPORT_V3_PROFILE),
+        )
+        if salvage_repair.get("changed"):
+            sanitized_draft, local_issues = validate_report_draft_v3(
+                salvage_repair.get("draft", sanitized_draft),
+                evidence_pack,
+            )
+
+        merged_issues, _filtered_model_issues = merge_review_and_local_issues_v3(
+            review_issues_raw,
+            local_issues,
+            sanitized_draft,
+        )
 
         quality_meta = compute_report_quality_meta_v3(sanitized_draft, evidence_pack, merged_issues)
+        if isinstance(quality_meta, dict):
+            quality_meta["runtime_profile"] = normalize_report_profile_choice(outcome.get("profile", ""), fallback=REPORT_V3_PROFILE)
         quality_gate_issues = build_quality_gate_issues_v3(quality_meta)
         outcome["quality_gate_issue_count"] = len(quality_gate_issues)
         if quality_gate_issues:

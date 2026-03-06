@@ -429,6 +429,47 @@ class SecurityRegressionTests(unittest.TestCase):
             else:
                 os.environ[env_key] = old_value
 
+    def test_build_quality_gate_issues_v3_detects_style_template_violation(self):
+        quality_meta = {
+            "runtime_profile": "quality",
+            "evidence_coverage": 0.95,
+            "consistency": 0.9,
+            "actionability": 0.82,
+            "expression_structure": 0.65,
+            "table_readiness": 0.58,
+            "action_acceptance": 0.5,
+            "milestone_coverage": 0.42,
+            "template_minimums": {
+                "needs": 2,
+                "solutions": 2,
+                "risks": 1,
+                "actions": 3,
+                "open_questions": 1,
+            },
+            "list_counts": {
+                "needs": 1,
+                "solutions": 1,
+                "risks": 1,
+                "actions": 1,
+                "open_questions": 0,
+            },
+        }
+
+        issues = self.server.build_quality_gate_issues_v3(quality_meta)
+        issue_types = {item.get("type") for item in issues if isinstance(item, dict)}
+
+        self.assertIn("quality_gate_expression", issue_types)
+        self.assertIn("quality_gate_table", issue_types)
+        self.assertIn("quality_gate_milestone", issue_types)
+        self.assertIn("style_template_violation", issue_types)
+
+    def test_report_v3_runtime_quality_single_lane_defaults(self):
+        cfg = self.server.get_report_v3_runtime_config("quality")
+        self.assertTrue(cfg.get("quality_force_single_lane"))
+        self.assertEqual(cfg.get("quality_primary_lane"), "report")
+        self.assertTrue(cfg.get("weak_binding_enabled"))
+        self.assertTrue(cfg.get("salvage_on_quality_gate_failure"))
+
     def test_resolve_report_v3_phase_lane_defaults_and_failover_behavior(self):
         keys = [
             "REPORT_V3_DUAL_STAGE_ENABLED",
@@ -459,6 +500,8 @@ class SecurityRegressionTests(unittest.TestCase):
             "REPORT_V3_REVIEW_BASE_ROUNDS",
             "REPORT_V3_QUALITY_FIX_ROUNDS",
             "REPORT_V3_MIN_REVIEW_ROUNDS",
+            "REPORT_V3_QUALITY_FORCE_SINGLE_LANE",
+            "REPORT_V3_QUALITY_PRIMARY_LANE",
         ]
         env_backup = {key: os.environ.get(key) for key in env_keys}
         fn_keys = [
@@ -475,10 +518,13 @@ class SecurityRegressionTests(unittest.TestCase):
         ]
         fn_backup = {key: getattr(self.server, key) for key in fn_keys}
         review_call_types = []
+        phase_lane_calls = []
         try:
             os.environ["REPORT_V3_REVIEW_BASE_ROUNDS"] = "2"
             os.environ["REPORT_V3_QUALITY_FIX_ROUNDS"] = "0"
             os.environ["REPORT_V3_MIN_REVIEW_ROUNDS"] = "2"
+            os.environ["REPORT_V3_QUALITY_FORCE_SINGLE_LANE"] = "true"
+            os.environ["REPORT_V3_QUALITY_PRIMARY_LANE"] = "report"
 
             self.server.build_report_evidence_pack = lambda _session: {"facts": [{"q_id": "Q1"}], "overall_coverage": 1.0}
             self.server.build_report_draft_prompt_v3 = lambda *_args, **_kwargs: "draft prompt"
@@ -506,6 +552,8 @@ class SecurityRegressionTests(unittest.TestCase):
 
             def _fake_call_claude(_prompt, **kwargs):
                 call_type = str(kwargs.get("call_type", "") or "")
+                preferred_lane = str(kwargs.get("preferred_lane", "") or "")
+                phase_lane_calls.append((call_type, preferred_lane))
                 if call_type.startswith("report_v3_review_round_"):
                     review_call_types.append(call_type)
                 return "{\"ok\":true}"
@@ -523,6 +571,15 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertEqual(len(review_call_types), 2)
             self.assertEqual(result.get("review_rounds_executed"), 2)
             self.assertEqual(result.get("min_required_review_rounds"), 2)
+            self.assertEqual(result.get("phase_lanes"), {"draft": "report", "review": "report"})
+
+            report_phase_calls = [
+                lane
+                for call_type, lane in phase_lane_calls
+                if call_type.startswith("report_v3_draft") or call_type.startswith("report_v3_review_round_")
+            ]
+            self.assertTrue(report_phase_calls)
+            self.assertTrue(all(lane == "report" for lane in report_phase_calls))
         finally:
             for key, value in fn_backup.items():
                 setattr(self.server, key, value)
@@ -531,6 +588,191 @@ class SecurityRegressionTests(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+    def test_filter_model_review_issues_v3_skips_hallucinated_template_rules(self):
+        draft = {
+            "overview": "ok",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [{"risk": "风险A", "impact": "高", "mitigation": "降级", "evidence_refs": []}],
+            "actions": [],
+            "open_questions": [{"question": "待补问A", "reason": "未知", "impact": "中", "suggested_follow_up": "补问", "evidence_refs": []}],
+            "evidence_index": [],
+        }
+        model_issues = [
+            {
+                "type": "quality_gate_table",
+                "severity": "medium",
+                "message": "needs表缺少acceptance_criteria字段",
+                "target": "needs[]",
+            },
+            {
+                "type": "no_evidence",
+                "severity": "high",
+                "message": "open_questions 缺少证据引用",
+                "target": "open_questions[0]",
+            },
+            {
+                "type": "no_evidence",
+                "severity": "high",
+                "message": "risks 缺少证据引用",
+                "target": "risks[0]",
+            },
+        ]
+        filtered = self.server.filter_model_review_issues_v3(model_issues, draft)
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0].get("target"), "risks[0]")
+
+    def test_apply_deterministic_report_repairs_v3_binds_and_prunes_no_evidence(self):
+        draft = {
+            "overview": "概述",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [
+                {"risk": "跨部门协同阻塞", "impact": "交付延期", "mitigation": "建立周会", "evidence_refs": []}
+            ],
+            "actions": [
+                {"action": "明确角色分工", "owner": "项目经理", "timeline": "2周内", "metric": "职责清单发布", "evidence_refs": []}
+            ],
+            "open_questions": [],
+            "evidence_index": [
+                {"claim": "结论A", "confidence": "high", "evidence_refs": []}
+            ],
+        }
+        evidence_pack = {
+            "facts": [
+                {"q_id": "Q1", "dimension": "business_process", "dimension_name": "业务流程", "question": "跨部门协同现状", "answer": "目前职责边界不清晰", "quality_score": 0.72},
+                {"q_id": "Q2", "dimension": "business_process", "dimension_name": "业务流程", "question": "角色分工是否明确", "answer": "还不明确", "quality_score": 0.68},
+            ],
+            "quality_snapshot": {"average_quality_score": 0.45},
+            "dimension_coverage": {
+                "business_process": {"name": "业务流程", "missing_aspects": ["角色分工"]},
+            },
+        }
+        issues = [
+            {"type": "no_evidence", "target": "risks[0]"},
+            {"type": "no_evidence", "target": "actions[0]"},
+            {"type": "no_evidence", "target": "evidence_index[0]"},
+        ]
+        repaired = self.server.apply_deterministic_report_repairs_v3(draft, evidence_pack, issues, runtime_profile="quality")
+        self.assertTrue(repaired.get("changed"))
+        repaired_draft = repaired.get("draft", {})
+
+        risks = repaired_draft.get("risks", [])
+        actions = repaired_draft.get("actions", [])
+        open_questions = repaired_draft.get("open_questions", [])
+        risk_refs = risks[0].get("evidence_refs", []) if risks else []
+        action_refs = actions[0].get("evidence_refs", []) if actions else []
+        self.assertTrue(risk_refs or action_refs or open_questions)
+        self.assertEqual(len(repaired_draft.get("evidence_index", [])), 0)
+
+    def test_compute_report_quality_meta_v3_counts_weak_binding_ratio(self):
+        draft = {
+            "overview": "概述",
+            "needs": [{"name": "需求A", "priority": "P1", "description": "描述", "evidence_refs": ["Q1"]}],
+            "analysis": {
+                "customer_needs": "A",
+                "business_flow": "B",
+                "tech_constraints": "C",
+                "project_constraints": "D",
+            },
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [
+                {
+                    "action": "行动A",
+                    "owner": "负责人",
+                    "timeline": "2周内",
+                    "metric": "完成率>=90%",
+                    "evidence_refs": ["Q2"],
+                    "evidence_binding_mode": "weak_inferred",
+                }
+            ],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "facts": [{"q_id": "Q1"}, {"q_id": "Q2"}],
+            "contradictions": [],
+            "unknowns": [],
+            "blindspots": [],
+            "quality_snapshot": {"average_quality_score": 0.6},
+        }
+        meta = self.server.compute_report_quality_meta_v3(draft, evidence_pack, [])
+        self.assertGreater(meta.get("weak_binding_count", 0), 0)
+        self.assertGreater(meta.get("weak_binding_ratio", 0), 0)
+        self.assertLess(meta.get("evidence_coverage", 1.0), 1.0)
+
+    def test_build_quality_gate_issues_v3_relaxes_expression_threshold_when_evidence_is_noisy(self):
+        quality_meta = {
+            "runtime_profile": "balanced",
+            "evidence_coverage": 0.95,
+            "consistency": 0.92,
+            "actionability": 0.70,
+            "expression_structure": 0.62,
+            "table_readiness": 0.6,
+            "action_acceptance": 0.58,
+            "milestone_coverage": 0.55,
+            "weak_binding_ratio": 0.20,
+            "template_minimums": {"needs": 1, "solutions": 1, "risks": 1, "actions": 2, "open_questions": 1},
+            "list_counts": {"needs": 1, "solutions": 1, "risks": 1, "actions": 2, "open_questions": 2},
+            "evidence_context": {
+                "facts_count": 24,
+                "unknown_count": 20,
+                "unknown_ratio": 0.83,
+                "average_quality_score": 0.21,
+            },
+        }
+        issues = self.server.build_quality_gate_issues_v3(quality_meta)
+        issue_types = {item.get("type") for item in issues if isinstance(item, dict)}
+        self.assertNotIn("quality_gate_actionability", issue_types)
+        self.assertNotIn("quality_gate_table", issue_types)
+
+    def test_attempt_salvage_v3_review_failure_supports_quality_gate_failure_reason(self):
+        backups = {
+            "validate_report_draft_v3": self.server.validate_report_draft_v3,
+            "apply_deterministic_report_repairs_v3": self.server.apply_deterministic_report_repairs_v3,
+            "compute_report_quality_meta_v3": self.server.compute_report_quality_meta_v3,
+            "build_quality_gate_issues_v3": self.server.build_quality_gate_issues_v3,
+            "render_report_from_draft_v3": self.server.render_report_from_draft_v3,
+        }
+        old_toggle = self.server.REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE
+        try:
+            self.server.REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE = True
+            self.server.validate_report_draft_v3 = lambda draft, _evidence: (draft, [])
+            self.server.apply_deterministic_report_repairs_v3 = lambda draft, _evidence, _issues, runtime_profile="": {
+                "draft": draft,
+                "changed": False,
+                "notes": [],
+            }
+            self.server.compute_report_quality_meta_v3 = lambda _draft, _evidence, _issues: {
+                "overall": 0.88,
+                "runtime_profile": "quality",
+            }
+            self.server.build_quality_gate_issues_v3 = lambda _meta: []
+            self.server.render_report_from_draft_v3 = lambda _session, _draft, _meta: "# 挽救成功"
+
+            failed_payload = {
+                "reason": "review_not_passed_or_quality_gate_failed",
+                "profile": "quality",
+                "phase_lanes": {"draft": "report", "review": "report"},
+                "draft_snapshot": {"overview": "ok", "needs": [], "analysis": {}},
+                "evidence_pack": {"facts": [{"q_id": "Q1", "dimension": "customer_needs"}]},
+                "review_issues": [{"type": "no_evidence", "target": "risks[0]"}],
+            }
+            outcome = self.server.attempt_salvage_v3_review_failure({"topic": "测试"}, failed_payload)
+            self.assertTrue(outcome.get("attempted"))
+            self.assertTrue(outcome.get("success"))
+            self.assertEqual(outcome.get("report_content"), "# 挽救成功")
+        finally:
+            self.server.REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE = old_toggle
+            for name, fn in backups.items():
+                setattr(self.server, name, fn)
 
     def test_select_slimmed_facts_for_prompt_prioritizes_signal_and_dedup(self):
         keys = [
@@ -781,6 +1023,79 @@ class SecurityRegressionTests(unittest.TestCase):
         )
         styled = self.server.ensure_flowchart_semantic_styles(raw)
         self.assertEqual(styled, raw.strip())
+
+    def test_render_report_from_draft_v3_uses_data_driven_mermaid_and_table_layout(self):
+        old_flag = self.server.REPORT_V3_RENDER_MERMAID_FROM_DATA
+        try:
+            self.server.REPORT_V3_RENDER_MERMAID_FROM_DATA = True
+            draft = {
+                "overview": "这是一段用于验证渲染稳定性的概述。",
+                "needs": [
+                    {
+                        "name": "统一任务追踪视图",
+                        "priority": "P0",
+                        "description": "希望统一查看全部任务状态",
+                        "evidence_refs": ["Q1", "Q2"],
+                    }
+                ],
+                "analysis": {
+                    "customer_needs": "客户希望提升跨团队可见性。",
+                    "business_flow": "当前流程跨部门协同效率较低。",
+                    "tech_constraints": "需要兼容既有 SSO 和审计链路。",
+                    "project_constraints": "预计两个月内完成首期上线。",
+                },
+                "visualizations": {
+                    "business_flow_mermaid": "flowchart TD\nX[模型幻觉图]",
+                    "architecture_mermaid": "flowchart TD\nY[模型幻觉架构]",
+                },
+                "solutions": [
+                    {
+                        "title": "建设统一工作台",
+                        "description": "先聚合核心任务，再分阶段扩展。",
+                        "owner": "产品经理",
+                        "timeline": "1个月内",
+                        "metric": "核心任务覆盖率>=90%",
+                        "evidence_refs": ["Q3"],
+                    }
+                ],
+                "risks": [
+                    {
+                        "risk": "跨系统数据口径不一致",
+                        "impact": "影响报表可信度",
+                        "mitigation": "建立统一口径映射与校验规则",
+                        "evidence_refs": ["Q4"],
+                    }
+                ],
+                "actions": [
+                    {
+                        "action": "完成首批系统接入",
+                        "owner": "研发负责人",
+                        "timeline": "2周内",
+                        "metric": "接入系统数量>=3",
+                        "evidence_refs": ["Q5"],
+                    }
+                ],
+                "open_questions": [
+                    {
+                        "question": "审计链路是否需要额外留痕字段？",
+                        "reason": "合规条款尚未最终确认",
+                        "impact": "影响上线节奏",
+                        "suggested_follow_up": "与合规团队确认字段清单",
+                        "evidence_refs": ["Q6"],
+                    }
+                ],
+                "evidence_index": [],
+            }
+
+            report = self.server.render_report_from_draft_v3({"topic": "渲染稳定性测试"}, draft, {})
+
+            self.assertIn("### 5.1 建议清单（表格）", report)
+            self.assertIn("| 编号 | 方案建议 | 说明 | Owner | 时间计划 | 验收指标 | 证据 |", report)
+            self.assertIn("访谈输入", report)
+            self.assertNotIn("模型幻觉图", report)
+            self.assertNotIn("模型幻觉架构", report)
+        finally:
+            self.server.REPORT_V3_RENDER_MERMAID_FROM_DATA = old_flag
 
     def test_summarize_error_for_log_strips_html_payload(self):
         raw_error = (
