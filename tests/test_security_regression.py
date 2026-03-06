@@ -239,6 +239,38 @@ class SecurityRegressionTests(unittest.TestCase):
         }
         self.assertTrue(self.server.should_retry_v3_with_failover(payload))
 
+    def test_should_retry_v3_failover_when_single_fixable_issue(self):
+        payload = {
+            "status": "failed",
+            "reason": "quality_gate_failed",
+            "final_issue_count": 1,
+            "review_issues": [
+                {"type": "blindspot", "severity": "high", "target": "actions", "message": "盲区已进入open_questions但未纳入actions"}
+            ],
+        }
+        self.assertTrue(self.server.should_retry_v3_with_failover(payload))
+
+    def test_should_not_retry_v3_failover_when_multiple_gate_issues(self):
+        payload = {
+            "status": "failed",
+            "reason": "quality_gate_failed",
+            "final_issue_count": 2,
+            "review_issues": [
+                {"type": "blindspot", "severity": "high", "target": "actions", "message": "盲区未处理"},
+                {"type": "quality_gate_table", "severity": "high", "target": "actions", "message": "表格化不足"},
+            ],
+        }
+        self.assertFalse(self.server.should_retry_v3_with_failover(payload))
+
+    def test_should_retry_v3_failover_for_legacy_reason_when_single_fixable_issue(self):
+        payload = {
+            "status": "failed",
+            "reason": "review_not_passed_or_quality_gate_failed",
+            "final_issue_count": 1,
+            "review_issues": [{"type": "quality_gate_table", "severity": "high", "target": "actions"}],
+        }
+        self.assertTrue(self.server.should_retry_v3_with_failover(payload))
+
     def test_build_v3_failure_log_context_contains_diagnostics(self):
         failure_payload = {
             "reason": "review_parse_failed",
@@ -251,6 +283,8 @@ class SecurityRegressionTests(unittest.TestCase):
             "salvage_success": False,
             "salvage_note": "quality_gate_blocked",
             "salvage_quality_issue_count": 3,
+            "review_issues": [{"type": "blindspot", "target": "actions"}],
+            "salvage_issue_types": ["quality_gate_table"],
         }
 
         context_text = self.server.build_v3_failure_log_context(failure_payload)
@@ -260,6 +294,8 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertIn("phase_lanes=draft=question,review=report", context_text)
         self.assertIn("salvage_attempted=True", context_text)
         self.assertIn("salvage_quality_issue_count=3", context_text)
+        self.assertIn("final_issue_types=blindspot", context_text)
+        self.assertIn("salvage_issue_types=quality_gate_table", context_text)
 
     def test_attempt_salvage_v3_review_failure_success(self):
         backups = {
@@ -327,6 +363,8 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertEqual(outcome.get("note"), "quality_gate_blocked")
             self.assertEqual(outcome.get("quality_gate_issue_count"), 1)
             self.assertEqual(len(outcome.get("review_issues") or []), 1)
+            self.assertEqual(outcome.get("quality_gate_issue_types"), ["quality_gate"])
+            self.assertEqual(len(outcome.get("quality_gate_issues") or []), 1)
         finally:
             for name, fn in backups.items():
                 setattr(self.server, name, fn)
@@ -469,6 +507,11 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual(cfg.get("quality_primary_lane"), "report")
         self.assertTrue(cfg.get("weak_binding_enabled"))
         self.assertTrue(cfg.get("salvage_on_quality_gate_failure"))
+        self.assertTrue(cfg.get("failover_on_single_issue"))
+        self.assertTrue(cfg.get("blindspot_action_required_quality"))
+        self.assertFalse(cfg.get("blindspot_action_required_balanced"))
+        self.assertTrue(cfg.get("unknown_followup_enabled"))
+        self.assertGreaterEqual(cfg.get("unknown_followup_max_items", 0), 1)
 
     def test_resolve_report_v3_phase_lane_defaults_and_failover_behavior(self):
         keys = [
@@ -625,6 +668,47 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0].get("target"), "risks[0]")
 
+    def test_filter_model_review_issues_v3_soft_passes_blindspot_when_open_questions_covered(self):
+        draft = {
+            "overview": "ok",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [],
+            "open_questions": [
+                {
+                    "question": "业务流程中的角色分工仍不清晰，是否需要补采访谈？",
+                    "reason": "角色分工未澄清",
+                    "impact": "影响执行边界",
+                    "suggested_follow_up": "补采角色职责口径",
+                    "evidence_refs": ["Q2"],
+                }
+            ],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "facts": [{"q_id": "Q2"}],
+            "unknowns": [{"q_id": "Q2"}],
+            "quality_snapshot": {"average_quality_score": 0.22},
+        }
+        model_issues = [
+            {
+                "type": "blindspot",
+                "severity": "high",
+                "message": "盲区证据'业务流程: 角色分工'已在open_questions中记录，但未纳入actions行动计划",
+                "target": "actions",
+            }
+        ]
+        filtered = self.server.filter_model_review_issues_v3(
+            model_issues,
+            draft,
+            evidence_pack=evidence_pack,
+            runtime_profile="balanced",
+        )
+        self.assertEqual(filtered, [])
+
     def test_apply_deterministic_report_repairs_v3_binds_and_prunes_no_evidence(self):
         draft = {
             "overview": "概述",
@@ -669,6 +753,57 @@ class SecurityRegressionTests(unittest.TestCase):
         action_refs = actions[0].get("evidence_refs", []) if actions else []
         self.assertTrue(risk_refs or action_refs or open_questions)
         self.assertEqual(len(repaired_draft.get("evidence_index", [])), 0)
+
+    def test_apply_deterministic_report_repairs_v3_adds_blindspot_pending_action(self):
+        draft = {
+            "overview": "概述",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [],
+            "open_questions": [
+                {
+                    "question": "业务流程中的角色分工仍不清晰，是否需要补采访谈？",
+                    "reason": "角色分工未澄清",
+                    "impact": "影响执行边界",
+                    "suggested_follow_up": "补采角色职责口径",
+                    "evidence_refs": ["Q1"],
+                }
+            ],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "facts": [
+                {
+                    "q_id": "Q1",
+                    "dimension": "business_process",
+                    "dimension_name": "业务流程",
+                    "question": "角色分工是否明确",
+                    "answer": "目前不明确",
+                    "quality_score": 0.62,
+                }
+            ],
+            "blindspots": [{"dimension": "业务流程", "aspect": "角色分工"}],
+            "unknowns": [{"q_id": "Q1", "dimension": "业务流程", "reason": "回答存在模糊表述"}],
+            "quality_snapshot": {"average_quality_score": 0.25},
+        }
+        issues = [
+            {
+                "type": "blindspot",
+                "severity": "high",
+                "target": "actions",
+                "message": "盲区证据'业务流程: 角色分工'已在open_questions中记录，但未纳入actions行动计划",
+            }
+        ]
+        repaired = self.server.apply_deterministic_report_repairs_v3(draft, evidence_pack, issues, runtime_profile="quality")
+        self.assertTrue(repaired.get("changed"))
+        repaired_draft = repaired.get("draft", {})
+        actions = repaired_draft.get("actions", [])
+        self.assertTrue(actions)
+        self.assertIn("角色分工", actions[0].get("action", ""))
+        self.assertTrue(actions[0].get("evidence_refs"))
 
     def test_compute_report_quality_meta_v3_counts_weak_binding_ratio(self):
         draft = {

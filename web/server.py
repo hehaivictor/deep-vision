@@ -584,6 +584,14 @@ REPORT_V3_WEAK_BINDING_ENABLED = _cfg_bool("REPORT_V3_WEAK_BINDING_ENABLED", Tru
 REPORT_V3_WEAK_BINDING_MIN_SCORE = _cfg_float("REPORT_V3_WEAK_BINDING_MIN_SCORE", 0.46)
 REPORT_V3_WEAK_BINDING_MIN_SCORE = max(0.2, min(REPORT_V3_WEAK_BINDING_MIN_SCORE, 0.9))
 REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE = _cfg_bool("REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE", True)
+REPORT_V3_FAILOVER_ON_SINGLE_ISSUE = _cfg_bool("REPORT_V3_FAILOVER_ON_SINGLE_ISSUE", True)
+REPORT_V3_BLINDSPOT_ACTION_REQUIRED_BALANCED = _cfg_bool("REPORT_V3_BLINDSPOT_ACTION_REQUIRED_BALANCED", False)
+REPORT_V3_BLINDSPOT_ACTION_REQUIRED_QUALITY = _cfg_bool("REPORT_V3_BLINDSPOT_ACTION_REQUIRED_QUALITY", True)
+REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_ENABLED = _cfg_bool("REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_ENABLED", True)
+REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_MAX_ITEMS = _cfg_int("REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_MAX_ITEMS", 3)
+REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_MAX_ITEMS = max(1, min(REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_MAX_ITEMS, 8))
+REPORT_V3_UNKNOWN_RATIO_TRIGGER = _cfg_float("REPORT_V3_UNKNOWN_RATIO_TRIGGER", 0.65)
+REPORT_V3_UNKNOWN_RATIO_TRIGGER = max(0.2, min(REPORT_V3_UNKNOWN_RATIO_TRIGGER, 1.0))
 REPORT_V3_EVIDENCE_SLIM_ENABLED = _cfg_bool("REPORT_V3_EVIDENCE_SLIM_ENABLED", True)
 REPORT_V3_EVIDENCE_DIM_QUOTA = _cfg_int("REPORT_V3_EVIDENCE_DIM_QUOTA", 6)
 REPORT_V3_EVIDENCE_DIM_QUOTA = max(1, min(REPORT_V3_EVIDENCE_DIM_QUOTA, 20))
@@ -667,6 +675,14 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
     weak_binding_min_score = _cfg_float("REPORT_V3_WEAK_BINDING_MIN_SCORE", 0.46)
     weak_binding_min_score = max(0.2, min(weak_binding_min_score, 0.9))
     salvage_on_quality_gate_failure = _cfg_bool("REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE", True)
+    failover_on_single_issue = _cfg_bool("REPORT_V3_FAILOVER_ON_SINGLE_ISSUE", True)
+    blindspot_action_required_balanced = _cfg_bool("REPORT_V3_BLINDSPOT_ACTION_REQUIRED_BALANCED", False)
+    blindspot_action_required_quality = _cfg_bool("REPORT_V3_BLINDSPOT_ACTION_REQUIRED_QUALITY", True)
+    unknown_followup_enabled = _cfg_bool("REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_ENABLED", True)
+    unknown_followup_max_items = _cfg_int("REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_MAX_ITEMS", 3)
+    unknown_followup_max_items = max(1, min(unknown_followup_max_items, 8))
+    unknown_ratio_trigger = _cfg_float("REPORT_V3_UNKNOWN_RATIO_TRIGGER", 0.65)
+    unknown_ratio_trigger = max(0.2, min(unknown_ratio_trigger, 1.0))
 
     return {
         "profile": profile,
@@ -687,6 +703,12 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
         "weak_binding_enabled": bool(weak_binding_enabled),
         "weak_binding_min_score": float(weak_binding_min_score),
         "salvage_on_quality_gate_failure": bool(salvage_on_quality_gate_failure),
+        "failover_on_single_issue": bool(failover_on_single_issue),
+        "blindspot_action_required_balanced": bool(blindspot_action_required_balanced),
+        "blindspot_action_required_quality": bool(blindspot_action_required_quality),
+        "unknown_followup_enabled": bool(unknown_followup_enabled),
+        "unknown_followup_max_items": int(unknown_followup_max_items),
+        "unknown_ratio_trigger": float(unknown_ratio_trigger),
     }
 
 
@@ -10102,7 +10124,7 @@ def build_report_review_prompt_v3(session: dict, evidence_pack: dict, draft: dic
 1. no_evidence：关键结论或行动缺少 evidence_refs。
 2. unresolved_contradiction：冲突证据没有被解释或处理。
 3. not_actionable：行动建议缺少 owner/timeline/metric。
-4. blindspot：盲区没有进入 open_questions 或行动计划。
+4. blindspot：盲区至少进入 open_questions；仅在证据充分时再进入 actions。
 5. style_template_violation：章节模板偏离（数量不足、字段缺失、难以表格化）。
 6. quality_gate_expression：表达结构不完整（概述、分析、建议、行动衔接弱）。
 7. quality_gate_table：needs/solutions/risks/actions 的表格化可读性不足。
@@ -10127,6 +10149,7 @@ def build_report_review_prompt_v3(session: dict, evidence_pack: dict, draft: dic
 - 若仍有问题，issues 需完整列出。
 - 优先修复风格锁定问题：补齐可表格化字段，避免段落堆叠和口语化表述。
 - actions 至少 3 条（证据不足可 2 条），timeline 需覆盖短期和中期。
+- 对盲区项优先补齐 open_questions；若证据仍不足，可先以 pending_follow_up 标记并给出补采动作。
 - 不要引入模板外新字段作为硬门槛（例如 needs.acceptance_criteria 不是必填）。
 - 禁止输出“请确认是否继续”“我会创建文件”等工具执行话术。
 - 禁止输出 markdown 代码块与额外说明，禁止前后缀文本。
@@ -10183,6 +10206,179 @@ REVIEW_GATE_MANAGED_ISSUE_PREFIXES_V3 = ("quality_gate_",)
 REVIEW_GATE_MANAGED_ISSUE_TYPES_V3 = {"style_template_violation"}
 
 
+def summarize_issue_types_v3(issues: list) -> list[str]:
+    """提取问题类型列表并去重，保持原始顺序。"""
+    if not isinstance(issues, list):
+        return []
+    output = []
+    seen = set()
+    for item in issues:
+        if not isinstance(item, dict):
+            continue
+        issue_type = str(item.get("type", "") or "").strip().lower()
+        if not issue_type or issue_type in seen:
+            continue
+        seen.add(issue_type)
+        output.append(issue_type)
+    return output
+
+
+def _is_quality_gate_issue_type_v3(issue_type: str) -> bool:
+    normalized = str(issue_type or "").strip().lower()
+    return normalized.startswith(REVIEW_GATE_MANAGED_ISSUE_PREFIXES_V3) or normalized in REVIEW_GATE_MANAGED_ISSUE_TYPES_V3
+
+
+def _extract_blindspot_aspect_from_text_v3(text: str) -> str:
+    source = str(text or "").strip()
+    if not source:
+        return ""
+
+    quoted = re.findall(r"[\"'“‘](.+?)[\"'”’]", source)
+    if quoted:
+        candidate = quoted[0]
+        if ":" in candidate:
+            candidate = candidate.split(":", 1)[1]
+        if "：" in candidate:
+            candidate = candidate.split("：", 1)[1]
+        candidate = candidate.strip()
+        if candidate:
+            return candidate
+
+    if "未覆盖盲区未进入草案" in source:
+        tail = source.split("未覆盖盲区未进入草案", 1)[-1]
+        tail = tail.lstrip("：: ").strip()
+        if tail:
+            return tail.split("、")[0].strip()
+    return ""
+
+
+def _collect_text_corpus_for_items_v3(items: list, keys: list[str]) -> str:
+    if not isinstance(items, list):
+        return ""
+    seg = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        for key in keys:
+            text = str(item.get(key, "") or "").strip()
+            if text:
+                seg.append(text.lower())
+    return " ".join(seg)
+
+
+def _is_evidence_sparse_v3(evidence_pack: Optional[dict]) -> bool:
+    if not isinstance(evidence_pack, dict):
+        return False
+    facts = evidence_pack.get("facts", [])
+    unknowns = evidence_pack.get("unknowns", [])
+    quality_snapshot = evidence_pack.get("quality_snapshot", {})
+    facts_count = len(facts) if isinstance(facts, list) else 0
+    unknown_count = len(unknowns) if isinstance(unknowns, list) else 0
+    unknown_ratio = (unknown_count / facts_count) if facts_count > 0 else 0.0
+    avg_quality = _safe_float((quality_snapshot or {}).get("average_quality_score", 0.0), default=0.0)
+    return unknown_ratio >= REPORT_V3_UNKNOWN_RATIO_TRIGGER or avg_quality <= 0.32
+
+
+def _pick_evidence_refs_for_dimension_v3(evidence_pack: dict, dimension_hint: str = "", limit: int = 1) -> list[str]:
+    if not isinstance(evidence_pack, dict):
+        return []
+    facts = evidence_pack.get("facts", [])
+    if not isinstance(facts, list):
+        return []
+
+    normalized_hint = str(dimension_hint or "").strip().lower()
+    picked = []
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        q_id = str(fact.get("q_id", "") or "").upper().strip()
+        if not re.fullmatch(r"Q\d+", q_id):
+            continue
+        if normalized_hint:
+            fact_dim = str(fact.get("dimension", "") or "").strip().lower()
+            fact_dim_name = str(fact.get("dimension_name", "") or "").strip().lower()
+            if normalized_hint not in {fact_dim, fact_dim_name} and normalized_hint not in fact_dim_name and normalized_hint not in fact_dim:
+                continue
+        picked.append(q_id)
+        if len(picked) >= max(1, int(limit or 1)):
+            break
+    return _normalize_evidence_refs(picked)
+
+
+def _build_blindspot_open_question_v3(dimension: str, aspect: str, evidence_pack: dict) -> dict:
+    dim_text = str(dimension or "相关维度").strip()
+    aspect_text = str(aspect or "关键未覆盖点").strip()
+    refs = _pick_evidence_refs_for_dimension_v3(evidence_pack, dimension_hint=dim_text, limit=1)
+    return {
+        "question": f"{dim_text}中的“{aspect_text}”缺少直接证据，是否需要补采访谈？",
+        "reason": "该盲区会影响结论可信度，先记录为待验证问题并补采证据",
+        "impact": f"{aspect_text}未澄清会影响行动优先级与方案可行性判断",
+        "suggested_follow_up": f"围绕“{aspect_text}”补充角色、场景与量化口径，并确认责任边界",
+        "evidence_refs": refs,
+        "evidence_binding_mode": "pending_follow_up" if not refs else "weak_inferred",
+    }
+
+
+def _build_blindspot_pending_action_v3(dimension: str, aspect: str, evidence_pack: dict) -> dict:
+    dim_text = str(dimension or "相关维度").strip()
+    aspect_text = str(aspect or "关键未覆盖点").strip()
+    refs = _pick_evidence_refs_for_dimension_v3(evidence_pack, dimension_hint=dim_text, limit=1)
+    if not refs:
+        refs = _pick_evidence_refs_for_dimension_v3(evidence_pack, dimension_hint="", limit=1)
+    if not refs:
+        return {}
+
+    return {
+        "action": f"补采并确认“{aspect_text}”的责任分工与执行边界",
+        "owner": "产品经理",
+        "timeline": "1-2周内",
+        "metric": "完成至少3位相关角色访谈并输出分工决策记录",
+        "evidence_refs": refs,
+        "evidence_binding_mode": "weak_inferred",
+        "inference_origin_field": "blindspot",
+    }
+
+
+def _should_soft_pass_blindspot_issue_v3(
+    issue: dict,
+    draft: dict,
+    evidence_pack: Optional[dict] = None,
+    runtime_profile: str = "",
+) -> bool:
+    if not isinstance(issue, dict) or not isinstance(draft, dict):
+        return False
+
+    issue_type = str(issue.get("type", "") or "").strip().lower()
+    if issue_type != "blindspot":
+        return False
+
+    profile = normalize_report_profile_choice(runtime_profile, fallback=REPORT_V3_PROFILE)
+    if profile == "quality" and REPORT_V3_BLINDSPOT_ACTION_REQUIRED_QUALITY:
+        # quality 档保持更严格，但当证据明显稀疏时允许从“阻断”降级为“补采建议”。
+        if not _is_evidence_sparse_v3(evidence_pack):
+            return False
+    elif profile == "balanced" and REPORT_V3_BLINDSPOT_ACTION_REQUIRED_BALANCED:
+        return False
+
+    message = str(issue.get("message", "") or "").lower()
+    target = str(issue.get("target", "") or "").lower()
+    mentions_action_gap = ("action" in message or "行动" in message or "行动计划" in message or "actions" in target)
+    if not mentions_action_gap:
+        return False
+
+    open_questions = draft.get("open_questions", [])
+    oq_corpus = _collect_text_corpus_for_items_v3(open_questions if isinstance(open_questions, list) else [], ["question", "reason", "impact", "suggested_follow_up"])
+    if not oq_corpus:
+        return False
+
+    aspect = _extract_blindspot_aspect_from_text_v3(issue.get("message", ""))
+    if aspect:
+        return aspect.lower() in oq_corpus
+
+    # 无法提取具体 aspect 时，至少保证存在盲区补问并且证据稀疏。
+    return _is_evidence_sparse_v3(evidence_pack)
+
+
 def _extract_issue_field_index_v3(target: str) -> tuple[str, int]:
     text = str(target or "").strip()
     match = re.match(r"^(needs|solutions|risks|actions|open_questions|evidence_index)\[(\d+)\]", text)
@@ -10210,7 +10406,12 @@ def _normalize_review_issue_payload_v3(item: dict) -> dict:
     }
 
 
-def filter_model_review_issues_v3(model_issues: list, draft: dict) -> list:
+def filter_model_review_issues_v3(
+    model_issues: list,
+    draft: dict,
+    evidence_pack: Optional[dict] = None,
+    runtime_profile: str = "",
+) -> list:
     """过滤模型审稿问题：仅保留阻断型结构问题，避免模板幻觉导致误拦截。"""
     if not isinstance(model_issues, list):
         return []
@@ -10228,6 +10429,13 @@ def filter_model_review_issues_v3(model_issues: list, draft: dict) -> list:
             continue
         if "acceptance_criteria" in message_lower:
             continue
+        if issue_type == "blindspot" and _should_soft_pass_blindspot_issue_v3(
+            issue,
+            draft,
+            evidence_pack=evidence_pack,
+            runtime_profile=runtime_profile,
+        ):
+            continue
         if issue_type not in REVIEW_BLOCKING_ISSUE_TYPES_V3:
             continue
         if issue_type == "no_evidence" and str(target).startswith("open_questions"):
@@ -10238,9 +10446,20 @@ def filter_model_review_issues_v3(model_issues: list, draft: dict) -> list:
     return filtered
 
 
-def merge_review_and_local_issues_v3(model_issues: list, local_issues: list, draft: dict) -> tuple[list, list]:
+def merge_review_and_local_issues_v3(
+    model_issues: list,
+    local_issues: list,
+    draft: dict,
+    evidence_pack: Optional[dict] = None,
+    runtime_profile: str = "",
+) -> tuple[list, list]:
     """合并模型问题与本地校验问题，并去重。"""
-    filtered_model_issues = filter_model_review_issues_v3(model_issues, draft)
+    filtered_model_issues = filter_model_review_issues_v3(
+        model_issues,
+        draft,
+        evidence_pack=evidence_pack,
+        runtime_profile=runtime_profile,
+    )
 
     merged = []
     seen_keys = set()
@@ -10450,7 +10669,9 @@ def apply_deterministic_report_repairs_v3(
     1) 对 risks/actions/open_questions 的 no_evidence 尝试保守弱绑定
     2) 无法绑定的 risks/actions 自动降级为 open_questions
     3) evidence_index 中无证据条目直接清理
-    4) 去重，减少模型重复条目导致的误拦截
+    4) 对盲区项做保守补全（先补 open_questions，必要时补 pending action）
+    5) 在 unknown_ratio 过高时，自动补充待补采 open_questions，降低遗漏
+    6) 去重，减少模型重复条目导致的误拦截
     """
     if not isinstance(draft, dict):
         return {"draft": {}, "changed": False, "notes": []}
@@ -10517,6 +10738,109 @@ def apply_deterministic_report_repairs_v3(
             remove_index_map[field].add(index)
             changed = True
             notes.append(f"{field}[{index}] 降级为 open_questions")
+
+    # 盲区规则补全：优先进入 open_questions；质量档可按配置补一条待验证行动项。
+    blindspot_candidates = []
+    for blindspot in (evidence_pack.get("blindspots", []) if isinstance(evidence_pack, dict) else []):
+        if not isinstance(blindspot, dict):
+            continue
+        dimension = str(blindspot.get("dimension", "") or "").strip()
+        aspect = str(blindspot.get("aspect", "") or "").strip()
+        if not aspect:
+            continue
+        blindspot_candidates.append((dimension, aspect))
+
+    for issue in (issues if isinstance(issues, list) else []):
+        if not isinstance(issue, dict):
+            continue
+        if str(issue.get("type", "") or "").strip().lower() != "blindspot":
+            continue
+        raw_message = str(issue.get("message", "") or "").strip()
+        aspect = _extract_blindspot_aspect_from_text_v3(raw_message)
+        if not aspect:
+            continue
+        blindspot_candidates.append(("", aspect))
+
+    blindspot_dedup = []
+    blindspot_seen = set()
+    for dimension, aspect in blindspot_candidates:
+        sig = f"{str(dimension or '').strip().lower()}|{str(aspect or '').strip().lower()}"
+        if not aspect or sig in blindspot_seen:
+            continue
+        blindspot_seen.add(sig)
+        blindspot_dedup.append((str(dimension or "").strip(), str(aspect or "").strip()))
+
+    if blindspot_dedup:
+        open_questions = working.get("open_questions", [])
+        if not isinstance(open_questions, list):
+            open_questions = []
+        actions = working.get("actions", [])
+        if not isinstance(actions, list):
+            actions = []
+
+        action_required_for_blindspot = (
+            REPORT_V3_BLINDSPOT_ACTION_REQUIRED_QUALITY
+            if runtime_profile == "quality"
+            else REPORT_V3_BLINDSPOT_ACTION_REQUIRED_BALANCED
+        )
+        for dimension, aspect in blindspot_dedup:
+            oq_corpus = _collect_text_corpus_for_items_v3(open_questions, ["question", "reason", "impact", "suggested_follow_up"])
+            action_corpus = _collect_text_corpus_for_items_v3(actions, ["action", "owner", "timeline", "metric"])
+            aspect_token = aspect.lower()
+
+            if aspect_token and aspect_token not in oq_corpus:
+                open_questions.append(_build_blindspot_open_question_v3(dimension, aspect, evidence_pack))
+                changed = True
+                notes.append(f"盲区补齐 open_questions: {aspect}")
+
+            if action_required_for_blindspot and aspect_token and aspect_token not in action_corpus:
+                action_item = _build_blindspot_pending_action_v3(dimension, aspect, evidence_pack)
+                if action_item:
+                    actions.append(action_item)
+                    changed = True
+                    notes.append(f"盲区补齐 pending action: {aspect}")
+
+        working["open_questions"] = open_questions
+        working["actions"] = actions
+
+    # unknown 过高时自动补采待问，减少“信息缺口直接进结论”的风险。
+    if REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_ENABLED and isinstance(evidence_pack, dict):
+        raw_facts = evidence_pack.get("facts", [])
+        raw_unknowns = evidence_pack.get("unknowns", [])
+        facts_count = len(raw_facts) if isinstance(raw_facts, list) else 0
+        unknown_count = len(raw_unknowns) if isinstance(raw_unknowns, list) else 0
+        unknown_ratio = (unknown_count / facts_count) if facts_count > 0 else 0.0
+        if unknown_ratio >= REPORT_V3_UNKNOWN_RATIO_TRIGGER and isinstance(raw_unknowns, list) and raw_unknowns:
+            open_questions = working.get("open_questions", [])
+            if not isinstance(open_questions, list):
+                open_questions = []
+            oq_corpus = _collect_text_corpus_for_items_v3(open_questions, ["question", "reason", "impact", "suggested_follow_up"])
+            appended = 0
+            for item in raw_unknowns:
+                if appended >= REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_MAX_ITEMS:
+                    break
+                if not isinstance(item, dict):
+                    continue
+                q_id = str(item.get("q_id", "") or "").upper().strip()
+                if not re.fullmatch(r"Q\d+", q_id):
+                    continue
+                reason = str(item.get("reason", "") or "").strip() or "回答存在不确定信息"
+                dimension = str(item.get("dimension", "") or "").strip() or "相关维度"
+                signature = f"{q_id.lower()} {reason.lower()}"
+                if signature in oq_corpus:
+                    continue
+                open_questions.append({
+                    "question": f"{dimension}在{q_id}呈现不确定信号，是否需要补采访谈以确认真实约束？",
+                    "reason": reason,
+                    "impact": "若不补采，报告中的优先级和行动口径可能偏离实际",
+                    "suggested_follow_up": f"围绕 {q_id} 对应场景补充可量化事实（角色、频次、影响范围）",
+                    "evidence_refs": [q_id],
+                    "evidence_binding_mode": "pending_follow_up",
+                })
+                appended += 1
+                changed = True
+                notes.append(f"unknown补采 open_questions: {q_id}")
+            working["open_questions"] = open_questions
 
     for field, index_set in remove_index_map.items():
         if not index_set:
@@ -12242,9 +12566,12 @@ def generate_report_v3_pipeline(
         min_required_review_rounds = max(1, min(total_round_budget, int(runtime_cfg.get("min_required_review_rounds", 1) or 1)))
         remaining_quality_fix_rounds = quality_fix_rounds
         final_issues = list(local_issues)
+        last_failed_stage = "review_gate"
+        last_review_round_no = 0
 
         for review_round in range(total_round_budget):
             review_round_no = review_round + 1
+            last_review_round_no = review_round_no
             if session_id:
                 update_report_generation_status(
                     session_id,
@@ -12357,6 +12684,8 @@ def generate_report_v3_pipeline(
                 review_parsed.get("issues", []),
                 local_issues,
                 current_draft,
+                evidence_pack=evidence_pack,
+                runtime_profile=runtime_profile,
             )
             final_issues = merged_issues
 
@@ -12370,6 +12699,7 @@ def generate_report_v3_pipeline(
                 quality_gate_issues = build_quality_gate_issues_v3(quality_meta)
                 quality_gate_elapsed = _time.perf_counter() - quality_gate_start
                 if quality_gate_issues:
+                    last_failed_stage = "quality_gate"
                     final_issues = quality_gate_issues
                     record_pipeline_stage_metric(
                         stage="quality_gate",
@@ -12420,12 +12750,20 @@ def generate_report_v3_pipeline(
                 }
 
             review_issues = merged_issues
+            last_failed_stage = "review_gate"
 
+        final_issue_types = summarize_issue_types_v3(final_issues)
+        failure_reason = "quality_gate_failed" if last_failed_stage == "quality_gate" else "review_gate_failed"
+        failure_stage = "quality_gate" if last_failed_stage == "quality_gate" else f"review_round_{max(1, int(last_review_round_no or 1))}"
+        if failure_reason != "quality_gate_failed" and any(_is_quality_gate_issue_type_v3(item) for item in final_issue_types):
+            failure_reason = "quality_gate_failed"
+            failure_stage = "quality_gate"
         return {
             "status": "failed",
-            "reason": "review_not_passed_or_quality_gate_failed",
+            "reason": failure_reason,
+            "legacy_reason": "review_not_passed_or_quality_gate_failed",
             "error": f"profile={runtime_profile},final_issue_count={len(final_issues)}",
-            "parse_stage": "quality_gate",
+            "parse_stage": failure_stage,
             "profile": runtime_profile,
             "lane": pipeline_lane,
             "phase_lanes": phase_lanes,
@@ -12434,6 +12772,9 @@ def generate_report_v3_pipeline(
             "evidence_pack": evidence_pack,
             "draft_snapshot": current_draft if isinstance(current_draft, dict) else {},
             "review_issues": final_issues,
+            "final_issue_count": len(final_issues),
+            "final_issue_types": final_issue_types,
+            "failure_stage": last_failed_stage,
         }
     except Exception as e:
         if ENABLE_DEBUG_LOG:
@@ -15442,6 +15783,17 @@ def restart_interview(session_id):
 
 # ============ 报告生成 API ============
 
+V3_FAILOVER_FIXABLE_SINGLE_ISSUE_TYPES = {
+    "blindspot",
+    "style_template_violation",
+    "quality_gate_expression",
+    "quality_gate_table",
+    "quality_gate_milestone",
+    "quality_gate_actionability",
+    "quality_gate_acceptance",
+}
+
+
 def should_retry_v3_with_failover(v3_result: Optional[dict]) -> bool:
     """判断 V3 失败后是否值得切备用网关再试一次。"""
     if not isinstance(v3_result, dict):
@@ -15449,11 +15801,20 @@ def should_retry_v3_with_failover(v3_result: Optional[dict]) -> bool:
 
     reason = str(v3_result.get("reason", "") or "").strip().lower()
     error = str(v3_result.get("error", "") or "").strip().lower()
+    issue_types = summarize_issue_types_v3(v3_result.get("review_issues", []))
+    try:
+        final_issue_count = int(v3_result.get("final_issue_count", len(v3_result.get("review_issues", []) or [])) or 0)
+    except Exception:
+        final_issue_count = len(v3_result.get("review_issues", []) or [])
+
+    if reason in {"review_gate_failed", "quality_gate_failed", "review_not_passed_or_quality_gate_failed"}:
+        if not REPORT_V3_FAILOVER_ON_SINGLE_ISSUE:
+            return False
+        if final_issue_count != 1 or len(issue_types) != 1:
+            return False
+        return issue_types[0] in V3_FAILOVER_FIXABLE_SINGLE_ISSUE_TYPES
 
     # 质量门禁未通过属于内容质量问题，切网关通常无收益
-    if reason == "review_not_passed_or_quality_gate_failed":
-        return False
-
     if reason in {"draft_generation_failed", "review_generation_failed", "exception", "v3_pipeline_returned_empty"}:
         return True
 
@@ -15487,6 +15848,8 @@ def describe_v3_failure_reason(reason: str) -> str:
         "draft_parse_failed": "草案结构化解析失败",
         "review_generation_failed": "审稿生成超时/空响应",
         "review_parse_failed": "审稿结构化解析失败",
+        "review_gate_failed": "审稿门禁未通过",
+        "quality_gate_failed": "质量门禁未通过",
         "review_not_passed_or_quality_gate_failed": "审稿或质量门禁未通过",
         "exception": "流水线异常",
         "v3_pipeline_returned_empty": "流水线返回为空",
@@ -15500,6 +15863,8 @@ def choose_v3_failure_log_icon(reason: str) -> str:
     if normalized in {
         "draft_parse_failed",
         "review_parse_failed",
+        "review_gate_failed",
+        "quality_gate_failed",
         "review_not_passed_or_quality_gate_failed",
     }:
         return "ℹ️"
@@ -15529,6 +15894,16 @@ def build_v3_failure_log_context(v3_failure: Optional[dict]) -> str:
     salvage_success = bool(v3_failure.get("salvage_success", False))
     salvage_note = str(v3_failure.get("salvage_note", "") or "").strip()
     salvage_error = str(v3_failure.get("salvage_error", "") or "").strip()
+    final_issue_types = summarize_issue_types_v3(v3_failure.get("review_issues", []))
+    if not final_issue_types:
+        final_issue_types = [str(item).strip().lower() for item in (v3_failure.get("final_issue_types", []) or []) if str(item).strip()]
+    salvage_issue_types = [str(item).strip().lower() for item in (v3_failure.get("salvage_issue_types", []) or []) if str(item).strip()]
+    final_issue_types_text = "|".join(final_issue_types[:8]) if final_issue_types else "-"
+    salvage_issue_types_text = "|".join(salvage_issue_types[:8]) if salvage_issue_types else "-"
+    try:
+        final_issue_count = int(v3_failure.get("final_issue_count", len(v3_failure.get("review_issues", []) or [])) or 0)
+    except Exception:
+        final_issue_count = len(v3_failure.get("review_issues", []) or [])
     try:
         salvage_quality_issue_count = int(v3_failure.get("salvage_quality_issue_count", 0) or 0)
     except Exception:
@@ -15541,8 +15916,10 @@ def build_v3_failure_log_context(v3_failure: Optional[dict]) -> str:
 
     return (
         f"reason={reason},profile={profile},parse_stage={parse_stage},lane={lane},phase_lanes={phase_lanes},"
-        f"error={error},salvage_attempted={salvage_attempted},salvage_success={salvage_success},"
+        f"error={error},final_issue_count={final_issue_count},final_issue_types={final_issue_types_text},"
+        f"salvage_attempted={salvage_attempted},salvage_success={salvage_success},"
         f"salvage_quality_issue_count={salvage_quality_issue_count},"
+        f"salvage_issue_types={salvage_issue_types_text},"
         f"salvage_note={salvage_note or '-'},salvage_error={salvage_error or '-'}"
     )
 
@@ -15551,7 +15928,7 @@ def attempt_salvage_v3_review_failure(session: dict, v3_result: Optional[dict]) 
     """
     在审稿阶段失败时尝试直接复用现有草案：
     - 针对 review_generation_failed / review_parse_failed
-    - 可选覆盖 review_not_passed_or_quality_gate_failed（启用保守规则修复）
+    - 可选覆盖 review_gate_failed / quality_gate_failed（启用保守规则修复）
     - 若草案通过质量门禁，则直接产出，减少不必要回退和告警
     """
     outcome = {
@@ -15562,6 +15939,8 @@ def attempt_salvage_v3_review_failure(session: dict, v3_result: Optional[dict]) 
         "error": "",
         "quality_gate_issue_count": 0,
         "review_issues": [],
+        "quality_gate_issues": [],
+        "quality_gate_issue_types": [],
         "profile": str((v3_result or {}).get("profile", "") or "").strip() if isinstance(v3_result, dict) else "",
         "phase_lanes": (v3_result.get("phase_lanes", {}) if isinstance(v3_result, dict) and isinstance(v3_result.get("phase_lanes", {}), dict) else {}),
         "evidence_pack": (v3_result.get("evidence_pack", {}) if isinstance(v3_result, dict) and isinstance(v3_result.get("evidence_pack", {}), dict) else {}),
@@ -15572,7 +15951,11 @@ def attempt_salvage_v3_review_failure(session: dict, v3_result: Optional[dict]) 
 
     salvage_reasons = {"review_generation_failed", "review_parse_failed"}
     if REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE:
-        salvage_reasons.add("review_not_passed_or_quality_gate_failed")
+        salvage_reasons.update({
+            "review_gate_failed",
+            "quality_gate_failed",
+            "review_not_passed_or_quality_gate_failed",
+        })
 
     if outcome["reason"] not in salvage_reasons:
         return outcome
@@ -15607,6 +15990,8 @@ def attempt_salvage_v3_review_failure(session: dict, v3_result: Optional[dict]) 
             review_issues_raw,
             local_issues,
             sanitized_draft,
+            evidence_pack=evidence_pack,
+            runtime_profile=outcome.get("profile", REPORT_V3_PROFILE),
         )
 
         quality_meta = compute_report_quality_meta_v3(sanitized_draft, evidence_pack, merged_issues)
@@ -15614,8 +15999,10 @@ def attempt_salvage_v3_review_failure(session: dict, v3_result: Optional[dict]) 
             quality_meta["runtime_profile"] = normalize_report_profile_choice(outcome.get("profile", ""), fallback=REPORT_V3_PROFILE)
         quality_gate_issues = build_quality_gate_issues_v3(quality_meta)
         outcome["quality_gate_issue_count"] = len(quality_gate_issues)
+        outcome["quality_gate_issue_types"] = summarize_issue_types_v3(quality_gate_issues)
         if quality_gate_issues:
             outcome["note"] = "quality_gate_blocked"
+            outcome["quality_gate_issues"] = quality_gate_issues[:60]
             outcome["review_issues"] = quality_gate_issues[:60]
             return outcome
 
@@ -15629,6 +16016,8 @@ def attempt_salvage_v3_review_failure(session: dict, v3_result: Optional[dict]) 
         outcome["quality_meta"] = quality_meta if isinstance(quality_meta, dict) else {}
         outcome["report_content"] = report_content
         outcome["review_issues"] = merged_issues[:60]
+        outcome["quality_gate_issues"] = []
+        outcome["quality_gate_issue_types"] = []
         return outcome
     except Exception as exc:
         outcome["error"] = summarize_error_for_log(exc, limit=200)
@@ -15835,12 +16224,17 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
                     "repair_applied": bool(result.get("repair_applied", False)),
                     "parse_meta": result.get("parse_meta", {}) if isinstance(result.get("parse_meta", {}), dict) else {},
                     "review_issues": (result.get("review_issues", []) if isinstance(result.get("review_issues", []), list) else [])[:60],
+                    "final_issue_count": int(result.get("final_issue_count", len(result.get("review_issues", []) or [])) or 0),
+                    "final_issue_types": list(result.get("final_issue_types", summarize_issue_types_v3(result.get("review_issues", []))) or []),
+                    "failure_stage": str(result.get("failure_stage", "") or ""),
                     "evidence_pack_summary": summarize_evidence_pack_for_debug(result.get("evidence_pack", {})),
                     "salvage_attempted": bool(result.get("salvage_attempted", False)),
                     "salvage_success": bool(result.get("salvage_success", False)),
                     "salvage_note": str(result.get("salvage_note", "") or ""),
                     "salvage_error": str(result.get("salvage_error", "") or ""),
                     "salvage_quality_issue_count": int(result.get("salvage_quality_issue_count", 0) or 0),
+                    "salvage_issue_types": list(result.get("salvage_issue_types", []) or []),
+                    "salvage_issues": (result.get("salvage_issues", []) if isinstance(result.get("salvage_issues", []), list) else [])[:60],
                 }
             return {
                 "reason": "v3_pipeline_returned_empty",
@@ -15853,12 +16247,17 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
                 "repair_applied": False,
                 "parse_meta": {},
                 "review_issues": [],
+                "final_issue_count": 0,
+                "final_issue_types": [],
+                "failure_stage": "",
                 "evidence_pack_summary": {},
                 "salvage_attempted": False,
                 "salvage_success": False,
                 "salvage_note": "",
                 "salvage_error": "",
                 "salvage_quality_issue_count": 0,
+                "salvage_issue_types": [],
+                "salvage_issues": [],
             }
 
         def persist_v3_success_result(
@@ -15935,6 +16334,8 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
                 v3_result["salvage_note"] = str(primary_salvage.get("note", "") or "")
                 v3_result["salvage_error"] = str(primary_salvage.get("error", "") or "")
                 v3_result["salvage_quality_issue_count"] = int(primary_salvage.get("quality_gate_issue_count", 0) or 0)
+                v3_result["salvage_issue_types"] = list(primary_salvage.get("quality_gate_issue_types", []) or [])
+                v3_result["salvage_issues"] = (primary_salvage.get("quality_gate_issues", []) if isinstance(primary_salvage.get("quality_gate_issues", []), list) else [])[:60]
 
             if primary_salvage.get("success"):
                 if ENABLE_DEBUG_LOG:
@@ -16020,6 +16421,8 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
                     failover_result["salvage_note"] = str(failover_salvage.get("note", "") or "")
                     failover_result["salvage_error"] = str(failover_salvage.get("error", "") or "")
                     failover_result["salvage_quality_issue_count"] = int(failover_salvage.get("quality_gate_issue_count", 0) or 0)
+                    failover_result["salvage_issue_types"] = list(failover_salvage.get("quality_gate_issue_types", []) or [])
+                    failover_result["salvage_issues"] = (failover_salvage.get("quality_gate_issues", []) if isinstance(failover_salvage.get("quality_gate_issues", []), list) else [])[:60]
 
                 if failover_salvage.get("success"):
                     failover_success = True
@@ -16067,12 +16470,17 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
                 "parse_meta": primary_failure.get("parse_meta", {}),
                 "raw_excerpt": primary_failure.get("raw_excerpt", ""),
                 "review_issues": primary_failure.get("review_issues", []),
+                "final_issue_count": primary_failure.get("final_issue_count", 0),
+                "final_issue_types": primary_failure.get("final_issue_types", []),
+                "failure_stage": primary_failure.get("failure_stage", ""),
                 "evidence_pack_summary": primary_failure.get("evidence_pack_summary", {}),
                 "salvage_attempted": primary_failure.get("salvage_attempted", False),
                 "salvage_success": primary_failure.get("salvage_success", False),
                 "salvage_note": primary_failure.get("salvage_note", ""),
                 "salvage_error": primary_failure.get("salvage_error", ""),
                 "salvage_quality_issue_count": primary_failure.get("salvage_quality_issue_count", 0),
+                "salvage_issue_types": primary_failure.get("salvage_issue_types", []),
+                "salvage_issues": primary_failure.get("salvage_issues", []),
                 "failover_attempted": failover_attempted,
                 "failover_lane": REPORT_V3_FAILOVER_LANE if failover_attempted else "",
                 "failover_success": failover_success,
@@ -16085,11 +16493,16 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
                 "failover_repair_applied": failover_failure.get("repair_applied", False) if failover_failure else False,
                 "failover_parse_meta": failover_failure.get("parse_meta", {}) if failover_failure else {},
                 "failover_raw_excerpt": failover_failure.get("raw_excerpt", "") if failover_failure else "",
+                "failover_final_issue_count": failover_failure.get("final_issue_count", 0) if failover_failure else 0,
+                "failover_final_issue_types": failover_failure.get("final_issue_types", []) if failover_failure else [],
+                "failover_failure_stage": failover_failure.get("failure_stage", "") if failover_failure else "",
                 "failover_salvage_attempted": failover_failure.get("salvage_attempted", False) if failover_failure else False,
                 "failover_salvage_success": failover_failure.get("salvage_success", False) if failover_failure else False,
                 "failover_salvage_note": failover_failure.get("salvage_note", "") if failover_failure else "",
                 "failover_salvage_error": failover_failure.get("salvage_error", "") if failover_failure else "",
                 "failover_salvage_quality_issue_count": failover_failure.get("salvage_quality_issue_count", 0) if failover_failure else 0,
+                "failover_salvage_issue_types": failover_failure.get("salvage_issue_types", []) if failover_failure else [],
+                "failover_salvage_issues": failover_failure.get("salvage_issues", []) if failover_failure else [],
                 "primary_failure_context": build_v3_failure_log_context(primary_failure),
                 "failover_failure_context": build_v3_failure_log_context(failover_failure) if failover_failure else "",
             }
