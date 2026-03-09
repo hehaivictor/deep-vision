@@ -2319,6 +2319,13 @@ def ensure_meta_index_schema() -> None:
                 )
                 """
             )
+            session_columns = {
+                str(row[1]): True
+                for row in conn.execute("PRAGMA table_info(session_index)").fetchall()
+            }
+            if "instance_scope_key" not in session_columns:
+                conn.execute("ALTER TABLE session_index ADD COLUMN instance_scope_key TEXT NOT NULL DEFAULT ''")
+
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_session_index_owner_scope_updated ON session_index(owner_user_id, instance_scope_key, updated_at DESC)"
             )
@@ -2341,16 +2348,6 @@ def ensure_meta_index_schema() -> None:
                 )
                 """
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_report_index_owner_scope_deleted_created ON report_index(owner_user_id, instance_scope_key, deleted, created_at DESC)"
-            )
-
-            session_columns = {
-                str(row[1]): True
-                for row in conn.execute("PRAGMA table_info(session_index)").fetchall()
-            }
-            if "instance_scope_key" not in session_columns:
-                conn.execute("ALTER TABLE session_index ADD COLUMN instance_scope_key TEXT NOT NULL DEFAULT ''")
 
             report_columns = {
                 str(row[1]): True
@@ -2358,6 +2355,10 @@ def ensure_meta_index_schema() -> None:
             }
             if "instance_scope_key" not in report_columns:
                 conn.execute("ALTER TABLE report_index ADD COLUMN instance_scope_key TEXT NOT NULL DEFAULT ''")
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_report_index_owner_scope_deleted_created ON report_index(owner_user_id, instance_scope_key, deleted, created_at DESC)"
+            )
 
         meta_index_state["schema_ready"] = True
 

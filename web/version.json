@@ -1,7 +1,17 @@
 {
-  "version": "2.17.1",
+  "version": "2.17.2",
   "releaseDate": "2026-03-10",
   "changelog": [
+    {
+      "version": "2.17.2",
+      "date": "2026-03-10",
+      "type": "patch",
+      "title": "修复实例隔离索引迁移顺序错误",
+      "changes": [
+        "fix(迁移): 先补 instance_scope_key 列再创建索引，避免旧库启动时报 no such column",
+        "fix(兼容): 保证 session_index 与 report_index 在旧 meta_index.db 上可平滑升级"
+      ]
+    },
     {
       "version": "2.17.1",
       "date": "2026-03-10",
