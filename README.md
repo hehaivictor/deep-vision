@@ -78,6 +78,8 @@ uv run --with gunicorn gunicorn -c web/gunicorn.conf.py web.wsgi:app
 - 场景目录：
   - `BUILTIN_SCENARIOS_DIR`
   - `CUSTOM_SCENARIOS_DIR`
+- 多实例隔离：
+  - `INSTANCE_SCOPE_KEY`（规范见 [docs/instance-scope.md](docs/instance-scope.md)）
 
 ## 测试
 
@@ -96,6 +98,7 @@ DeepVision/
 ├── resources/           # 内置场景资源
 ├── tests/               # 回归测试
 ├── deploy/              # 部署示例（Nginx）
+├── docs/                # 运维与配置文档
 └── data/                # 运行时数据目录（已忽略，不入库）
 ```
 
