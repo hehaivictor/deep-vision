@@ -94,6 +94,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         cls.server.DELETED_REPORTS_FILE = cls.server.REPORTS_DIR / ".deleted_reports.json"
         cls.server.DELETED_DOCS_FILE = cls.server.DATA_DIR / ".deleted_docs.json"
         cls.server.REPORT_OWNERS_FILE = cls.server.REPORTS_DIR / ".owners.json"
+        cls.server.REPORT_SCOPES_FILE = cls.server.REPORTS_DIR / ".scopes.json"
 
         for path in [
             cls.server.SESSIONS_DIR,
@@ -147,7 +148,10 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.server.reset_list_metrics()
         self.server.report_owners_cache["signature"] = None
         self.server.report_owners_cache["data"] = {}
+        self.server.report_scopes_cache["signature"] = None
+        self.server.report_scopes_cache["data"] = {}
         self.server.session_list_cache.clear()
+        self.server.INSTANCE_SCOPE_KEY = ""
         with self.server.report_generation_status_lock:
             self.server.report_generation_status.clear()
         with self.server.report_generation_workers_lock:
@@ -202,6 +206,13 @@ class ComprehensiveApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         return response.get_json()
+
+    def _build_scoped_report_name(self, topic, date_str="20990101"):
+        slug = self.server.normalize_topic_slug(topic)
+        tag = self.server.get_instance_scope_short_tag()
+        if tag:
+            return f"deep-vision-{date_str}-{tag}-{slug}.md"
+        return f"deep-vision-{date_str}-{slug}.md"
 
     def test_auth_lifecycle(self):
         self._register()
@@ -392,6 +403,58 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(delete_other.status_code, 404)
 
         self.assertGreater(user_a["id"], 0)
+
+    def test_session_isolation_between_instance_scopes_for_same_user(self):
+        old_scope = self.server.INSTANCE_SCOPE_KEY
+        try:
+            self.server.INSTANCE_SCOPE_KEY = "instance-a"
+            user = self._register()
+            session_id = self._create_session(topic="实例隔离会话")["session_id"]
+
+            list_a = self.client.get("/api/sessions")
+            self.assertEqual(list_a.status_code, 200)
+            self.assertIn(session_id, [item["session_id"] for item in list_a.get_json()])
+
+            self.server.INSTANCE_SCOPE_KEY = "instance-b"
+            list_b = self.client.get("/api/sessions")
+            self.assertEqual(list_b.status_code, 200)
+            self.assertNotIn(session_id, [item["session_id"] for item in list_b.get_json()])
+
+            get_b = self.client.get(f"/api/sessions/{session_id}")
+            self.assertEqual(get_b.status_code, 404)
+
+            delete_b = self.client.delete(f"/api/sessions/{session_id}")
+            self.assertEqual(delete_b.status_code, 404)
+
+            self.assertGreater(user["id"], 0)
+        finally:
+            self.server.INSTANCE_SCOPE_KEY = old_scope
+
+    def test_report_isolation_between_instance_scopes_for_same_user(self):
+        old_scope = self.server.INSTANCE_SCOPE_KEY
+        try:
+            self.server.INSTANCE_SCOPE_KEY = "instance-a"
+            user = self._register()
+            report_name = self._build_scoped_report_name("实例隔离报告")
+            (self.server.REPORTS_DIR / report_name).write_text("# 实例隔离报告\n", encoding="utf-8")
+            self.server.set_report_owner_id(report_name, int(user["id"]))
+
+            list_a = self.client.get("/api/reports")
+            self.assertEqual(list_a.status_code, 200)
+            self.assertIn(report_name, [item["name"] for item in list_a.get_json()])
+
+            self.server.INSTANCE_SCOPE_KEY = "instance-b"
+            list_b = self.client.get("/api/reports")
+            self.assertEqual(list_b.status_code, 200)
+            self.assertNotIn(report_name, [item["name"] for item in list_b.get_json()])
+
+            get_b = self.client.get(f"/api/reports/{report_name}")
+            self.assertEqual(get_b.status_code, 404)
+
+            delete_b = self.client.delete(f"/api/reports/{report_name}")
+            self.assertEqual(delete_b.status_code, 404)
+        finally:
+            self.server.INSTANCE_SCOPE_KEY = old_scope
 
     def test_sessions_list_supports_pagination_headers(self):
         self._register()
@@ -963,10 +1026,8 @@ class ComprehensiveApiTests(unittest.TestCase):
 
         sid_a = first["session_id"]
         sid_b = second["session_id"]
-        slug_a = self.server.normalize_topic_slug(first["topic"])
-        slug_b = self.server.normalize_topic_slug(second["topic"])
-        report_a = f"deep-vision-20990101-{slug_a}.md"
-        report_b = f"deep-vision-20990101-{slug_b}.md"
+        report_a = self._build_scoped_report_name(first["topic"])
+        report_b = self._build_scoped_report_name(second["topic"])
 
         (self.server.REPORTS_DIR / report_a).write_text("# Report A\n", encoding="utf-8")
         (self.server.REPORTS_DIR / report_b).write_text("# Report B\n", encoding="utf-8")
@@ -988,6 +1049,40 @@ class ComprehensiveApiTests(unittest.TestCase):
         listed = [item["name"] for item in list_reports.get_json()]
         self.assertNotIn(report_a, listed)
         self.assertNotIn(report_b, listed)
+
+    def test_batch_delete_sessions_does_not_delete_reports_from_other_scope(self):
+        old_scope = self.server.INSTANCE_SCOPE_KEY
+        try:
+            self.server.INSTANCE_SCOPE_KEY = "instance-a"
+            user = self._register()
+            created = self._create_session(topic="跨实例同主题")
+            session_id = created["session_id"]
+            report_a = self._build_scoped_report_name(created["topic"])
+            (self.server.REPORTS_DIR / report_a).write_text("# Scope A\n", encoding="utf-8")
+            self.server.set_report_owner_id(report_a, int(user["id"]))
+
+            self.server.INSTANCE_SCOPE_KEY = "instance-b"
+            report_b = self._build_scoped_report_name(created["topic"])
+            (self.server.REPORTS_DIR / report_b).write_text("# Scope B\n", encoding="utf-8")
+            self.server.set_report_owner_id(report_b, int(user["id"]))
+
+            self.server.INSTANCE_SCOPE_KEY = "instance-a"
+            batch = self.client.post(
+                "/api/sessions/batch-delete",
+                json={"session_ids": [session_id], "delete_reports": True},
+            )
+            self.assertEqual(batch.status_code, 200, batch.get_data(as_text=True))
+            payload = batch.get_json() or {}
+            self.assertEqual(payload.get("deleted_reports"), [report_a])
+            self.assertIn(report_a, self.server.get_deleted_reports())
+            self.assertNotIn(report_b, self.server.get_deleted_reports())
+
+            self.server.INSTANCE_SCOPE_KEY = "instance-b"
+            reports_b = self.client.get("/api/reports")
+            self.assertEqual(reports_b.status_code, 200)
+            self.assertIn(report_b, [item["name"] for item in reports_b.get_json()])
+        finally:
+            self.server.INSTANCE_SCOPE_KEY = old_scope
 
 
 if __name__ == "__main__":

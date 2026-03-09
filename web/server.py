@@ -983,6 +983,7 @@ WECHAT_LOGIN_ENABLED = _cfg_bool("WECHAT_LOGIN_ENABLED", False)
 WECHAT_APP_ID = _cfg_text("WECHAT_APP_ID", "")
 WECHAT_APP_SECRET = _cfg_text("WECHAT_APP_SECRET", "")
 WECHAT_REDIRECT_URI = _cfg_text("WECHAT_REDIRECT_URI", "")
+INSTANCE_SCOPE_KEY = _cfg_text("INSTANCE_SCOPE_KEY", "")
 WECHAT_OAUTH_SCOPE = _cfg_text("WECHAT_OAUTH_SCOPE", "snsapi_login")
 if not WECHAT_OAUTH_SCOPE:
     WECHAT_OAUTH_SCOPE = "snsapi_login"
@@ -1163,7 +1164,9 @@ PRESENTATION_MAP_LOCK = threading.Lock()
 DELETED_REPORTS_FILE = REPORTS_DIR / ".deleted_reports.json"
 DELETED_DOCS_FILE = DATA_DIR / ".deleted_docs.json"  # 软删除记录文件
 REPORT_OWNERS_FILE = REPORTS_DIR / ".owners.json"
+REPORT_SCOPES_FILE = REPORTS_DIR / ".scopes.json"
 REPORT_OWNERS_LOCK = threading.RLock()
+REPORT_SCOPES_LOCK = threading.RLock()
 SESSIONS_LIST_SEMAPHORE = threading.BoundedSemaphore(SESSIONS_LIST_MAX_INFLIGHT)
 REPORTS_LIST_SEMAPHORE = threading.BoundedSemaphore(REPORTS_LIST_MAX_INFLIGHT)
 ALLOWED_STATIC_EXTENSIONS = {
@@ -1224,6 +1227,9 @@ else:
 
 for d in [SESSIONS_DIR, REPORTS_DIR, CONVERTED_DIR, TEMP_DIR, METRICS_DIR, SUMMARIES_DIR, PRESENTATIONS_DIR, AUTH_DIR]:
     d.mkdir(parents=True, exist_ok=True)
+
+if WECHAT_LOGIN_ENABLED and not INSTANCE_SCOPE_KEY:
+    print("⚠️  未配置 INSTANCE_SCOPE_KEY，不同深瞳链接若共享同一数据目录，可能互相看到会话/报告")
 
 AUTH_PHONE_PATTERN = re.compile(r"^1\d{10}$")
 
@@ -1319,6 +1325,7 @@ prefetch_cache = {}            # { session_id: { dimension: { question_data, cre
 prefetch_cache_lock = threading.Lock()
 PREFETCH_TTL = 300             # 预生成缓存有效期（秒）
 report_owners_cache = {"signature": None, "data": {}}
+report_scopes_cache = {"signature": None, "data": {}}
 session_list_cache = {}        # { filename: { signature, payload } }
 session_list_cache_lock = threading.Lock()
 list_overload_stats = {
@@ -2262,7 +2269,7 @@ def reset_list_metrics() -> None:
                 "error_reasons": {},
             })
 
-        for cache_name in ("session_meta", "report_owner"):
+        for cache_name in ("session_meta", "report_owner", "report_scope"):
             metric = list_cache_metrics.setdefault(cache_name, {"hit": 0, "miss": 0})
             metric["hit"] = 0
             metric["miss"] = 0
@@ -2297,6 +2304,7 @@ def ensure_meta_index_schema() -> None:
                     session_id TEXT PRIMARY KEY,
                     file_name TEXT NOT NULL UNIQUE,
                     owner_user_id INTEGER NOT NULL,
+                    instance_scope_key TEXT NOT NULL DEFAULT '',
                     topic TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT 'in_progress',
                     created_at TEXT NOT NULL DEFAULT '',
@@ -2312,10 +2320,10 @@ def ensure_meta_index_schema() -> None:
                 """
             )
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_session_index_owner_updated ON session_index(owner_user_id, updated_at DESC)"
+                "CREATE INDEX IF NOT EXISTS idx_session_index_owner_scope_updated ON session_index(owner_user_id, instance_scope_key, updated_at DESC)"
             )
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_session_index_owner_created ON session_index(owner_user_id, created_at DESC)"
+                "CREATE INDEX IF NOT EXISTS idx_session_index_owner_scope_created ON session_index(owner_user_id, instance_scope_key, created_at DESC)"
             )
 
             conn.execute(
@@ -2323,6 +2331,7 @@ def ensure_meta_index_schema() -> None:
                 CREATE TABLE IF NOT EXISTS report_index (
                     file_name TEXT PRIMARY KEY,
                     owner_user_id INTEGER NOT NULL,
+                    instance_scope_key TEXT NOT NULL DEFAULT '',
                     deleted INTEGER NOT NULL DEFAULT 0,
                     size INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT '',
@@ -2333,8 +2342,22 @@ def ensure_meta_index_schema() -> None:
                 """
             )
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_report_index_owner_deleted_created ON report_index(owner_user_id, deleted, created_at DESC)"
+                "CREATE INDEX IF NOT EXISTS idx_report_index_owner_scope_deleted_created ON report_index(owner_user_id, instance_scope_key, deleted, created_at DESC)"
             )
+
+            session_columns = {
+                str(row[1]): True
+                for row in conn.execute("PRAGMA table_info(session_index)").fetchall()
+            }
+            if "instance_scope_key" not in session_columns:
+                conn.execute("ALTER TABLE session_index ADD COLUMN instance_scope_key TEXT NOT NULL DEFAULT ''")
+
+            report_columns = {
+                str(row[1]): True
+                for row in conn.execute("PRAGMA table_info(report_index)").fetchall()
+            }
+            if "instance_scope_key" not in report_columns:
+                conn.execute("ALTER TABLE report_index ADD COLUMN instance_scope_key TEXT NOT NULL DEFAULT ''")
 
         meta_index_state["schema_ready"] = True
 
@@ -2391,6 +2414,7 @@ def _build_session_index_record(session_file: Path, session_data: dict) -> Optio
         "session_id": session_id,
         "file_name": session_file.name,
         "owner_user_id": owner_user_id,
+        "instance_scope_key": get_session_instance_scope_key(session_data),
         "topic": str(session_data.get("topic") or ""),
         "status": str(session_data.get("status") or "in_progress"),
         "created_at": str(session_data.get("created_at") or ""),
@@ -2417,14 +2441,15 @@ def _upsert_session_index_record(record: dict) -> None:
         conn.execute(
             """
             INSERT INTO session_index (
-                session_id, file_name, owner_user_id, topic, status,
+                session_id, file_name, owner_user_id, instance_scope_key, topic, status,
                 created_at, updated_at, interview_count, scenario_id,
                 scenario_config_json, dimensions_json, file_mtime_ns,
                 file_size, indexed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 file_name=excluded.file_name,
                 owner_user_id=excluded.owner_user_id,
+                instance_scope_key=excluded.instance_scope_key,
                 topic=excluded.topic,
                 status=excluded.status,
                 created_at=excluded.created_at,
@@ -2441,6 +2466,7 @@ def _upsert_session_index_record(record: dict) -> None:
                 record["session_id"],
                 record["file_name"],
                 record["owner_user_id"],
+                record["instance_scope_key"],
                 record["topic"],
                 record["status"],
                 record["created_at"],
@@ -2503,17 +2529,18 @@ def rebuild_session_index_from_disk() -> None:
             conn.executemany(
                 """
                 INSERT INTO session_index (
-                    session_id, file_name, owner_user_id, topic, status,
+                    session_id, file_name, owner_user_id, instance_scope_key, topic, status,
                     created_at, updated_at, interview_count, scenario_id,
                     scenario_config_json, dimensions_json, file_mtime_ns,
                     file_size, indexed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         record["session_id"],
                         record["file_name"],
                         record["owner_user_id"],
+                        record["instance_scope_key"],
                         record["topic"],
                         record["status"],
                         record["created_at"],
@@ -2549,10 +2576,11 @@ def ensure_session_index_bootstrapped() -> None:
 
 def query_session_index_for_user(owner_user_id: int, page: int, page_size: int) -> tuple[list[dict], int]:
     offset = (page - 1) * page_size
+    scope_key = get_active_instance_scope_key()
     with get_meta_index_connection() as conn:
         total_row = conn.execute(
-            "SELECT COUNT(1) AS total FROM session_index WHERE owner_user_id = ?",
-            (int(owner_user_id),),
+            "SELECT COUNT(1) AS total FROM session_index WHERE owner_user_id = ? AND instance_scope_key = ?",
+            (int(owner_user_id), scope_key),
         ).fetchone()
         total = int((total_row["total"] if total_row else 0) or 0)
 
@@ -2562,11 +2590,11 @@ def query_session_index_for_user(owner_user_id: int, page: int, page_size: int) 
                 session_id, topic, status, created_at, updated_at,
                 interview_count, scenario_id, scenario_config_json, dimensions_json
             FROM session_index
-            WHERE owner_user_id = ?
+            WHERE owner_user_id = ? AND instance_scope_key = ?
             ORDER BY updated_at DESC
             LIMIT ? OFFSET ?
             """,
-            (int(owner_user_id), int(page_size), int(offset)),
+            (int(owner_user_id), scope_key, int(page_size), int(offset)),
         ).fetchall()
 
     result = []
@@ -2585,7 +2613,12 @@ def query_session_index_for_user(owner_user_id: int, page: int, page_size: int) 
     return result, total
 
 
-def _build_report_index_record(file_name: str, owner_user_id: int, deleted: bool) -> Optional[dict]:
+def _build_report_index_record(
+    file_name: str,
+    owner_user_id: int,
+    deleted: bool,
+    instance_scope_key: object = "",
+) -> Optional[dict]:
     name = str(file_name or "").strip()
     if not name or not name.endswith(".md"):
         return None
@@ -2605,6 +2638,7 @@ def _build_report_index_record(file_name: str, owner_user_id: int, deleted: bool
     return {
         "file_name": name,
         "owner_user_id": int(owner_user_id),
+        "instance_scope_key": get_record_instance_scope_key(instance_scope_key),
         "deleted": 1 if deleted else 0,
         "size": int(stat.st_size),
         "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
@@ -2622,11 +2656,12 @@ def _upsert_report_index_record(record: dict) -> None:
         conn.execute(
             """
             INSERT INTO report_index (
-                file_name, owner_user_id, deleted, size, created_at,
+                file_name, owner_user_id, instance_scope_key, deleted, size, created_at,
                 file_mtime_ns, file_size, indexed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(file_name) DO UPDATE SET
                 owner_user_id=excluded.owner_user_id,
+                instance_scope_key=excluded.instance_scope_key,
                 deleted=excluded.deleted,
                 size=excluded.size,
                 created_at=excluded.created_at,
@@ -2637,6 +2672,7 @@ def _upsert_report_index_record(record: dict) -> None:
             (
                 record["file_name"],
                 record["owner_user_id"],
+                record["instance_scope_key"],
                 record["deleted"],
                 record["size"],
                 record["created_at"],
@@ -2655,7 +2691,12 @@ def remove_report_index_record(file_name: str) -> None:
         conn.execute("DELETE FROM report_index WHERE file_name = ?", (name,))
 
 
-def sync_report_index_for_filename(file_name: str, owner_user_id: Optional[int] = None, deleted: Optional[bool] = None) -> None:
+def sync_report_index_for_filename(
+    file_name: str,
+    owner_user_id: Optional[int] = None,
+    deleted: Optional[bool] = None,
+    instance_scope_key: Optional[object] = None,
+) -> None:
     name = str(file_name or "").strip()
     if not name:
         return
@@ -2667,8 +2708,9 @@ def sync_report_index_for_filename(file_name: str, owner_user_id: Optional[int] 
         remove_report_index_record(name)
         return
 
+    scope_key = get_report_scope_key(name) if instance_scope_key is None else get_record_instance_scope_key(instance_scope_key)
     is_deleted = bool(deleted) if deleted is not None else (name in get_deleted_reports())
-    record = _build_report_index_record(name, owner_id, is_deleted)
+    record = _build_report_index_record(name, owner_id, is_deleted, scope_key)
     if not record:
         remove_report_index_record(name)
         return
@@ -2677,10 +2719,16 @@ def sync_report_index_for_filename(file_name: str, owner_user_id: Optional[int] 
 
 def rebuild_report_index_from_sources() -> None:
     owner_map = load_report_owners()
+    scope_map = load_report_scopes()
     deleted_set = get_deleted_reports()
     records = []
     for report_name, owner_id in owner_map.items():
-        record = _build_report_index_record(report_name, int(owner_id), report_name in deleted_set)
+        record = _build_report_index_record(
+            report_name,
+            int(owner_id),
+            report_name in deleted_set,
+            scope_map.get(report_name, ""),
+        )
         if record:
             records.append(record)
 
@@ -2690,14 +2738,15 @@ def rebuild_report_index_from_sources() -> None:
             conn.executemany(
                 """
                 INSERT INTO report_index (
-                    file_name, owner_user_id, deleted, size, created_at,
+                    file_name, owner_user_id, instance_scope_key, deleted, size, created_at,
                     file_mtime_ns, file_size, indexed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         record["file_name"],
                         record["owner_user_id"],
+                        record["instance_scope_key"],
                         record["deleted"],
                         record["size"],
                         record["created_at"],
@@ -2728,10 +2777,11 @@ def ensure_report_index_bootstrapped() -> None:
 
 def query_report_index_for_user(owner_user_id: int, page: int, page_size: int) -> tuple[list[dict], int]:
     offset = (page - 1) * page_size
+    scope_key = get_active_instance_scope_key()
     with get_meta_index_connection() as conn:
         total_row = conn.execute(
-            "SELECT COUNT(1) AS total FROM report_index WHERE owner_user_id = ? AND deleted = 0",
-            (int(owner_user_id),),
+            "SELECT COUNT(1) AS total FROM report_index WHERE owner_user_id = ? AND instance_scope_key = ? AND deleted = 0",
+            (int(owner_user_id), scope_key),
         ).fetchone()
         total = int((total_row["total"] if total_row else 0) or 0)
 
@@ -2739,11 +2789,11 @@ def query_report_index_for_user(owner_user_id: int, page: int, page_size: int) -
             """
             SELECT file_name, size, created_at
             FROM report_index
-            WHERE owner_user_id = ? AND deleted = 0
+            WHERE owner_user_id = ? AND instance_scope_key = ? AND deleted = 0
             ORDER BY created_at DESC
             LIMIT ? OFFSET ?
             """,
-            (int(owner_user_id), int(page_size), int(offset)),
+            (int(owner_user_id), scope_key, int(page_size), int(offset)),
         ).fetchall()
 
     return ([
@@ -5617,6 +5667,124 @@ def generate_session_id() -> str:
     return f"dv-{timestamp}-{random_suffix}"
 
 
+INSTANCE_SCOPE_FIELD = "instance_scope_key"
+
+
+def normalize_instance_scope_key(raw_scope: object) -> str:
+    value = str(raw_scope or "").strip().lower()
+    if not value:
+        return ""
+    value = re.sub(r"[^a-z0-9._/-]+", "-", value)
+    value = value.strip("-._/")
+    value = value.replace("/", "--")
+    return value[:96]
+
+
+def get_active_instance_scope_key() -> str:
+    return normalize_instance_scope_key(INSTANCE_SCOPE_KEY)
+
+
+def get_instance_scope_short_tag() -> str:
+    scope_key = get_active_instance_scope_key()
+    if not scope_key:
+        return ""
+    return hashlib.sha1(scope_key.encode("utf-8")).hexdigest()[:8]
+
+
+def get_record_instance_scope_key(raw_scope: object) -> str:
+    return normalize_instance_scope_key(raw_scope)
+
+
+def is_instance_scope_visible(record_scope: object, expected_scope: Optional[str] = None) -> bool:
+    current_scope = normalize_instance_scope_key(
+        get_active_instance_scope_key() if expected_scope is None else expected_scope
+    )
+    normalized_record_scope = get_record_instance_scope_key(record_scope)
+    if current_scope:
+        return normalized_record_scope == current_scope
+    return normalized_record_scope == ""
+
+
+def get_session_instance_scope_key(session: dict) -> str:
+    if not isinstance(session, dict):
+        return ""
+    return get_record_instance_scope_key(session.get(INSTANCE_SCOPE_FIELD))
+
+
+def load_report_scopes() -> dict:
+    with REPORT_SCOPES_LOCK:
+        signature = get_file_signature(REPORT_SCOPES_FILE)
+        cached_signature = report_scopes_cache.get("signature")
+        cached_data = report_scopes_cache.get("data")
+        if signature == cached_signature and isinstance(cached_data, dict):
+            record_list_cache_metric("report_scope", hit=True)
+            return dict(cached_data)
+
+        record_list_cache_metric("report_scope", hit=False)
+        if signature is None:
+            report_scopes_cache["signature"] = None
+            report_scopes_cache["data"] = {}
+            return {}
+
+        normalized = {}
+        try:
+            payload = json.loads(REPORT_SCOPES_FILE.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                for name, scope_key in payload.items():
+                    if not isinstance(name, str):
+                        continue
+                    normalized_scope = normalize_instance_scope_key(scope_key)
+                    if not normalized_scope:
+                        continue
+                    normalized[name] = normalized_scope
+        except Exception:
+            normalized = {}
+
+        report_scopes_cache["signature"] = signature
+        report_scopes_cache["data"] = dict(normalized)
+        return dict(normalized)
+
+
+def save_report_scopes(data: dict) -> None:
+    normalized = {}
+    if isinstance(data, dict):
+        for name, scope_key in data.items():
+            if not isinstance(name, str):
+                continue
+            normalized_scope = normalize_instance_scope_key(scope_key)
+            if not normalized_scope:
+                continue
+            normalized[name] = normalized_scope
+
+    with REPORT_SCOPES_LOCK:
+        REPORT_SCOPES_FILE.write_text(
+            json.dumps(normalized, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+        report_scopes_cache["signature"] = get_file_signature(REPORT_SCOPES_FILE)
+        report_scopes_cache["data"] = dict(normalized)
+
+
+def get_report_scope_key(filename: str) -> str:
+    scopes = load_report_scopes()
+    return get_record_instance_scope_key(scopes.get(filename, ""))
+
+
+def set_report_scope_key(filename: str, scope_key: object) -> None:
+    name = str(filename or "").strip()
+    if not name:
+        return
+
+    normalized_scope = normalize_instance_scope_key(scope_key)
+    with REPORT_SCOPES_LOCK:
+        scopes = load_report_scopes()
+        if normalized_scope:
+            scopes[name] = normalized_scope
+        else:
+            scopes.pop(name, None)
+        save_report_scopes(scopes)
+
+
 def get_deleted_reports() -> set:
     """获取已删除报告的列表"""
     if not DELETED_REPORTS_FILE.exists():
@@ -5702,6 +5870,7 @@ def set_report_owner_id(filename: str, owner_user_id: int) -> None:
         owners = load_report_owners()
         owners[filename] = owner_id
         save_report_owners(owners)
+    set_report_scope_key(filename, get_active_instance_scope_key())
     try:
         sync_report_index_for_filename(filename, owner_user_id=owner_id)
     except Exception as exc:
@@ -5715,7 +5884,9 @@ def ensure_report_owner(filename: str, owner_user_id: int) -> bool:
     # 禁止自动认领无归属历史数据，需通过迁移脚本显式迁移
     if owner <= 0:
         return False
-    return owner == owner_id
+    if owner != owner_id:
+        return False
+    return is_instance_scope_visible(get_report_scope_key(filename))
 
 
 def is_session_owned_by_user(session: dict, user_id: int) -> bool:
@@ -5742,8 +5913,9 @@ def ensure_session_owner(session: dict, user_id: int) -> bool:
     # 禁止自动认领无归属历史数据，需通过迁移脚本显式迁移
     if owner_id <= 0:
         return False
-
-    return owner_id == int(user_id)
+    if owner_id != int(user_id):
+        return False
+    return is_instance_scope_visible(get_session_instance_scope_key(session))
 
 
 def get_current_user_id_or_none() -> Optional[int]:
@@ -5843,16 +6015,33 @@ def get_effective_session_status(session: dict) -> str:
 
 
 def find_reports_by_session_topic(session: dict) -> list:
-    """根据会话主题匹配关联报告文件。"""
+    """根据会话主题匹配同归属、同实例的关联报告文件。"""
+    if not isinstance(session, dict):
+        return []
+
     topic_slug = normalize_topic_slug(session.get("topic", ""))
     if not topic_slug:
         return []
 
+    try:
+        owner_user_id = int(session.get("owner_user_id"))
+    except (TypeError, ValueError):
+        return []
+    if owner_user_id <= 0:
+        return []
+
+    session_scope_key = get_session_instance_scope_key(session)
     suffix = f"-{topic_slug}.md"
     matched = []
     for report_file in REPORTS_DIR.glob("deep-vision-*.md"):
-        if report_file.name.endswith(suffix):
-            matched.append(report_file.name)
+        report_name = report_file.name
+        if not report_name.endswith(suffix):
+            continue
+        if get_report_owner_id(report_name) != owner_user_id:
+            continue
+        if get_report_scope_key(report_name) != session_scope_key:
+            continue
+        matched.append(report_name)
     return matched
 
 
@@ -14145,6 +14334,7 @@ def build_session_list_cache_payload(session_data: dict) -> Optional[dict]:
 
     return {
         "owner_user_id": owner_user_id,
+        "instance_scope_key": get_session_instance_scope_key(session_data),
         "session_id": session_data.get("session_id"),
         "topic": session_data.get("topic"),
         "status": session_data.get("status"),
@@ -14198,12 +14388,15 @@ def cleanup_session_list_cache(active_filenames: set[str]) -> None:
 def load_sessions_for_user_from_files(user_id_int: int) -> list[dict]:
     sessions = []
     active_files = set()
+    expected_scope = get_active_instance_scope_key()
     for session_file in SESSIONS_DIR.glob("*.json"):
         active_files.add(session_file.name)
         data = get_cached_session_list_payload(session_file)
         if not isinstance(data, dict):
             continue
         if int(data.get("owner_user_id", 0)) != int(user_id_int):
+            continue
+        if not is_instance_scope_visible(data.get("instance_scope_key"), expected_scope=expected_scope):
             continue
 
         sessions.append({
@@ -14438,6 +14631,7 @@ def create_session():
     session = {
         "session_id": session_id,
         "owner_user_id": user_id,
+        INSTANCE_SCOPE_FIELD: get_active_instance_scope_key(),
         "topic": topic,
         "description": description,  # 存储主题描述
         "interview_mode": interview_mode,  # 存储访谈模式
@@ -14580,7 +14774,7 @@ def batch_delete_sessions():
             skipped_sessions.append({"session_id": session_id, "reason": "会话数据损坏"})
             continue
 
-        if not is_session_owned_by_user(session, user_id):
+        if not ensure_session_owner(session, user_id):
             missing_sessions.append(session_id)
             continue
 
@@ -16291,7 +16485,11 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
             """保存报告并更新会话状态。"""
             topic_slug = session.get("topic", "report").replace(" ", "-")[:30]
             date_str = datetime.now().strftime("%Y%m%d")
-            filename = f"deep-vision-{date_str}-{topic_slug}.md"
+            scope_tag = get_instance_scope_short_tag()
+            if scope_tag:
+                filename = f"deep-vision-{date_str}-{scope_tag}-{topic_slug}.md"
+            else:
+                filename = f"deep-vision-{date_str}-{topic_slug}.md"
             report_file = REPORTS_DIR / filename
             normalized_content = normalize_report_time_fields(content)
             report_file.write_text(normalized_content, encoding="utf-8")
@@ -17981,10 +18179,13 @@ def build_appendix_pdf_bytes(appendix_markdown: str) -> bytes:
 def load_reports_for_user_from_files(user_id_int: int) -> list[dict]:
     deleted = get_deleted_reports()
     owner_map = load_report_owners()
+    expected_scope = get_active_instance_scope_key()
     reports_root = REPORTS_DIR.resolve()
     reports = []
     for report_name, owner_id in owner_map.items():
         if owner_id != int(user_id_int):
+            continue
+        if not is_instance_scope_visible(get_report_scope_key(report_name), expected_scope=expected_scope):
             continue
         if report_name in deleted:
             continue

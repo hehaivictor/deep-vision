@@ -179,6 +179,8 @@ WECHAT_APP_ID = ""
 WECHAT_APP_SECRET = ""
 # 建议填写完整 HTTPS 回调地址；为空时将自动使用当前服务域名拼接 /api/auth/wechat/callback
 WECHAT_REDIRECT_URI = ""
+# 多个 DeepVision 实例若共享同一 data 目录，必须为每个实例配置不同的 scope 值，避免同账号串看会话/报告
+INSTANCE_SCOPE_KEY = ""
 # PC 网站扫码登录建议使用 snsapi_login
 WECHAT_OAUTH_SCOPE = "snsapi_login"
 # 微信 OAuth 网络请求超时（秒）
