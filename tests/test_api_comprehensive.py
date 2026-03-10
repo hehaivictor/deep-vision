@@ -910,7 +910,8 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertNotIn("- ☐", content)
         self.assertNotIn("**维度**:", content)
         self.assertNotIn("记录时间", content)
-        self.assertIn("本次访谈共手机了 1 个问题的回答（点击展开/收起）", content)
+        self.assertIn("本次访谈共收集了 1 个问题的回答", content)
+        self.assertNotIn("点击展开/收起", content)
 
         solution_resp = self.client.get(f"/api/reports/{report_name}/solution")
         self.assertEqual(solution_resp.status_code, 200)

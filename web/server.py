@@ -17126,7 +17126,7 @@ def generate_interview_appendix(session: dict) -> str:
 
     appendix = "\n\n---\n\n## 附录：完整访谈记录\n\n"
     appendix += "<details>\n"
-    appendix += f"<summary>本次访谈共手机了 {len(interview_log)} 个问题的回答（点击展开/收起）</summary>\n\n"
+    appendix += f"<summary>本次访谈共收集了 {len(interview_log)} 个问题的回答</summary>\n\n"
 
     appendix_dim_info = get_dimension_info_for_session(session)
     total_questions = len(interview_log)

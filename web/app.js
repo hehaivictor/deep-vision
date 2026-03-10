@@ -5321,8 +5321,8 @@ function deepVision() {
                 ? rootDetails.firstElementChild
                 : null;
             if (summary) {
-                const baseText = (summary.textContent || '').replace(/（点击展开\/收起）/g, '').trim();
-                summary.textContent = `${baseText}（点击展开/收起）`;
+                const baseText = this.normalizeAppendixSummaryText(summary.textContent || '').trim();
+                summary.textContent = baseText;
             }
 
             const childDetails = Array.from(rootDetails.querySelectorAll('details'))
@@ -5524,7 +5524,108 @@ function deepVision() {
 
             let appendix = content.slice(appendixIndex).trim();
             appendix = appendix.replace(/^\s*\*\*生成方式\*\*:[^\n]*\n?/gm, '');
+            appendix = this.normalizeAppendixSummaryText(appendix);
             return appendix.trim();
+        },
+
+        normalizeAppendixSummaryText(content) {
+            return String(content || '')
+                .replace(/本次访谈共手机了/g, '本次访谈共收集了')
+                .replace(/\s*[（(]点击展开\/收起[）)]/g, '')
+                .replace(/[ \t]{2,}/g, ' ');
+        },
+
+        stripHtmlToPlainText(rawHtml) {
+            const input = String(rawHtml || '');
+            if (!input) return '';
+
+            const normalizedInput = input
+                .replace(/<br\s*\/?>/gi, '\n')
+                .replace(/<\/(div|p|li|h[1-6]|tr|summary)>/gi, '</$1>\n')
+                .replace(/<\/(ul|ol|table|thead|tbody|details)>/gi, '</$1>\n')
+                .replace(/&nbsp;/gi, ' ');
+
+            if (typeof DOMParser === 'undefined') {
+                return normalizedInput
+                    .replace(/<[^>]+>/g, '')
+                    .replace(/&lt;/g, '<')
+                    .replace(/&gt;/g, '>')
+                    .replace(/&quot;/g, '"')
+                    .replace(/&#39;/g, "'")
+                    .replace(/&amp;/g, '&')
+                    .replace(/\r/g, '');
+            }
+
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(`<div id="appendix-plain-text-root">${normalizedInput}</div>`, 'text/html');
+            const root = doc.getElementById('appendix-plain-text-root');
+            const text = root ? (root.textContent || '') : normalizedInput.replace(/<[^>]+>/g, '');
+            return text.replace(/\r/g, '');
+        },
+
+        normalizeAppendixHtmlForDocx(markdownText) {
+            let content = this.normalizeAppendixSummaryText(markdownText);
+            if (!content) return '';
+
+            content = content
+                .replace(/<details>\s*/gi, '')
+                .replace(/<\/details>\s*/gi, '\n')
+                .replace(/<summary>([\s\S]*?)<\/summary>/gi, (_, rawText) => {
+                    const text = this.stripHtmlToPlainText(rawText)
+                        .replace(/\s+/g, ' ')
+                        .trim();
+                    return text ? `### ${text}\n` : '';
+                })
+                .replace(/<div\b[^>]*>([\s\S]*?)<\/div>/gi, (_, rawText) => {
+                    const text = this.stripHtmlToPlainText(rawText)
+                        .split('\n')
+                        .map(line => line.trim())
+                        .filter(Boolean)
+                        .join('\n');
+                    return text ? `${text}\n` : '\n';
+                })
+                .replace(/<br\s*\/?>/gi, '\n');
+
+            const plainText = this.stripHtmlToPlainText(content)
+                .replace(/[ \t]+\n/g, '\n')
+                .replace(/\n[ \t]+/g, '\n')
+                .replace(/[ \t]{2,}/g, ' ');
+
+            const rawLines = plainText.split('\n');
+            const cleanedLines = [];
+            for (let i = 0; i < rawLines.length; i++) {
+                const line = rawLines[i].trim();
+                if (!line) {
+                    if (cleanedLines[cleanedLines.length - 1] === '') {
+                        continue;
+                    }
+
+                    let nextLine = '';
+                    for (let j = i + 1; j < rawLines.length; j++) {
+                        const candidate = rawLines[j].trim();
+                        if (candidate) {
+                            nextLine = candidate;
+                            break;
+                        }
+                    }
+
+                    const prevLine = cleanedLines[cleanedLines.length - 1] || '';
+                    const prevIsAnswerLine = /^(回答：|[☐☑])/.test(prevLine);
+                    const nextIsAnswerOption = /^[☐☑]/.test(nextLine);
+                    if (prevIsAnswerLine && nextIsAnswerOption) {
+                        continue;
+                    }
+
+                    cleanedLines.push('');
+                    continue;
+                }
+
+                cleanedLines.push(line);
+            }
+
+            return cleanedLines.join('\n')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
         },
 
         stripInlineEvidenceMarkers(content = '') {
@@ -5543,19 +5644,7 @@ function deepVision() {
             let content = this.getAppendixExportContent();
             if (!content) return '';
 
-            content = content
-                .replace(/<details>\s*/gi, '')
-                .replace(/<\/details>\s*/gi, '')
-                .replace(/<summary>([\s\S]*?)<\/summary>/gi, (_, rawText) => {
-                    const text = String(rawText || '')
-                        .replace(/<[^>]+>/g, '')
-                        .replace(/\s+/g, ' ')
-                        .trim();
-                    return text ? `### ${text}\n` : '';
-                })
-                .replace(/\n{3,}/g, '\n\n')
-                .trim();
-
+            content = this.normalizeAppendixHtmlForDocx(content);
             return content;
         },
 
@@ -6729,7 +6818,9 @@ function deepVision() {
                 String(content)
                 .replace(/^\s*\*\*生成方式\*\*:[^\n]*\n?/gm, '')
             );
-            const normalizedContent = this.normalizeLegacyAppendixAnswerLayout(sanitizedContent);
+            const normalizedContent = this.normalizeLegacyAppendixAnswerLayout(
+                this.normalizeAppendixSummaryText(sanitizedContent)
+            );
 
             if (typeof marked !== 'undefined') {
                 // 使用 marked 渲染 Markdown
