@@ -508,6 +508,7 @@ function deepVision() {
             await this.loadScenarios();
             await this.loadSessions();
             await this.loadReports();
+            await this.consumeInitialEntryRoute();
             this.startQuoteRotation();
 
             // 检查是否首次访问，跳转产品介绍页
@@ -610,6 +611,27 @@ function deepVision() {
 
             params.delete('auth_result');
             params.delete('auth_message');
+            const nextQuery = params.toString();
+            const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash || ''}`;
+            window.history.replaceState({}, '', nextUrl);
+        },
+
+        async consumeInitialEntryRoute() {
+            if (typeof window === 'undefined') return;
+            const params = new URLSearchParams(window.location.search || '');
+            const targetView = String(params.get('view') || '').trim();
+            const targetReport = String(params.get('report') || '').trim();
+
+            if (!targetView && !targetReport) return;
+            if (targetView && targetView !== 'reports' && !targetReport) return;
+
+            this.currentView = 'reports';
+            if (targetReport) {
+                await this.viewReport(targetReport);
+            }
+
+            params.delete('view');
+            params.delete('report');
             const nextQuery = params.toString();
             const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash || ''}`;
             window.history.replaceState({}, '', nextUrl);
@@ -4380,6 +4402,24 @@ function deepVision() {
                 await this.fetchPresentationStatus();
             } catch (error) {
                 this.showToast('加载报告失败', 'error');
+            }
+        },
+
+        buildSolutionPageUrl(reportName = '') {
+            const targetReport = String(reportName || this.selectedReport || '').trim();
+            if (!targetReport) return '';
+            const params = new URLSearchParams();
+            params.set('report', targetReport);
+            params.set('v', '20260310-solution-v3');
+            return `solution.html?${params.toString()}`;
+        },
+
+        openSolutionPage(reportName = '') {
+            const url = this.buildSolutionPageUrl(reportName);
+            if (!url) return;
+            const opened = this.openUrl(url);
+            if (!opened) {
+                window.location.href = url;
             }
         },
 

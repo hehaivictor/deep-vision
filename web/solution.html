@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="shortcut icon" href="favicon.svg">
+    <title>DeepVision 查看方案</title>
+    <link rel="stylesheet" href="vendor/css/fonts.css">
+    <link rel="stylesheet" href="solution.css?v=20260310-solution-v3">
+</head>
+<body>
+    <div class="solution-page">
+        <main class="solution-main">
+            <section class="solution-state-card" id="solution-state-card">
+                <div class="solution-state-badge">正在准备</div>
+                <h1 class="solution-state-title">正在生成方案视图</h1>
+                <p class="solution-state-text">系统会根据当前访谈报告内容提炼单页方案，请稍候。</p>
+            </section>
+
+            <div class="solution-shell" id="solution-shell" hidden>
+                <div class="solution-topbar">
+                    <div class="solution-topbar-main">
+                        <nav class="solution-nav" id="solution-nav"></nav>
+                        <div class="solution-top-actions">
+                            <button type="button" class="solution-btn solution-btn-secondary" id="solution-back-btn">返回报告</button>
+                            <button type="button" class="solution-btn solution-btn-primary" id="solution-open-report-btn">查看原报告</button>
+                        </div>
+                    </div>
+                </div>
+
+                <section class="solution-hero" id="hero">
+                    <div class="solution-hero-copy">
+                        <div class="solution-eyebrow">查看方案</div>
+                        <h1 class="solution-title" id="solution-title"></h1>
+                        <p class="solution-subtitle" id="solution-subtitle"></p>
+                    </div>
+                    <div class="solution-hero-panel">
+                        <div class="solution-summary-grid" id="solution-headline-cards"></div>
+                    </div>
+                </section>
+
+                <section class="solution-section" id="overview" data-solution-section>
+                    <div class="solution-section-head">
+                        <span class="solution-section-kicker">概览</span>
+                        <h2>方案概览</h2>
+                    </div>
+                    <div class="solution-overview-card">
+                        <div class="solution-overview-layout">
+                            <div class="solution-overview-copy">
+                                <p id="solution-overview-text"></p>
+                            </div>
+                            <div class="solution-overview-meta" id="solution-overview-meta"></div>
+                        </div>
+                    </div>
+                    <div class="solution-metric-grid" id="solution-metrics"></div>
+                </section>
+
+                <section class="solution-section" id="focus" data-solution-section>
+                    <div class="solution-section-head">
+                        <span class="solution-section-kicker">重点</span>
+                        <h2>重点洞察</h2>
+                    </div>
+                    <div class="solution-card-grid solution-card-grid-3" id="solution-focus-cards"></div>
+                </section>
+
+                <section class="solution-section" id="modules" data-solution-section>
+                    <div class="solution-section-head">
+                        <span class="solution-section-kicker">板块</span>
+                        <h2>业务板块</h2>
+                    </div>
+                    <div class="solution-card-grid solution-card-grid-2" id="solution-dimension-cards"></div>
+                </section>
+
+                <section class="solution-section" id="roadmap" data-solution-section>
+                    <div class="solution-section-head">
+                        <span class="solution-section-kicker">路径</span>
+                        <h2>实施路径</h2>
+                    </div>
+                    <div class="solution-roadmap" id="solution-roadmap"></div>
+                </section>
+
+                <section class="solution-section" id="value" data-solution-section>
+                    <div class="solution-section-head">
+                        <span class="solution-section-kicker">价值</span>
+                        <h2>预期价值</h2>
+                    </div>
+                    <div class="solution-card-grid solution-card-grid-2" id="solution-value-cards"></div>
+                </section>
+
+                <section class="solution-section" id="risks" data-solution-section>
+                    <div class="solution-section-head">
+                        <span class="solution-section-kicker">风险</span>
+                        <h2>风险依赖</h2>
+                    </div>
+                    <div class="solution-card-grid solution-card-grid-2" id="solution-risk-cards"></div>
+                </section>
+
+                <section class="solution-section" id="actions" data-solution-section>
+                    <div class="solution-section-head">
+                        <span class="solution-section-kicker">动作</span>
+                        <h2>下一步动作</h2>
+                    </div>
+                    <div class="solution-action-list" id="solution-actions"></div>
+                </section>
+            </div>
+        </main>
+    </div>
+    <script src="solution.js?v=20260310-solution-v3"></script>
+</body>
+</html>

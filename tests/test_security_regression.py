@@ -119,9 +119,10 @@ class SecurityRegressionTests(unittest.TestCase):
     def setUp(self):
         self.client = self.server.app.test_client()
 
-    def _register_user(self):
+    def _register_user(self, client=None):
+        target_client = client or self.client
         account = f"1{uuid.uuid4().int % 10**10:010d}"
-        send_resp = self.client.post(
+        send_resp = target_client.post(
             "/api/auth/sms/send-code",
             json={"account": account, "scene": "login"},
         )
@@ -129,7 +130,7 @@ class SecurityRegressionTests(unittest.TestCase):
         code = (send_resp.get_json() or {}).get("test_code")
         self.assertTrue(code, "TESTING 模式应返回 test_code")
 
-        login_resp = self.client.post(
+        login_resp = target_client.post(
             "/api/auth/login/code",
             json={"account": account, "code": code, "scene": "login"},
         )
@@ -173,6 +174,45 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertNotIn("model", payload)
         self.assertNotIn("question_model", payload)
         self.assertNotIn("report_model", payload)
+
+    def test_report_solution_endpoint_requires_auth(self):
+        response = self.client.get('/api/reports/security-solution.md/solution')
+        self.assertEqual(response.status_code, 401)
+
+    def test_report_solution_endpoint_enforces_owner(self):
+        owner_user = self._register_user()
+        report_name = 'security-solution-report.md'
+        report_content = (
+            '# DeepVision 访谈报告\n\n'
+            '## 1. 访谈概述\n'
+            '- **访谈场景** - 产品需求调研\n'
+            '- **核心问题** - 报告生成后缺少直接查看方案的入口\n'
+            '- **关键触点** - 访谈报告详情页\n\n'
+            '## 2. 需求摘要\n'
+            '### 客户需求\n'
+            '- **希望立即查看落地方案** - 用户希望报告生成后直接进入方案单页。\n'
+            '### 业务流程\n'
+            '- **从报告详情直接跳转** - 方案页需要在新页面打开并保留导航结构。\n'
+            '### 技术约束\n'
+            '- **保持账号隔离** - 方案接口必须沿用报告权限校验与文件归属校验。\n'
+            '### 项目约束\n'
+            '- **先完成最小闭环** - 优先交付同步提炼方案内容与单页展示能力。\n'
+        )
+        report_file = self.server.REPORTS_DIR / report_name
+        report_file.write_text(report_content, encoding='utf-8')
+        self.server.set_report_owner_id(report_name, owner_user['id'])
+
+        owner_resp = self.client.get(f'/api/reports/{report_name}/solution')
+        self.assertEqual(owner_resp.status_code, 200, owner_resp.get_data(as_text=True))
+        owner_payload = owner_resp.get_json() or {}
+        self.assertEqual(owner_payload.get('report_name'), report_name)
+        self.assertTrue(owner_payload.get('metrics'))
+        self.assertTrue(owner_payload.get('nav_items'))
+
+        other_client = self.server.app.test_client()
+        self._register_user(client=other_client)
+        forbidden_resp = other_client.get(f'/api/reports/{report_name}/solution')
+        self.assertEqual(forbidden_resp.status_code, 404)
 
     def test_model_routing_aligns_with_reused_report_gateway(self):
         keys = [

@@ -18211,6 +18211,414 @@ def load_reports_for_user_from_files(user_id_int: int) -> list[dict]:
     return reports
 
 
+SOLUTION_DIMENSION_META = {
+    "客户需求": {"badge": "需求聚焦", "summary": "围绕真实痛点定义目标、样本与优先级。"},
+    "业务流程": {"badge": "关键触点", "summary": "锁定用户触达路径、界面节点与干预时机。"},
+    "技术约束": {"badge": "技术底线", "summary": "明确合规、脱敏、性能与集成边界。"},
+    "项目约束": {"badge": "交付边界", "summary": "平衡周期、预算、样本与落地节奏。"},
+}
+
+
+def normalize_solution_report_filename(report_filename: Optional[str]) -> str:
+    return normalize_presentation_report_filename(report_filename)
+
+
+def clean_solution_text(value: object, max_len: int = 0) -> str:
+    text = html.unescape(str(value or ""))
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", text)
+    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", text)
+    text = re.sub(r"(?m)^\s*[-*+]\s+", "", text)
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    text = re.sub(r"\s+", " ", text).strip(" \t\r\n-—|:：；;，。,.")
+    if max_len and len(text) > max_len:
+        text = text[:max_len].rstrip("，。,.;；：:!?？！ ") + "..."
+    return text
+
+
+def split_markdown_sections(content: str, heading_prefix: str) -> list[tuple[str, str]]:
+    sections: list[tuple[str, str]] = []
+    current_title = ""
+    current_lines: list[str] = []
+    for raw_line in str(content or "").splitlines():
+        line = raw_line.rstrip("\n")
+        if line.startswith(heading_prefix):
+            if current_title:
+                sections.append((clean_solution_text(current_title), "\n".join(current_lines).strip()))
+            current_title = line[len(heading_prefix):].strip()
+            current_lines = []
+            continue
+        if current_title:
+            current_lines.append(line)
+    if current_title:
+        sections.append((clean_solution_text(current_title), "\n".join(current_lines).strip()))
+    return sections
+
+
+def parse_solution_bullet_item(raw_line: str) -> dict:
+    text = str(raw_line or "").strip()
+    if text.startswith("- "):
+        text = text[2:].strip()
+    match = re.match(r"^\*\*(.+?)\*\*\s*-\s*(.+)$", text)
+    if match:
+        return {
+            "answer": clean_solution_text(match.group(1), max_len=88),
+            "detail": clean_solution_text(match.group(2), max_len=180),
+        }
+    return {
+        "answer": clean_solution_text(text, max_len=88),
+        "detail": "",
+    }
+
+
+def dedupe_solution_items(items: list[dict], max_items: int = 8) -> list[dict]:
+    seen = set()
+    results = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        answer = clean_solution_text(item.get("answer", ""), max_len=88)
+        detail = clean_solution_text(item.get("detail", ""), max_len=180)
+        if not answer:
+            continue
+        key = answer.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append({"answer": answer, "detail": detail})
+        if len(results) >= max_items:
+            break
+    return results
+
+
+def get_solution_item_answer(items: list[dict], index: int, fallback: str = "") -> str:
+    if 0 <= index < len(items):
+        return clean_solution_text(items[index].get("answer", ""), max_len=88)
+    return clean_solution_text(fallback, max_len=88)
+
+
+def get_solution_item_detail(items: list[dict], index: int, fallback: str = "") -> str:
+    if 0 <= index < len(items):
+        return clean_solution_text(items[index].get("detail", ""), max_len=180)
+    return clean_solution_text(fallback, max_len=180)
+
+
+def compact_solution_term(value: object, max_len: int = 0) -> str:
+    text = clean_solution_text(value)
+    text = re.sub(r"（[^）]*）", "", text)
+    text = re.sub(r"\([^\)]*\)", "", text)
+    text = re.split(r"[：:]", text, maxsplit=1)[0]
+    text = re.sub(r"\s+", " ", text).strip(" \t\r\n-—|:：；;，。,.")
+
+    if max_len and len(text) > max_len and "后的" in text:
+        tail = text.rsplit("后的", 1)[-1].strip()
+        if 1 < len(tail) < len(text):
+            text = tail
+
+    if max_len and len(text) > max_len and "的" in text:
+        tail = text.rsplit("的", 1)[-1].strip()
+        if 1 < len(tail) <= max_len:
+            text = tail
+
+    if max_len and len(text) > max_len:
+        text = text[:max_len].rstrip("，。,.;；：:!?？！ ") + "..."
+    return text or clean_solution_text(value, max_len=max_len)
+
+
+def normalize_solution_meta_label(value: object, fallback: str = "访谈信息") -> str:
+    text = clean_solution_text(value, max_len=28)
+    text = re.sub(r"^\d+(?:\.\d+)*\s*", "", text)
+    return text or fallback
+
+
+def build_solution_overview_meta(
+    overview_section: str,
+    scene: str,
+    pain_point: str,
+    entry_point: str,
+    tech_constraint: str,
+    project_constraint: str,
+) -> list[dict]:
+    _ = overview_section
+    candidates = [
+        ("聚焦场景", scene or "待明确", 18),
+        ("核心目标", pain_point or "待明确", 16),
+        ("推进切口", entry_point or "待明确", 14),
+        ("交付边界", project_constraint or tech_constraint or "待明确", 16),
+    ]
+    items: list[dict] = []
+    for label, value, limit in candidates:
+        normalized = compact_solution_term(value, max_len=limit)
+        if not normalized:
+            continue
+        items.append({"label": label, "value": normalized})
+    return items
+
+
+def build_solution_overview_text(
+    report_title: str,
+    scene: str,
+    pain_point: str,
+    entry_point: str,
+    tech_constraint: str,
+    project_constraint: str,
+    overview_meta: list[dict],
+) -> str:
+    _ = tech_constraint
+    _ = project_constraint
+    _ = overview_meta
+    scene_brief = compact_solution_term(scene or report_title, max_len=16)
+    pain_brief = compact_solution_term(pain_point or "核心问题", max_len=14)
+    entry_brief = compact_solution_term(entry_point or "关键触点", max_len=12)
+    return f"聚焦「{scene_brief}」，先解决「{pain_brief}」，从「{entry_brief}」启动首轮试点。"
+
+
+def extract_solution_requirements(summary_content: str) -> dict[str, list[dict]]:
+    groups: dict[str, list[dict]] = {}
+    for title, body in split_markdown_sections(summary_content, "### "):
+        parsed_items = []
+        for raw_line in body.splitlines():
+            line = raw_line.strip()
+            if not line.startswith("- "):
+                continue
+            parsed_items.append(parse_solution_bullet_item(line))
+        if parsed_items:
+            groups[clean_solution_text(title, max_len=32)] = dedupe_solution_items(parsed_items, max_items=10)
+    return groups
+
+
+def infer_solution_metrics(report_title: str, report_text: str) -> list[dict]:
+    combined = f"{report_title}\n{report_text}"
+
+    def contains_any(keywords: list[str]) -> bool:
+        return any(keyword in combined for keyword in keywords)
+
+    metrics = [
+        {
+            "label": "调研效率",
+            "value": "65-80%" if contains_any(["效率", "自动化", "人工", "回收", "耗时"]) else "35-50%",
+            "note": "用于衡量访谈组织与整理效率的预估改善幅度",
+        },
+        {
+            "label": "有效洞察率",
+            "value": "40-60%" if contains_any(["洞察", "归因", "真实痛点", "敷衍", "无效"]) else "25-40%",
+            "note": "用于衡量高价值回答与根因识别的预估提升",
+        },
+        {
+            "label": "风险识别",
+            "value": "20-35%" if contains_any(["风控", "安全", "误拦截", "合规", "隐私", "脱敏"]) else "15-25%",
+            "note": "用于衡量高风险场景识别与拦截误伤校准",
+        },
+        {
+            "label": "试点周期",
+            "value": "4-8周" if contains_any(["2-3个月", "短周期", "试点", "投放"]) else "3-6周",
+            "note": "从方案对齐到首轮验证的建议节奏",
+        },
+    ]
+    return metrics
+
+
+def infer_solution_risk_guardrail(answer: str) -> str:
+    text = str(answer or "")
+    if any(keyword in text for keyword in ["隐私", "合规", "脱敏", "加密"]):
+        return "先冻结脱敏规则、留痕范围与本地处理边界，再推进采集。"
+    if any(keyword in text for keyword in ["招募", "投放", "样本", "触发"]):
+        return "先验证样本获取路径，再扩大投放，避免低质样本稀释结论。"
+    if any(keyword in text for keyword in ["复现", "模拟器", "录屏", "UI"]):
+        return "采用分层复现策略，优先低保真验证，再投入高仿真开发。"
+    if any(keyword in text for keyword in ["周期", "预算", "资源"]):
+        return "把试点范围、验收口径和资源上限前置锁定，避免中途扩张。"
+    return "通过试点范围、验收门槛和里程碑复盘控制执行风险。"
+
+
+def build_solution_payload_from_report(report_name: str, report_content: str) -> dict:
+    normalized_content = normalize_report_time_fields(str(report_content or ""))
+    report_text = strip_inline_evidence_markers(normalized_content)
+    main_report_text = report_text.split("## 附录：完整访谈记录", 1)[0].strip()
+    report_title = "访谈报告"
+    for raw_line in main_report_text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("# "):
+            report_title = clean_solution_text(line[2:].replace("访谈报告", ""), max_len=60) or "访谈报告"
+            break
+
+    sections_level2 = split_markdown_sections(main_report_text, "## ")
+    overview_section = ""
+    summary_section = ""
+    for title, body in sections_level2:
+        if "访谈概述" in title and not overview_section:
+            overview_section = body
+        if "需求摘要" in title and not summary_section:
+            summary_section = body
+
+    requirement_groups = extract_solution_requirements(summary_section)
+    customer_items = requirement_groups.get("客户需求", [])
+    process_items = requirement_groups.get("业务流程", [])
+    tech_items = requirement_groups.get("技术约束", [])
+    project_items = requirement_groups.get("项目约束", [])
+
+    scene = get_solution_item_answer(customer_items, 1, fallback=get_solution_item_answer(process_items, 0, fallback=report_title))
+    pain_point = get_solution_item_answer(customer_items, 3, fallback=get_solution_item_answer(customer_items, 2, fallback="需要进一步明确核心痛点"))
+    entry_point = get_solution_item_answer(process_items, 1, fallback=get_solution_item_answer(customer_items, 5, fallback="关键业务触点"))
+    tech_constraint = get_solution_item_answer(tech_items, 0, fallback="技术与合规边界待进一步确认")
+    project_constraint = get_solution_item_answer(project_items, 0, fallback="交付边界与资源约束待进一步确认")
+    scene_brief = compact_solution_term(scene or report_title, max_len=18)
+    pain_brief = compact_solution_term(pain_point or "核心问题", max_len=16)
+    entry_brief = compact_solution_term(entry_point or "关键触点", max_len=14)
+    constraint_brief = compact_solution_term(project_constraint or tech_constraint or "待明确", max_len=16)
+    overview_meta = build_solution_overview_meta(
+        overview_section,
+        scene,
+        pain_point,
+        entry_point,
+        tech_constraint,
+        project_constraint,
+    )
+    overview_text = build_solution_overview_text(
+        report_title,
+        scene,
+        pain_point,
+        entry_point,
+        tech_constraint,
+        project_constraint,
+        overview_meta,
+    )
+
+    metrics = infer_solution_metrics(report_title, main_report_text)
+
+    headline_cards = [
+        {"label": "业务场景", "value": scene_brief or "待明确", "detail": "当前最优先推进的访谈应用场景"},
+        {"label": "核心问题", "value": pain_brief or "待明确", "detail": "首轮试点需要验证并改善的核心问题"},
+        {"label": "优先触点", "value": entry_brief or "待明确", "detail": "建议先落地验证的业务切入口"},
+        {"label": "落地约束", "value": constraint_brief or "待明确", "detail": "推进前必须先确认的交付边界"},
+    ]
+
+    focus_cards = [
+        {
+            "title": "场景切口",
+            "summary": get_solution_item_answer(customer_items, 5, fallback=scene or "围绕高价值场景优先切入"),
+            "detail": get_solution_item_detail(customer_items, 5, fallback="把业务场景进一步收窄到可验证切口。"),
+        },
+        {
+            "title": "用户心理",
+            "summary": get_solution_item_answer(customer_items, 8, fallback=get_solution_item_answer(customer_items, 7, fallback="补齐用户心理与替代方案决策链路")),
+            "detail": get_solution_item_detail(customer_items, 8, fallback="优先还原用户在关键触点的决策与情绪机制。"),
+        },
+        {
+            "title": "流程触点",
+            "summary": get_solution_item_answer(process_items, 2, fallback=entry_point or "补齐触发节点与操作路径"),
+            "detail": get_solution_item_detail(process_items, 2, fallback="把触点、时机和交互阻塞点映射到方案动作。"),
+        },
+    ]
+
+    dimension_cards = []
+    for name in ["客户需求", "业务流程", "技术约束", "项目约束"]:
+        items = requirement_groups.get(name, [])
+        meta = SOLUTION_DIMENSION_META.get(name, {"badge": "业务板块", "summary": "结合访谈内容补齐该板块。"})
+        dimension_cards.append({
+            "name": name,
+            "badge": meta["badge"],
+            "summary": get_solution_item_answer(items, 0, fallback=meta["summary"]),
+            "points": [clean_solution_text(item["answer"], max_len=44) for item in items[:4]],
+        })
+
+    roadmap = [
+        {
+            "phase": "阶段一 · 场景对齐",
+            "timeline": "第1-2周",
+            "goal": f"围绕「{scene or report_title}」统一试点范围、问题树与成功指标。",
+            "tasks": [
+                f"把「{pain_point or '核心问题'}」拆成首轮方案目标与验证假设。",
+                f"明确「{scene or '业务场景'}」下的样本分层、样本量与回收标准。",
+                f"沉淀首版方案目录、指标口径与试点验收门槛。",
+            ],
+        },
+        {
+            "phase": "阶段二 · 方案设计",
+            "timeline": "第3-5周",
+            "goal": f"围绕「{entry_point or '关键触点'}」形成可试跑的业务流程与交互方案。",
+            "tasks": [
+                f"把「{get_solution_item_answer(process_items, 0, fallback='关键流程')}」映射为关键触点与交互节点。",
+                f"将「{tech_constraint or '技术约束'}」纳入采集、脱敏和性能设计边界。",
+                f"输出触点原型、访谈脚本和业务协同清单，小范围试跑验证。",
+            ],
+        },
+        {
+            "phase": "阶段三 · 试点验证",
+            "timeline": "第6-8周",
+            "goal": f"在「{project_constraint or '交付约束'}」下完成试点验证、收益复盘与迭代。",
+            "tasks": [
+                f"按「{get_solution_item_answer(project_items, 1, fallback='试点投放策略')}」安排样本触达与回收节奏。",
+                f"追踪调研效率、有效洞察率与业务反馈，校准方案优先级。",
+                f"形成二期扩展建议，确定正式推广范围与资源投入。",
+            ],
+        },
+    ]
+
+    value_cards = [
+        {"title": metrics[0]["label"], "value": metrics[0]["value"], "description": metrics[0]["note"]},
+        {"title": metrics[1]["label"], "value": metrics[1]["value"], "description": metrics[1]["note"]},
+        {
+            "title": "场景复盘速度",
+            "value": "2-3倍",
+            "description": f"针对「{entry_point or scene or report_title}」建立从触点到结论的闭环节奏。",
+        },
+        {
+            "title": metrics[2]["label"],
+            "value": metrics[2]["value"],
+            "description": metrics[2]["note"],
+        },
+    ]
+
+    risk_source_items = tech_items[:2] + project_items[:2]
+    risk_cards = []
+    for item in risk_source_items:
+        risk_cards.append({
+            "title": item["answer"],
+            "description": item["detail"] or "该约束会直接影响方案范围、样本质量或技术实现。",
+            "guardrail": infer_solution_risk_guardrail(item["answer"]),
+        })
+    if not risk_cards:
+        risk_cards.append({
+            "title": "样本与资源边界待确认",
+            "description": "建议先锁定试点范围、样本口径和验收标准。",
+            "guardrail": "先做小规模试点，再扩展正式落地范围。",
+        })
+
+    action_items = [
+        {"owner": "产品", "title": f"把「{pain_point or '核心问题'}」拆成一级目标", "detail": "输出方案目标、成功指标和验收口径。"},
+        {"owner": "研究", "title": f"围绕「{scene or '业务场景'}」补齐样本招募规则", "detail": "明确访谈对象、触发时机与样本筛选条件。"},
+        {"owner": "设计", "title": f"针对「{entry_point or '关键触点'}」制作单页原型", "detail": "把用户路径、关键文案和交互状态沉淀成可试跑原型。"},
+        {"owner": "研发", "title": f"落实「{tech_constraint or '技术约束'}」边界", "detail": "优先处理脱敏、性能和埋点实现边界。"},
+        {"owner": "运营", "title": f"按「{project_constraint or '项目约束'}」组织试点节奏", "detail": "制定触达方案、回收节奏与复盘机制。"},
+    ]
+
+    return {
+        "report_name": report_name,
+        "title": report_title,
+        "subtitle": f"围绕「{scene_brief or report_title}」场景，从「{entry_brief or '关键触点'}」切入首轮试点与实施路径。",
+        "overview": overview_text,
+        "overview_meta": overview_meta,
+        "metrics": metrics,
+        "nav_items": [
+            {"id": "overview", "label": "方案概览"},
+            {"id": "focus", "label": "重点洞察"},
+            {"id": "modules", "label": "业务板块"},
+            {"id": "roadmap", "label": "实施路径"},
+            {"id": "value", "label": "预期价值"},
+            {"id": "risks", "label": "风险依赖"},
+            {"id": "actions", "label": "下一步动作"},
+        ],
+        "headline_cards": headline_cards,
+        "focus_cards": focus_cards,
+        "dimension_cards": dimension_cards,
+        "roadmap": roadmap,
+        "value_cards": value_cards,
+        "risk_cards": risk_cards,
+        "action_items": action_items,
+    }
+
+
 @app.route('/api/reports', methods=['GET'])
 def list_reports():
     """获取所有报告（排除已删除的）"""
@@ -18327,6 +18735,31 @@ def get_report(filename):
         generated_at = None
     content = normalize_report_time_fields(content, generated_at=generated_at)
     return jsonify({"name": filename, "content": content})
+
+
+@app.route('/api/reports/<path:filename>/solution', methods=['GET'])
+def get_report_solution(filename):
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    normalized = normalize_solution_report_filename(filename)
+    if not normalized:
+        return jsonify({"error": "报告文件名无效"}), 400
+
+    report_file, owner_error = enforce_report_owner_or_404(normalized, user_id)
+    if owner_error:
+        response, status_code = owner_error
+        return response, status_code
+
+    content = report_file.read_text(encoding="utf-8")
+    try:
+        generated_at = datetime.fromtimestamp(report_file.stat().st_mtime)
+    except Exception:
+        generated_at = None
+    content = normalize_report_time_fields(content, generated_at=generated_at)
+    payload = build_solution_payload_from_report(normalized, content)
+    return jsonify(payload)
 
 
 @app.route('/api/reports/<path:filename>/appendix/pdf', methods=['GET'])
