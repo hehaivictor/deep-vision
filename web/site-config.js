@@ -375,6 +375,12 @@ const SITE_CONFIG = {
     // 是否展示“一键生成演示文稿”按钮
     enabled: false,
   },
+
+  // ============ 方案页配置 ============
+  solution: {
+    // 是否展示“查看方案”按钮
+    enabled: true,
+  },
 };
 
 // 如果在 Node.js 环境中，导出配置

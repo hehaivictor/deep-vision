@@ -1,3 +1,4 @@
+const SOLUTION_ASSET_VERSION = '20260310-solution-v6';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 
 function solutionEscapeHtml(value) {
@@ -7,6 +8,17 @@ function solutionEscapeHtml(value) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#39;');
+}
+
+function solutionNormalizeList(value) {
+    return Array.isArray(value) ? value.filter(Boolean) : [];
+}
+
+function solutionShortText(value, maxLength = 36) {
+    const normalized = String(value || '').trim().replace(/\s+/g, ' ');
+    if (!normalized) return '';
+    if (normalized.length <= maxLength) return normalized;
+    return `${normalized.slice(0, maxLength).trim()}...`;
 }
 
 function solutionGetReportName() {
@@ -32,7 +44,7 @@ function solutionBuildReportUrl(reportName = '') {
     const params = new URLSearchParams();
     params.set('view', 'reports');
     params.set('report', normalized);
-    params.set('v', '20260310-solution-v3');
+    params.set('v', SOLUTION_ASSET_VERSION);
     return `index.html?${params.toString()}`;
 }
 
@@ -69,7 +81,8 @@ async function solutionApiCall(endpoint) {
 function solutionRenderNav(items) {
     const nav = document.getElementById('solution-nav');
     if (!nav) return;
-    nav.innerHTML = (Array.isArray(items) ? items : []).map((item) => `
+    const navItems = solutionNormalizeList(items);
+    nav.innerHTML = navItems.map((item) => `
         <button type="button" class="solution-nav-button" data-target="${solutionEscapeHtml(item.id)}">
             ${solutionEscapeHtml(item.label)}
         </button>
@@ -87,10 +100,60 @@ function solutionRenderNav(items) {
     });
 }
 
+function solutionRenderHeroSignals(items) {
+    const root = document.getElementById('solution-hero-signals');
+    if (!root) return;
+    const signals = solutionNormalizeList(items).slice(0, 4);
+    root.hidden = !signals.length;
+    root.innerHTML = signals.map((item, index) => `
+        <article class="solution-hero-signal" data-accent="${index % 4}">
+            <div class="solution-hero-signal-label">${solutionEscapeHtml(item.label)}</div>
+            <div class="solution-hero-signal-value">${solutionEscapeHtml(solutionShortText(item.value, 24))}</div>
+        </article>
+    `).join('');
+}
+
+function solutionRenderHeroFocus(items, overviewText) {
+    const root = document.getElementById('solution-hero-focus');
+    if (!root) return;
+    const primary = solutionNormalizeList(items)[0] || null;
+    const label = primary?.label || '首轮主线';
+    const title = primary?.value || '围绕核心问题启动首轮落地';
+    const detail = primary?.detail || overviewText || '根据当前访谈报告提炼首轮试点路径。';
+    root.innerHTML = `
+        <article class="solution-hero-focus-card">
+            <div class="solution-hero-focus-topline">
+                <div class="solution-hero-focus-kicker">${solutionEscapeHtml(label)}</div>
+                <div class="solution-hero-focus-badge">01</div>
+            </div>
+            <h2 class="solution-hero-focus-title">${solutionEscapeHtml(title)}</h2>
+            <p class="solution-hero-focus-copy">${solutionEscapeHtml(solutionShortText(detail, 72))}</p>
+            <div class="solution-hero-focus-foot">
+                <span>访谈提炼</span>
+                <span>可直接启动</span>
+            </div>
+        </article>
+    `;
+}
+
+function solutionRenderHeroMetrics(items) {
+    const root = document.getElementById('solution-hero-metric-row');
+    if (!root) return;
+    const metrics = solutionNormalizeList(items).slice(0, 2);
+    root.hidden = !metrics.length;
+    root.innerHTML = metrics.map((item) => `
+        <article class="solution-hero-metric">
+            <div class="solution-hero-metric-label">${solutionEscapeHtml(item.label)}</div>
+            <div class="solution-hero-metric-value">${solutionEscapeHtml(item.value)}</div>
+            <div class="solution-hero-metric-note">${solutionEscapeHtml(solutionShortText(item.note, 28))}</div>
+        </article>
+    `).join('');
+}
+
 function solutionRenderMetrics(items) {
     const root = document.getElementById('solution-metrics');
     if (!root) return;
-    root.innerHTML = (Array.isArray(items) ? items : []).map((item) => `
+    root.innerHTML = solutionNormalizeList(items).map((item) => `
         <article class="solution-metric-card">
             <div class="solution-metric-label">${solutionEscapeHtml(item.label)}</div>
             <div class="solution-metric-value">${solutionEscapeHtml(item.value)}</div>
@@ -102,7 +165,7 @@ function solutionRenderMetrics(items) {
 function solutionRenderOverviewMeta(items) {
     const root = document.getElementById('solution-overview-meta');
     if (!root) return;
-    root.innerHTML = (Array.isArray(items) ? items : []).map((item) => `
+    root.innerHTML = solutionNormalizeList(items).map((item) => `
         <article class="solution-overview-meta-item">
             <div class="solution-overview-meta-label">${solutionEscapeHtml(item.label)}</div>
             <div class="solution-overview-meta-value">${solutionEscapeHtml(item.value)}</div>
@@ -110,14 +173,21 @@ function solutionRenderOverviewMeta(items) {
     `).join('');
 }
 
+function solutionFormatCardIndex(index) {
+    return String(Number(index || 0) + 1).padStart(2, '0');
+}
+
 function solutionRenderHeadlineCards(items) {
     const root = document.getElementById('solution-headline-cards');
     if (!root) return;
-    root.innerHTML = (Array.isArray(items) ? items : []).map((item) => `
-        <article class="solution-summary-card">
+    const cards = solutionNormalizeList(items);
+    const secondaryCards = cards.length > 1 ? cards.slice(1, 4) : cards.slice(0, 3);
+    root.hidden = !secondaryCards.length;
+    root.innerHTML = secondaryCards.map((item, index) => `
+        <article class="solution-summary-card" data-accent="${(index + 1) % 4}">
             <div class="solution-summary-label">${solutionEscapeHtml(item.label)}</div>
             <div class="solution-summary-value">${solutionEscapeHtml(item.value)}</div>
-            <div class="solution-summary-detail">${solutionEscapeHtml(item.detail)}</div>
+            <div class="solution-summary-detail">${solutionEscapeHtml(solutionShortText(item.detail, 44))}</div>
         </article>
     `).join('');
 }
@@ -125,9 +195,12 @@ function solutionRenderHeadlineCards(items) {
 function solutionRenderFocusCards(items) {
     const root = document.getElementById('solution-focus-cards');
     if (!root) return;
-    root.innerHTML = (Array.isArray(items) ? items : []).map((item) => `
-        <article class="solution-card">
-            <div class="solution-card-badge">重点洞察</div>
+    root.innerHTML = solutionNormalizeList(items).map((item, index) => `
+        <article class="solution-card solution-card-insight" data-accent="${index % 4}">
+            <div class="solution-card-topline">
+                <div class="solution-card-badge">重点洞察</div>
+                <div class="solution-card-index">${solutionFormatCardIndex(index)}</div>
+            </div>
             <h3 class="solution-card-title">${solutionEscapeHtml(item.title)}</h3>
             <p class="solution-card-copy">${solutionEscapeHtml(item.summary)}</p>
             <p class="solution-card-meta">${solutionEscapeHtml(item.detail)}</p>
@@ -138,44 +211,61 @@ function solutionRenderFocusCards(items) {
 function solutionRenderDimensionCards(items) {
     const root = document.getElementById('solution-dimension-cards');
     if (!root) return;
-    root.innerHTML = (Array.isArray(items) ? items : []).map((item) => `
-        <article class="solution-card">
-            <div class="solution-card-badge">${solutionEscapeHtml(item.badge)}</div>
+    root.innerHTML = solutionNormalizeList(items).map((item, index) => {
+        const points = solutionNormalizeList(item.points);
+        return `
+        <article class="solution-card solution-card-module" data-accent="${index % 4}">
+            <div class="solution-card-topline">
+                <div class="solution-card-badge">${solutionEscapeHtml(item.badge || '业务板块')}</div>
+                <div class="solution-card-index">${solutionFormatCardIndex(index)}</div>
+            </div>
             <h3 class="solution-card-title">${solutionEscapeHtml(item.name)}</h3>
             <p class="solution-card-copy">${solutionEscapeHtml(item.summary)}</p>
-            <ul class="solution-card-list">
-                ${(Array.isArray(item.points) ? item.points : []).map((point) => `<li>${solutionEscapeHtml(point)}</li>`).join('')}
+            <ul class="solution-card-list solution-card-list-module">
+                ${points.map((point) => `<li>${solutionEscapeHtml(point)}</li>`).join('')}
             </ul>
-        </article>
-    `).join('');
+            <div class="solution-card-foot">
+                <span>模块要点</span>
+                <span>${points.length || 0} 项</span>
+            </div>
+        </article>`;
+    }).join('');
 }
 
 function solutionRenderRoadmap(items) {
     const root = document.getElementById('solution-roadmap');
     if (!root) return;
-    root.innerHTML = (Array.isArray(items) ? items : []).map((item) => `
-        <article class="solution-roadmap-item">
-            <div class="solution-roadmap-side">
-                <div class="solution-roadmap-phase">${solutionEscapeHtml(item.phase)}</div>
-                <div class="solution-roadmap-time">${solutionEscapeHtml(item.timeline)}</div>
+    const steps = solutionNormalizeList(items).map((item, index) => `
+        <article class="solution-roadmap-item" data-step="${solutionFormatCardIndex(index)}">
+            <div class="solution-roadmap-node">
+                <div class="solution-roadmap-index">${solutionFormatCardIndex(index)}</div>
+                <div class="solution-roadmap-dot"></div>
             </div>
-            <div>
+            <div class="solution-roadmap-panel">
+                <div class="solution-roadmap-meta">
+                    <div class="solution-roadmap-phase">${solutionEscapeHtml(item.phase)}</div>
+                    <div class="solution-roadmap-time">${solutionEscapeHtml(item.timeline)}</div>
+                </div>
                 <h3 class="solution-roadmap-title">${solutionEscapeHtml(item.goal)}</h3>
                 <ul class="solution-roadmap-list">
-                    ${(Array.isArray(item.tasks) ? item.tasks : []).map((task) => `<li>${solutionEscapeHtml(task)}</li>`).join('')}
+                    ${solutionNormalizeList(item.tasks).map((task) => `<li>${solutionEscapeHtml(task)}</li>`).join('')}
                 </ul>
             </div>
         </article>
     `).join('');
+    root.innerHTML = `<div class="solution-roadmap-track">${steps}</div>`;
 }
 
 function solutionRenderValueCards(items) {
     const root = document.getElementById('solution-value-cards');
     if (!root) return;
-    root.innerHTML = (Array.isArray(items) ? items : []).map((item) => `
-        <article class="solution-card">
-            <div class="solution-card-badge">预期收益</div>
-            <h3 class="solution-card-title">${solutionEscapeHtml(item.value)}</h3>
+    root.innerHTML = solutionNormalizeList(items).map((item, index) => `
+        <article class="solution-card solution-card-value" data-accent="${index % 4}">
+            <div class="solution-card-topline">
+                <div class="solution-card-badge">预期收益</div>
+                <div class="solution-card-index">${solutionFormatCardIndex(index)}</div>
+            </div>
+            <h3 class="solution-card-title solution-card-value-hero">${solutionEscapeHtml(item.value)}</h3>
             <p class="solution-card-copy">${solutionEscapeHtml(item.title)}</p>
             <p class="solution-card-meta">${solutionEscapeHtml(item.description)}</p>
         </article>
@@ -185,12 +275,18 @@ function solutionRenderValueCards(items) {
 function solutionRenderRiskCards(items) {
     const root = document.getElementById('solution-risk-cards');
     if (!root) return;
-    root.innerHTML = (Array.isArray(items) ? items : []).map((item) => `
-        <article class="solution-card">
-            <div class="solution-card-badge">风险依赖</div>
+    root.innerHTML = solutionNormalizeList(items).map((item, index) => `
+        <article class="solution-card solution-card-risk" data-accent="${index % 4}">
+            <div class="solution-card-topline">
+                <div class="solution-card-badge">风险依赖</div>
+                <div class="solution-card-index">${solutionFormatCardIndex(index)}</div>
+            </div>
             <h3 class="solution-card-title">${solutionEscapeHtml(item.title)}</h3>
             <p class="solution-card-copy">${solutionEscapeHtml(item.description)}</p>
-            <p class="solution-card-meta">${solutionEscapeHtml(item.guardrail)}</p>
+            <div class="solution-card-guardrail">
+                <div class="solution-card-guardrail-label">防护动作</div>
+                <div class="solution-card-meta">${solutionEscapeHtml(item.guardrail)}</div>
+            </div>
         </article>
     `).join('');
 }
@@ -198,11 +294,15 @@ function solutionRenderRiskCards(items) {
 function solutionRenderActions(items) {
     const root = document.getElementById('solution-actions');
     if (!root) return;
-    root.innerHTML = (Array.isArray(items) ? items : []).map((item) => `
-        <article class="solution-action-item">
-            <div class="solution-action-owner">${solutionEscapeHtml(item.owner)}</div>
+    root.innerHTML = solutionNormalizeList(items).map((item, index) => `
+        <article class="solution-action-item" data-accent="${index % 4}">
+            <div class="solution-card-topline">
+                <div class="solution-action-owner">${solutionEscapeHtml(item.owner)}</div>
+                <div class="solution-card-index">${solutionFormatCardIndex(index)}</div>
+            </div>
             <h3 class="solution-action-title">${solutionEscapeHtml(item.title)}</h3>
             <p class="solution-action-copy">${solutionEscapeHtml(item.detail)}</p>
+            <div class="solution-action-foot">立即推进</div>
         </article>
     `).join('');
 }
@@ -267,12 +367,31 @@ function solutionRender(payload) {
     const state = document.getElementById('solution-state-card');
     if (!shell || !state) return;
 
-    document.getElementById('solution-title').textContent = payload.title || '查看方案';
-    document.getElementById('solution-subtitle').textContent = payload.subtitle || '';
-    document.getElementById('solution-overview-text').textContent = payload.overview || '';
+    const subtitle = payload.subtitle || payload.overview || '';
+    const overview = payload.overview || payload.subtitle || '';
+    const heroSignalSource = solutionNormalizeList(payload.overview_meta).length ? payload.overview_meta : payload.headline_cards;
+    const heroAbstract = document.getElementById('solution-hero-abstract');
+    const heroAbstractCard = document.getElementById('solution-hero-abstract-card');
+    const subtitleNode = document.getElementById('solution-subtitle');
 
-    solutionRenderHeadlineCards(payload.headline_cards);
+    document.getElementById('solution-title').textContent = payload.title || '查看方案';
+    if (subtitleNode) {
+        subtitleNode.textContent = subtitle;
+        subtitleNode.hidden = !subtitle;
+    }
+    if (heroAbstract) {
+        heroAbstract.textContent = overview;
+    }
+    if (heroAbstractCard) {
+        heroAbstractCard.hidden = !overview;
+    }
+    document.getElementById('solution-overview-text').textContent = overview;
+
     solutionRenderNav(payload.nav_items);
+    solutionRenderHeroSignals(heroSignalSource);
+    solutionRenderHeroFocus(payload.headline_cards, overview);
+    solutionRenderHeadlineCards(payload.headline_cards);
+    solutionRenderHeroMetrics(payload.metrics);
     solutionRenderOverviewMeta(payload.overview_meta);
     solutionRenderMetrics(payload.metrics);
     solutionRenderFocusCards(payload.focus_cards);

@@ -7,7 +7,7 @@
     <link rel="shortcut icon" href="favicon.svg">
     <title>DeepVision 查看方案</title>
     <link rel="stylesheet" href="vendor/css/fonts.css">
-    <link rel="stylesheet" href="solution.css?v=20260310-solution-v3">
+    <link rel="stylesheet" href="solution.css?v=20260310-solution-v6">
 </head>
 <body>
     <div class="solution-page">
@@ -31,12 +31,34 @@
 
                 <section class="solution-hero" id="hero">
                     <div class="solution-hero-copy">
-                        <div class="solution-eyebrow">查看方案</div>
+                        <div class="solution-hero-copy-top">
+                            <div class="solution-eyebrow">查看方案</div>
+                            <div class="solution-hero-status">
+                                <span class="solution-hero-status-dot"></span>
+                                方案已生成
+                            </div>
+                        </div>
                         <h1 class="solution-title" id="solution-title"></h1>
                         <p class="solution-subtitle" id="solution-subtitle"></p>
+                        <article class="solution-hero-abstract" id="solution-hero-abstract-card">
+                            <div class="solution-hero-abstract-label">方案摘要</div>
+                            <p class="solution-hero-abstract-text" id="solution-hero-abstract"></p>
+                        </article>
+                        <div class="solution-hero-signal-strip" id="solution-hero-signals"></div>
                     </div>
                     <div class="solution-hero-panel">
-                        <div class="solution-summary-grid" id="solution-headline-cards"></div>
+                        <div class="solution-hero-console">
+                            <div class="solution-hero-console-head">
+                                <div>
+                                    <div class="solution-hero-console-kicker">执行看板</div>
+                                    <div class="solution-hero-console-title">首轮落地建议</div>
+                                </div>
+                                <div class="solution-hero-console-chip">DeepVision</div>
+                            </div>
+                            <div class="solution-hero-focus" id="solution-hero-focus"></div>
+                            <div class="solution-summary-grid" id="solution-headline-cards"></div>
+                            <div class="solution-hero-metric-row" id="solution-hero-metric-row"></div>
+                        </div>
                     </div>
                 </section>
 
@@ -106,6 +128,6 @@
             </div>
         </main>
     </div>
-    <script src="solution.js?v=20260310-solution-v3"></script>
+    <script src="solution.js?v=20260310-solution-v6"></script>
 </body>
 </html>

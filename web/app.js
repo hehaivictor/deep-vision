@@ -4410,7 +4410,7 @@ function deepVision() {
             if (!targetReport) return '';
             const params = new URLSearchParams();
             params.set('report', targetReport);
-            params.set('v', '20260310-solution-v3');
+            params.set('v', '20260310-solution-v6');
             return `solution.html?${params.toString()}`;
         },
 
@@ -4419,7 +4419,7 @@ function deepVision() {
             if (!url) return;
             const opened = this.openUrl(url);
             if (!opened) {
-                window.location.href = url;
+                this.showToast('浏览器拦截了新标签页，请允许后重试', 'warning');
             }
         },
 
@@ -4983,9 +4983,18 @@ function deepVision() {
 
         openUrl(url) {
             if (!url) return false;
-            const win = window.open(url, '_blank', 'noopener');
+            const win = window.open(url, '_blank');
             if (win) {
-                win.focus();
+                try {
+                    win.opener = null;
+                } catch (error) {
+                    // 忽略跨窗口安全限制，避免影响打开流程
+                }
+                try {
+                    win.focus();
+                } catch (error) {
+                    // 某些浏览器不允许脚本主动聚焦新标签页
+                }
                 return true;
             }
             return false;
@@ -7945,6 +7954,11 @@ function deepVision() {
         isPresentationEnabled() {
             if (typeof SITE_CONFIG === 'undefined') return false;
             return SITE_CONFIG?.presentation?.enabled === true;
+        },
+
+        isSolutionEnabled() {
+            if (typeof SITE_CONFIG === 'undefined') return true;
+            return SITE_CONFIG?.solution?.enabled !== false;
         },
 
         // 获取维度评分（评估场景）
