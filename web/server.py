@@ -18388,6 +18388,23 @@ def dedupe_solution_items(items: list[dict], max_items: int = 8) -> list[dict]:
     return results
 
 
+def dedupe_solution_texts(values: list[object], max_items: int = 6, max_len: int = 24) -> list[str]:
+    seen = set()
+    results: list[str] = []
+    for value in values:
+        text = clean_solution_text(value, max_len=max_len)
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(text)
+        if len(results) >= max_items:
+            break
+    return results
+
+
 def get_solution_item_answer(items: list[dict], index: int, fallback: str = "") -> str:
     if 0 <= index < len(items):
         return clean_solution_text(items[index].get("answer", ""), max_len=88)
@@ -18484,6 +18501,30 @@ def extract_solution_requirements(summary_content: str) -> dict[str, list[dict]]
     return groups
 
 
+def extract_solution_overview_facts(overview_content: str) -> dict[str, str]:
+    facts: dict[str, str] = {}
+    for raw_line in str(overview_content or "").splitlines():
+        line = raw_line.strip()
+        if not line.startswith("- "):
+            continue
+
+        match = re.match(r"^- \*\*(.+?)\*\*\s*-\s*(.+)$", line)
+        if match:
+            label = normalize_solution_meta_label(match.group(1))
+            value = clean_solution_text(match.group(2), max_len=180)
+        else:
+            body = line[2:].strip()
+            parts = re.split(r"\s*[：:-]\s*", body, maxsplit=1)
+            if len(parts) != 2:
+                continue
+            label = normalize_solution_meta_label(parts[0])
+            value = clean_solution_text(parts[1], max_len=180)
+
+        if label and value and label not in facts:
+            facts[label] = value
+    return facts
+
+
 def infer_solution_metrics(report_title: str, report_text: str) -> list[dict]:
     combined = f"{report_title}\n{report_text}"
 
@@ -18528,6 +18569,393 @@ def infer_solution_risk_guardrail(answer: str) -> str:
     return "通过试点范围、验收门槛和里程碑复盘控制执行风险。"
 
 
+def build_solution_focus_cards(
+    customer_items: list[dict],
+    process_items: list[dict],
+    scene: str,
+    entry_point: str,
+) -> list[dict]:
+    return [
+        {
+            "title": "场景切口",
+            "summary": get_solution_item_answer(customer_items, 5, fallback=scene or "围绕高价值场景优先切入"),
+            "detail": get_solution_item_detail(customer_items, 5, fallback="把业务场景进一步收窄到可验证切口。"),
+        },
+        {
+            "title": "用户心理",
+            "summary": get_solution_item_answer(
+                customer_items,
+                8,
+                fallback=get_solution_item_answer(customer_items, 7, fallback="补齐用户心理与替代方案决策链路"),
+            ),
+            "detail": get_solution_item_detail(customer_items, 8, fallback="优先还原用户在关键触点的决策与情绪机制。"),
+        },
+        {
+            "title": "流程触点",
+            "summary": get_solution_item_answer(process_items, 2, fallback=entry_point or "补齐触发节点与操作路径"),
+            "detail": get_solution_item_detail(process_items, 2, fallback="把触点、时机和交互阻塞点映射到方案动作。"),
+        },
+    ]
+
+
+def build_solution_dimension_cards(requirement_groups: dict[str, list[dict]]) -> list[dict]:
+    cards: list[dict] = []
+    for name in ["客户需求", "业务流程", "技术约束", "项目约束"]:
+        items = requirement_groups.get(name, [])
+        meta = SOLUTION_DIMENSION_META.get(name, {"badge": "业务板块", "summary": "结合访谈内容补齐该板块。"})
+        points = dedupe_solution_texts([item.get("answer", "") for item in items] or [meta["summary"]], max_items=4, max_len=44)
+        cards.append({
+            "name": name,
+            "badge": meta["badge"],
+            "summary": get_solution_item_answer(items, 0, fallback=meta["summary"]),
+            "points": points,
+        })
+    return cards
+
+
+def build_solution_roadmap(
+    report_title: str,
+    scene: str,
+    pain_point: str,
+    entry_point: str,
+    tech_constraint: str,
+    project_constraint: str,
+    process_items: list[dict],
+    project_items: list[dict],
+) -> list[dict]:
+    return [
+        {
+            "phase": "阶段一 · 场景对齐",
+            "timeline": "第1-2周",
+            "goal": f"围绕「{scene or report_title}」统一试点范围、问题树与成功指标。",
+            "tasks": [
+                f"把「{pain_point or '核心问题'}」拆成首轮方案目标与验证假设。",
+                f"明确「{scene or '业务场景'}」下的样本分层、样本量与回收标准。",
+                "沉淀首版方案目录、指标口径与试点验收门槛。",
+            ],
+        },
+        {
+            "phase": "阶段二 · 方案设计",
+            "timeline": "第3-5周",
+            "goal": f"围绕「{entry_point or '关键触点'}」形成可试跑的业务流程与交互方案。",
+            "tasks": [
+                f"把「{get_solution_item_answer(process_items, 0, fallback='关键流程')}」映射为关键触点与交互节点。",
+                f"将「{tech_constraint or '技术约束'}」纳入采集、脱敏和性能设计边界。",
+                "输出触点原型、访谈脚本和业务协同清单，小范围试跑验证。",
+            ],
+        },
+        {
+            "phase": "阶段三 · 试点验证",
+            "timeline": "第6-8周",
+            "goal": f"在「{project_constraint or '交付约束'}」下完成试点验证、收益复盘与迭代。",
+            "tasks": [
+                f"按「{get_solution_item_answer(project_items, 1, fallback='试点投放策略')}」安排样本触达与回收节奏。",
+                "追踪调研效率、有效洞察率与业务反馈，校准方案优先级。",
+                "形成二期扩展建议，确定正式推广范围与资源投入。",
+            ],
+        },
+    ]
+
+
+def build_solution_value_cards(metrics: list[dict], entry_point: str, scene: str, report_title: str) -> list[dict]:
+    return [
+        {"title": metrics[0]["label"], "value": metrics[0]["value"], "description": metrics[0]["note"]},
+        {"title": metrics[1]["label"], "value": metrics[1]["value"], "description": metrics[1]["note"]},
+        {
+            "title": "场景复盘速度",
+            "value": "2-3倍",
+            "description": f"针对「{entry_point or scene or report_title}」建立从触点到结论的闭环节奏。",
+        },
+        {
+            "title": metrics[2]["label"],
+            "value": metrics[2]["value"],
+            "description": metrics[2]["note"],
+        },
+    ]
+
+
+def build_solution_risk_cards(tech_items: list[dict], project_items: list[dict]) -> list[dict]:
+    risk_source_items = tech_items[:2] + project_items[:2]
+    risk_cards = []
+    for item in risk_source_items:
+        risk_cards.append({
+            "title": item["answer"],
+            "description": item["detail"] or "该约束会直接影响方案范围、样本质量或技术实现。",
+            "guardrail": infer_solution_risk_guardrail(item["answer"]),
+        })
+    if not risk_cards:
+        risk_cards.append({
+            "title": "样本与资源边界待确认",
+            "description": "建议先锁定试点范围、样本口径和验收标准。",
+            "guardrail": "先做小规模试点，再扩展正式落地范围。",
+        })
+    return risk_cards
+
+
+def build_solution_action_items(
+    scene: str,
+    pain_point: str,
+    entry_point: str,
+    tech_constraint: str,
+    project_constraint: str,
+) -> list[dict]:
+    return [
+        {"owner": "产品", "title": f"把「{pain_point or '核心问题'}」拆成一级目标", "detail": "输出方案目标、成功指标和验收口径。"},
+        {"owner": "研究", "title": f"围绕「{scene or '业务场景'}」补齐样本招募规则", "detail": "明确访谈对象、触发时机与样本筛选条件。"},
+        {"owner": "设计", "title": f"针对「{entry_point or '关键触点'}」制作单页原型", "detail": "把用户路径、关键文案和交互状态沉淀成可试跑原型。"},
+        {"owner": "研发", "title": f"落实「{tech_constraint or '技术约束'}」边界", "detail": "优先处理脱敏、性能和埋点实现边界。"},
+        {"owner": "运营", "title": f"按「{project_constraint or '项目约束'}」组织试点节奏", "detail": "制定触达方案、回收节奏与复盘机制。"},
+    ]
+
+
+def build_solution_decision_summary(
+    scene_brief: str,
+    pain_brief: str,
+    entry_brief: str,
+    constraint_brief: str,
+) -> str:
+    return clean_solution_text(
+        f"建议围绕「{scene_brief or '当前场景'}」启动首轮试点，优先从「{entry_brief or '关键触点'}」切入验证「{pain_brief or '核心问题'}」的改善空间，并在「{constraint_brief or '既定边界'}」范围内形成可复盘的执行闭环。",
+        max_len=120,
+    )
+
+
+def build_solution_decision_cards(
+    pain_point: str,
+    entry_point: str,
+    tech_constraint: str,
+    project_constraint: str,
+    focus_cards: list[dict],
+    roadmap: list[dict],
+    metrics: list[dict],
+) -> list[dict]:
+    constraint = project_constraint or tech_constraint or "既定交付边界"
+    first_phase = roadmap[0]["phase"] if roadmap else "首轮试点"
+    return [
+        {
+            "title": "推进时机已经成熟",
+            "summary": clean_solution_text(
+                focus_cards[0].get("summary") if focus_cards else f"当前报告已把「{pain_point or '核心问题'}」收敛成可验证的试点主题。",
+                max_len=80,
+            ),
+            "detail": clean_solution_text(
+                f"围绕「{pain_point or '核心问题'}」的目标、问题树与验收方向已经清楚，可直接进入「{first_phase}」统一评审口径。",
+                max_len=180,
+            ),
+        },
+        {
+            "title": "首轮切口足够聚焦",
+            "summary": clean_solution_text(
+                f"优先从「{entry_point or '关键触点'}」切入，更容易在短周期内验证用户反馈和组织协同。",
+                max_len=80,
+            ),
+            "detail": clean_solution_text(
+                f"结合流程触点与用户心理信息，先观察{metrics[0]['label']}和{metrics[1]['label']}两项改善，再决定是否扩展范围。",
+                max_len=180,
+            ),
+        },
+        {
+            "title": "执行边界可提前锁定",
+            "summary": clean_solution_text(
+                f"在「{constraint}」范围内小步试点，能把投入、风险和协同复杂度控制在可管理区间。",
+                max_len=80,
+            ),
+            "detail": clean_solution_text(
+                f"将「{tech_constraint or '技术约束'}」前置为设计与评审边界，可降低试点中途因为合规、性能或资源问题返工的概率。",
+                max_len=180,
+            ),
+        },
+    ]
+
+
+def build_solution_comparison_items(
+    scene: str,
+    pain_point: str,
+    entry_point: str,
+    project_constraint: str,
+) -> list[dict]:
+    scene_text = scene or "当前场景"
+    pain_text = pain_point or "核心问题"
+    entry_text = entry_point or "关键触点"
+    constraint_text = project_constraint or "既定交付边界"
+    return [
+        {
+            "label": "问题识别",
+            "traditional": "传统推进往往先收集纪要，再由不同角色各自解读问题，根因判断容易分散。",
+            "proposed": f"DeepVision 先围绕「{scene_text}」提炼问题树，把「{pain_text}」明确为首轮验证主题。",
+            "effect": "让问题定义、验证目标和优先级在同一份方案里达成统一。",
+        },
+        {
+            "label": "推进路径",
+            "traditional": "通常需要多轮会议逐步收敛范围，方案与试点入口经常在沟通里反复摇摆。",
+            "proposed": f"直接以「{entry_text}」作为首轮切口，同时把模块、里程碑和动作清单一次成型。",
+            "effect": "缩短从报告生成到进入试点评审的准备链路。",
+        },
+        {
+            "label": "协同方式",
+            "traditional": "产品、设计、研发与运营分别维护各自文档，边界条件往往在执行中途才暴露。",
+            "proposed": f"在方案阶段就把约束写进结构化章节，按「{constraint_text}」提前锁定试点边界。",
+            "effect": "减少返工、口径不一致和责任不清的协同损耗。",
+        },
+        {
+            "label": "价值沉淀",
+            "traditional": "单次调研结论很难继续复用，经验沉淀容易停留在个人或项目群聊里。",
+            "proposed": "将访谈结论沉淀为提案式方案页，统一保存对比、路径、风险与价值论证。",
+            "effect": "首轮试点的成功经验可以更顺畅地复制到后续场景。",
+        },
+    ]
+
+
+def build_solution_architecture_nodes(
+    report_title: str,
+    scene: str,
+    pain_point: str,
+    entry_point: str,
+    tech_constraint: str,
+    project_constraint: str,
+    customer_items: list[dict],
+    process_items: list[dict],
+    tech_items: list[dict],
+    project_items: list[dict],
+    metrics: list[dict],
+) -> list[dict]:
+    customer_terms = dedupe_solution_texts([scene, pain_point] + [item.get("answer", "") for item in customer_items], max_items=4, max_len=22)
+    process_terms = dedupe_solution_texts([entry_point] + [item.get("answer", "") for item in process_items], max_items=4, max_len=22)
+    tech_terms = dedupe_solution_texts([tech_constraint] + [item.get("answer", "") for item in tech_items], max_items=3, max_len=22)
+    project_terms = dedupe_solution_texts([project_constraint] + [item.get("answer", "") for item in project_items], max_items=3, max_len=22)
+    metric_terms = dedupe_solution_texts([item.get("label", "") for item in metrics], max_items=3, max_len=18)
+
+    return [
+        {
+            "stage": "输入层",
+            "title": "访谈输入",
+            "summary": clean_solution_text(f"围绕「{scene or report_title}」组织样本、问题与原始回答，形成首轮输入池。", max_len=120),
+            "inputs": customer_terms[:3] or [compact_solution_term(scene or report_title, max_len=20)],
+            "outputs": dedupe_solution_texts(["原始回答", entry_point or "关键触点", "试点范围"], max_items=3, max_len=18),
+        },
+        {
+            "stage": "识别层",
+            "title": "问题诊断",
+            "summary": clean_solution_text(f"把「{pain_point or '核心问题'}」拆成问题树、优先级与成功指标，避免停留在表层反馈。", max_len=120),
+            "inputs": (customer_terms[:2] + process_terms[:1]) or [compact_solution_term(pain_point or "核心问题", max_len=20)],
+            "outputs": ["问题树", "优先级", "成功指标"],
+        },
+        {
+            "stage": "编排层",
+            "title": "方案编排",
+            "summary": clean_solution_text(f"将「{entry_point or '关键触点'}」相关问题映射成模块方案、协同动作与边界控制。", max_len=120),
+            "inputs": (process_terms[:2] + tech_terms[:1]) or [compact_solution_term(entry_point or "关键触点", max_len=20)],
+            "outputs": ["模块清单", "协作动作", "控制边界"],
+        },
+        {
+            "stage": "执行层",
+            "title": "试点推进",
+            "summary": clean_solution_text(f"在「{project_constraint or '交付边界'}」内，把方案转成原型、任务清单和试点节奏。", max_len=120),
+            "inputs": (project_terms[:2] + tech_terms[:1]) or [compact_solution_term(project_constraint or "交付边界", max_len=20)],
+            "outputs": ["试点原型", "任务清单", "评审口径"],
+        },
+        {
+            "stage": "回流层",
+            "title": "价值复盘",
+            "summary": clean_solution_text("通过指标回收与业务反馈复盘，决定是否进入二期扩展和规模化推广。", max_len=120),
+            "inputs": metric_terms or ["调研效率", "有效洞察率"],
+            "outputs": ["价值测算", "二期建议", "推广条件"],
+        },
+    ]
+
+
+def build_solution_dataflow_steps(
+    scene: str,
+    pain_point: str,
+    entry_point: str,
+    tech_constraint: str,
+    roadmap: list[dict],
+    metrics: list[dict],
+) -> list[dict]:
+    phase_goal = roadmap[1]["goal"] if len(roadmap) > 1 else "形成可试跑的方案与原型"
+    metric_names = "、".join(item["label"] for item in metrics[:2]) or "关键指标"
+    return [
+        {
+            "stage": "01",
+            "title": "锁定试点范围",
+            "detail": clean_solution_text(f"围绕「{scene or '当前场景'}」明确样本范围、触发时机和验收门槛。", max_len=120),
+            "owner": "产品 / 研究",
+        },
+        {
+            "stage": "02",
+            "title": "提炼问题树",
+            "detail": clean_solution_text(f"把「{pain_point or '核心问题'}」拆成一级问题、假设和优先级，统一评审口径。", max_len=120),
+            "owner": "研究 / 产品",
+        },
+        {
+            "stage": "03",
+            "title": "组装模块方案",
+            "detail": clean_solution_text(f"围绕「{entry_point or '关键触点'}」输出模块划分、原型方向和协作清单。", max_len=120),
+            "owner": "产品 / 设计",
+        },
+        {
+            "stage": "04",
+            "title": "搭建试点与验证",
+            "detail": clean_solution_text(f"{phase_goal}，并把「{tech_constraint or '技术约束'}」前置到采集、脱敏和埋点设计中。", max_len=120),
+            "owner": "设计 / 研发",
+        },
+        {
+            "stage": "05",
+            "title": "回收指标并扩展",
+            "detail": clean_solution_text(f"持续跟踪{metric_names}，基于业务反馈决定是否进入二期扩展。", max_len=120),
+            "owner": "运营 / 管理",
+        },
+    ]
+
+
+def build_solution_value_table(
+    scene_brief: str,
+    entry_brief: str,
+    constraint_brief: str,
+    metrics: list[dict],
+) -> list[dict]:
+    scene_text = scene_brief or "当前场景"
+    entry_text = entry_brief or "关键触点"
+    constraint_text = constraint_brief or "试点边界"
+    return [
+        {
+            "domain": scene_text,
+            "metric": metrics[0]["label"],
+            "baseline": "依赖人工整理纪要，访谈结论分散在多个文档里",
+            "target": metrics[0]["value"],
+            "effect": "缩短从访谈结束到进入评审的整理与对齐周期。",
+        },
+        {
+            "domain": scene_text,
+            "metric": metrics[1]["label"],
+            "baseline": "高价值问题识别依赖个人经验，方案动作难以统一",
+            "target": metrics[1]["value"],
+            "effect": "提升高价值洞察与落地动作之间的匹配度。",
+        },
+        {
+            "domain": entry_text,
+            "metric": "方案启动速度",
+            "baseline": "方案需要多轮串行沟通后才能进入试点",
+            "target": metrics[3]["value"],
+            "effect": "让关键触点在固定周期内形成可试跑方案与验收口径。",
+        },
+        {
+            "domain": entry_text,
+            "metric": "场景复盘速度",
+            "baseline": "项目结束后经验难以抽取，后续团队复用成本高",
+            "target": "2-3倍",
+            "effect": "把试点结论沉淀为可复用的提案结构和推进模板。",
+        },
+        {
+            "domain": constraint_text,
+            "metric": metrics[2]["label"],
+            "baseline": "风险往往在执行后期才暴露，返工成本高",
+            "target": metrics[2]["value"],
+            "effect": "将合规、脱敏和资源边界前置到方案评审阶段。",
+        },
+    ]
+
+
 def build_solution_payload_from_report(report_name: str, report_content: str) -> dict:
     normalized_content = normalize_report_time_fields(str(report_content or ""))
     report_text = strip_inline_evidence_markers(normalized_content)
@@ -18548,21 +18976,24 @@ def build_solution_payload_from_report(report_name: str, report_content: str) ->
         if "需求摘要" in title and not summary_section:
             summary_section = body
 
+    overview_facts = extract_solution_overview_facts(overview_section)
     requirement_groups = extract_solution_requirements(summary_section)
     customer_items = requirement_groups.get("客户需求", [])
     process_items = requirement_groups.get("业务流程", [])
     tech_items = requirement_groups.get("技术约束", [])
     project_items = requirement_groups.get("项目约束", [])
 
-    scene = get_solution_item_answer(customer_items, 1, fallback=get_solution_item_answer(process_items, 0, fallback=report_title))
-    pain_point = get_solution_item_answer(customer_items, 3, fallback=get_solution_item_answer(customer_items, 2, fallback="需要进一步明确核心痛点"))
-    entry_point = get_solution_item_answer(process_items, 1, fallback=get_solution_item_answer(customer_items, 5, fallback="关键业务触点"))
-    tech_constraint = get_solution_item_answer(tech_items, 0, fallback="技术与合规边界待进一步确认")
-    project_constraint = get_solution_item_answer(project_items, 0, fallback="交付边界与资源约束待进一步确认")
+    scene = overview_facts.get("访谈场景") or get_solution_item_answer(customer_items, 1, fallback=get_solution_item_answer(process_items, 0, fallback=report_title))
+    pain_point = overview_facts.get("核心问题") or get_solution_item_answer(customer_items, 3, fallback=get_solution_item_answer(customer_items, 2, fallback="需要进一步明确核心痛点"))
+    entry_point = overview_facts.get("关键触点") or get_solution_item_answer(process_items, 1, fallback=get_solution_item_answer(customer_items, 5, fallback="关键业务触点"))
+    tech_constraint = overview_facts.get("技术约束") or get_solution_item_answer(tech_items, 0, fallback="技术与合规边界待进一步确认")
+    project_constraint = overview_facts.get("项目约束") or get_solution_item_answer(project_items, 0, fallback="交付边界与资源约束待进一步确认")
+
     scene_brief = compact_solution_term(scene or report_title, max_len=18)
     pain_brief = compact_solution_term(pain_point or "核心问题", max_len=16)
     entry_brief = compact_solution_term(entry_point or "关键触点", max_len=14)
     constraint_brief = compact_solution_term(project_constraint or tech_constraint or "待明确", max_len=16)
+
     overview_meta = build_solution_overview_meta(
         overview_section,
         scene,
@@ -18580,8 +19011,48 @@ def build_solution_payload_from_report(report_name: str, report_content: str) ->
         project_constraint,
         overview_meta,
     )
-
     metrics = infer_solution_metrics(report_title, main_report_text)
+    focus_cards = build_solution_focus_cards(customer_items, process_items, scene, entry_point)
+    dimension_cards = build_solution_dimension_cards(requirement_groups)
+    roadmap = build_solution_roadmap(
+        report_title,
+        scene,
+        pain_point,
+        entry_point,
+        tech_constraint,
+        project_constraint,
+        process_items,
+        project_items,
+    )
+    value_cards = build_solution_value_cards(metrics, entry_point, scene, report_title)
+    risk_cards = build_solution_risk_cards(tech_items, project_items)
+    action_items = build_solution_action_items(scene, pain_point, entry_point, tech_constraint, project_constraint)
+    decision_summary = build_solution_decision_summary(scene_brief, pain_brief, entry_brief, constraint_brief)
+    decision_cards = build_solution_decision_cards(
+        pain_point,
+        entry_point,
+        tech_constraint,
+        project_constraint,
+        focus_cards,
+        roadmap,
+        metrics,
+    )
+    comparison_items = build_solution_comparison_items(scene, pain_point, entry_point, project_constraint)
+    architecture_nodes = build_solution_architecture_nodes(
+        report_title,
+        scene,
+        pain_point,
+        entry_point,
+        tech_constraint,
+        project_constraint,
+        customer_items,
+        process_items,
+        tech_items,
+        project_items,
+        metrics,
+    )
+    dataflow_steps = build_solution_dataflow_steps(scene, pain_point, entry_point, tech_constraint, roadmap, metrics)
+    value_table = build_solution_value_table(scene_brief, entry_brief, constraint_brief, metrics)
 
     headline_cards = [
         {"label": "业务场景", "value": scene_brief or "待明确", "detail": "当前最优先推进的访谈应用场景"},
@@ -18590,121 +19061,32 @@ def build_solution_payload_from_report(report_name: str, report_content: str) ->
         {"label": "落地约束", "value": constraint_brief or "待明确", "detail": "推进前必须先确认的交付边界"},
     ]
 
-    focus_cards = [
-        {
-            "title": "场景切口",
-            "summary": get_solution_item_answer(customer_items, 5, fallback=scene or "围绕高价值场景优先切入"),
-            "detail": get_solution_item_detail(customer_items, 5, fallback="把业务场景进一步收窄到可验证切口。"),
-        },
-        {
-            "title": "用户心理",
-            "summary": get_solution_item_answer(customer_items, 8, fallback=get_solution_item_answer(customer_items, 7, fallback="补齐用户心理与替代方案决策链路")),
-            "detail": get_solution_item_detail(customer_items, 8, fallback="优先还原用户在关键触点的决策与情绪机制。"),
-        },
-        {
-            "title": "流程触点",
-            "summary": get_solution_item_answer(process_items, 2, fallback=entry_point or "补齐触发节点与操作路径"),
-            "detail": get_solution_item_detail(process_items, 2, fallback="把触点、时机和交互阻塞点映射到方案动作。"),
-        },
-    ]
-
-    dimension_cards = []
-    for name in ["客户需求", "业务流程", "技术约束", "项目约束"]:
-        items = requirement_groups.get(name, [])
-        meta = SOLUTION_DIMENSION_META.get(name, {"badge": "业务板块", "summary": "结合访谈内容补齐该板块。"})
-        dimension_cards.append({
-            "name": name,
-            "badge": meta["badge"],
-            "summary": get_solution_item_answer(items, 0, fallback=meta["summary"]),
-            "points": [clean_solution_text(item["answer"], max_len=44) for item in items[:4]],
-        })
-
-    roadmap = [
-        {
-            "phase": "阶段一 · 场景对齐",
-            "timeline": "第1-2周",
-            "goal": f"围绕「{scene or report_title}」统一试点范围、问题树与成功指标。",
-            "tasks": [
-                f"把「{pain_point or '核心问题'}」拆成首轮方案目标与验证假设。",
-                f"明确「{scene or '业务场景'}」下的样本分层、样本量与回收标准。",
-                f"沉淀首版方案目录、指标口径与试点验收门槛。",
-            ],
-        },
-        {
-            "phase": "阶段二 · 方案设计",
-            "timeline": "第3-5周",
-            "goal": f"围绕「{entry_point or '关键触点'}」形成可试跑的业务流程与交互方案。",
-            "tasks": [
-                f"把「{get_solution_item_answer(process_items, 0, fallback='关键流程')}」映射为关键触点与交互节点。",
-                f"将「{tech_constraint or '技术约束'}」纳入采集、脱敏和性能设计边界。",
-                f"输出触点原型、访谈脚本和业务协同清单，小范围试跑验证。",
-            ],
-        },
-        {
-            "phase": "阶段三 · 试点验证",
-            "timeline": "第6-8周",
-            "goal": f"在「{project_constraint or '交付约束'}」下完成试点验证、收益复盘与迭代。",
-            "tasks": [
-                f"按「{get_solution_item_answer(project_items, 1, fallback='试点投放策略')}」安排样本触达与回收节奏。",
-                f"追踪调研效率、有效洞察率与业务反馈，校准方案优先级。",
-                f"形成二期扩展建议，确定正式推广范围与资源投入。",
-            ],
-        },
-    ]
-
-    value_cards = [
-        {"title": metrics[0]["label"], "value": metrics[0]["value"], "description": metrics[0]["note"]},
-        {"title": metrics[1]["label"], "value": metrics[1]["value"], "description": metrics[1]["note"]},
-        {
-            "title": "场景复盘速度",
-            "value": "2-3倍",
-            "description": f"针对「{entry_point or scene or report_title}」建立从触点到结论的闭环节奏。",
-        },
-        {
-            "title": metrics[2]["label"],
-            "value": metrics[2]["value"],
-            "description": metrics[2]["note"],
-        },
-    ]
-
-    risk_source_items = tech_items[:2] + project_items[:2]
-    risk_cards = []
-    for item in risk_source_items:
-        risk_cards.append({
-            "title": item["answer"],
-            "description": item["detail"] or "该约束会直接影响方案范围、样本质量或技术实现。",
-            "guardrail": infer_solution_risk_guardrail(item["answer"]),
-        })
-    if not risk_cards:
-        risk_cards.append({
-            "title": "样本与资源边界待确认",
-            "description": "建议先锁定试点范围、样本口径和验收标准。",
-            "guardrail": "先做小规模试点，再扩展正式落地范围。",
-        })
-
-    action_items = [
-        {"owner": "产品", "title": f"把「{pain_point or '核心问题'}」拆成一级目标", "detail": "输出方案目标、成功指标和验收口径。"},
-        {"owner": "研究", "title": f"围绕「{scene or '业务场景'}」补齐样本招募规则", "detail": "明确访谈对象、触发时机与样本筛选条件。"},
-        {"owner": "设计", "title": f"针对「{entry_point or '关键触点'}」制作单页原型", "detail": "把用户路径、关键文案和交互状态沉淀成可试跑原型。"},
-        {"owner": "研发", "title": f"落实「{tech_constraint or '技术约束'}」边界", "detail": "优先处理脱敏、性能和埋点实现边界。"},
-        {"owner": "运营", "title": f"按「{project_constraint or '项目约束'}」组织试点节奏", "detail": "制定触达方案、回收节奏与复盘机制。"},
-    ]
+    solution_title = clean_solution_text(
+        f"{scene_brief or compact_solution_term(report_title, max_len=18) or report_title}落地方案",
+        max_len=48,
+    )
+    subtitle = clean_solution_text(
+        f"围绕「{scene_brief or report_title}」场景，基于访谈报告提炼首轮试点切口、执行链路与价值论证。",
+        max_len=88,
+    )
 
     return {
         "report_name": report_name,
-        "title": report_title,
-        "subtitle": f"围绕「{scene_brief or report_title}」场景，从「{entry_brief or '关键触点'}」切入首轮试点与实施路径。",
+        "title": solution_title,
+        "subtitle": subtitle,
         "overview": overview_text,
         "overview_meta": overview_meta,
         "metrics": metrics,
         "nav_items": [
-            {"id": "overview", "label": "方案概览"},
-            {"id": "focus", "label": "重点洞察"},
-            {"id": "modules", "label": "业务板块"},
+            {"id": "decision", "label": "方案判断"},
+            {"id": "comparison", "label": "方案对比"},
+            {"id": "modules", "label": "落地模块"},
+            {"id": "architecture", "label": "能力架构"},
+            {"id": "dataflow", "label": "闭环机制"},
+            {"id": "value", "label": "价值测算"},
             {"id": "roadmap", "label": "实施路径"},
-            {"id": "value", "label": "预期价值"},
-            {"id": "risks", "label": "风险依赖"},
-            {"id": "actions", "label": "下一步动作"},
+            {"id": "risks", "label": "风险边界"},
+            {"id": "actions", "label": "下一步推进"},
         ],
         "headline_cards": headline_cards,
         "focus_cards": focus_cards,
@@ -18713,6 +19095,12 @@ def build_solution_payload_from_report(report_name: str, report_content: str) ->
         "value_cards": value_cards,
         "risk_cards": risk_cards,
         "action_items": action_items,
+        "decision_summary": decision_summary,
+        "decision_cards": decision_cards,
+        "comparison_items": comparison_items,
+        "architecture_nodes": architecture_nodes,
+        "dataflow_steps": dataflow_steps,
+        "value_table": value_table,
     }
 
 

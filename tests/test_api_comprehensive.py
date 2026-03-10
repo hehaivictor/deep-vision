@@ -925,7 +925,21 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertIsInstance(solution_payload.get("metrics"), list)
         self.assertGreaterEqual(len(solution_payload.get("metrics", [])), 3)
         self.assertIsInstance(solution_payload.get("nav_items"), list)
-        self.assertGreaterEqual(len(solution_payload.get("nav_items", [])), 5)
+        self.assertEqual(
+            [item.get("id") for item in solution_payload.get("nav_items", [])],
+            ["decision", "comparison", "modules", "architecture", "dataflow", "value", "roadmap", "risks", "actions"],
+        )
+        self.assertTrue(solution_payload.get("decision_summary"))
+        self.assertIsInstance(solution_payload.get("decision_cards"), list)
+        self.assertGreaterEqual(len(solution_payload.get("decision_cards", [])), 3)
+        self.assertIsInstance(solution_payload.get("comparison_items"), list)
+        self.assertGreaterEqual(len(solution_payload.get("comparison_items", [])), 3)
+        self.assertIsInstance(solution_payload.get("architecture_nodes"), list)
+        self.assertGreaterEqual(len(solution_payload.get("architecture_nodes", [])), 4)
+        self.assertIsInstance(solution_payload.get("dataflow_steps"), list)
+        self.assertGreaterEqual(len(solution_payload.get("dataflow_steps", [])), 4)
+        self.assertIsInstance(solution_payload.get("value_table"), list)
+        self.assertGreaterEqual(len(solution_payload.get("value_table", [])), 4)
         self.assertIsInstance(solution_payload.get("dimension_cards"), list)
         self.assertGreaterEqual(len(solution_payload.get("dimension_cards", [])), 1)
         self.assertIsInstance(solution_payload.get("roadmap"), list)

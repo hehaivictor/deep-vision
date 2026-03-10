@@ -207,12 +207,69 @@ class SecurityRegressionTests(unittest.TestCase):
         owner_payload = owner_resp.get_json() or {}
         self.assertEqual(owner_payload.get('report_name'), report_name)
         self.assertTrue(owner_payload.get('metrics'))
-        self.assertTrue(owner_payload.get('nav_items'))
+        self.assertEqual(
+            [item.get('id') for item in owner_payload.get('nav_items', [])],
+            ['decision', 'comparison', 'modules', 'architecture', 'dataflow', 'value', 'roadmap', 'risks', 'actions'],
+        )
+        self.assertTrue(owner_payload.get('decision_summary'))
+        self.assertTrue(owner_payload.get('decision_cards'))
+        self.assertTrue(owner_payload.get('comparison_items'))
+        self.assertTrue(owner_payload.get('architecture_nodes'))
+        self.assertTrue(owner_payload.get('dataflow_steps'))
+        self.assertTrue(owner_payload.get('value_table'))
 
         other_client = self.server.app.test_client()
         self._register_user(client=other_client)
         forbidden_resp = other_client.get(f'/api/reports/{report_name}/solution')
         self.assertEqual(forbidden_resp.status_code, 404)
+
+    def test_build_solution_payload_strips_html_from_new_fields(self):
+        report_content = (
+            '# DeepVision 访谈报告\n\n'
+            '## 1. 访谈概述\n'
+            '- **访谈场景** - 微信客服 <script>alert(1)</script> 接待\n'
+            '- **核心问题** - <div>高意向客户识别慢</div>\n'
+            '- **关键触点** - 首轮咨询分流\n\n'
+            '## 2. 需求摘要\n'
+            '### 客户需求\n'
+            '- **尽快识别高意向线索<script>alert(2)</script>** - <b>减少人工二次筛选</b>\n'
+            '### 业务流程\n'
+            '- **首轮咨询分流** - 在转人工前完成标签归类与优先级判断。\n'
+            '### 技术约束\n'
+            '- **对话内容需要脱敏** - <span>禁止原文外流</span>\n'
+            '### 项目约束\n'
+            '- **四周内完成试点** - 先覆盖一个业务线。\n'
+        )
+        payload = self.server.build_solution_payload_from_report('solution-sanitize.md', report_content)
+
+        def iter_strings(value):
+            if isinstance(value, str):
+                yield value
+            elif isinstance(value, dict):
+                for item in value.values():
+                    yield from iter_strings(item)
+            elif isinstance(value, list):
+                for item in value:
+                    yield from iter_strings(item)
+
+        text_values = list(iter_strings({
+            'title': payload.get('title'),
+            'subtitle': payload.get('subtitle'),
+            'overview': payload.get('overview'),
+            'decision_summary': payload.get('decision_summary'),
+            'decision_cards': payload.get('decision_cards'),
+            'comparison_items': payload.get('comparison_items'),
+            'architecture_nodes': payload.get('architecture_nodes'),
+            'dataflow_steps': payload.get('dataflow_steps'),
+            'value_table': payload.get('value_table'),
+        }))
+        self.assertTrue(text_values)
+        for value in text_values:
+            lowered = value.lower()
+            self.assertNotIn('<script', lowered)
+            self.assertNotIn('</script', lowered)
+            self.assertNotIn('<div', lowered)
+            self.assertNotIn('javascript:', lowered)
 
     def test_model_routing_aligns_with_reused_report_gateway(self):
         keys = [

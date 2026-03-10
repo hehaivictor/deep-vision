@@ -7,7 +7,7 @@
     <link rel="shortcut icon" href="favicon.svg">
     <title>DeepVision 查看方案</title>
     <link rel="stylesheet" href="vendor/css/fonts.css">
-    <link rel="stylesheet" href="solution.css?v=20260310-solution-v7">
+    <link rel="stylesheet" href="solution.css?v=20260310-solution-v8">
 </head>
 <body>
     <div class="solution-page">
@@ -25,21 +25,21 @@
                     </div>
                 </div>
 
-                <section class="solution-hero" id="hero">
+                <section class="solution-hero solution-reveal" id="hero">
                     <div class="solution-hero-copy">
                         <div class="solution-hero-copy-top">
-                            <div class="solution-eyebrow">查看方案</div>
+                            <div class="solution-eyebrow">企业落地提案</div>
                         </div>
                         <h1 class="solution-title" id="solution-title"></h1>
                         <p class="solution-subtitle" id="solution-subtitle"></p>
-                        <article class="solution-hero-abstract" id="solution-hero-abstract-card">
+                        <article class="solution-hero-abstract solution-glass-card" id="solution-hero-abstract-card">
                             <div class="solution-hero-abstract-label">方案摘要</div>
                             <p class="solution-hero-abstract-text" id="solution-hero-abstract"></p>
                         </article>
                         <div class="solution-hero-signal-strip" id="solution-hero-signals"></div>
                     </div>
                     <div class="solution-hero-panel">
-                        <div class="solution-hero-console">
+                        <div class="solution-hero-console solution-glass-card">
                             <div class="solution-hero-console-head">
                                 <div>
                                     <div class="solution-hero-console-kicker">执行看板</div>
@@ -53,72 +53,105 @@
                     </div>
                 </section>
 
-                <section class="solution-section" id="overview" data-solution-section>
+                <section class="solution-section solution-reveal" id="decision" data-solution-section>
                     <div class="solution-section-head">
-                        <span class="solution-section-kicker">概览</span>
-                        <h2>方案概览</h2>
+                        <span class="solution-section-kicker">判断</span>
+                        <h2>方案判断</h2>
+                        <p>先给出建议，再说明这份方案为什么值得现在推进。</p>
                     </div>
-                    <div class="solution-overview-card">
-                        <div class="solution-overview-layout">
-                            <div class="solution-overview-copy">
-                                <p id="solution-overview-text"></p>
-                            </div>
-                            <div class="solution-overview-meta" id="solution-overview-meta"></div>
-                        </div>
+                    <div class="solution-decision-layout">
+                        <article class="solution-quote-block solution-glass-card" id="solution-decision-summary-card">
+                            <div class="solution-quote-kicker">决策结论</div>
+                            <h3 class="solution-quote-title" id="solution-decision-summary"></h3>
+                            <p class="solution-quote-copy" id="solution-overview-text"></p>
+                        </article>
+                        <div class="solution-overview-meta" id="solution-overview-meta"></div>
                     </div>
-                    <div class="solution-metric-grid" id="solution-metrics"></div>
+                    <div class="solution-card-grid solution-card-grid-3" id="solution-decision-cards"></div>
                 </section>
 
-                <section class="solution-section" id="focus" data-solution-section>
+                <section class="solution-section solution-reveal" id="comparison" data-solution-section>
                     <div class="solution-section-head">
-                        <span class="solution-section-kicker">重点</span>
-                        <h2>重点洞察</h2>
+                        <span class="solution-section-kicker">对比</span>
+                        <h2>方案对比</h2>
+                        <p>把传统推进方式与基于访谈报告的落地方案放在同一张桌面上比较。</p>
                     </div>
-                    <div class="solution-card-grid solution-card-grid-3" id="solution-focus-cards"></div>
+                    <div class="solution-compare-list" id="solution-comparison-grid"></div>
                 </section>
 
-                <section class="solution-section" id="modules" data-solution-section>
+                <section class="solution-section solution-reveal" id="modules" data-solution-section>
                     <div class="solution-section-head">
-                        <span class="solution-section-kicker">板块</span>
-                        <h2>业务板块</h2>
+                        <span class="solution-section-kicker">模块</span>
+                        <h2>落地模块</h2>
+                        <p>将访谈结论拆成可协作、可交付、可复用的业务模块。</p>
                     </div>
                     <div class="solution-card-grid solution-card-grid-2" id="solution-dimension-cards"></div>
                 </section>
 
-                <section class="solution-section" id="roadmap" data-solution-section>
+                <section class="solution-section solution-reveal" id="architecture" data-solution-section>
+                    <div class="solution-section-head">
+                        <span class="solution-section-kicker">架构</span>
+                        <h2>能力架构</h2>
+                        <p>说明访谈输入、问题识别、方案映射、试点执行和价值回流如何形成同一套能力体系。</p>
+                    </div>
+                    <div class="solution-architecture-grid" id="solution-architecture-map"></div>
+                </section>
+
+                <section class="solution-section solution-reveal" id="dataflow" data-solution-section>
+                    <div class="solution-section-head">
+                        <span class="solution-section-kicker">闭环</span>
+                        <h2>闭环机制</h2>
+                        <p>让方案不是一次性汇报，而是能进入试点、回收结果、持续迭代的执行闭环。</p>
+                    </div>
+                    <div class="solution-dataflow-list" id="solution-dataflow-steps"></div>
+                </section>
+
+                <section class="solution-section solution-reveal" id="value" data-solution-section>
+                    <div class="solution-section-head">
+                        <span class="solution-section-kicker">价值</span>
+                        <h2>价值测算</h2>
+                        <p>先看总览指标，再看可以对外提报或内部评审的价值明细。</p>
+                    </div>
+                    <div class="solution-metric-grid" id="solution-metrics"></div>
+                    <div class="solution-card-grid solution-card-grid-2" id="solution-value-cards"></div>
+                    <article class="solution-expandable-panel solution-glass-card" id="solution-value-detail-panel" hidden>
+                        <button type="button" class="solution-expandable-toggle" id="solution-value-detail-toggle">
+                            <span>详细价值测算</span>
+                            <span class="solution-expandable-toggle-text" id="solution-value-detail-toggle-text">展开查看</span>
+                        </button>
+                        <div class="solution-expandable-content" id="solution-value-detail"></div>
+                    </article>
+                </section>
+
+                <section class="solution-section solution-reveal" id="roadmap" data-solution-section>
                     <div class="solution-section-head">
                         <span class="solution-section-kicker">路径</span>
                         <h2>实施路径</h2>
+                        <p>围绕场景对齐、方案设计、试点验证三阶段推进，逐步扩大组织认知和业务确定性。</p>
                     </div>
                     <div class="solution-roadmap" id="solution-roadmap"></div>
                 </section>
 
-                <section class="solution-section" id="value" data-solution-section>
+                <section class="solution-section solution-reveal" id="risks" data-solution-section>
                     <div class="solution-section-head">
-                        <span class="solution-section-kicker">价值</span>
-                        <h2>预期价值</h2>
-                    </div>
-                    <div class="solution-card-grid solution-card-grid-2" id="solution-value-cards"></div>
-                </section>
-
-                <section class="solution-section" id="risks" data-solution-section>
-                    <div class="solution-section-head">
-                        <span class="solution-section-kicker">风险</span>
-                        <h2>风险依赖</h2>
+                        <span class="solution-section-kicker">边界</span>
+                        <h2>风险边界</h2>
+                        <p>把真正会影响试点推进的边界条件提前讲清楚，避免中途返工。</p>
                     </div>
                     <div class="solution-card-grid solution-card-grid-2" id="solution-risk-cards"></div>
                 </section>
 
-                <section class="solution-section" id="actions" data-solution-section>
+                <section class="solution-section solution-reveal" id="actions" data-solution-section>
                     <div class="solution-section-head">
-                        <span class="solution-section-kicker">动作</span>
-                        <h2>下一步动作</h2>
+                        <span class="solution-section-kicker">推进</span>
+                        <h2>下一步推进</h2>
+                        <p>将方案分配给产品、研究、设计、研发与运营，形成真正可以启动的动作清单。</p>
                     </div>
                     <div class="solution-action-list" id="solution-actions"></div>
                 </section>
             </div>
         </main>
     </div>
-    <script src="solution.js?v=20260310-solution-v7"></script>
+    <script src="solution.js?v=20260310-solution-v8"></script>
 </body>
 </html>
