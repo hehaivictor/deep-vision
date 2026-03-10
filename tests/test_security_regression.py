@@ -1377,6 +1377,70 @@ class SecurityRegressionTests(unittest.TestCase):
             for key, value in backup.items():
                 setattr(self.server, key, value)
 
+    def test_call_claude_return_meta_marks_empty_text_response(self):
+        class _DummyMessages:
+            def create(self, **kwargs):
+                return types.SimpleNamespace(content=[{"type": "text", "text": "   "}])
+
+        class _DummyClient:
+            def __init__(self):
+                self.messages = _DummyMessages()
+
+        keys = [
+            "question_ai_client",
+            "report_ai_client",
+            "summary_ai_client",
+            "search_decision_ai_client",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+
+        try:
+            self.server.question_ai_client = _DummyClient()
+            self.server.report_ai_client = None
+            self.server.summary_ai_client = None
+            self.server.search_decision_ai_client = None
+
+            result, meta = self.server.call_claude(
+                "请生成问题",
+                max_tokens=64,
+                call_type="question_fast",
+                preferred_lane="question",
+                timeout=12.0,
+                return_meta=True,
+            )
+
+            self.assertIsNone(result)
+            self.assertEqual(meta.get("selected_lane"), "question")
+            self.assertEqual(meta.get("failure_reason"), "empty_text")
+            self.assertFalse(meta.get("success"))
+            self.assertEqual(meta.get("timeout_seconds"), 12.0)
+            self.assertEqual(meta.get("max_tokens"), 64)
+        finally:
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+
+    def test_format_question_tier_attempts_for_log_uses_detailed_reason_labels(self):
+        detail = self.server._format_question_tier_attempts_for_log({
+            "attempts": [
+                {
+                    "lane": "question",
+                    "failure_reason": "timeout",
+                    "timeout_occurred": True,
+                    "timeout_seconds": 12.0,
+                    "queue_wait_ms": 523.4,
+                },
+                {
+                    "lane": "summary",
+                    "failure_reason": "empty_text",
+                },
+            ]
+        })
+
+        self.assertIn("question:超时", detail)
+        self.assertIn("timeout>12s", detail)
+        self.assertIn("queue=523ms", detail)
+        self.assertIn("summary:空文本", detail)
+
     def test_ensure_flowchart_semantic_styles_adds_multicolor_classdefs(self):
         raw = (
             "flowchart TD\n"

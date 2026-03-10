@@ -490,18 +490,18 @@ FIRST_QUESTION_PREFETCH_PRIORITY_WINDOW_SECONDS = _cfg_float("FIRST_QUESTION_PRE
 if FIRST_QUESTION_PREFETCH_PRIORITY_WINDOW_SECONDS < 10.0:
     FIRST_QUESTION_PREFETCH_PRIORITY_WINDOW_SECONDS = 10.0
 QUESTION_FAST_PATH_ENABLED = _cfg_bool("QUESTION_FAST_PATH_ENABLED", True)
-QUESTION_FAST_TIMEOUT = _cfg_float("QUESTION_FAST_TIMEOUT", 20.0)
+QUESTION_FAST_TIMEOUT = _cfg_float("QUESTION_FAST_TIMEOUT", 12.0)
 if QUESTION_FAST_TIMEOUT < 5.0:
     QUESTION_FAST_TIMEOUT = 5.0
-QUESTION_FAST_MAX_TOKENS = _cfg_int("QUESTION_FAST_MAX_TOKENS", 1400)
+QUESTION_FAST_MAX_TOKENS = _cfg_int("QUESTION_FAST_MAX_TOKENS", 1000)
 QUESTION_FAST_MAX_TOKENS = max(600, min(QUESTION_FAST_MAX_TOKENS, MAX_TOKENS_QUESTION))
 QUESTION_HEDGED_ENABLED = _cfg_bool("QUESTION_HEDGED_ENABLED", True)
-QUESTION_HEDGED_DELAY_SECONDS = _cfg_float("QUESTION_HEDGED_DELAY_SECONDS", 8.0)
+QUESTION_HEDGED_DELAY_SECONDS = _cfg_float("QUESTION_HEDGED_DELAY_SECONDS", 4.0)
 if QUESTION_HEDGED_DELAY_SECONDS < 0.5:
     QUESTION_HEDGED_DELAY_SECONDS = 0.5
-QUESTION_HEDGED_SECONDARY_LANE = _cfg_text("QUESTION_HEDGED_SECONDARY_LANE", "report").strip().lower()
+QUESTION_HEDGED_SECONDARY_LANE = _cfg_text("QUESTION_HEDGED_SECONDARY_LANE", "summary").strip().lower()
 if QUESTION_HEDGED_SECONDARY_LANE not in {"report", "summary", "search_decision"}:
-    QUESTION_HEDGED_SECONDARY_LANE = "report"
+    QUESTION_HEDGED_SECONDARY_LANE = "summary"
 QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT = _cfg_bool("QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT", True)
 QUESTION_RESULT_CACHE_TTL_SECONDS = _cfg_int("QUESTION_RESULT_CACHE_TTL_SECONDS", 120)
 if QUESTION_RESULT_CACHE_TTL_SECONDS < 0:
@@ -13312,11 +13312,38 @@ def describe_image_with_vision(image_path: Path, filename: str) -> str:
         return f"[图片: {filename}] (处理失败: {str(e)[:100]})"
 
 
-def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = True,
-                call_type: str = "unknown", truncated_docs: list = None,
-                timeout: float = None, model_name: str = "", preferred_lane: str = "",
-                hedge_triggered: bool = False, cache_hit: bool = False) -> Optional[str]:
-    """同步调用 Claude API，带超时控制和容错机制"""
+def _build_ai_call_meta(selected_lane: str, effective_model: str, effective_timeout: float, max_tokens: int) -> dict:
+    """构造统一的 AI 调用元信息，便于上层记录更细粒度失败原因。"""
+    try:
+        normalized_timeout = float(effective_timeout)
+    except Exception:
+        normalized_timeout = float(API_TIMEOUT)
+    try:
+        normalized_max_tokens = int(max_tokens)
+    except Exception:
+        normalized_max_tokens = int(MAX_TOKENS_DEFAULT)
+
+    return {
+        "success": False,
+        "selected_lane": str(selected_lane or ""),
+        "model": str(effective_model or ""),
+        "timeout_seconds": normalized_timeout,
+        "max_tokens": normalized_max_tokens,
+        "queue_wait_ms": 0.0,
+        "timeout_occurred": False,
+        "failure_reason": "",
+        "error_kind": "",
+        "error_message": "",
+        "response_length": 0,
+        "empty_text": False,
+    }
+
+
+def _call_claude_internal(prompt: str, max_tokens: int = None, retry_on_timeout: bool = True,
+                         call_type: str = "unknown", truncated_docs: list = None,
+                         timeout: float = None, model_name: str = "", preferred_lane: str = "",
+                         hedge_triggered: bool = False, cache_hit: bool = False) -> tuple[Optional[str], dict]:
+    """同步调用 AI 网关，返回文本与执行元信息。"""
     import time
 
     effective_client, selected_lane, lane_meta = resolve_ai_client_with_lane(
@@ -13324,8 +13351,6 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
         model_name=model_name,
         preferred_lane=preferred_lane,
     )
-    if not effective_client:
-        return None
 
     if max_tokens is None:
         max_tokens = MAX_TOKENS_DEFAULT
@@ -13336,8 +13361,14 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
         model_name=model_name,
         selected_lane=selected_lane,
     )
-    generation_stage = resolve_generation_stage(call_type=call_type)
+    call_meta = _build_ai_call_meta(selected_lane, effective_model, effective_timeout, max_tokens)
+    if not effective_client:
+        call_meta["failure_reason"] = "no_client"
+        call_meta["error_kind"] = "no_client"
+        call_meta["error_message"] = "未找到可用 AI 客户端"
+        return None, call_meta
 
+    generation_stage = resolve_generation_stage(call_type=call_type)
     start_time = time.time()
     success = False
     timeout_occurred = False
@@ -13362,7 +13393,6 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
                 else:
                     print(f"ℹ️ 熔断切换：跳过冷却 lane={','.join(skipped_open_lanes)}")
 
-        # 使用配置的超时时间
         with ai_call_priority_slot(call_type) as priority_meta:
             if isinstance(priority_meta, dict):
                 try:
@@ -13378,6 +13408,7 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
 
         response_text = extract_message_text(message)
         if not response_text:
+            call_meta["empty_text"] = True
             raise ValueError("模型响应中未包含可用文本内容")
         success = True
         record_gateway_lane_success(selected_lane)
@@ -13390,6 +13421,28 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
         error_message = summarize_error_for_log(raw_error_message, limit=320)
         print(f"❌ Claude API 调用失败: {error_message}")
         error_kind = classify_gateway_failure_kind(raw_error_message)
+        lower_error = raw_error_message.lower()
+        call_type_lower = str(call_type or "").lower()
+        is_report_call = call_type_lower.startswith("report")
+
+        if raw_error_message == "模型响应中未包含可用文本内容":
+            call_meta["empty_text"] = True
+            call_meta["failure_reason"] = "empty_text"
+            if error_kind in {"", "unknown"}:
+                error_kind = "empty_text"
+        elif "timeout" in lower_error:
+            timeout_occurred = True
+            call_meta["failure_reason"] = "timeout"
+        elif "rate" in lower_error:
+            call_meta["failure_reason"] = "rate_limited"
+        elif "authentication" in lower_error or "api key" in lower_error:
+            call_meta["failure_reason"] = "auth_error"
+        else:
+            call_meta["failure_reason"] = "gateway_error"
+
+        call_meta["error_kind"] = str(error_kind or "")
+        call_meta["error_message"] = str(error_message or "")
+
         circuit_meta = record_gateway_lane_failure(selected_lane, error_kind)
         if circuit_meta.get("circuit_opened"):
             cooldown_seconds = int(round(float(circuit_meta.get("cooldown_remaining_seconds", 0.0) or 0.0)))
@@ -13399,23 +13452,16 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
                 f"error={error_kind}, cooldown={cooldown_seconds}s"
             )
 
-        # 详细的错误分类和容错处理
-        lower_error = raw_error_message.lower()
-        call_type_lower = str(call_type or "").lower()
-        is_report_call = call_type_lower.startswith("report")
         if "timeout" in lower_error:
             timeout_occurred = True
             print(f"   原因: API 调用超时（超过{effective_timeout}秒）")
 
-            # 超时容错：报告链路由上层统一重试/切换，避免在底层递归重试导致总耗时暴涨。
             should_retry_with_shrink = retry_on_timeout and len(prompt) > 5000 and not is_report_call
             if should_retry_with_shrink:
                 print(f"   🔄 尝试容错重试：截断 prompt 后重试...")
-                # 截断 prompt 到原来的 70%
                 truncated_prompt = prompt[:int(len(prompt) * 0.7)]
                 truncated_prompt += "\n\n[注意：由于内容过长，部分上下文已被截断，请基于已有信息进行回答]"
 
-                # 报告生成更容易触发长响应超时，重试时同步收敛输出长度并放宽超时
                 retry_max_tokens = max_tokens
                 retry_timeout = effective_timeout
                 if is_report_call:
@@ -13424,7 +13470,6 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
                 else:
                     retry_max_tokens = max(1000, int(max_tokens * 0.8))
 
-                # 递归重试（禁止再次重试）
                 response_text = call_claude(
                     truncated_prompt, retry_max_tokens,
                     retry_on_timeout=False,
@@ -13440,13 +13485,25 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
                 if response_text:
                     success = True
 
+        elif raw_error_message == "模型响应中未包含可用文本内容":
+            print("   原因: 模型返回空文本，或仅返回了非 text 内容块")
         elif "rate" in lower_error:
             print(f"   原因: API 请求频率限制")
         elif "authentication" in lower_error or "api key" in lower_error:
             print(f"   原因: API Key 认证失败")
 
     finally:
-        # 记录指标
+        call_meta["success"] = bool(success and response_text)
+        call_meta["timeout_occurred"] = bool(timeout_occurred)
+        call_meta["queue_wait_ms"] = round(queue_wait_ms, 2)
+        if response_text:
+            call_meta["response_length"] = len(response_text)
+        if call_meta["success"]:
+            call_meta["failure_reason"] = ""
+            call_meta["error_kind"] = ""
+            call_meta["error_message"] = ""
+            call_meta["empty_text"] = False
+
         response_time = time.time() - start_time
         metrics_collector.record_api_call(
             call_type=call_type,
@@ -13465,6 +13522,29 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
             stage=generation_stage,
         )
 
+    return (response_text or None), call_meta
+
+
+def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = True,
+                call_type: str = "unknown", truncated_docs: list = None,
+                timeout: float = None, model_name: str = "", preferred_lane: str = "",
+                hedge_triggered: bool = False, cache_hit: bool = False,
+                return_meta: bool = False):
+    """同步调用 Claude 兼容 API，按需返回文本或文本+元信息。"""
+    response_text, call_meta = _call_claude_internal(
+        prompt,
+        max_tokens=max_tokens,
+        retry_on_timeout=retry_on_timeout,
+        call_type=call_type,
+        truncated_docs=truncated_docs,
+        timeout=timeout,
+        model_name=model_name,
+        preferred_lane=preferred_lane,
+        hedge_triggered=hedge_triggered,
+        cache_hit=cache_hit,
+    )
+    if return_meta:
+        return response_text, call_meta
     return response_text
 
 
@@ -15090,6 +15170,120 @@ def parse_question_response(response: str, debug: bool = False) -> Optional[dict
     return None
 
 
+def _normalize_question_call_result(raw_result, lane: str, max_tokens: int, timeout: Optional[float]) -> tuple[Optional[str], dict]:
+    """兼容 call_claude 返回文本或 (文本, meta) 两种形态。"""
+    response_text = None
+    call_meta = {}
+    if isinstance(raw_result, tuple) and len(raw_result) == 2 and isinstance(raw_result[1], dict):
+        response_text, call_meta = raw_result
+    else:
+        response_text = raw_result
+
+    if response_text is not None and not isinstance(response_text, str):
+        response_text = str(response_text)
+    response_text = (response_text or "").strip() or None
+
+    normalized_meta = dict(call_meta or {})
+    normalized_meta.setdefault("selected_lane", str(lane or ""))
+    normalized_meta.setdefault("model", "")
+    normalized_meta.setdefault("timeout_seconds", float(timeout if timeout is not None else API_TIMEOUT))
+    normalized_meta.setdefault("max_tokens", int(max_tokens))
+    normalized_meta.setdefault("queue_wait_ms", 0.0)
+    normalized_meta.setdefault("timeout_occurred", False)
+    normalized_meta.setdefault("failure_reason", "" if response_text else "unknown")
+    normalized_meta.setdefault("error_kind", "")
+    normalized_meta.setdefault("error_message", "")
+    normalized_meta.setdefault("response_length", len(response_text or ""))
+    normalized_meta.setdefault("empty_text", False)
+    normalized_meta["success"] = bool(response_text)
+    if response_text:
+        normalized_meta["response_length"] = len(response_text)
+        normalized_meta["failure_reason"] = ""
+    return response_text, normalized_meta
+
+
+def _build_question_attempt_summary(lane: str, response_text: Optional[str], call_meta: Optional[dict]) -> dict:
+    normalized_meta = dict(call_meta or {})
+    failure_reason = str(normalized_meta.get("failure_reason", "") or "")
+    success = bool(response_text)
+    if success and not failure_reason:
+        failure_reason = "ok"
+    elif not failure_reason:
+        failure_reason = "unknown"
+
+    try:
+        queue_wait_ms = round(float(normalized_meta.get("queue_wait_ms", 0.0) or 0.0), 2)
+    except Exception:
+        queue_wait_ms = 0.0
+    try:
+        timeout_seconds = float(normalized_meta.get("timeout_seconds", API_TIMEOUT) or API_TIMEOUT)
+    except Exception:
+        timeout_seconds = float(API_TIMEOUT)
+    try:
+        max_tokens_value = int(normalized_meta.get("max_tokens", 0) or 0)
+    except Exception:
+        max_tokens_value = 0
+
+    response_length = int(normalized_meta.get("response_length", len(response_text or "")) or 0)
+    return {
+        "lane": str(lane or normalized_meta.get("selected_lane", "") or "unknown"),
+        "success": success,
+        "failure_reason": failure_reason,
+        "timeout_occurred": bool(normalized_meta.get("timeout_occurred", False)),
+        "error_kind": str(normalized_meta.get("error_kind", "") or ""),
+        "error_message": str(normalized_meta.get("error_message", "") or ""),
+        "queue_wait_ms": queue_wait_ms,
+        "timeout_seconds": timeout_seconds,
+        "max_tokens": max_tokens_value,
+        "response_length": response_length,
+    }
+
+
+def _question_failure_reason_label(reason: str) -> str:
+    mapping = {
+        "ok": "成功",
+        "timeout": "超时",
+        "empty_text": "空文本",
+        "parse_failed": "解析失败",
+        "gateway_error": "网关异常",
+        "rate_limited": "限流",
+        "auth_error": "鉴权失败",
+        "no_client": "无可用客户端",
+        "no_result": "未产出结果",
+        "unknown": "未知",
+    }
+    return mapping.get(str(reason or "").strip(), str(reason or "未知").strip() or "未知")
+
+
+def _format_question_tier_attempts_for_log(call_meta: Optional[dict]) -> str:
+    attempts = list(call_meta.get("attempts", []) or []) if isinstance(call_meta, dict) else []
+    if not attempts:
+        return "未知"
+
+    segments = []
+    for attempt in attempts:
+        if not isinstance(attempt, dict):
+            continue
+        lane = str(attempt.get("lane", "unknown") or "unknown")
+        reason = _question_failure_reason_label(attempt.get("failure_reason", "unknown"))
+        extras = []
+        if bool(attempt.get("timeout_occurred", False)):
+            timeout_seconds = float(attempt.get("timeout_seconds", API_TIMEOUT) or API_TIMEOUT)
+            extras.append(f"timeout>{timeout_seconds:g}s")
+        queue_wait_ms = float(attempt.get("queue_wait_ms", 0.0) or 0.0)
+        if queue_wait_ms >= 1.0:
+            extras.append(f"queue={queue_wait_ms:.0f}ms")
+        response_length = int(attempt.get("response_length", 0) or 0)
+        if response_length > 0:
+            extras.append(f"len={response_length}")
+        error_kind = str(attempt.get("error_kind", "") or "")
+        if error_kind and attempt.get("failure_reason") not in {"timeout", "empty_text", "ok"}:
+            extras.append(f"kind={error_kind}")
+        detail_suffix = f" ({', '.join(extras)})" if extras else ""
+        segments.append(f"{lane}:{reason}{detail_suffix}")
+    return "；".join(segments) if segments else "未知"
+
+
 def _call_question_with_optional_hedge(
     prompt: str,
     max_tokens: int,
@@ -15098,13 +15292,13 @@ def _call_question_with_optional_hedge(
     timeout: Optional[float] = None,
     retry_on_timeout: bool = False,
     debug: bool = False,
-) -> tuple[Optional[str], str]:
+) -> tuple[Optional[str], str, dict]:
     """问题生成可选竞速：主通道先发，延迟触发备用通道，谁先返回可用结果用谁。"""
     primary_lane = "question"
     secondary_lane = QUESTION_HEDGED_SECONDARY_LANE
 
-    def _run_single(lane: str, lane_call_type: str, hedge_flag: bool = False) -> Optional[str]:
-        return call_claude(
+    def _run_single(lane: str, lane_call_type: str, hedge_flag: bool = False) -> tuple[Optional[str], dict]:
+        raw_result = call_claude(
             prompt,
             max_tokens=max_tokens,
             retry_on_timeout=retry_on_timeout,
@@ -15113,25 +15307,60 @@ def _call_question_with_optional_hedge(
             timeout=timeout,
             preferred_lane=lane,
             hedge_triggered=hedge_flag,
+            return_meta=True,
         )
+        return _normalize_question_call_result(raw_result, lane=lane, max_tokens=max_tokens, timeout=timeout)
+
+    def _build_attempts_summary(responses: list[tuple[str, Optional[str], dict]], started_lanes: list[str]) -> list[dict]:
+        attempt_map = {}
+        for resp_lane, resp_text, resp_meta in responses:
+            attempt_map[resp_lane] = _build_question_attempt_summary(resp_lane, resp_text, resp_meta)
+        for lane_name in started_lanes:
+            attempt_map.setdefault(
+                lane_name,
+                _build_question_attempt_summary(
+                    lane_name,
+                    None,
+                    {
+                        "selected_lane": lane_name,
+                        "timeout_seconds": float(timeout if timeout is not None else API_TIMEOUT),
+                        "max_tokens": int(max_tokens),
+                        "failure_reason": "no_result",
+                    },
+                ),
+            )
+        return [attempt_map[lane_name] for lane_name in started_lanes if lane_name in attempt_map]
 
     if not QUESTION_HEDGED_ENABLED or secondary_lane == primary_lane:
-        return _run_single(primary_lane, call_type), primary_lane
+        response_text, response_meta = _run_single(primary_lane, call_type)
+        response_meta = dict(response_meta or {})
+        response_meta["attempts"] = _build_attempts_summary([(primary_lane, response_text, response_meta)], [primary_lane])
+        return response_text, primary_lane, response_meta
 
     primary_client = resolve_ai_client(call_type=call_type, preferred_lane=primary_lane)
     secondary_client = resolve_ai_client(call_type=call_type, preferred_lane=secondary_lane)
     if not primary_client:
-        return None, primary_lane
+        return None, primary_lane, {
+            "selected_lane": primary_lane,
+            "attempts": _build_attempts_summary([], [primary_lane]),
+        }
     if not secondary_client:
-        return _run_single(primary_lane, call_type), primary_lane
+        response_text, response_meta = _run_single(primary_lane, call_type)
+        response_meta = dict(response_meta or {})
+        response_meta["attempts"] = _build_attempts_summary([(primary_lane, response_text, response_meta)], [primary_lane])
+        return response_text, primary_lane, response_meta
     if QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT and primary_client is secondary_client:
-        return _run_single(primary_lane, call_type), primary_lane
+        response_text, response_meta = _run_single(primary_lane, call_type)
+        response_meta = dict(response_meta or {})
+        response_meta["attempts"] = _build_attempts_summary([(primary_lane, response_text, response_meta)], [primary_lane])
+        return response_text, primary_lane, response_meta
 
     result_queue: queue.Queue = queue.Queue()
+    started_lanes = [primary_lane]
 
     def _runner(lane: str, lane_call_type: str, hedge_flag: bool) -> None:
-        response_text = _run_single(lane, lane_call_type, hedge_flag=hedge_flag)
-        result_queue.put((lane, response_text))
+        response_text, response_meta = _run_single(lane, lane_call_type, hedge_flag=hedge_flag)
+        result_queue.put((lane, response_text, response_meta))
 
     primary_thread = threading.Thread(
         target=_runner,
@@ -15141,23 +15370,26 @@ def _call_question_with_optional_hedge(
     )
     primary_thread.start()
 
-    responses: list[tuple[str, Optional[str]]] = []
+    responses: list[tuple[str, Optional[str], dict]] = []
     delay_deadline = _time.time() + float(QUESTION_HEDGED_DELAY_SECONDS)
     while _time.time() < delay_deadline:
         wait_timeout = max(0.01, min(0.15, delay_deadline - _time.time()))
         try:
-            lane, response_text = result_queue.get(timeout=wait_timeout)
-            responses.append((lane, response_text))
+            lane, response_text, response_meta = result_queue.get(timeout=wait_timeout)
+            responses.append((lane, response_text, response_meta))
             if response_text:
-                return response_text, lane
+                response_meta = dict(response_meta or {})
+                response_meta["attempts"] = _build_attempts_summary(responses, started_lanes)
+                return response_text, lane, response_meta
         except queue.Empty:
             if not primary_thread.is_alive():
                 break
 
     secondary_thread = None
-    if all(not text for _lane, text in responses):
+    if all(not text for _lane, text, _meta in responses):
         if debug:
             print(f"⚡ 触发问题生成竞速: {primary_lane} vs {secondary_lane}")
+        started_lanes.append(secondary_lane)
         secondary_thread = threading.Thread(
             target=_runner,
             args=(secondary_lane, f"{call_type}_hedged_{secondary_lane}", True),
@@ -15171,18 +15403,23 @@ def _call_question_with_optional_hedge(
     while len(responses) < expected_count and _time.time() < finish_deadline:
         wait_timeout = max(0.01, min(0.2, finish_deadline - _time.time()))
         try:
-            lane, response_text = result_queue.get(timeout=wait_timeout)
-            responses.append((lane, response_text))
+            lane, response_text, response_meta = result_queue.get(timeout=wait_timeout)
+            responses.append((lane, response_text, response_meta))
             if response_text:
+                response_meta = dict(response_meta or {})
+                response_meta["attempts"] = _build_attempts_summary(responses, started_lanes)
                 if debug and lane != primary_lane:
                     print(f"🏁 竞速命中备用通道: {lane}")
-                return response_text, lane
+                return response_text, lane, response_meta
         except queue.Empty:
             secondary_alive = bool(secondary_thread and secondary_thread.is_alive())
             if not primary_thread.is_alive() and not secondary_alive:
                 break
 
-    return None, primary_lane
+    return None, primary_lane, {
+        "selected_lane": primary_lane,
+        "attempts": _build_attempts_summary(responses, started_lanes),
+    }
 
 
 def generate_question_with_tiered_strategy(
@@ -15192,10 +15429,10 @@ def generate_question_with_tiered_strategy(
     base_call_type: str = "question",
     allow_fast_path: bool = True,
 ) -> tuple[Optional[str], Optional[dict], str]:
-    """问题生成双档策略：快档优先，解析失败或空响应时回退全量档。"""
+    """问题生成双档策略：快档优先，解析失败或无效响应时回退全量档。"""
     if allow_fast_path and QUESTION_FAST_PATH_ENABLED:
         fast_timeout = min(float(API_TIMEOUT), float(QUESTION_FAST_TIMEOUT))
-        fast_response, fast_lane = _call_question_with_optional_hedge(
+        fast_response, fast_lane, fast_meta = _call_question_with_optional_hedge(
             prompt,
             max_tokens=QUESTION_FAST_MAX_TOKENS,
             call_type=f"{base_call_type}_fast",
@@ -15209,11 +15446,12 @@ def generate_question_with_tiered_strategy(
             if fast_result:
                 return fast_response, fast_result, f"fast:{fast_lane}"
             if debug:
-                print("⚠️ 快档响应解析失败，回退全量档重试")
+                response_length = int(fast_meta.get("response_length", len(fast_response)) or len(fast_response))
+                print(f"⚠️ 快档响应解析失败: lane={fast_lane}, len={response_length}，回退全量档重试")
         elif debug:
-            print("⚠️ 快档未返回有效响应，回退全量档重试")
+            print(f"⚠️ 快档未命中，原因: {_format_question_tier_attempts_for_log(fast_meta)}，回退全量档重试")
 
-    full_response, full_lane = _call_question_with_optional_hedge(
+    full_response, full_lane, full_meta = _call_question_with_optional_hedge(
         prompt,
         max_tokens=MAX_TOKENS_QUESTION,
         call_type=base_call_type,
@@ -15222,6 +15460,11 @@ def generate_question_with_tiered_strategy(
         debug=debug,
     )
     full_result = parse_question_response(full_response, debug=debug) if full_response else None
+    if debug and not full_response:
+        print(f"⚠️ 全量档未命中，原因: {_format_question_tier_attempts_for_log(full_meta)}")
+    elif debug and full_response and not full_result:
+        response_length = int(full_meta.get("response_length", len(full_response)) or len(full_response))
+        print(f"⚠️ 全量档响应解析失败: lane={full_lane}, len={response_length}")
     return full_response, full_result, f"full:{full_lane}"
 
 
@@ -18525,6 +18768,53 @@ def extract_solution_overview_facts(overview_content: str) -> dict[str, str]:
     return facts
 
 
+def extract_solution_overview_topic(overview_content: str) -> str:
+    text = clean_solution_text(overview_content, max_len=180)
+    match = re.search(r'本次访谈主题为[「"]?(.+?)[」"]?[，。,]', text)
+    if match:
+        return clean_solution_text(match.group(1), max_len=60)
+    return ""
+
+
+def simplify_solution_subject(value: object, max_len: int = 0) -> str:
+    text = clean_solution_text(value)
+    if not text:
+        return ""
+
+    text = text.replace("DeepVision", "").replace("深瞳", "").strip()
+    original = text
+    patterns = [
+        r"(产品)?需求调研报告$",
+        r"需求调研报告$",
+        r"调研报告$",
+        r"访谈报告$",
+        r"报告$",
+        r"(产品)?需求调研$",
+        r"需求调研$",
+        r"专题调研$",
+        r"调研$",
+    ]
+
+    for pattern in patterns:
+        candidate = re.sub(pattern, "", text).strip(" \t\r\n-—|:：；;，。,.《》「」")
+        if len(candidate) >= 2:
+            text = candidate
+            break
+
+    return compact_solution_term(text or original, max_len=max_len)
+
+
+def is_solution_generic_subject(value: object) -> bool:
+    text = clean_solution_text(value)
+    if not text:
+        return True
+    if "报告" in text or "调研" in text:
+        return True
+    if "访谈" in text and len(text) >= 8:
+        return True
+    return False
+
+
 def infer_solution_metrics(report_title: str, report_text: str) -> list[dict]:
     combined = f"{report_title}\n{report_text}"
 
@@ -18977,22 +19267,29 @@ def build_solution_payload_from_report(report_name: str, report_content: str) ->
             summary_section = body
 
     overview_facts = extract_solution_overview_facts(overview_section)
+    overview_topic = extract_solution_overview_topic(overview_section)
     requirement_groups = extract_solution_requirements(summary_section)
     customer_items = requirement_groups.get("客户需求", [])
     process_items = requirement_groups.get("业务流程", [])
     tech_items = requirement_groups.get("技术约束", [])
     project_items = requirement_groups.get("项目约束", [])
 
-    scene = overview_facts.get("访谈场景") or get_solution_item_answer(customer_items, 1, fallback=get_solution_item_answer(process_items, 0, fallback=report_title))
+    fallback_subject = simplify_solution_subject(overview_topic or report_title, max_len=24) or compact_solution_term(report_title, max_len=24)
+    scene = overview_facts.get("访谈场景") or get_solution_item_answer(customer_items, 1, fallback=get_solution_item_answer(process_items, 0, fallback=fallback_subject or report_title))
     pain_point = overview_facts.get("核心问题") or get_solution_item_answer(customer_items, 3, fallback=get_solution_item_answer(customer_items, 2, fallback="需要进一步明确核心痛点"))
     entry_point = overview_facts.get("关键触点") or get_solution_item_answer(process_items, 1, fallback=get_solution_item_answer(customer_items, 5, fallback="关键业务触点"))
     tech_constraint = overview_facts.get("技术约束") or get_solution_item_answer(tech_items, 0, fallback="技术与合规边界待进一步确认")
     project_constraint = overview_facts.get("项目约束") or get_solution_item_answer(project_items, 0, fallback="交付边界与资源约束待进一步确认")
 
-    scene_brief = compact_solution_term(scene or report_title, max_len=18)
+    scene_brief = compact_solution_term(scene or fallback_subject or report_title, max_len=18)
+    if is_solution_generic_subject(scene_brief):
+        scene_brief = simplify_solution_subject(scene or overview_topic or report_title, max_len=18) or scene_brief
     pain_brief = compact_solution_term(pain_point or "核心问题", max_len=16)
     entry_brief = compact_solution_term(entry_point or "关键触点", max_len=14)
     constraint_brief = compact_solution_term(project_constraint or tech_constraint or "待明确", max_len=16)
+    display_subject = scene_brief
+    if is_solution_generic_subject(display_subject):
+        display_subject = simplify_solution_subject(entry_point, max_len=18) or simplify_solution_subject(pain_point, max_len=18) or "访谈结论"
 
     overview_meta = build_solution_overview_meta(
         overview_section,
@@ -19055,19 +19352,19 @@ def build_solution_payload_from_report(report_name: str, report_content: str) ->
     value_table = build_solution_value_table(scene_brief, entry_brief, constraint_brief, metrics)
 
     headline_cards = [
-        {"label": "业务场景", "value": scene_brief or "待明确", "detail": "当前最优先推进的访谈应用场景"},
+        {"label": "业务场景", "value": scene_brief or display_subject or "待明确", "detail": "当前最优先推进的访谈应用场景"},
         {"label": "核心问题", "value": pain_brief or "待明确", "detail": "首轮试点需要验证并改善的核心问题"},
         {"label": "优先触点", "value": entry_brief or "待明确", "detail": "建议先落地验证的业务切入口"},
         {"label": "落地约束", "value": constraint_brief or "待明确", "detail": "推进前必须先确认的交付边界"},
     ]
 
     solution_title = clean_solution_text(
-        f"{scene_brief or compact_solution_term(report_title, max_len=18) or report_title}落地方案",
-        max_len=48,
+        f"{display_subject or scene_brief or compact_solution_term(report_title, max_len=18) or report_title}落地方案",
+        max_len=40,
     )
     subtitle = clean_solution_text(
-        f"围绕「{scene_brief or report_title}」场景，基于访谈报告提炼首轮试点切口、执行链路与价值论证。",
-        max_len=88,
+        f"聚焦「{scene_brief or display_subject or report_title}」，优先验证「{pain_brief or '核心问题'}」，从「{entry_brief or '关键触点'}」切入形成首轮执行闭环。",
+        max_len=72,
     )
 
     return {
