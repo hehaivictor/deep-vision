@@ -1,4 +1,4 @@
-const SOLUTION_ASSET_VERSION = '20260310-solution-v8';
+const SOLUTION_ASSET_VERSION = '20260310-solution-v16';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 
 function solutionEscapeHtml(value) {
@@ -112,85 +112,333 @@ function solutionRenderNav(items, visibleIds) {
     });
 }
 
-function solutionRenderHeroSignals(items) {
+function solutionNormalizeCompareText(value) {
+    return String(value || '')
+        .trim()
+        .replace(/\s+/g, '')
+        .replace(/[《》「」"'“”‘’、，。！？!?:：;；\-—（）()【】\[\]\/]/g, '')
+        .toLowerCase();
+}
+
+function solutionTextRepeats(value, references = []) {
+    const current = solutionNormalizeCompareText(value);
+    if (!current) return true;
+    return references.some((reference) => {
+        const normalized = solutionNormalizeCompareText(reference);
+        if (!normalized) return false;
+        return normalized.includes(current) || current.includes(normalized);
+    });
+}
+
+function solutionFilterUniqueInfoItems(items, references = [], limit = 3) {
+    const pool = Array.isArray(references) ? [...references] : [];
+    const seen = new Set();
+    const results = [];
+
+    for (const item of solutionNormalizeList(items)) {
+        const label = String(item?.label || '').trim();
+        const value = String(item?.value || '').trim();
+        if (!value) continue;
+
+        const normalized = solutionNormalizeCompareText(`${label}${value}`);
+        if (!normalized || seen.has(normalized) || solutionTextRepeats(value, pool)) {
+            continue;
+        }
+
+        seen.add(normalized);
+        pool.push(value);
+        results.push(item);
+        if (results.length >= limit) break;
+    }
+
+    return results;
+}
+
+function solutionBuildRoadmapSpan(items) {
+    const steps = solutionNormalizeList(items).slice(0, 3);
+    if (!steps.length) return '';
+
+    const first = String(steps[0]?.timeline || '').trim();
+    const last = String(steps[steps.length - 1]?.timeline || '').trim();
+    const firstMatch = first.match(/(\d+)\s*-\s*(\d+)/);
+    const lastMatch = last.match(/(\d+)\s*-\s*(\d+)/);
+
+    if (firstMatch && lastMatch) {
+        return `第${firstMatch[1]}-${lastMatch[2]}周`;
+    }
+    return last || first;
+}
+
+function solutionSplitHeroTitle(value) {
+    const title = String(value || '').trim() || '查看方案';
+    const suffixes = ['落地方案', '实施方案', '解决方案', '提案方案'];
+    for (const suffix of suffixes) {
+        if (title.endsWith(suffix) && title.length > suffix.length) {
+            return {
+                primary: title.slice(0, -suffix.length).trim(),
+                secondary: suffix
+            };
+        }
+    }
+    if (title.length >= 10) {
+        const splitIndex = Math.ceil(title.length * 0.58);
+        return {
+            primary: title.slice(0, splitIndex).trim(),
+            secondary: title.slice(splitIndex).trim()
+        };
+    }
+    return { primary: title, secondary: '' };
+}
+
+function solutionRenderHeroPrimary(payload, decisionCards) {
+    const root = document.getElementById('solution-hero-primary');
+    if (!root) return false;
+
+    const cards = solutionNormalizeList(decisionCards);
+    const headlineCards = solutionNormalizeList(payload.headline_cards);
+    const scene = headlineCards[0]?.value || payload.title || '当前场景';
+    const entry = headlineCards[2]?.value || '关键触点';
+    const primary = cards[0] || null;
+    const verdict = primary?.title && !solutionTextRepeats(primary.title, [payload.title])
+        ? primary.title
+        : '适合立即推进首轮试点';
+    const fallbackCopy = `围绕「${solutionShortText(scene, 14)}」启动首轮试点，优先从「${solutionShortText(entry, 12)}」切入验证。`;
+    const decisionSummary = payload.decision_summary || primary?.summary || payload.overview || '';
+    const copy = decisionSummary && !solutionTextRepeats(decisionSummary, [verdict, payload.title])
+        ? decisionSummary
+        : fallbackCopy;
+    const tags = [
+        { label: '聚焦场景', value: scene },
+        { label: '推进切口', value: entry }
+    ].filter((item) => item.value);
+
+    root.hidden = !verdict && !copy;
+    root.innerHTML = `
+        <div class="solution-hero-primary-kicker">主判断</div>
+        <h2 class="solution-hero-primary-title">${solutionEscapeHtml(solutionShortText(verdict, 18))}</h2>
+        <p class="solution-hero-primary-copy">${solutionEscapeHtml(solutionShortText(copy, 60))}</p>
+        <div class="solution-hero-primary-tags">
+            ${tags.map((item) => `
+                <div class="solution-hero-primary-tag">
+                    <span class="solution-hero-primary-tag-label">${solutionEscapeHtml(item.label)}</span>
+                    <span class="solution-hero-primary-tag-value">${solutionEscapeHtml(solutionShortText(item.value, 14))}</span>
+                </div>
+            `).join('')}
+        </div>
+    `;
+    return !root.hidden;
+}
+
+function solutionRenderHeroSignals(payload) {
     const root = document.getElementById('solution-hero-signals');
     if (!root) return false;
-    const signals = solutionNormalizeList(items).slice(0, 4);
+
+    const roadmap = solutionNormalizeList(payload.roadmap).slice(0, 3);
+    if (roadmap.length) {
+        root.hidden = true;
+        root.innerHTML = '';
+        return false;
+    }
+
+    const signals = roadmap.map((item, index) => ({
+        label: item.phase || `阶段 ${index + 1}`,
+        value: item.timeline || '推进中'
+    }));
+
     root.hidden = !signals.length;
     root.innerHTML = signals.map((item, index) => `
         <article class="solution-hero-signal" data-accent="${index % 4}">
-            <div class="solution-hero-signal-label">${solutionEscapeHtml(item.label)}</div>
-            <div class="solution-hero-signal-value">${solutionEscapeHtml(solutionShortText(item.value, 24))}</div>
+            <div class="solution-hero-signal-label">${solutionEscapeHtml(solutionShortText(item.label, 16))}</div>
+            <div class="solution-hero-signal-value">${solutionEscapeHtml(solutionShortText(item.value, 10))}</div>
         </article>
     `).join('');
     return signals.length > 0;
 }
 
-function solutionRenderHeroFocus(payload) {
+function solutionRenderHeroStage(payload) {
+    const root = document.getElementById('solution-hero-stage');
+    if (!root) return false;
+
+    const roadmap = solutionNormalizeList(payload.roadmap).slice(0, 3);
+    const overview = payload.overview || payload.decision_summary || '';
+    const cards = roadmap.length ? roadmap.map((item, index) => {
+        const phaseParts = String(item.phase || '').split('·').map((part) => part.trim()).filter(Boolean);
+        return {
+            label: phaseParts[0] || `阶段 ${index + 1}`,
+            value: phaseParts[1] || item.goal || `步骤 ${index + 1}`,
+            detail: item.goal || '',
+            timeline: item.timeline || ''
+        };
+    }) : [
+        { label: '阶段一', value: '场景对齐', detail: '统一问题、样本与试点范围。', timeline: '第 1-2 周' },
+        { label: '阶段二', value: '方案设计', detail: '形成可评审的流程、原型与清单。', timeline: '第 3-5 周' },
+        { label: '阶段三', value: '试点验证', detail: '回收结果并判断是否进入扩展。', timeline: '第 6-8 周' }
+    ];
+    const summary = cards[0]?.detail || overview;
+    const badgeText = (cards[cards.length - 1] && cards[cards.length - 1].timeline) || '三步闭环';
+
+    root.innerHTML = `
+        <div class="solution-hero-stage-head">
+            <div>
+                <div class="solution-hero-stage-kicker">首轮推进节奏</div>
+                <h2 class="solution-hero-stage-title">三步完成从共识到试点</h2>
+            </div>
+            <div class="solution-hero-stage-badge">${solutionEscapeHtml(solutionShortText(badgeText, 12))}</div>
+        </div>
+        ${summary ? `<p class="solution-hero-stage-summary">${solutionEscapeHtml(solutionShortText(summary, 64))}</p>` : ''}
+        <div class="solution-hero-stage-grid">
+            ${cards.map((item, index) => `
+                <article class="solution-hero-stage-card" data-accent="${index % 4}">
+                    <div class="solution-hero-stage-card-top">
+                        <div class="solution-hero-stage-index">${String(index + 1).padStart(2, '0')}</div>
+                        ${item.timeline ? `<div class="solution-hero-stage-timeline">${solutionEscapeHtml(solutionShortText(item.timeline, 12))}</div>` : ''}
+                    </div>
+                    <div class="solution-hero-stage-card-label">${solutionEscapeHtml(item.label)}</div>
+                    <div class="solution-hero-stage-card-value">${solutionEscapeHtml(solutionShortText(item.value, 14))}</div>
+                    ${item.detail ? `<div class="solution-hero-stage-card-detail">${solutionEscapeHtml(solutionShortText(item.detail, 34))}</div>` : ''}
+                </article>
+            `).join('')}
+        </div>
+    `;
+    return true;
+}
+
+function solutionRenderHeroFocus(payload, decisionCards) {
     const root = document.getElementById('solution-hero-focus');
     if (!root) return false;
+
+    const cards = solutionNormalizeList(decisionCards);
     const headlineCards = solutionNormalizeList(payload.headline_cards);
-    const primary = headlineCards[0] || null;
-    const label = primary?.label || '决策结论';
-    const title = primary?.value || payload.title || '围绕核心问题启动首轮落地';
-    const detail = payload.decision_summary || payload.overview || primary?.detail || '根据当前访谈报告提炼首轮试点路径。';
+    const primary = cards[0] || null;
+    const title = primary?.title || '建议进入首轮试点';
+    const summary = primary?.summary || payload.decision_summary || payload.overview || '根据当前访谈报告提炼首轮试点路径。';
+    const detail = primary?.detail || payload.overview || '';
+    const detailText = solutionTextRepeats(detail, [title, summary, payload.decision_summary, payload.overview]) ? '' : detail;
+    const facts = solutionFilterUniqueInfoItems(
+        [headlineCards[0], headlineCards[1], headlineCards[2]],
+        [title, summary, detailText, payload.title, payload.subtitle],
+        2
+    );
+
     root.innerHTML = `
         <article class="solution-hero-focus-card">
             <div class="solution-hero-focus-topline">
-                <div class="solution-hero-focus-kicker">${solutionEscapeHtml(label)}</div>
-                <div class="solution-hero-focus-badge">01</div>
+                <div class="solution-hero-focus-kicker">决策结论</div>
+                <div class="solution-hero-focus-badge">A 级建议</div>
             </div>
-            <h2 class="solution-hero-focus-title">${solutionEscapeHtml(solutionShortText(title, 28))}</h2>
-            <p class="solution-hero-focus-copy">${solutionEscapeHtml(solutionShortText(detail, 108))}</p>
+            <h2 class="solution-hero-focus-title">${solutionEscapeHtml(solutionShortText(title, 20))}</h2>
+            <p class="solution-hero-focus-copy">${solutionEscapeHtml(solutionShortText(summary, 60))}</p>
+            ${detailText ? `<p class="solution-hero-focus-meta">${solutionEscapeHtml(solutionShortText(detailText, 72))}</p>` : ''}
+            ${facts.length ? `<div class="solution-hero-focus-facts">
+                ${facts.map((item) => `
+                    <div class="solution-hero-focus-fact">
+                        <div class="solution-hero-focus-fact-label">${solutionEscapeHtml(item.label || '信息')}</div>
+                        <div class="solution-hero-focus-fact-value">${solutionEscapeHtml(solutionShortText(item.value, 14))}</div>
+                    </div>
+                `).join('')}
+            </div>` : ''}
             <div class="solution-hero-focus-foot">
-                <span>首轮试点</span>
-                <span>可进入评审</span>
+                <span class="solution-hero-focus-pill">建议立即推进</span>
+                <span class="solution-hero-focus-pill solution-hero-focus-pill-subtle">控制在首轮试点</span>
             </div>
         </article>
     `;
     return true;
 }
 
-function solutionRenderHeadlineCards(items) {
-    const root = document.getElementById('solution-headline-cards');
+function solutionRenderHeroActions(actionItems, decisionCards) {
+    const root = document.getElementById('solution-hero-actions');
     if (!root) return false;
-    const cards = solutionNormalizeList(items).slice(1, 4);
-    root.hidden = !cards.length;
-    root.innerHTML = cards.map((item, index) => `
-        <article class="solution-summary-card" data-accent="${index % 4}">
-            <div class="solution-summary-label">${solutionEscapeHtml(item.label)}</div>
-            <div class="solution-summary-value">${solutionEscapeHtml(item.value)}</div>
-            <div class="solution-summary-detail">${solutionEscapeHtml(solutionShortText(item.detail, 48))}</div>
+
+    let items = solutionNormalizeList(actionItems).slice(0, 2);
+    if (!items.length) {
+        items = solutionNormalizeList(decisionCards).slice(0, 2).map((item, index) => ({
+            owner: `判断 ${index + 1}`,
+            title: item.title,
+            detail: item.summary || item.detail || ''
+        }));
+    }
+
+    root.hidden = !items.length;
+    root.innerHTML = items.map((item, index) => `
+        <article class="solution-hero-action-item" data-accent="${index % 4}">
+            <div class="solution-hero-action-step">${String(index + 1).padStart(2, '0')}</div>
+            <div class="solution-hero-action-body">
+                <div class="solution-hero-action-owner">${solutionEscapeHtml(item.owner || '立即推进')}</div>
+                <div class="solution-hero-action-title">${solutionEscapeHtml(solutionShortText(item.title, 22))}</div>
+                ${item.detail ? `<div class="solution-hero-action-detail">${solutionEscapeHtml(solutionShortText(item.detail, 24))}</div>` : ''}
+            </div>
         </article>
     `).join('');
-    return cards.length > 0;
+    return items.length > 0;
 }
 
-function solutionRenderHeroMetrics(items) {
+function solutionRenderHeroMetrics(items, roadmap) {
     const root = document.getElementById('solution-hero-metric-row');
     if (!root) return false;
+
     const metrics = solutionNormalizeList(items).slice(0, 2);
-    root.hidden = !metrics.length;
-    root.innerHTML = metrics.map((item) => `
-        <article class="solution-hero-metric">
-            <div class="solution-hero-metric-label">${solutionEscapeHtml(item.label)}</div>
-            <div class="solution-hero-metric-value">${solutionEscapeHtml(item.value)}</div>
-            <div class="solution-hero-metric-note">${solutionEscapeHtml(solutionShortText(item.note, 34))}</div>
+    const timeline = solutionBuildRoadmapSpan(roadmap);
+    const chips = [
+        timeline ? { label: '首轮周期', value: timeline } : null,
+        ...metrics.map((item) => ({ label: item.label, value: item.value }))
+    ].filter(Boolean);
+
+    root.hidden = !chips.length;
+    root.innerHTML = chips.map((item) => `
+        <article class="solution-hero-metric-chip">
+            <div class="solution-hero-metric-chip-label">${solutionEscapeHtml(item.label)}</div>
+            <div class="solution-hero-metric-chip-value">${solutionEscapeHtml(item.value)}</div>
         </article>
     `).join('');
-    return metrics.length > 0;
+    return chips.length > 0;
+}
+
+function solutionRenderDecisionSummary(payload, decisionCards) {
+    const root = document.getElementById('solution-decision-summary-card');
+    if (!root) return false;
+
+    const cards = solutionNormalizeList(decisionCards);
+    const metas = solutionNormalizeList(payload.overview_meta).slice(0, 4);
+    const headlineCards = solutionNormalizeList(payload.headline_cards);
+    const scene = metas.find((item) => item.label === '聚焦场景')?.value || headlineCards[0]?.value || payload.title || '当前场景';
+    const entry = metas.find((item) => item.label === '推进切口')?.value || headlineCards[2]?.value || '关键触点';
+    const readyCount = metas.length || 4;
+    const verdict = cards.length ? '适合现在推进' : '可进入首轮试点';
+    const note = `${readyCount} 项前提已具备，建议围绕「${solutionShortText(scene, 14)}」启动首轮试点。`;
+    const sideNote = `先从「${solutionShortText(entry, 12)}」切入，不建议直接大范围铺开。`;
+
+    root.innerHTML = `
+        <div class="solution-decision-verdict-kicker">判断结论</div>
+        <div class="solution-decision-verdict-main">${solutionEscapeHtml(verdict)}</div>
+        <p class="solution-decision-verdict-copy">${solutionEscapeHtml(note)}</p>
+        <div class="solution-decision-verdict-tags">
+            <span class="solution-decision-tag">建议立即推进</span>
+            <span class="solution-decision-tag solution-decision-tag-subtle">控制在首轮试点</span>
+        </div>
+        <div class="solution-decision-verdict-side">${solutionEscapeHtml(sideNote)}</div>
+    `;
+    return true;
 }
 
 function solutionRenderOverviewMeta(items) {
     const root = document.getElementById('solution-overview-meta');
     if (!root) return false;
-    const metas = solutionNormalizeList(items);
-    root.innerHTML = metas.map((item) => `
-        <article class="solution-overview-meta-item solution-glass-card">
-            <div class="solution-overview-meta-label">${solutionEscapeHtml(item.label)}</div>
-            <div class="solution-overview-meta-value">${solutionEscapeHtml(item.value)}</div>
-        </article>
-    `).join('');
+    const metas = solutionNormalizeList(items).slice(0, 4);
+    root.innerHTML = metas.map((item, index) => {
+        const isBoundary = String(item.label || '').includes('边界');
+        const status = isBoundary ? '需控制' : '已明确';
+        const tone = isBoundary ? 'warning' : (index === 0 ? 'focus' : 'ready');
+        return `
+            <article class="solution-decision-signal" data-tone="${tone}">
+                <div class="solution-decision-signal-head">
+                    <div class="solution-decision-signal-label">${solutionEscapeHtml(item.label)}</div>
+                    <div class="solution-decision-signal-status" data-tone="${tone}">${solutionEscapeHtml(status)}</div>
+                </div>
+                <div class="solution-decision-signal-value">${solutionEscapeHtml(solutionShortText(item.value, 18))}</div>
+            </article>
+        `;
+    }).join('');
     return metas.length > 0;
 }
 
@@ -227,18 +475,24 @@ function solutionBuildDecisionFallback(payload) {
 function solutionRenderDecisionCards(items) {
     const root = document.getElementById('solution-decision-cards');
     if (!root) return false;
-    const cards = solutionNormalizeList(items);
-    root.innerHTML = cards.map((item, index) => `
-        <article class="solution-card solution-card-decision" data-accent="${index % 4}">
-            <div class="solution-card-topline">
-                <div class="solution-card-badge">判断依据</div>
-                <div class="solution-card-index">${String(index + 1).padStart(2, '0')}</div>
-            </div>
-            <h3 class="solution-card-title">${solutionEscapeHtml(item.title)}</h3>
-            <p class="solution-card-copy">${solutionEscapeHtml(item.summary)}</p>
-            <p class="solution-card-meta">${solutionEscapeHtml(item.detail)}</p>
-        </article>
-    `).join('');
+    const cards = solutionNormalizeList(items).slice(0, 3);
+    root.innerHTML = !cards.length ? '' : `
+        <div class="solution-decision-evidence-head">支持判断的依据</div>
+        ${cards.map((item, index) => {
+            const summary = !solutionTextRepeats(item.summary, [item.title])
+                ? item.summary
+                : (!solutionTextRepeats(item.detail, [item.title, item.summary]) ? item.detail : '');
+            return `
+                <article class="solution-decision-evidence-item" data-accent="${index % 4}">
+                    <div class="solution-decision-evidence-index">${String(index + 1).padStart(2, '0')}</div>
+                    <div class="solution-decision-evidence-body">
+                        <h3 class="solution-decision-evidence-title">${solutionEscapeHtml(solutionShortText(item.title, 18))}</h3>
+                        ${summary ? `<p class="solution-decision-evidence-copy">${solutionEscapeHtml(solutionShortText(summary, 38))}</p>` : ''}
+                    </div>
+                </article>
+            `;
+        }).join('')}
+    `;
     return cards.length > 0;
 }
 
@@ -682,40 +936,34 @@ function solutionRender(payload) {
     if (!shell || !state) return;
 
     const subtitle = payload.subtitle || payload.overview || '';
-    const overview = payload.overview || payload.subtitle || '';
-    const heroSignalSource = solutionNormalizeList(payload.overview_meta).length ? payload.overview_meta : payload.headline_cards;
     const decisionCards = solutionNormalizeList(payload.decision_cards).length ? payload.decision_cards : solutionBuildDecisionFallback(payload);
     const comparisonItems = solutionNormalizeList(payload.comparison_items).length ? payload.comparison_items : solutionBuildComparisonFallback(payload);
     const architectureNodes = solutionNormalizeList(payload.architecture_nodes).length ? payload.architecture_nodes : solutionBuildArchitectureFallback(payload);
     const dataflowSteps = solutionNormalizeList(payload.dataflow_steps).length ? payload.dataflow_steps : solutionBuildDataflowFallback(payload);
     const valueDetailItems = solutionNormalizeList(payload.value_table).length ? payload.value_table : solutionBuildValueDetailFallback(payload);
-    const decisionSummary = payload.decision_summary || payload.overview || subtitle;
 
-    document.getElementById('solution-title').textContent = payload.title || '查看方案';
+    const titleNode = document.getElementById('solution-title');
+    if (titleNode) {
+        const titleParts = solutionSplitHeroTitle(payload.title || '查看方案');
+        titleNode.innerHTML = `
+            <span class="solution-title-line solution-title-line-primary">${solutionEscapeHtml(titleParts.primary)}</span>
+            ${titleParts.secondary ? `<span class="solution-title-line solution-title-line-secondary">${solutionEscapeHtml(titleParts.secondary)}</span>` : ''}
+        `;
+    }
 
     const subtitleNode = document.getElementById('solution-subtitle');
     if (subtitleNode) {
-        subtitleNode.textContent = subtitle;
+        subtitleNode.textContent = solutionShortText(subtitle, 58);
         subtitleNode.hidden = !subtitle;
     }
 
-    const heroAbstract = document.getElementById('solution-hero-abstract');
-    const heroAbstractCard = document.getElementById('solution-hero-abstract-card');
-    if (heroAbstract) heroAbstract.textContent = decisionSummary;
-    if (heroAbstractCard) heroAbstractCard.hidden = !decisionSummary;
-
-    const decisionSummaryNode = document.getElementById('solution-decision-summary');
-    const overviewNode = document.getElementById('solution-overview-text');
-    if (decisionSummaryNode) decisionSummaryNode.textContent = decisionSummary;
-    if (overviewNode) overviewNode.textContent = overview;
-
-    solutionRenderHeroSignals(heroSignalSource);
-    solutionRenderHeroFocus(payload);
-    solutionRenderHeadlineCards(payload.headline_cards);
-    solutionRenderHeroMetrics(payload.metrics);
+    solutionRenderHeroPrimary(payload, decisionCards);
+    solutionRenderHeroActions(payload.action_items, decisionCards);
+    solutionRenderHeroMetrics(payload.metrics, payload.roadmap);
 
     const visibleIds = new Set();
-    if (solutionSetSectionVisibility('decision', solutionRenderOverviewMeta(payload.overview_meta) || solutionRenderDecisionCards(decisionCards))) visibleIds.add('decision');
+    const hasDecision = solutionRenderDecisionSummary(payload, decisionCards) || solutionRenderOverviewMeta(payload.overview_meta) || solutionRenderDecisionCards(decisionCards);
+    if (solutionSetSectionVisibility('decision', hasDecision)) visibleIds.add('decision');
     if (solutionSetSectionVisibility('comparison', solutionRenderComparison(comparisonItems))) visibleIds.add('comparison');
     if (solutionSetSectionVisibility('modules', solutionRenderDimensionCards(payload.dimension_cards))) visibleIds.add('modules');
     if (solutionSetSectionVisibility('architecture', solutionRenderArchitecture(architectureNodes))) visibleIds.add('architecture');

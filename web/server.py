@@ -513,6 +513,19 @@ QUESTION_FAST_ADAPTIVE_MIN_HIT_RATE = max(0.0, min(QUESTION_FAST_ADAPTIVE_MIN_HI
 QUESTION_FAST_ADAPTIVE_COOLDOWN_SECONDS = _cfg_float("QUESTION_FAST_ADAPTIVE_COOLDOWN_SECONDS", 900.0)
 if QUESTION_FAST_ADAPTIVE_COOLDOWN_SECONDS < 0.0:
     QUESTION_FAST_ADAPTIVE_COOLDOWN_SECONDS = 0.0
+QUESTION_LANE_DYNAMIC_ENABLED = _cfg_bool("QUESTION_LANE_DYNAMIC_ENABLED", True)
+QUESTION_LANE_STATS_WINDOW_SIZE = _cfg_int("QUESTION_LANE_STATS_WINDOW_SIZE", 24)
+if QUESTION_LANE_STATS_WINDOW_SIZE < 6:
+    QUESTION_LANE_STATS_WINDOW_SIZE = 6
+QUESTION_LANE_STATS_MIN_SAMPLES = _cfg_int("QUESTION_LANE_STATS_MIN_SAMPLES", 6)
+if QUESTION_LANE_STATS_MIN_SAMPLES < 3:
+    QUESTION_LANE_STATS_MIN_SAMPLES = 3
+if QUESTION_LANE_STATS_MIN_SAMPLES > QUESTION_LANE_STATS_WINDOW_SIZE:
+    QUESTION_LANE_STATS_MIN_SAMPLES = QUESTION_LANE_STATS_WINDOW_SIZE
+QUESTION_LANE_SWITCH_SUCCESS_MARGIN = _cfg_float("QUESTION_LANE_SWITCH_SUCCESS_MARGIN", 0.08)
+QUESTION_LANE_SWITCH_SUCCESS_MARGIN = max(0.0, min(QUESTION_LANE_SWITCH_SUCCESS_MARGIN, 0.5))
+QUESTION_LANE_SWITCH_LATENCY_RATIO = _cfg_float("QUESTION_LANE_SWITCH_LATENCY_RATIO", 0.18)
+QUESTION_LANE_SWITCH_LATENCY_RATIO = max(0.0, min(QUESTION_LANE_SWITCH_LATENCY_RATIO, 0.8))
 QUESTION_HEDGED_ENABLED = _cfg_bool("QUESTION_HEDGED_ENABLED", True)
 QUESTION_HEDGED_DELAY_SECONDS = _cfg_float("QUESTION_HEDGED_DELAY_SECONDS", 1.5)
 if QUESTION_HEDGED_DELAY_SECONDS < 0.5:
@@ -521,6 +534,25 @@ QUESTION_HEDGED_SECONDARY_LANE = _cfg_text("QUESTION_HEDGED_SECONDARY_LANE", "su
 if QUESTION_HEDGED_SECONDARY_LANE not in {"report", "summary", "search_decision"}:
     QUESTION_HEDGED_SECONDARY_LANE = "summary"
 QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT = _cfg_bool("QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT", True)
+PREFETCH_QUESTION_TIMEOUT = _cfg_float("PREFETCH_QUESTION_TIMEOUT", 60.0)
+if PREFETCH_QUESTION_TIMEOUT < 15.0:
+    PREFETCH_QUESTION_TIMEOUT = 15.0
+PREFETCH_QUESTION_MAX_TOKENS = _cfg_int("PREFETCH_QUESTION_MAX_TOKENS", min(MAX_TOKENS_QUESTION, 1400))
+PREFETCH_QUESTION_MAX_TOKENS = max(600, min(PREFETCH_QUESTION_MAX_TOKENS, MAX_TOKENS_QUESTION))
+PREFETCH_QUESTION_FAST_TIMEOUT = _cfg_float("PREFETCH_QUESTION_FAST_TIMEOUT", 10.0)
+if PREFETCH_QUESTION_FAST_TIMEOUT < 5.0:
+    PREFETCH_QUESTION_FAST_TIMEOUT = 5.0
+PREFETCH_QUESTION_FAST_MAX_TOKENS = _cfg_int("PREFETCH_QUESTION_FAST_MAX_TOKENS", min(PREFETCH_QUESTION_MAX_TOKENS, 850))
+PREFETCH_QUESTION_FAST_MAX_TOKENS = max(500, min(PREFETCH_QUESTION_FAST_MAX_TOKENS, PREFETCH_QUESTION_MAX_TOKENS))
+PREFETCH_QUESTION_HEDGE_DELAY_SECONDS = _cfg_float("PREFETCH_QUESTION_HEDGE_DELAY_SECONDS", 2.2)
+if PREFETCH_QUESTION_HEDGE_DELAY_SECONDS < 0.5:
+    PREFETCH_QUESTION_HEDGE_DELAY_SECONDS = 0.5
+PREFETCH_QUESTION_PRIMARY_LANE = _cfg_text("PREFETCH_QUESTION_PRIMARY_LANE", "summary").strip().lower()
+if PREFETCH_QUESTION_PRIMARY_LANE not in {"question", "summary", "report", "search_decision"}:
+    PREFETCH_QUESTION_PRIMARY_LANE = "summary"
+PREFETCH_QUESTION_SECONDARY_LANE = _cfg_text("PREFETCH_QUESTION_SECONDARY_LANE", "question").strip().lower()
+if PREFETCH_QUESTION_SECONDARY_LANE not in {"question", "summary", "report", "search_decision"}:
+    PREFETCH_QUESTION_SECONDARY_LANE = "question"
 QUESTION_RESULT_CACHE_TTL_SECONDS = _cfg_int("QUESTION_RESULT_CACHE_TTL_SECONDS", 120)
 if QUESTION_RESULT_CACHE_TTL_SECONDS < 0:
     QUESTION_RESULT_CACHE_TTL_SECONDS = 0
@@ -1306,6 +1338,8 @@ question_fast_strategy_state = {
     "last_sample_size": 0,
     "last_opened_at": 0.0,
 }
+question_lane_strategy_lock = threading.Lock()
+question_lane_strategy_state = {}  # { profile_name: { lane: deque(records) } }
 
 # ============ 访谈 Prompt 构建缓存 ============
 interview_prompt_cache_lock = threading.Lock()
@@ -1837,6 +1871,7 @@ def _build_interview_prompt_cache_key(
     session_signature: Optional[tuple[int, int]],
     dimension: str,
     session_id: str = "",
+    output_mode: str = "full",
 ) -> str:
     if not isinstance(session_signature, tuple) or len(session_signature) != 2:
         return ""
@@ -1844,6 +1879,7 @@ def _build_interview_prompt_cache_key(
         "session_id": str(session_id or "").strip(),
         "signature": session_signature,
         "dimension": str(dimension or "").strip(),
+        "output_mode": str(output_mode or "full").strip().lower() or "full",
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
@@ -8212,9 +8248,17 @@ def _build_follow_up_reason(signals: list) -> str:
     return reasons[0] if reasons else "需要进一步了解详细需求"
 
 
+def _normalize_question_prompt_output_mode(output_mode: str = "full") -> str:
+    normalized = str(output_mode or "full").strip().lower()
+    if normalized in {"light", "fast", "fast_light", "lite"}:
+        return "light"
+    return "full"
+
+
 def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
                            session_id: str = None,
-                           session_signature: Optional[tuple[int, int]] = None) -> tuple[str, list, dict]:
+                           session_signature: Optional[tuple[int, int]] = None,
+                           output_mode: str = "full") -> tuple[str, list, dict]:
     """构建访谈 prompt（使用滑动窗口 + 摘要压缩 + 智能追问）
 
     Args:
@@ -8237,13 +8281,25 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     session_dim_info = get_dimension_info_for_session(session)
     dim_info = session_dim_info.get(dimension, {})
     cache_session_id = str(session.get("session_id", "") or "").strip()
-    prompt_cache_key = _build_interview_prompt_cache_key(session_signature, dimension, cache_session_id)
+    normalized_output_mode = _normalize_question_prompt_output_mode(output_mode)
+    prompt_cache_key = _build_interview_prompt_cache_key(
+        session_signature,
+        dimension,
+        cache_session_id,
+        output_mode=normalized_output_mode,
+    )
     if prompt_cache_key:
         cached_prompt = _get_interview_prompt_cache(prompt_cache_key)
         if isinstance(cached_prompt, tuple) and len(cached_prompt) == 3:
             if ENABLE_DEBUG_LOG:
-                print(f"📦 命中访谈 Prompt 缓存: dim={dimension}")
+                print(f"📦 命中访谈 Prompt 缓存: dim={dimension}, mode={normalized_output_mode}")
             return cached_prompt
+
+    is_lightweight_output = normalized_output_mode == "light"
+    context_window_limit = min(CONTEXT_WINDOW_SIZE, 2) if is_lightweight_output else CONTEXT_WINDOW_SIZE
+    include_history_summary = not is_lightweight_output
+    search_result_limit = 1 if is_lightweight_output else 2
+    search_excerpt_limit = 100 if is_lightweight_output else 150
 
     # 构建上下文
     context_parts = [f"当前访谈主题：{topic}"]
@@ -8305,20 +8361,20 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 
         if search_results:
             context_parts.append("\n## 行业知识参考（联网搜索）：")
-            for idx, result in enumerate(search_results[:2], 1):
+            for idx, result in enumerate(search_results[:search_result_limit], 1):
                 if result["type"] == "intent":
-                    context_parts.append(f"**{result['content'][:150]}**")
+                    context_parts.append(f"**{result['content'][:search_excerpt_limit]}**")
                 else:
                     context_parts.append(f"{idx}. **{result.get('title', '参考信息')[:40]}**")
-                    context_parts.append(f"   {result['content'][:150]}")
+                    context_parts.append(f"   {result['content'][:search_excerpt_limit]}")
 
     # ========== 滑动窗口 + 摘要压缩 ==========
     if interview_log:
         context_parts.append("\n## 已收集的信息：")
 
         # 判断是否需要使用摘要
-        if len(interview_log) > CONTEXT_WINDOW_SIZE:
-            history_count = len(interview_log) - CONTEXT_WINDOW_SIZE
+        if len(interview_log) > context_window_limit:
+            history_count = len(interview_log) - context_window_limit
             cached_summary = session.get("context_summary", {}) if isinstance(session.get("context_summary", {}), dict) else {}
             cached_count = int(cached_summary.get("log_count", 0) or 0)
             if cached_count < history_count:
@@ -8416,7 +8472,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 
     # 构建 AI 评估提示（当规则未明确触发但建议AI判断时）
     ai_eval_guidance = ""
-    if suggest_ai_eval and last_log:
+    if suggest_ai_eval and last_log and not is_lightweight_output:
         ai_eval_guidance = f"""
 ## 回答深度评估
 
@@ -8458,7 +8514,22 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     # 构建追问模式的提示
     follow_up_section = ""
     if should_follow_up:
-        follow_up_section = f"""## 追问模式（必须执行）
+        if is_lightweight_output:
+            follow_up_section = f"""## 追问模式（必须执行）
+
+上一个用户回答需要追问。原因：{follow_up_reason}
+
+**上一个问题**: {last_log.get('question', '')[:90] if last_log else ''}
+**用户回答**: {last_log.get('answer', '')[:180] if last_log else ''}
+
+追问要求：
+1. 必须设置 is_follow_up: true
+2. 追问必须紧扣上一条回答，不要跳题
+3. 问题尽量简洁，优先问最关键的一个缺口
+4. 选项要短、清晰、便于直接选择
+"""
+        else:
+            follow_up_section = f"""## 追问模式（必须执行）
 
 上一个用户回答需要追问。原因：{follow_up_reason}
 
@@ -8473,7 +8544,17 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 5. 可以使用"您提到的XXX，能否具体说明..."这样的句式
 """
     else:
-        follow_up_section = """## 问题生成要求
+        if is_lightweight_output:
+            follow_up_section = """## 问题生成要求
+
+1. 生成 1 个清晰、聚焦的问题
+2. 提供 3-4 个简洁选项，优先使用短句
+3. 优先覆盖当前最关键的一个缺口，不要贪多
+4. 根据问题性质判断单选或多选
+5. 问题和选项都要便于用户快速选择，不要写成长段解释
+"""
+        else:
+            follow_up_section = """## 问题生成要求
 
 1. 生成 1 个针对性的问题，用于收集该维度的关键信息
 2. 为这个问题提供 3-4 个具体的选项
@@ -8488,7 +8569,49 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 5. 如果用户的回答与参考文档内容有冲突，要在问题中指出并请求澄清
 """
 
-    prompt = f"""**严格输出要求：你的回复必须是纯 JSON 对象，不要添加任何解释、markdown 代码块或其他文本。第一个字符必须是 {{，最后一个字符必须是 }}**
+    if is_lightweight_output:
+        prompt = f"""**严格输出要求：你的回复必须是纯 JSON 对象，不要添加任何解释、markdown 代码块或其他文本。第一个字符必须是 {{，最后一个字符必须是 }}**
+
+你是一个高效率的访谈师，正在进行"{topic}"的访谈。
+请用尽量少的文字，生成一个可直接选择的问题。
+
+{chr(10).join(context_parts)}
+
+## 当前任务
+
+你现在需要针对「{dim_info.get('name', dimension)}」维度收集信息。
+这个维度关注：{dim_info.get('description', '')}
+
+该维度已收集了 {formal_questions_count} 个正式问题的回答，关键方面包括：{', '.join(dim_info.get('key_aspects', []))}
+{blindspot_guidance}
+{follow_up_section}
+
+## 输出格式（必须严格遵守）
+
+只输出下面这个 JSON 结构，不要输出任何额外说明：
+
+    {{
+        "question": "你的问题",
+        "options": ["选项1", "选项2", "选项3"],
+        "multi_select": false,
+        "is_follow_up": {'true' if should_follow_up else 'false'},
+        "follow_up_reason": {json.dumps(follow_up_reason, ensure_ascii=False) if should_follow_up else 'null'}
+    }}
+
+字段要求：
+- question: 一句话问题，尽量直接、清晰
+- options: 3-4 个选项；每个选项尽量不超过 18 个字
+- multi_select: true=多选，false=单选
+- is_follow_up: 必须严格按模板给定的值输出
+- follow_up_reason: 追问时输出原因，否则输出 null
+
+关键提醒：
+- 不要输出 ai_recommendation、conflict_detected、conflict_description
+- 不要输出 markdown 代码块
+- 你的整个回复只能是这个 JSON 对象
+- **重要**：is_follow_up 的值已由系统预先决定，请严格照抄模板中的值**"""
+    else:
+        prompt = f"""**严格输出要求：你的回复必须是纯 JSON 对象，不要添加任何解释、markdown 代码块或其他文本。第一个字符必须是 {{，最后一个字符必须是 }}**
 
 你是一个专业的访谈师，正在进行"{topic}"的访谈。
 你的核心职责是**深度挖掘用户的真实需求**，不满足于表面回答。
@@ -8559,6 +8682,12 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         "remaining_question_follow_up_budget": remaining_question_follow_up_budget,
         "hard_triggered": hard_triggered,
         "missing_aspects": missing_aspects,
+        "should_follow_up": should_follow_up,
+        "has_search": bool(will_search and search_query),
+        "output_mode": normalized_output_mode,
+        "formal_questions_count": formal_questions_count,
+        "has_reference_docs": bool(reference_materials),
+        "has_truncated_docs": bool(truncated_docs),
     }
 
     if prompt_cache_key:

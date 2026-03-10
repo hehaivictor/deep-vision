@@ -150,6 +150,27 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertEqual(payload.get('headline_cards', [])[0].get('value'), '售后服务回访')
         self.assertEqual(payload.get('headline_cards', [])[2].get('value'), '回访结束后的总结页面')
 
+    def test_build_solution_payload_avoids_using_full_report_title_as_scene(self):
+        report_content = (
+            '# 交互式访谈产品需求调研报告\n\n'
+            '## 1. 访谈概述\n'
+            '本次访谈主题为「交互式访谈产品需求调研报告」，共收集了 1 个问题的回答。\n\n'
+            '## 2. 需求摘要\n'
+            '### 客户需求\n'
+            '- **需要进一步明确核心痛点** - 聚焦最先验证的问题。\n'
+            '### 业务流程\n'
+            '- **关键业务触点** - 先从一个入口做试点。\n'
+            '### 技术约束\n'
+            '- **数据需要脱敏** - 不能泄露原始会话。\n'
+            '### 项目约束\n'
+            '- **四周内完成验证** - 先做最小闭环。\n'
+        )
+        payload = self.server.build_solution_payload_from_report('generic.md', report_content)
+
+        self.assertNotIn('产品需求调研报告落地方案', payload.get('title', ''))
+        self.assertNotIn('调研报告', payload.get('headline_cards', [])[0].get('value', ''))
+
+
 
 if __name__ == '__main__':
     unittest.main()

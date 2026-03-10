@@ -7,7 +7,7 @@
     <link rel="shortcut icon" href="favicon.svg">
     <title>DeepVision 查看方案</title>
     <link rel="stylesheet" href="vendor/css/fonts.css">
-    <link rel="stylesheet" href="solution.css?v=20260310-solution-v8">
+    <link rel="stylesheet" href="solution.css?v=20260310-solution-v16">
 </head>
 <body>
     <div class="solution-page">
@@ -28,46 +28,39 @@
                 <section class="solution-hero solution-reveal" id="hero">
                     <div class="solution-hero-copy">
                         <div class="solution-hero-copy-top">
-                            <div class="solution-eyebrow">企业落地提案</div>
+                            <div class="solution-eyebrow">DeepVision 企业方案</div>
                         </div>
-                        <h1 class="solution-title" id="solution-title"></h1>
-                        <p class="solution-subtitle" id="solution-subtitle"></p>
-                        <article class="solution-hero-abstract solution-glass-card" id="solution-hero-abstract-card">
-                            <div class="solution-hero-abstract-label">方案摘要</div>
-                            <p class="solution-hero-abstract-text" id="solution-hero-abstract"></p>
-                        </article>
-                        <div class="solution-hero-signal-strip" id="solution-hero-signals"></div>
+                        <div class="solution-hero-heading">
+                            <h1 class="solution-title" id="solution-title"></h1>
+                            <p class="solution-subtitle" id="solution-subtitle"></p>
+                        </div>
+                        <article class="solution-hero-primary solution-glass-card" id="solution-hero-primary"></article>
                     </div>
                     <div class="solution-hero-panel">
                         <div class="solution-hero-console solution-glass-card">
                             <div class="solution-hero-console-head">
                                 <div>
-                                    <div class="solution-hero-console-kicker">执行看板</div>
-                                    <div class="solution-hero-console-title">首轮落地建议</div>
+                                    <div class="solution-hero-console-kicker">首轮行动</div>
+                                    <div class="solution-hero-console-title">现在先做什么</div>
                                 </div>
                             </div>
-                            <div class="solution-hero-focus" id="solution-hero-focus"></div>
-                            <div class="solution-summary-grid" id="solution-headline-cards"></div>
+                            <div class="solution-hero-action-list" id="solution-hero-actions"></div>
                             <div class="solution-hero-metric-row" id="solution-hero-metric-row"></div>
                         </div>
                     </div>
                 </section>
 
                 <section class="solution-section solution-reveal" id="decision" data-solution-section>
-                    <div class="solution-section-head">
+                    <div class="solution-section-head solution-section-head-decision">
                         <span class="solution-section-kicker">判断</span>
-                        <h2>方案判断</h2>
-                        <p>先给出建议，再说明这份方案为什么值得现在推进。</p>
+                        <h2>推进判断矩阵</h2>
+                        <p>这里不再重复方案内容，只回答三件事：能不能现在做、成立前提是什么、判断依据是什么。</p>
                     </div>
-                    <div class="solution-decision-layout">
-                        <article class="solution-quote-block solution-glass-card" id="solution-decision-summary-card">
-                            <div class="solution-quote-kicker">决策结论</div>
-                            <h3 class="solution-quote-title" id="solution-decision-summary"></h3>
-                            <p class="solution-quote-copy" id="solution-overview-text"></p>
-                        </article>
-                        <div class="solution-overview-meta" id="solution-overview-meta"></div>
+                    <div class="solution-decision-board">
+                        <article class="solution-decision-verdict solution-glass-card" id="solution-decision-summary-card"></article>
+                        <div class="solution-decision-signals" id="solution-overview-meta"></div>
+                        <div class="solution-decision-evidence" id="solution-decision-cards"></div>
                     </div>
-                    <div class="solution-card-grid solution-card-grid-3" id="solution-decision-cards"></div>
                 </section>
 
                 <section class="solution-section solution-reveal" id="comparison" data-solution-section>
@@ -152,6 +145,6 @@
             </div>
         </main>
     </div>
-    <script src="solution.js?v=20260310-solution-v8"></script>
+    <script src="solution.js?v=20260310-solution-v16"></script>
 </body>
 </html>
