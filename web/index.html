@@ -3915,7 +3915,7 @@
                 <div class="flex-1 overflow-y-auto p-5">
                     <template x-if="changelog && changelog.length > 0">
                         <div class="space-y-6">
-                            <template x-for="(release, index) in changelog" :key="release.version">
+                            <template x-for="(release, index) in changelog" :key="`${release.version}-${index}`">
                                 <div class="relative">
                                     <!-- 版本标签 -->
                                     <div class="flex items-center gap-3 mb-3">
