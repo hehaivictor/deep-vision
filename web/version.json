@@ -1,7 +1,18 @@
 {
-  "version": "2.20.5",
-  "releaseDate": "2026-03-10",
+  "version": "2.21.0",
+  "releaseDate": "2026-03-11",
   "changelog": [
+    {
+      "version": "2.21.0",
+      "date": "2026-03-11",
+      "type": "minor",
+      "title": "完成问题预生成动态路由",
+      "changes": [
+        "问题预生成接入 selector、双档生成与动态 lane 路由",
+        "新增 prefetch 独立 timeout、tokens 与 lane 配置样例",
+        "补齐预生成链路与参数隔离测试"
+      ]
+    },
     {
       "version": "2.20.5",
       "date": "2026-03-10",

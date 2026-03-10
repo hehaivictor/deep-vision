@@ -264,6 +264,57 @@ def _cfg_text_list(name: str, default: list[str]) -> list[str]:
     return list(default)
 
 
+def _cfg_numeric_map(name: str, default: dict[str, float], value_type: str = "float") -> dict[str, float]:
+    value = _cfg_get(name, default)
+    result = {}
+
+    def _convert_number(raw_value):
+        try:
+            return int(raw_value) if value_type == "int" else float(raw_value)
+        except Exception:
+            return None
+
+    if isinstance(value, dict):
+        items = value.items()
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return dict(default)
+        if text.startswith("{") and text.endswith("}"):
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    items = parsed.items()
+                else:
+                    items = []
+            except Exception:
+                items = []
+        else:
+            segments = [segment.strip() for segment in re.split(r"[;,]", text) if segment.strip()]
+            pairs = []
+            for segment in segments:
+                if "=" not in segment:
+                    continue
+                key, raw_value = segment.split("=", 1)
+                pairs.append((key, raw_value))
+            items = pairs
+    else:
+        return dict(default)
+
+    for key, raw_value in items:
+        normalized_key = str(key or "").strip().lower()
+        if not normalized_key:
+            continue
+        converted = _convert_number(raw_value)
+        if converted is None:
+            continue
+        result[normalized_key] = converted
+
+    merged = dict(default)
+    merged.update(result)
+    return merged
+
+
 def _first_non_empty(*values: str) -> str:
     for value in values:
         text = str(value or "").strip()
@@ -534,6 +585,11 @@ QUESTION_HEDGED_SECONDARY_LANE = _cfg_text("QUESTION_HEDGED_SECONDARY_LANE", "su
 if QUESTION_HEDGED_SECONDARY_LANE not in {"report", "summary", "search_decision"}:
     QUESTION_HEDGED_SECONDARY_LANE = "summary"
 QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT = _cfg_bool("QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT", True)
+QUESTION_FAST_TIMEOUT_BY_LANE = _cfg_numeric_map("QUESTION_FAST_TIMEOUT_BY_LANE", {}, value_type="float")
+QUESTION_FAST_MAX_TOKENS_BY_LANE = _cfg_numeric_map("QUESTION_FAST_MAX_TOKENS_BY_LANE", {}, value_type="int")
+QUESTION_FULL_TIMEOUT_BY_LANE = _cfg_numeric_map("QUESTION_FULL_TIMEOUT_BY_LANE", {}, value_type="float")
+QUESTION_FULL_MAX_TOKENS_BY_LANE = _cfg_numeric_map("QUESTION_FULL_MAX_TOKENS_BY_LANE", {}, value_type="int")
+QUESTION_HEDGE_DELAY_BY_LANE = _cfg_numeric_map("QUESTION_HEDGE_DELAY_BY_LANE", {}, value_type="float")
 PREFETCH_QUESTION_TIMEOUT = _cfg_float("PREFETCH_QUESTION_TIMEOUT", 60.0)
 if PREFETCH_QUESTION_TIMEOUT < 15.0:
     PREFETCH_QUESTION_TIMEOUT = 15.0
@@ -1340,6 +1396,173 @@ question_fast_strategy_state = {
 }
 question_lane_strategy_lock = threading.Lock()
 question_lane_strategy_state = {}  # { profile_name: { lane: deque(records) } }
+
+
+def reset_question_lane_strategy_state(profile_name: str = "") -> None:
+    normalized = str(profile_name or "").strip()
+    with question_lane_strategy_lock:
+        if normalized:
+            question_lane_strategy_state.pop(normalized, None)
+        else:
+            question_lane_strategy_state.clear()
+
+
+def _record_question_lane_strategy_outcome(profile_name: str, lane: str, response_text: Optional[str], call_meta: Optional[dict]) -> None:
+    normalized_profile = str(profile_name or "").strip()
+    normalized_lane = str(lane or "").strip().lower()
+    if not normalized_profile or not normalized_lane:
+        return
+
+    meta = dict(call_meta or {})
+    try:
+        response_time_ms = max(0.0, float(meta.get("response_time_ms", 0.0) or 0.0))
+    except Exception:
+        response_time_ms = 0.0
+    try:
+        queue_wait_ms = max(0.0, float(meta.get("queue_wait_ms", 0.0) or 0.0))
+    except Exception:
+        queue_wait_ms = 0.0
+
+    record = {
+        "success": bool(response_text),
+        "response_time_ms": response_time_ms,
+        "queue_wait_ms": queue_wait_ms,
+        "failure_reason": str(meta.get("failure_reason", "") or ""),
+        "timestamp": round(_time.time(), 3),
+    }
+
+    with question_lane_strategy_lock:
+        profile_bucket = question_lane_strategy_state.setdefault(normalized_profile, {})
+        lane_bucket = profile_bucket.get(normalized_lane)
+        if not isinstance(lane_bucket, deque):
+            lane_bucket = deque(maxlen=max(QUESTION_LANE_STATS_WINDOW_SIZE, QUESTION_LANE_STATS_MIN_SAMPLES, 6))
+            profile_bucket[normalized_lane] = lane_bucket
+        lane_bucket.append(record)
+
+
+def _build_question_lane_strategy_snapshot(profile_name: str, candidates: Optional[list[str]] = None) -> dict:
+    normalized_profile = str(profile_name or "").strip()
+    requested_candidates = [str(item or "").strip().lower() for item in (candidates or []) if str(item or "").strip()]
+    snapshot = {}
+
+    with question_lane_strategy_lock:
+        profile_bucket = question_lane_strategy_state.get(normalized_profile, {}) if normalized_profile else {}
+        lane_names = requested_candidates or list(profile_bucket.keys())
+        for lane_name in lane_names:
+            records = profile_bucket.get(lane_name)
+            sample = list(records or [])[-QUESTION_LANE_STATS_WINDOW_SIZE:]
+            sample_size = len(sample)
+            success_count = sum(1 for item in sample if isinstance(item, dict) and bool(item.get("success", False)))
+            success_rate = (success_count / sample_size) if sample_size > 0 else 0.0
+            latency_values = [
+                max(0.0, float(item.get("response_time_ms", 0.0) or 0.0))
+                for item in sample
+                if isinstance(item, dict)
+            ]
+            latency_values = [value for value in latency_values if value > 0.0]
+            avg_latency_ms = round(sum(latency_values) / len(latency_values), 2) if latency_values else 0.0
+            queue_values = [
+                max(0.0, float(item.get("queue_wait_ms", 0.0) or 0.0))
+                for item in sample
+                if isinstance(item, dict)
+            ]
+            queue_values = [value for value in queue_values if value > 0.0]
+            avg_queue_wait_ms = round(sum(queue_values) / len(queue_values), 2) if queue_values else 0.0
+            snapshot[lane_name] = {
+                "sample_size": sample_size,
+                "success_rate": round(success_rate, 4),
+                "avg_latency_ms": avg_latency_ms,
+                "avg_queue_wait_ms": avg_queue_wait_ms,
+                "ready": sample_size >= QUESTION_LANE_STATS_MIN_SAMPLES,
+            }
+
+    return snapshot
+
+
+def _should_promote_question_lane(candidate_stats: dict, current_stats: dict) -> bool:
+    if not candidate_stats.get("ready"):
+        return False
+    if not current_stats.get("ready"):
+        return True
+
+    candidate_success = float(candidate_stats.get("success_rate", 0.0) or 0.0)
+    current_success = float(current_stats.get("success_rate", 0.0) or 0.0)
+    success_margin = float(QUESTION_LANE_SWITCH_SUCCESS_MARGIN or 0.0)
+    latency_ratio = float(QUESTION_LANE_SWITCH_LATENCY_RATIO or 0.0)
+
+    if candidate_success > current_success + success_margin:
+        return True
+    if current_success > candidate_success + success_margin:
+        return False
+
+    candidate_latency = float(candidate_stats.get("avg_latency_ms", 0.0) or 0.0)
+    current_latency = float(current_stats.get("avg_latency_ms", 0.0) or 0.0)
+    if candidate_latency <= 0.0:
+        return False
+    if current_latency <= 0.0:
+        return True
+    return candidate_latency < current_latency * max(0.0, 1.0 - latency_ratio)
+
+
+def _build_question_lane_strategy_key(runtime_profile: Optional[dict], phase: str) -> str:
+    profile = dict(runtime_profile or {})
+    profile_name = str(profile.get("profile_name", "question") or "question").strip() or "question"
+    normalized_phase = "fast" if str(phase or "").strip().lower() == "fast" else "full"
+    mode_key = str(profile.get("fast_prompt_mode" if normalized_phase == "fast" else "full_prompt_mode", "full") or "full").strip().lower()
+    return f"{profile_name}:{normalized_phase}:{mode_key}"
+
+
+def _resolve_dynamic_question_lane_order(runtime_profile: Optional[dict], phase: str = "full") -> tuple[str, str, dict]:
+    profile = dict(runtime_profile or {})
+    normalized_phase = "fast" if str(phase or "").strip().lower() == "fast" else "full"
+    base_candidates = []
+    primary_lane = str(profile.get("primary_lane", "question") or "question").strip().lower() or "question"
+    secondary_lane = str(profile.get("secondary_lane", QUESTION_HEDGED_SECONDARY_LANE) or QUESTION_HEDGED_SECONDARY_LANE).strip().lower() or QUESTION_HEDGED_SECONDARY_LANE
+    for lane_name in [primary_lane, secondary_lane]:
+        if lane_name and lane_name not in base_candidates:
+            base_candidates.append(lane_name)
+
+    fallback_candidates = ["question", "summary", "report", "search_decision"]
+    if normalized_phase == "full":
+        fallback_candidates = ["question", "report", "summary", "search_decision"]
+    for lane_name in fallback_candidates:
+        if lane_name not in base_candidates:
+            base_candidates.append(lane_name)
+
+    available_candidates = [lane_name for lane_name in base_candidates if _lane_client_by_name(lane_name)]
+    ordered_candidates = available_candidates or list(base_candidates)
+    strategy_key = _build_question_lane_strategy_key(profile, normalized_phase)
+    snapshot = _build_question_lane_strategy_snapshot(strategy_key, ordered_candidates)
+
+    if QUESTION_LANE_DYNAMIC_ENABLED and len(ordered_candidates) > 1:
+        ranked = list(ordered_candidates)
+        for index in range(1, len(ranked)):
+            candidate_lane = ranked[index]
+            current_lane = ranked[index - 1]
+            if _should_promote_question_lane(snapshot.get(candidate_lane, {}), snapshot.get(current_lane, {})):
+                ranked[index - 1], ranked[index] = ranked[index], ranked[index - 1]
+
+        promoting = True
+        while promoting:
+            promoting = False
+            for index in range(1, len(ranked)):
+                candidate_lane = ranked[index]
+                current_lane = ranked[index - 1]
+                if _should_promote_question_lane(snapshot.get(candidate_lane, {}), snapshot.get(current_lane, {})):
+                    ranked[index - 1], ranked[index] = ranked[index], ranked[index - 1]
+                    promoting = True
+        ordered_candidates = ranked
+
+    resolved_primary = ordered_candidates[0] if ordered_candidates else primary_lane
+    resolved_secondary = ordered_candidates[1] if len(ordered_candidates) > 1 else secondary_lane
+    if not resolved_secondary:
+        resolved_secondary = resolved_primary
+    return resolved_primary, resolved_secondary, {
+        "strategy_key": strategy_key,
+        "ordered_candidates": ordered_candidates,
+        "snapshot": snapshot,
+        "dynamic_enabled": bool(QUESTION_LANE_DYNAMIC_ENABLED),
+    }
 
 # ============ 访谈 Prompt 构建缓存 ============
 interview_prompt_cache_lock = threading.Lock()
@@ -4429,8 +4652,8 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str):
     if formal_count < current_min_formal:
         return
 
-    # 维度顺序
-    dimension_order = ['customer_needs', 'business_process', 'tech_constraints', 'project_constraints']
+    # 维度顺序（动态场景优先使用会话定义）
+    dimension_order = get_dimension_order_for_session(session) or ['customer_needs', 'business_process', 'tech_constraints', 'project_constraints']
     current_idx = dimension_order.index(current_dimension) if current_dimension in dimension_order else -1
 
     # 找下一个未完成的维度
@@ -4476,41 +4699,45 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str):
             next_dim_logs = [l for l in session_data.get("interview_log", [])
                            if l.get("dimension") == next_dimension]
 
-            # 构建预生成的 prompt
-            prompt, truncated_docs, _decision_meta = build_interview_prompt(
-                session_data, next_dimension, next_dim_logs,
+            prepared_runtime = _prepare_question_generation_runtime(
+                session_data,
+                next_dimension,
+                next_dim_logs,
                 session_signature=session_signature,
+                base_call_type="prefetch",
+                allow_fast_path=True,
             )
 
-            # 调用 Claude API
-            response = call_claude(
-                prompt,
-                max_tokens=MAX_TOKENS_QUESTION,
-                call_type="prefetch",
-                truncated_docs=truncated_docs
+            response, result, tier_used = generate_question_with_tiered_strategy(
+                prepared_runtime["full_prompt"],
+                truncated_docs=prepared_runtime["truncated_docs"],
+                debug=ENABLE_DEBUG_LOG,
+                base_call_type="prefetch",
+                allow_fast_path=bool(prepared_runtime["runtime_profile"].get("allow_fast_path", True)),
+                fast_prompt=prepared_runtime["fast_prompt"],
+                runtime_profile=prepared_runtime["runtime_profile"],
             )
+            if ENABLE_DEBUG_LOG:
+                print(f"⚙️ 下一维度预生成通道: {tier_used}")
 
-            if response:
-                # 解析响应
-                result = parse_question_response(response, debug=False)
-                if result:
-                    result["dimension"] = next_dimension
-                    result["ai_generated"] = True
+            if response and result:
+                result["dimension"] = next_dimension
+                result["ai_generated"] = True
 
-                    with prefetch_cache_lock:
-                        if session_id not in prefetch_cache:
-                            prefetch_cache[session_id] = {}
-                        prefetch_cache[session_id][next_dimension] = {
-                            "question_data": result,
-                            "created_at": _time.time(),
-                            "topic": session_data.get("topic"),
-                            "valid": True,
-                        }
-                    if ENABLE_DEBUG_LOG:
-                        print(f"✅ 预生成完成: session={session_id}, dim={next_dimension}")
-                else:
-                    if ENABLE_DEBUG_LOG:
-                        print(f"⚠️ 预生成解析失败: session={session_id}, dim={next_dimension}")
+                with prefetch_cache_lock:
+                    if session_id not in prefetch_cache:
+                        prefetch_cache[session_id] = {}
+                    prefetch_cache[session_id][next_dimension] = {
+                        "question_data": result,
+                        "created_at": _time.time(),
+                        "topic": session_data.get("topic"),
+                        "valid": True,
+                    }
+                if ENABLE_DEBUG_LOG:
+                    print(f"✅ 预生成完成: session={session_id}, dim={next_dimension}")
+            else:
+                if ENABLE_DEBUG_LOG:
+                    print(f"⚠️ 预生成解析失败: session={session_id}, dim={next_dimension}")
         except Exception as e:
             print(f"⚠️ 预生成失败: {e}")
 
@@ -4549,18 +4776,23 @@ def prefetch_first_question(session_id: str):
             # 获取第一个维度（动态场景支持）
             first_dim = get_dimension_order_for_session(session_data)[0] if get_dimension_order_for_session(session_data) else "customer_needs"
 
-            # 首题不依赖任何历史记录
-            prompt, truncated_docs, _decision_meta = build_interview_prompt(
-                session_data, first_dim, [],
+            prepared_runtime = _prepare_question_generation_runtime(
+                session_data,
+                first_dim,
+                [],
                 session_signature=session_signature,
+                base_call_type="prefetch_first",
+                allow_fast_path=True,
             )
 
             response, result, tier_used = generate_question_with_tiered_strategy(
-                prompt,
-                truncated_docs=truncated_docs,
+                prepared_runtime["full_prompt"],
+                truncated_docs=prepared_runtime["truncated_docs"],
                 debug=ENABLE_DEBUG_LOG,
                 base_call_type="prefetch_first",
-                allow_fast_path=True,
+                allow_fast_path=bool(prepared_runtime["runtime_profile"].get("allow_fast_path", True)),
+                fast_prompt=prepared_runtime["fast_prompt"],
+                runtime_profile=prepared_runtime["runtime_profile"],
             )
             if ENABLE_DEBUG_LOG:
                 print(f"⚙️ 首题预生成通道: {tier_used}")
@@ -15568,6 +15800,311 @@ def _describe_question_fast_skip_reason(reason: str) -> str:
     return text
 
 
+def _clamp_question_generation_timeout(value: Optional[float], minimum: float = 6.0) -> Optional[float]:
+    if value is None:
+        return None
+
+    try:
+        normalized = float(value)
+    except Exception:
+        normalized = float(API_TIMEOUT)
+
+    normalized = max(float(minimum), normalized)
+    normalized = min(normalized, float(API_TIMEOUT))
+    return round(normalized, 2)
+
+
+def _clamp_question_generation_tokens(value: Optional[int], minimum: int = 500, ceiling: Optional[int] = None) -> int:
+    default_ceiling = int(ceiling if ceiling is not None else MAX_TOKENS_QUESTION)
+    try:
+        normalized = int(value if value is not None else default_ceiling)
+    except Exception:
+        normalized = default_ceiling
+
+    normalized = max(int(minimum), normalized)
+    normalized = min(normalized, default_ceiling)
+    return normalized
+
+
+def _resolve_question_lane_runtime_override(overrides: dict, lane: str, fallback):
+    normalized_lane = str(lane or "").strip().lower()
+    if normalized_lane and normalized_lane in overrides:
+        return overrides.get(normalized_lane)
+    if "default" in overrides:
+        return overrides.get("default")
+    return fallback
+
+
+def _resolve_question_lane_runtime_params(
+    runtime_profile: Optional[dict],
+    lane: str,
+    phase: str,
+    timeout: Optional[float],
+    max_tokens: int,
+    hedge_delay_seconds: Optional[float],
+) -> tuple[Optional[float], int, Optional[float]]:
+    profile = dict(runtime_profile or {})
+    normalized_phase = "fast" if str(phase or "").strip().lower() == "fast" else "full"
+
+    fast_timeout_by_lane = profile.get("fast_timeout_by_lane")
+    if not isinstance(fast_timeout_by_lane, dict):
+        fast_timeout_by_lane = QUESTION_FAST_TIMEOUT_BY_LANE
+    fast_max_tokens_by_lane = profile.get("fast_max_tokens_by_lane")
+    if not isinstance(fast_max_tokens_by_lane, dict):
+        fast_max_tokens_by_lane = QUESTION_FAST_MAX_TOKENS_BY_LANE
+    full_timeout_by_lane = profile.get("full_timeout_by_lane")
+    if not isinstance(full_timeout_by_lane, dict):
+        full_timeout_by_lane = QUESTION_FULL_TIMEOUT_BY_LANE
+    full_max_tokens_by_lane = profile.get("full_max_tokens_by_lane")
+    if not isinstance(full_max_tokens_by_lane, dict):
+        full_max_tokens_by_lane = QUESTION_FULL_MAX_TOKENS_BY_LANE
+    hedge_delay_by_lane = profile.get("hedge_delay_by_lane")
+    if not isinstance(hedge_delay_by_lane, dict):
+        hedge_delay_by_lane = QUESTION_HEDGE_DELAY_BY_LANE
+
+    if normalized_phase == "fast":
+        timeout = _resolve_question_lane_runtime_override(fast_timeout_by_lane, lane, timeout)
+        max_tokens = _resolve_question_lane_runtime_override(fast_max_tokens_by_lane, lane, max_tokens)
+    else:
+        timeout = _resolve_question_lane_runtime_override(full_timeout_by_lane, lane, timeout)
+        max_tokens = _resolve_question_lane_runtime_override(full_max_tokens_by_lane, lane, max_tokens)
+
+    hedge_delay_seconds = _resolve_question_lane_runtime_override(hedge_delay_by_lane, lane, hedge_delay_seconds)
+    timeout = _clamp_question_generation_timeout(timeout, minimum=5.0 if normalized_phase == "fast" else 12.0)
+    max_tokens = _clamp_question_generation_tokens(max_tokens, minimum=400 if normalized_phase == "fast" else 600)
+    if hedge_delay_seconds is not None:
+        hedge_delay_seconds = max(0.5, float(hedge_delay_seconds))
+    return timeout, max_tokens, hedge_delay_seconds
+
+
+def _select_question_generation_runtime_profile(
+    prompt: str,
+    truncated_docs: Optional[list] = None,
+    decision_meta: Optional[dict] = None,
+    base_call_type: str = "question",
+    allow_fast_path: bool = True,
+) -> dict:
+    normalized_meta = dict(decision_meta or {})
+    lowered_call_type = str(base_call_type or "").strip().lower()
+    is_prefetch_first = lowered_call_type.startswith("prefetch_first")
+    is_prefetch = lowered_call_type.startswith("prefetch")
+    profile_prefix = "prefetch_first" if is_prefetch_first else ("prefetch" if is_prefetch else "question")
+    prompt_length = len(prompt or "")
+    has_search = bool(normalized_meta.get("has_search", False))
+    has_reference_docs = bool(normalized_meta.get("has_reference_docs", False))
+    has_truncated_docs = bool(normalized_meta.get("has_truncated_docs", False) or truncated_docs)
+    should_follow_up = bool(normalized_meta.get("should_follow_up", False))
+    hard_triggered = bool(normalized_meta.get("hard_triggered", False))
+    missing_aspects = list(normalized_meta.get("missing_aspects", []) or [])
+    follow_up_round = max(0, int(normalized_meta.get("follow_up_round", 0) or 0))
+    formal_questions_count = max(0, int(normalized_meta.get("formal_questions_count", 0) or 0))
+    can_use_light_prompt = not has_search and not has_reference_docs and not has_truncated_docs
+    effective_fast_allowed = bool(allow_fast_path)
+
+    profile_name = f"{profile_prefix}_balanced_full"
+    fast_output_mode = "full"
+    primary_lane = "question"
+    secondary_lane = QUESTION_HEDGED_SECONDARY_LANE
+    hedged_enabled = bool(QUESTION_HEDGED_ENABLED)
+    hedge_delay_seconds = float(QUESTION_HEDGED_DELAY_SECONDS)
+    fast_timeout = _clamp_question_generation_timeout(QUESTION_FAST_TIMEOUT, minimum=5.0)
+    fast_max_tokens = _clamp_question_generation_tokens(QUESTION_FAST_MAX_TOKENS, minimum=500)
+    full_timeout = None
+    full_max_tokens = _clamp_question_generation_tokens(MAX_TOKENS_QUESTION, minimum=700)
+    max_tokens_ceiling = MAX_TOKENS_QUESTION
+    fast_timeout_by_lane = QUESTION_FAST_TIMEOUT_BY_LANE
+    fast_max_tokens_by_lane = QUESTION_FAST_MAX_TOKENS_BY_LANE
+    full_timeout_by_lane = QUESTION_FULL_TIMEOUT_BY_LANE
+    full_max_tokens_by_lane = QUESTION_FULL_MAX_TOKENS_BY_LANE
+    hedge_delay_by_lane = QUESTION_HEDGE_DELAY_BY_LANE
+    reasons = []
+
+    if is_prefetch:
+        primary_lane = PREFETCH_QUESTION_PRIMARY_LANE
+        secondary_lane = PREFETCH_QUESTION_SECONDARY_LANE
+        hedge_delay_seconds = float(PREFETCH_QUESTION_HEDGE_DELAY_SECONDS)
+        fast_timeout = _clamp_question_generation_timeout(PREFETCH_QUESTION_FAST_TIMEOUT, minimum=5.0)
+        fast_max_tokens = _clamp_question_generation_tokens(
+            PREFETCH_QUESTION_FAST_MAX_TOKENS,
+            minimum=500,
+            ceiling=PREFETCH_QUESTION_MAX_TOKENS,
+        )
+        full_timeout = _clamp_question_generation_timeout(PREFETCH_QUESTION_TIMEOUT, minimum=15.0)
+        full_max_tokens = _clamp_question_generation_tokens(
+            PREFETCH_QUESTION_MAX_TOKENS,
+            minimum=700,
+            ceiling=PREFETCH_QUESTION_MAX_TOKENS,
+        )
+        max_tokens_ceiling = PREFETCH_QUESTION_MAX_TOKENS
+        fast_timeout_by_lane = {}
+        fast_max_tokens_by_lane = {}
+        full_timeout_by_lane = {}
+        full_max_tokens_by_lane = {}
+        hedge_delay_by_lane = {}
+
+    if has_search or has_truncated_docs:
+        profile_name = f"{profile_prefix}_search_full"
+        effective_fast_allowed = False
+        if has_search:
+            reasons.append("has_search")
+        if has_truncated_docs:
+            reasons.append("has_truncated_docs")
+    elif can_use_light_prompt and should_follow_up:
+        profile_name = f"{profile_prefix}_follow_up_light"
+        fast_output_mode = "light"
+        secondary_lane = "summary" if not is_prefetch else secondary_lane
+        hedge_delay_seconds = min(float(hedge_delay_seconds), 1.0 if not is_prefetch else float(PREFETCH_QUESTION_HEDGE_DELAY_SECONDS))
+        fast_timeout = _clamp_question_generation_timeout(max(6.0, float(fast_timeout) - 3.0), minimum=5.0)
+        fast_max_tokens = _clamp_question_generation_tokens(
+            min(max_tokens_ceiling, 650 if follow_up_round > 0 else 720),
+            minimum=420,
+            ceiling=max_tokens_ceiling,
+        )
+        full_timeout = _clamp_question_generation_timeout(
+            max((15.0 if is_prefetch else 18.0), float((full_timeout or fast_timeout)) if full_timeout is not None else float(fast_timeout) + 8.0),
+            minimum=15.0 if is_prefetch else 18.0,
+        )
+        full_max_tokens = _clamp_question_generation_tokens(
+            min(max_tokens_ceiling, 1300),
+            minimum=720,
+            ceiling=max_tokens_ceiling,
+        )
+        reasons.append("follow_up")
+    elif can_use_light_prompt and (hard_triggered or missing_aspects or formal_questions_count >= 2 or prompt_length > QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS):
+        profile_name = f"{profile_prefix}_probe_light"
+        fast_output_mode = "light"
+        secondary_lane = "summary" if not is_prefetch else secondary_lane
+        fast_timeout = _clamp_question_generation_timeout(float(fast_timeout), minimum=5.0)
+        fast_max_tokens = _clamp_question_generation_tokens(
+            min(max_tokens_ceiling, 850),
+            minimum=500,
+            ceiling=max_tokens_ceiling,
+        )
+        full_timeout = _clamp_question_generation_timeout(
+            max((15.0 if is_prefetch else 18.0), float((full_timeout or fast_timeout)) if full_timeout is not None else float(fast_timeout) + 10.0),
+            minimum=15.0 if is_prefetch else 18.0,
+        )
+        full_max_tokens = _clamp_question_generation_tokens(
+            min(max_tokens_ceiling, 1500),
+            minimum=800,
+            ceiling=max_tokens_ceiling,
+        )
+        if hard_triggered:
+            reasons.append("hard_triggered")
+        if missing_aspects:
+            reasons.append(f"missing_aspects={len(missing_aspects)}")
+        if formal_questions_count >= 2:
+            reasons.append(f"formal_questions={formal_questions_count}")
+    elif can_use_light_prompt:
+        profile_name = f"{profile_prefix}_balanced_light"
+        fast_output_mode = "light"
+        secondary_lane = "summary" if not is_prefetch else secondary_lane
+        full_timeout = _clamp_question_generation_timeout(
+            max((15.0 if is_prefetch else 18.0), float((full_timeout or fast_timeout)) if full_timeout is not None else float(fast_timeout) + 12.0),
+            minimum=15.0 if is_prefetch else 18.0,
+        )
+        full_max_tokens = _clamp_question_generation_tokens(
+            min(max_tokens_ceiling, 1500),
+            minimum=800,
+            ceiling=max_tokens_ceiling,
+        )
+
+    if has_reference_docs:
+        reasons.append("has_reference_docs")
+    if not reasons:
+        reasons.append(profile_name)
+
+    return {
+        "profile_name": profile_name,
+        "selection_reason": ",".join([item for item in reasons if item]),
+        "allow_fast_path": effective_fast_allowed,
+        "fast_output_mode": _normalize_question_prompt_output_mode(fast_output_mode),
+        "full_output_mode": "full",
+        "fast_timeout": fast_timeout,
+        "fast_max_tokens": fast_max_tokens,
+        "full_timeout": full_timeout,
+        "full_max_tokens": full_max_tokens,
+        "primary_lane": primary_lane,
+        "secondary_lane": secondary_lane,
+        "hedged_enabled": hedged_enabled,
+        "hedge_delay_seconds": max(0.5, float(hedge_delay_seconds)),
+        "fast_timeout_by_lane": fast_timeout_by_lane,
+        "fast_max_tokens_by_lane": fast_max_tokens_by_lane,
+        "full_timeout_by_lane": full_timeout_by_lane,
+        "full_max_tokens_by_lane": full_max_tokens_by_lane,
+        "hedge_delay_by_lane": hedge_delay_by_lane,
+    }
+
+def _prepare_question_generation_runtime(
+    session: dict,
+    dimension: str,
+    all_dim_logs: list,
+    session_id: str = None,
+    session_signature: Optional[tuple[int, int]] = None,
+    base_call_type: str = "question",
+    allow_fast_path: bool = True,
+) -> dict:
+    full_prompt, truncated_docs, decision_meta = build_interview_prompt(
+        session,
+        dimension,
+        all_dim_logs,
+        session_id=session_id,
+        session_signature=session_signature,
+        output_mode="full",
+    )
+    runtime_profile = _select_question_generation_runtime_profile(
+        full_prompt,
+        truncated_docs=truncated_docs,
+        decision_meta=decision_meta,
+        base_call_type=base_call_type,
+        allow_fast_path=allow_fast_path,
+    )
+
+    fast_prompt = full_prompt
+    fast_prompt_mode = str((decision_meta or {}).get("output_mode", "full") or "full")
+    if runtime_profile.get("allow_fast_path") and runtime_profile.get("fast_output_mode") == "light":
+        light_prompt, light_truncated_docs, light_decision_meta = build_interview_prompt(
+            session,
+            dimension,
+            all_dim_logs,
+            session_id=session_id,
+            session_signature=session_signature,
+            output_mode="light",
+        )
+        if light_truncated_docs:
+            runtime_profile["allow_fast_path"] = False
+            runtime_profile["selection_reason"] = (
+                f"{runtime_profile.get('selection_reason', '')},light_prompt_truncated_docs".strip(",")
+            )
+        else:
+            fast_prompt = light_prompt
+            fast_prompt_mode = str((light_decision_meta or {}).get("output_mode", "light") or "light")
+
+    runtime_profile["fast_prompt_mode"] = fast_prompt_mode
+    runtime_profile["full_prompt_mode"] = str((decision_meta or {}).get("output_mode", "full") or "full")
+
+    enriched_decision_meta = dict(decision_meta or {})
+    enriched_decision_meta.update({
+        "runtime_profile": runtime_profile.get("profile_name", ""),
+        "selection_reason": runtime_profile.get("selection_reason", ""),
+        "fast_path_enabled": bool(runtime_profile.get("allow_fast_path", allow_fast_path)),
+        "fast_prompt_mode": runtime_profile.get("fast_prompt_mode", "full"),
+        "full_prompt_mode": runtime_profile.get("full_prompt_mode", "full"),
+        "primary_lane": runtime_profile.get("primary_lane", "question"),
+        "secondary_lane": runtime_profile.get("secondary_lane", QUESTION_HEDGED_SECONDARY_LANE),
+        "fast_prompt_length": len(fast_prompt or ""),
+        "full_prompt_length": len(full_prompt or ""),
+    })
+
+    return {
+        "fast_prompt": fast_prompt,
+        "full_prompt": full_prompt,
+        "truncated_docs": truncated_docs,
+        "decision_meta": enriched_decision_meta,
+        "runtime_profile": runtime_profile,
+    }
+
+
 def _call_question_with_optional_hedge(
     prompt: str,
     max_tokens: int,
@@ -15576,12 +16113,25 @@ def _call_question_with_optional_hedge(
     timeout: Optional[float] = None,
     retry_on_timeout: bool = False,
     debug: bool = False,
+    primary_lane: str = "question",
+    secondary_lane: str = QUESTION_HEDGED_SECONDARY_LANE,
+    hedged_enabled: Optional[bool] = None,
+    hedge_delay_seconds: Optional[float] = None,
+    lane_profile_name: str = "",
 ) -> tuple[Optional[str], str, dict]:
     """问题生成可选竞速：主通道先发，延迟触发备用通道，谁先返回可用结果用谁。"""
-    primary_lane = "question"
-    secondary_lane = QUESTION_HEDGED_SECONDARY_LANE
+    valid_lanes = {"question", "report", "summary", "search_decision"}
+    primary_lane = str(primary_lane or "question").strip().lower() or "question"
+    secondary_lane = str(secondary_lane or QUESTION_HEDGED_SECONDARY_LANE).strip().lower() or QUESTION_HEDGED_SECONDARY_LANE
+    if primary_lane not in valid_lanes:
+        primary_lane = "question"
+    if secondary_lane not in valid_lanes:
+        secondary_lane = QUESTION_HEDGED_SECONDARY_LANE
+    hedged_enabled = QUESTION_HEDGED_ENABLED if hedged_enabled is None else bool(hedged_enabled)
+    hedge_delay_seconds = max(0.5, float(hedge_delay_seconds if hedge_delay_seconds is not None else QUESTION_HEDGED_DELAY_SECONDS))
 
     def _run_single(lane: str, lane_call_type: str, hedge_flag: bool = False) -> tuple[Optional[str], dict]:
+        started_at = _time.perf_counter()
         raw_result = call_claude(
             prompt,
             max_tokens=max_tokens,
@@ -15593,7 +16143,11 @@ def _call_question_with_optional_hedge(
             hedge_triggered=hedge_flag,
             return_meta=True,
         )
-        return _normalize_question_call_result(raw_result, lane=lane, max_tokens=max_tokens, timeout=timeout)
+        response_text, response_meta = _normalize_question_call_result(raw_result, lane=lane, max_tokens=max_tokens, timeout=timeout)
+        response_meta = dict(response_meta or {})
+        response_meta.setdefault("response_time_ms", round((_time.perf_counter() - started_at) * 1000.0, 2))
+        _record_question_lane_strategy_outcome(lane_profile_name, lane, response_text, response_meta)
+        return response_text, response_meta
 
     def _build_attempts_summary(responses: list[tuple[str, Optional[str], dict]], started_lanes: list[str]) -> list[dict]:
         attempt_map = {}
@@ -15615,7 +16169,7 @@ def _call_question_with_optional_hedge(
             )
         return [attempt_map[lane_name] for lane_name in started_lanes if lane_name in attempt_map]
 
-    if not QUESTION_HEDGED_ENABLED or secondary_lane == primary_lane:
+    if not hedged_enabled or secondary_lane == primary_lane:
         response_text, response_meta = _run_single(primary_lane, call_type)
         response_meta = dict(response_meta or {})
         response_meta["attempts"] = _build_attempts_summary([(primary_lane, response_text, response_meta)], [primary_lane])
@@ -15655,7 +16209,7 @@ def _call_question_with_optional_hedge(
     primary_thread.start()
 
     responses: list[tuple[str, Optional[str], dict]] = []
-    delay_deadline = _time.time() + float(QUESTION_HEDGED_DELAY_SECONDS)
+    delay_deadline = _time.time() + float(hedge_delay_seconds)
     while _time.time() < delay_deadline:
         wait_timeout = max(0.01, min(0.15, delay_deadline - _time.time()))
         try:
@@ -15712,22 +16266,77 @@ def generate_question_with_tiered_strategy(
     debug: bool = False,
     base_call_type: str = "question",
     allow_fast_path: bool = True,
+    fast_prompt: Optional[str] = None,
+    runtime_profile: Optional[dict] = None,
 ) -> tuple[Optional[str], Optional[dict], str]:
     """问题生成双档策略：轻量 prompt 才尝试快档，失败时回退全量竞速。"""
-    fast_skip_reason = ""
-    if allow_fast_path:
-        fast_skip_reason = _get_question_fast_skip_reason(prompt, truncated_docs=truncated_docs)
-
-    if allow_fast_path and not fast_skip_reason:
+    runtime_profile = dict(runtime_profile or {})
+    effective_fast_prompt = fast_prompt if isinstance(fast_prompt, str) and fast_prompt else prompt
+    effective_fast_allowed = bool(runtime_profile.get("allow_fast_path", allow_fast_path))
+    fast_timeout = runtime_profile.get("fast_timeout")
+    if fast_timeout is None:
         fast_timeout = min(float(API_TIMEOUT), float(QUESTION_FAST_TIMEOUT))
+    fast_max_tokens = _clamp_question_generation_tokens(
+        runtime_profile.get("fast_max_tokens", QUESTION_FAST_MAX_TOKENS),
+        minimum=400,
+    )
+    full_timeout = runtime_profile.get("full_timeout")
+    full_max_tokens = _clamp_question_generation_tokens(
+        runtime_profile.get("full_max_tokens", MAX_TOKENS_QUESTION),
+        minimum=600,
+    )
+    hedged_enabled = runtime_profile.get("hedged_enabled", QUESTION_HEDGED_ENABLED)
+    hedge_delay_seconds = runtime_profile.get("hedge_delay_seconds", QUESTION_HEDGED_DELAY_SECONDS)
+    fast_primary_lane, fast_secondary_lane, fast_lane_meta = _resolve_dynamic_question_lane_order(runtime_profile, phase="fast")
+    full_primary_lane, full_secondary_lane, full_lane_meta = _resolve_dynamic_question_lane_order(runtime_profile, phase="full")
+    fast_timeout, fast_max_tokens, fast_hedge_delay_seconds = _resolve_question_lane_runtime_params(
+        runtime_profile,
+        fast_primary_lane,
+        "fast",
+        fast_timeout,
+        fast_max_tokens,
+        hedge_delay_seconds,
+    )
+    full_timeout, full_max_tokens, full_hedge_delay_seconds = _resolve_question_lane_runtime_params(
+        runtime_profile,
+        full_primary_lane,
+        "full",
+        full_timeout,
+        full_max_tokens,
+        hedge_delay_seconds,
+    )
+
+    if debug and runtime_profile:
+        print(
+            "⚙️ 问题运行时档位: "
+            f"profile={runtime_profile.get('profile_name', '-')},"
+            f"fast_mode={runtime_profile.get('fast_prompt_mode', runtime_profile.get('fast_output_mode', 'full'))},"
+            f"full_mode={runtime_profile.get('full_prompt_mode', 'full')},"
+            f"fast_timeout={fast_timeout},full_timeout={full_timeout},"
+            f"fast_tokens={fast_max_tokens},full_tokens={full_max_tokens},"
+            f"fast_lanes={fast_primary_lane}->{fast_secondary_lane},"
+            f"full_lanes={full_primary_lane}->{full_secondary_lane},"
+            f"reason={runtime_profile.get('selection_reason', '-') or '-'}"
+        )
+
+    fast_skip_reason = ""
+    if effective_fast_allowed:
+        fast_skip_reason = _get_question_fast_skip_reason(effective_fast_prompt, truncated_docs=truncated_docs)
+
+    if effective_fast_allowed and not fast_skip_reason:
         fast_response, fast_lane, fast_meta = _call_question_with_optional_hedge(
-            prompt,
-            max_tokens=QUESTION_FAST_MAX_TOKENS,
+            effective_fast_prompt,
+            max_tokens=fast_max_tokens,
             call_type=f"{base_call_type}_fast",
             truncated_docs=truncated_docs,
             timeout=fast_timeout,
             retry_on_timeout=False,
             debug=debug,
+            primary_lane=fast_primary_lane,
+            secondary_lane=fast_secondary_lane,
+            hedged_enabled=hedged_enabled,
+            hedge_delay_seconds=fast_hedge_delay_seconds,
+            lane_profile_name=str(fast_lane_meta.get("strategy_key", "") or ""),
         )
         if fast_response:
             fast_result = parse_question_response(fast_response, debug=debug)
@@ -15742,16 +16351,22 @@ def generate_question_with_tiered_strategy(
             _record_question_fast_outcome(False, lane=fast_lane, reason=_format_question_tier_attempts_for_log(fast_meta))
             if debug:
                 print(f"⚠️ 快档未命中，原因: {_format_question_tier_attempts_for_log(fast_meta)}，回退全量档重试")
-    elif debug and allow_fast_path:
+    elif debug and effective_fast_allowed:
         print(f"ℹ️ 跳过快档：{_describe_question_fast_skip_reason(fast_skip_reason)}，直接走全量竞速")
 
     full_response, full_lane, full_meta = _call_question_with_optional_hedge(
         prompt,
-        max_tokens=MAX_TOKENS_QUESTION,
+        max_tokens=full_max_tokens,
         call_type=base_call_type,
         truncated_docs=truncated_docs,
+        timeout=full_timeout,
         retry_on_timeout=True,
         debug=debug,
+        primary_lane=full_primary_lane,
+        secondary_lane=full_secondary_lane,
+        hedged_enabled=hedged_enabled,
+        hedge_delay_seconds=full_hedge_delay_seconds,
+        lane_profile_name=str(full_lane_meta.get("strategy_key", "") or ""),
     )
     full_result = parse_question_response(full_response, debug=debug) if full_response else None
     if debug and not full_response:
@@ -15954,18 +16569,28 @@ def get_next_question(session_id):
         # 阶段1: 分析回答
         update_thinking_status(session_id, "analyzing", has_search)
 
-        prompt, truncated_docs, decision_meta = build_interview_prompt(
+        prepared_runtime = _prepare_question_generation_runtime(
             session,
             dimension,
             all_dim_logs,
             session_id=session_id,
             session_signature=session_signature,
+            base_call_type="question",
+            allow_fast_path=True,
         )
+        prompt = prepared_runtime["full_prompt"]
+        truncated_docs = prepared_runtime["truncated_docs"]
+        decision_meta = prepared_runtime["decision_meta"]
+        runtime_profile = prepared_runtime["runtime_profile"]
+        fast_prompt = prepared_runtime["fast_prompt"]
 
         # 日志：记录 prompt 长度（便于监控和调优）
         if ENABLE_DEBUG_LOG:
             ref_docs_count = len(session.get("reference_materials", session.get("reference_docs", []) + session.get("research_docs", [])))
-            print(f"📊 访谈 Prompt 统计：总长度={len(prompt)}字符，参考资料={ref_docs_count}个")
+            print(
+                "📊 访谈 Prompt 统计："
+                f"full={len(prompt)}字符,fast={len(fast_prompt)}字符,参考资料={ref_docs_count}个"
+            )
             if truncated_docs:
                 print(f"⚠️  文档截断：{len(truncated_docs)}个文档被截断")
 
@@ -15977,7 +16602,9 @@ def get_next_question(session_id):
             truncated_docs=truncated_docs,
             debug=ENABLE_DEBUG_LOG,
             base_call_type="question",
-            allow_fast_path=True,
+            allow_fast_path=bool(runtime_profile.get("allow_fast_path", True)),
+            fast_prompt=fast_prompt,
+            runtime_profile=runtime_profile,
         )
         if ENABLE_DEBUG_LOG:
             print(f"⚙️ 问题生成通道: {tier_used}")
@@ -15999,12 +16626,16 @@ def get_next_question(session_id):
             if last_log and last_log.get("question") == result.get("question"):
                 if ENABLE_DEBUG_LOG:
                     print("⚠️ 检测到重复问题，自动重试一次")
+                retry_runtime_profile = dict(runtime_profile)
+                retry_runtime_profile["allow_fast_path"] = False
                 retry_response, retry_result, retry_tier = generate_question_with_tiered_strategy(
                     prompt,
                     truncated_docs=truncated_docs,
                     debug=ENABLE_DEBUG_LOG,
                     base_call_type="question_retry",
                     allow_fast_path=False,
+                    fast_prompt=prompt,
+                    runtime_profile=retry_runtime_profile,
                 )
                 if ENABLE_DEBUG_LOG:
                     print(f"⚙️ 重复问题重试通道: {retry_tier}")
