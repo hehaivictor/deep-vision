@@ -495,8 +495,26 @@ if QUESTION_FAST_TIMEOUT < 5.0:
     QUESTION_FAST_TIMEOUT = 5.0
 QUESTION_FAST_MAX_TOKENS = _cfg_int("QUESTION_FAST_MAX_TOKENS", 1000)
 QUESTION_FAST_MAX_TOKENS = max(600, min(QUESTION_FAST_MAX_TOKENS, MAX_TOKENS_QUESTION))
+QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS = _cfg_int("QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS", 1800)
+if QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS < 0:
+    QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS = 0
+QUESTION_FAST_SKIP_WHEN_TRUNCATED_DOCS = _cfg_bool("QUESTION_FAST_SKIP_WHEN_TRUNCATED_DOCS", True)
+QUESTION_FAST_ADAPTIVE_ENABLED = _cfg_bool("QUESTION_FAST_ADAPTIVE_ENABLED", True)
+QUESTION_FAST_ADAPTIVE_WINDOW_SIZE = _cfg_int("QUESTION_FAST_ADAPTIVE_WINDOW_SIZE", 20)
+if QUESTION_FAST_ADAPTIVE_WINDOW_SIZE < 4:
+    QUESTION_FAST_ADAPTIVE_WINDOW_SIZE = 4
+QUESTION_FAST_ADAPTIVE_MIN_SAMPLES = _cfg_int("QUESTION_FAST_ADAPTIVE_MIN_SAMPLES", 8)
+if QUESTION_FAST_ADAPTIVE_MIN_SAMPLES < 4:
+    QUESTION_FAST_ADAPTIVE_MIN_SAMPLES = 4
+if QUESTION_FAST_ADAPTIVE_MIN_SAMPLES > QUESTION_FAST_ADAPTIVE_WINDOW_SIZE:
+    QUESTION_FAST_ADAPTIVE_MIN_SAMPLES = QUESTION_FAST_ADAPTIVE_WINDOW_SIZE
+QUESTION_FAST_ADAPTIVE_MIN_HIT_RATE = _cfg_float("QUESTION_FAST_ADAPTIVE_MIN_HIT_RATE", 0.35)
+QUESTION_FAST_ADAPTIVE_MIN_HIT_RATE = max(0.0, min(QUESTION_FAST_ADAPTIVE_MIN_HIT_RATE, 1.0))
+QUESTION_FAST_ADAPTIVE_COOLDOWN_SECONDS = _cfg_float("QUESTION_FAST_ADAPTIVE_COOLDOWN_SECONDS", 900.0)
+if QUESTION_FAST_ADAPTIVE_COOLDOWN_SECONDS < 0.0:
+    QUESTION_FAST_ADAPTIVE_COOLDOWN_SECONDS = 0.0
 QUESTION_HEDGED_ENABLED = _cfg_bool("QUESTION_HEDGED_ENABLED", True)
-QUESTION_HEDGED_DELAY_SECONDS = _cfg_float("QUESTION_HEDGED_DELAY_SECONDS", 4.0)
+QUESTION_HEDGED_DELAY_SECONDS = _cfg_float("QUESTION_HEDGED_DELAY_SECONDS", 1.5)
 if QUESTION_HEDGED_DELAY_SECONDS < 0.5:
     QUESTION_HEDGED_DELAY_SECONDS = 0.5
 QUESTION_HEDGED_SECONDARY_LANE = _cfg_text("QUESTION_HEDGED_SECONDARY_LANE", "summary").strip().lower()
@@ -1277,6 +1295,17 @@ search_result_inflight = {}  # { cache_key: { event: threading.Event, started_at
 # ============ 问题结果幂等缓存 ============
 question_result_cache_lock = threading.Lock()
 question_result_cache = {}  # { cache_key: { value: dict, expire_at: float } }
+
+# ============ 问题快档自适应控制 ============
+question_fast_strategy_lock = threading.Lock()
+question_fast_strategy_state = {
+    "recent": deque(maxlen=max(QUESTION_FAST_ADAPTIVE_WINDOW_SIZE, QUESTION_FAST_ADAPTIVE_MIN_SAMPLES, 4)),
+    "cooldown_until": 0.0,
+    "last_reason": "",
+    "last_hit_rate": 0.0,
+    "last_sample_size": 0,
+    "last_opened_at": 0.0,
+}
 
 # ============ 访谈 Prompt 构建缓存 ============
 interview_prompt_cache_lock = threading.Lock()
@@ -5053,6 +5082,8 @@ def resolve_generation_stage(call_type: str = "") -> str:
         return "draft_gen"
     if "report_v3_review_round" in lowered:
         return "review_gen"
+    if lowered.startswith(("question", "prefetch")):
+        return "question_fast" if "_fast" in lowered else "question_full"
     return ""
 
 
@@ -15284,6 +15315,130 @@ def _format_question_tier_attempts_for_log(call_meta: Optional[dict]) -> str:
     return "；".join(segments) if segments else "未知"
 
 
+def reset_question_fast_strategy_state() -> None:
+    with question_fast_strategy_lock:
+        question_fast_strategy_state["recent"] = deque(
+            maxlen=max(QUESTION_FAST_ADAPTIVE_WINDOW_SIZE, QUESTION_FAST_ADAPTIVE_MIN_SAMPLES, 4)
+        )
+        question_fast_strategy_state["cooldown_until"] = 0.0
+        question_fast_strategy_state["last_reason"] = ""
+        question_fast_strategy_state["last_hit_rate"] = 0.0
+        question_fast_strategy_state["last_sample_size"] = 0
+        question_fast_strategy_state["last_opened_at"] = 0.0
+
+
+def get_question_fast_strategy_snapshot(now_ts: Optional[float] = None) -> dict:
+    now_value = _time.time() if now_ts is None else float(now_ts)
+    with question_fast_strategy_lock:
+        recent = list(question_fast_strategy_state.get("recent", []) or [])
+        cooldown_until = float(question_fast_strategy_state.get("cooldown_until", 0.0) or 0.0)
+        cooldown_remaining = max(0.0, cooldown_until - now_value)
+        sample = recent[-QUESTION_FAST_ADAPTIVE_WINDOW_SIZE:] if QUESTION_FAST_ADAPTIVE_WINDOW_SIZE > 0 else recent
+        sample_size = len(sample)
+        hit_count = sum(1 for item in sample if isinstance(item, dict) and bool(item.get("success", False)))
+        hit_rate = (hit_count / sample_size) if sample_size > 0 else 0.0
+        return {
+            "cooldown_remaining_seconds": cooldown_remaining,
+            "cooldown_active": cooldown_remaining > 0.0,
+            "hit_rate": hit_rate,
+            "sample_size": sample_size,
+            "last_reason": str(question_fast_strategy_state.get("last_reason", "") or ""),
+            "last_hit_rate": float(question_fast_strategy_state.get("last_hit_rate", 0.0) or 0.0),
+            "last_sample_size": int(question_fast_strategy_state.get("last_sample_size", 0) or 0),
+        }
+
+
+def _record_question_fast_outcome(success: bool, lane: str = "", reason: str = "") -> None:
+    if not QUESTION_FAST_ADAPTIVE_ENABLED:
+        return
+
+    now_ts = _time.time()
+    opened_reason = ""
+    with question_fast_strategy_lock:
+        recent = question_fast_strategy_state.get("recent")
+        if not isinstance(recent, deque):
+            recent = deque(maxlen=max(QUESTION_FAST_ADAPTIVE_WINDOW_SIZE, QUESTION_FAST_ADAPTIVE_MIN_SAMPLES, 4))
+            question_fast_strategy_state["recent"] = recent
+
+        recent.append({
+            "success": bool(success),
+            "lane": str(lane or ""),
+            "reason": str(reason or ""),
+            "timestamp": now_ts,
+        })
+
+        if QUESTION_FAST_ADAPTIVE_COOLDOWN_SECONDS <= 0.0:
+            return
+
+        cooldown_until = float(question_fast_strategy_state.get("cooldown_until", 0.0) or 0.0)
+        if cooldown_until > now_ts:
+            return
+
+        sample = list(recent)[-QUESTION_FAST_ADAPTIVE_WINDOW_SIZE:]
+        sample_size = len(sample)
+        if sample_size < QUESTION_FAST_ADAPTIVE_MIN_SAMPLES:
+            return
+
+        hit_count = sum(1 for item in sample if isinstance(item, dict) and bool(item.get("success", False)))
+        hit_rate = hit_count / sample_size if sample_size > 0 else 0.0
+        question_fast_strategy_state["last_hit_rate"] = hit_rate
+        question_fast_strategy_state["last_sample_size"] = sample_size
+
+        if hit_rate < QUESTION_FAST_ADAPTIVE_MIN_HIT_RATE:
+            question_fast_strategy_state["cooldown_until"] = now_ts + QUESTION_FAST_ADAPTIVE_COOLDOWN_SECONDS
+            opened_reason = (
+                f"近{sample_size}次快档命中率{hit_rate:.0%}"
+                f"低于阈值{QUESTION_FAST_ADAPTIVE_MIN_HIT_RATE:.0%}"
+            )
+            question_fast_strategy_state["last_reason"] = opened_reason
+            question_fast_strategy_state["last_opened_at"] = now_ts
+            recent.clear()
+
+    if opened_reason:
+        print(
+            f"⚠️ 问题快档自适应停用：{opened_reason}，"
+            f"冷却{int(round(QUESTION_FAST_ADAPTIVE_COOLDOWN_SECONDS))}s"
+        )
+
+
+def _get_question_fast_skip_reason(prompt: str, truncated_docs: Optional[list] = None) -> str:
+    if not QUESTION_FAST_PATH_ENABLED:
+        return "config_disabled"
+
+    prompt_length = len(prompt or "")
+    if QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS > 0 and prompt_length > QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS:
+        return f"prompt_too_long:{prompt_length}>{QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS}"
+
+    if QUESTION_FAST_SKIP_WHEN_TRUNCATED_DOCS and truncated_docs:
+        return f"truncated_docs:{len(truncated_docs)}"
+
+    if QUESTION_FAST_ADAPTIVE_ENABLED:
+        snapshot = get_question_fast_strategy_snapshot()
+        cooldown_remaining = float(snapshot.get("cooldown_remaining_seconds", 0.0) or 0.0)
+        if cooldown_remaining > 0.0:
+            return f"adaptive_cooldown:{int(round(cooldown_remaining))}s"
+
+    return ""
+
+
+def _describe_question_fast_skip_reason(reason: str) -> str:
+    text = str(reason or "").strip()
+    if not text:
+        return "未知原因"
+    if text == "config_disabled":
+        return "配置关闭"
+    if text.startswith("prompt_too_long:"):
+        payload = text.split(":", 1)[1]
+        return f"prompt 过长（{payload}）"
+    if text.startswith("truncated_docs:"):
+        payload = text.split(":", 1)[1]
+        return f"存在截断文档（{payload}个）"
+    if text.startswith("adaptive_cooldown:"):
+        payload = text.split(":", 1)[1]
+        return f"命中率过低，快档冷却中（剩余{payload}）"
+    return text
+
+
 def _call_question_with_optional_hedge(
     prompt: str,
     max_tokens: int,
@@ -15429,8 +15584,12 @@ def generate_question_with_tiered_strategy(
     base_call_type: str = "question",
     allow_fast_path: bool = True,
 ) -> tuple[Optional[str], Optional[dict], str]:
-    """问题生成双档策略：快档优先，解析失败或无效响应时回退全量档。"""
-    if allow_fast_path and QUESTION_FAST_PATH_ENABLED:
+    """问题生成双档策略：轻量 prompt 才尝试快档，失败时回退全量竞速。"""
+    fast_skip_reason = ""
+    if allow_fast_path:
+        fast_skip_reason = _get_question_fast_skip_reason(prompt, truncated_docs=truncated_docs)
+
+    if allow_fast_path and not fast_skip_reason:
         fast_timeout = min(float(API_TIMEOUT), float(QUESTION_FAST_TIMEOUT))
         fast_response, fast_lane, fast_meta = _call_question_with_optional_hedge(
             prompt,
@@ -15444,12 +15603,18 @@ def generate_question_with_tiered_strategy(
         if fast_response:
             fast_result = parse_question_response(fast_response, debug=debug)
             if fast_result:
+                _record_question_fast_outcome(True, lane=fast_lane, reason="ok")
                 return fast_response, fast_result, f"fast:{fast_lane}"
+            _record_question_fast_outcome(False, lane=fast_lane, reason="parse_failed")
             if debug:
                 response_length = int(fast_meta.get("response_length", len(fast_response)) or len(fast_response))
                 print(f"⚠️ 快档响应解析失败: lane={fast_lane}, len={response_length}，回退全量档重试")
-        elif debug:
-            print(f"⚠️ 快档未命中，原因: {_format_question_tier_attempts_for_log(fast_meta)}，回退全量档重试")
+        else:
+            _record_question_fast_outcome(False, lane=fast_lane, reason=_format_question_tier_attempts_for_log(fast_meta))
+            if debug:
+                print(f"⚠️ 快档未命中，原因: {_format_question_tier_attempts_for_log(fast_meta)}，回退全量档重试")
+    elif debug and allow_fast_path:
+        print(f"ℹ️ 跳过快档：{_describe_question_fast_skip_reason(fast_skip_reason)}，直接走全量竞速")
 
     full_response, full_lane, full_meta = _call_question_with_optional_hedge(
         prompt,
@@ -20233,6 +20398,14 @@ if __name__ == '__main__':
         print(f"搜索决策模型: {SEARCH_DECISION_MODEL_NAME}")
         print(f"搜索决策网关: {'可用' if search_decision_ai_client else '不可用'} @ {search_decision_endpoint}")
         print(f"搜索决策缓存: TTL={SEARCH_DECISION_CACHE_TTL_SECONDS}s, MAX={SEARCH_DECISION_CACHE_MAX_ENTRIES}")
+        print(
+            "问题策略: "
+            f"fast={'on' if QUESTION_FAST_PATH_ENABLED else 'off'}"
+            f"(timeout={QUESTION_FAST_TIMEOUT}s,tokens={QUESTION_FAST_MAX_TOKENS},"
+            f"prompt<={QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS},adaptive={'on' if QUESTION_FAST_ADAPTIVE_ENABLED else 'off'}), "
+            f"hedge={'on' if QUESTION_HEDGED_ENABLED else 'off'}"
+            f"(delay={QUESTION_HEDGED_DELAY_SECONDS}s,lane={QUESTION_HEDGED_SECONDARY_LANE})"
+        )
         print(
             "V3 配置: "
             f"profile={REPORT_V3_PROFILE}, "
