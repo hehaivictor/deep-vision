@@ -588,8 +588,15 @@ function deepVision() {
         },
 
         async checkAuthStatus() {
+            if (this.serverStatus && this.serverStatus.authenticated === false) {
+                this.enterLoginState({ showToast: false });
+                return;
+            }
             try {
-                const result = await this.apiCall('/auth/me', { skipAuthRedirect: true });
+                const result = await this.apiCall('/auth/me', {
+                    skipAuthRedirect: true,
+                    expectedStatuses: [401]
+                });
                 this.currentUser = result?.user || null;
                 this.authReady = Boolean(this.currentUser);
             } catch (error) {
@@ -2119,7 +2126,12 @@ function deepVision() {
         // ============ API 调用 ============
         async apiCall(endpoint, options = {}) {
             try {
-                const { skipAuthRedirect = false, ...fetchOptions } = options;
+                const {
+                    skipAuthRedirect = false,
+                    expectedStatuses = [],
+                    suppressErrorLog = false,
+                    ...fetchOptions
+                } = options;
                 const response = await fetch(`${API_BASE}${endpoint}`, {
                     headers: { 'Content-Type': 'application/json' },
                     ...fetchOptions
@@ -2141,11 +2153,16 @@ function deepVision() {
                         });
                     }
 
-                    throw new Error(errorMsg);
+                    const error = new Error(errorMsg);
+                    error.status = response.status;
+                    error.isExpected = Array.isArray(expectedStatuses) && expectedStatuses.includes(response.status);
+                    throw error;
                 }
                 return await response.json();
             } catch (error) {
-                console.error('API 调用失败:', error);
+                if (!error?.isExpected && !suppressErrorLog) {
+                    console.error('API 调用失败:', error);
+                }
                 throw error;
             }
         },

@@ -1985,7 +1985,16 @@
                         link.textContent = h3.textContent.trim();
                         container.appendChild(link);
                     });
-                    section.insertBefore(toc, section.querySelector('h3'));
+                    const firstHeading = h3List[0];
+                    let tocAnchor = firstHeading;
+                    while (tocAnchor && tocAnchor.parentElement !== section) {
+                        tocAnchor = tocAnchor.parentElement;
+                    }
+                    if (tocAnchor) {
+                        section.insertBefore(toc, tocAnchor);
+                    } else {
+                        section.appendChild(toc);
+                    }
                 }
             });
 
