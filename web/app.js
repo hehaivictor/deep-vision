@@ -4410,7 +4410,7 @@ function deepVision() {
             if (!targetReport) return '';
             const params = new URLSearchParams();
             params.set('report', targetReport);
-            params.set('v', '20260310-solution-v6');
+            params.set('v', '20260310-solution-v7');
             return `solution.html?${params.toString()}`;
         },
 

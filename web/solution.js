@@ -1,4 +1,4 @@
-const SOLUTION_ASSET_VERSION = '20260310-solution-v6';
+const SOLUTION_ASSET_VERSION = '20260310-solution-v7';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 
 function solutionEscapeHtml(value) {
@@ -24,18 +24,6 @@ function solutionShortText(value, maxLength = 36) {
 function solutionGetReportName() {
     const params = new URLSearchParams(window.location.search || '');
     return String(params.get('report') || '').trim();
-}
-
-function solutionResolveSameOriginReferrer() {
-    const referrer = String(document.referrer || '').trim();
-    if (!referrer) return '';
-    try {
-        const url = new URL(referrer, window.location.origin);
-        if (url.origin !== window.location.origin) return '';
-        return url.toString();
-    } catch (error) {
-        return '';
-    }
 }
 
 function solutionBuildReportUrl(reportName = '') {
@@ -335,32 +323,6 @@ function solutionBindScrollSpy() {
     }
 }
 
-function solutionBindHeaderActions(reportName) {
-    const backButton = document.getElementById('solution-back-btn');
-    const openReportButton = document.getElementById('solution-open-report-btn');
-    const referrerUrl = solutionResolveSameOriginReferrer();
-
-    if (backButton) {
-        backButton.addEventListener('click', () => {
-            if (referrerUrl) {
-                window.location.href = referrerUrl;
-                return;
-            }
-            if (window.history.length > 1) {
-                window.history.back();
-                return;
-            }
-            window.location.href = solutionBuildReportUrl(reportName);
-        });
-    }
-
-    if (openReportButton) {
-        openReportButton.addEventListener('click', () => {
-            window.location.href = solutionBuildReportUrl(reportName);
-        });
-    }
-}
-
 function solutionRender(payload) {
     document.title = `${payload.title || '查看方案'} | DeepVision`;
     const shell = document.getElementById('solution-shell');
@@ -404,7 +366,6 @@ function solutionRender(payload) {
     state.hidden = true;
     shell.hidden = false;
     solutionBindScrollSpy();
-    solutionBindHeaderActions(payload.report_name || solutionGetReportName());
 }
 
 async function initSolutionPage() {
