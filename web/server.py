@@ -9081,6 +9081,41 @@ def _repair_json_candidate(candidate: str) -> tuple[str, bool]:
         normalized = "".join(control_fixed_parts)
         repaired = True
 
+    # 兜底修复：截断响应常见于长 JSON，尝试补齐字符串与括号闭合。
+    if normalized.startswith("{"):
+        stack = []
+        in_string = False
+        escape_next = False
+        for ch in normalized:
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\":
+                escape_next = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch in "[{":
+                stack.append(ch)
+            elif ch == "]" and stack and stack[-1] == "[":
+                stack.pop()
+            elif ch == "}" and stack and stack[-1] == "{":
+                stack.pop()
+
+        suffix = []
+        if in_string:
+            suffix.append('"')
+        while stack:
+            opener = stack.pop()
+            suffix.append('}' if opener == '{' else ']')
+        if suffix:
+            normalized = normalized + "".join(suffix)
+            normalized = re.sub(r",\s*([}\]])", r"\1", normalized)
+            repaired = True
+
     # 若候选中仍混有额外文本，尝试提取首个 JSON 对象
     if not (normalized.startswith("{") and normalized.endswith("}")):
         extracted = _extract_first_json_object(normalized)
@@ -9126,7 +9161,7 @@ def parse_structured_json_response(
         seen_candidates.add(dedup_key)
         candidates.append((candidate, source))
 
-    if text.startswith('{') and text.endswith('}'):
+    if text.startswith('{'):
         _append_candidate(text, "raw_text")
 
     if "```json" in text:
@@ -10403,7 +10438,11 @@ def build_report_review_prompt_v3(session: dict, evidence_pack: dict, draft: dic
 ## 输出要求
 - 仅输出合法 JSON，禁止附加解释文字。
 - 必须包含 passed、issues、revised_draft 三个字段。
-- revised_draft 必须保留原有结构，并修复可修复问题。
+- revised_draft 允许采用“增量修订”模式：
+  - 未修改的顶层字段可以省略。
+  - 若修改 needs/solutions/risks/actions/open_questions/evidence_index 任一数组字段，需返回该字段的完整数组。
+  - analysis / visualizations 只返回被修改的子字段即可。
+- 只有在多数顶层字段都被改动时，才返回完整 revised_draft。
 - 若仍有问题，issues 需完整列出。
 - 优先修复风格锁定问题：补齐可表格化字段，避免段落堆叠和口语化表述。
 - actions 至少 3 条（证据不足可 2 条），timeline 需覆盖短期和中期。
@@ -10450,6 +10489,47 @@ def parse_report_review_response_v3(raw_text: str, parse_meta: Optional[dict] = 
         "issues": issues,
         "revised_draft": revised_draft,
     }
+
+
+def merge_report_draft_patch_v3(base_draft: dict, revised_patch: dict) -> dict:
+    """将审稿阶段的增量 patch 合并回完整草案，减少长 JSON 输出压力。"""
+    base = copy.deepcopy(base_draft) if isinstance(base_draft, dict) else {}
+    patch = revised_patch if isinstance(revised_patch, dict) else {}
+    if not patch:
+        return base
+
+    merged = copy.deepcopy(base)
+
+    if "overview" in patch:
+        merged["overview"] = patch.get("overview", "")
+
+    for field in ("analysis", "visualizations"):
+        if field in patch and isinstance(patch.get(field), dict):
+            current_value = merged.get(field, {})
+            if not isinstance(current_value, dict):
+                current_value = {}
+            current_value = dict(current_value)
+            current_value.update(patch.get(field, {}))
+            merged[field] = current_value
+
+    for field in ("needs", "solutions", "risks", "actions", "open_questions", "evidence_index"):
+        if field in patch and isinstance(patch.get(field), list):
+            merged[field] = patch.get(field, [])
+
+    return merged
+
+
+def resolve_report_v3_alternate_lane(primary_lane: str) -> str:
+    """为 V3 阶段选择可用且独立的备用 lane。"""
+    primary = str(primary_lane or "").strip().lower()
+    if primary not in {"question", "report"}:
+        return ""
+    alternate = "question" if primary == "report" else "report"
+    primary_client = resolve_ai_client(preferred_lane=primary)
+    alternate_client = resolve_ai_client(preferred_lane=alternate)
+    if not primary_client or not alternate_client or primary_client is alternate_client:
+        return ""
+    return alternate
 
 
 REVIEW_BLOCKING_ISSUE_TYPES_V3 = {
@@ -12727,28 +12807,33 @@ def generate_report_v3_pipeline(
                 current_prompt_length,
                 timeout_cap=max(REPORT_API_TIMEOUT, runtime_cfg["draft_timeout"] + 45),
             )
-            draft_raw = call_claude(
-                draft_prompt,
-                max_tokens=current_max_tokens,
-                call_type=current_call_type,
-                timeout=current_timeout,
-                preferred_lane=draft_phase_lane,
-            )
+            draft_lane_candidates = [draft_phase_lane]
+            alternate_draft_lane = resolve_report_v3_alternate_lane(draft_phase_lane)
+            if alternate_draft_lane:
+                draft_lane_candidates.append(alternate_draft_lane)
 
-            last_draft_call_type = current_call_type
-            last_facts_limit = current_facts_limit
-            last_draft_tokens = current_max_tokens
-            last_draft_timeout = float(current_timeout)
-            last_draft_prompt_length = current_prompt_length
-            last_draft_raw = draft_raw or ""
+            for lane_index, candidate_lane in enumerate(draft_lane_candidates):
+                lane_call_type = current_call_type if lane_index == 0 else f"{current_call_type}_fallback_{candidate_lane}"
+                lane_model = resolve_model_name_for_lane(call_type="report_v3_draft", selected_lane=candidate_lane)
+                draft_raw = call_claude(
+                    draft_prompt,
+                    max_tokens=current_max_tokens,
+                    call_type=lane_call_type,
+                    timeout=current_timeout,
+                    preferred_lane=candidate_lane,
+                )
 
-            if not draft_raw:
-                last_draft_reason = "draft_generation_failed"
-                if runtime_cfg["fast_fail_on_draft_empty"] and attempt_index == 0 and draft_attempt_total > 1:
-                    if ENABLE_DEBUG_LOG:
-                        print("⚠️ 草案首轮空响应，触发快速失败以尽快切换 failover 通道")
-                    break
-            else:
+                last_draft_call_type = lane_call_type
+                last_facts_limit = current_facts_limit
+                last_draft_tokens = current_max_tokens
+                last_draft_timeout = float(current_timeout)
+                last_draft_prompt_length = current_prompt_length
+                last_draft_raw = draft_raw or ""
+
+                if not draft_raw:
+                    last_draft_reason = "draft_generation_failed"
+                    continue
+
                 draft_parse_meta = {}
                 draft_parse_start = _time.perf_counter()
                 draft_parsed = parse_structured_json_response(
@@ -12763,13 +12848,25 @@ def generate_report_v3_pipeline(
                     stage="draft_parse",
                     success=bool(draft_parsed),
                     elapsed_seconds=draft_parse_elapsed,
-                    lane=draft_phase_lane,
-                    model=draft_phase_model,
+                    lane=candidate_lane,
+                    model=lane_model,
                     error_msg=str(draft_parse_meta.get("last_error", "") or ""),
                 )
                 if draft_parsed:
+                    if candidate_lane != draft_phase_lane:
+                        phase_lanes["draft"] = candidate_lane
+                        draft_phase_model = lane_model
                     break
                 last_draft_reason = "draft_parse_failed"
+
+            if draft_parsed:
+                break
+
+            if not draft_parsed and runtime_cfg["fast_fail_on_draft_empty"] and attempt_index == 0 and draft_attempt_total > 1:
+                if ENABLE_DEBUG_LOG and last_draft_reason == "draft_generation_failed":
+                    print("⚠️ 草案首轮空响应，触发快速失败以尽快切换 failover 通道")
+                if last_draft_reason == "draft_generation_failed":
+                    break
 
             if attempt_index < (draft_attempt_total - 1) and runtime_cfg["draft_retry_backoff_seconds"] > 0:
                 _time.sleep(min(5.0, runtime_cfg["draft_retry_backoff_seconds"] * round_no))
@@ -12921,8 +13018,8 @@ def generate_report_v3_pipeline(
                     "review_issues": final_issues,
                 }
 
-            if review_parsed.get("revised_draft"):
-                current_draft = review_parsed["revised_draft"]
+            if isinstance(review_parsed.get("revised_draft"), dict):
+                current_draft = merge_report_draft_patch_v3(current_draft, review_parsed["revised_draft"])
 
             current_draft, local_issues = validate_report_draft_v3(current_draft, evidence_pack)
             repair_seed_issues = (review_parsed.get("issues", []) if isinstance(review_parsed.get("issues", []), list) else []) + list(local_issues)

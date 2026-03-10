@@ -460,6 +460,50 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertIn("第一行", parsed.get("overview", ""))
         self.assertTrue(parse_meta.get("repair_applied"))
 
+    def test_parse_structured_json_response_repairs_truncated_nested_json(self):
+        raw_text = '{"passed": true, "issues": [], "revised_draft": {"overview": "ok"'
+        parse_meta = {}
+        parsed = self.server.parse_structured_json_response(
+            raw_text,
+            required_keys=["passed", "issues", "revised_draft"],
+            require_all_keys=True,
+            parse_meta=parse_meta,
+        )
+        self.assertIsInstance(parsed, dict)
+        self.assertTrue(parse_meta.get("repair_applied"))
+        self.assertEqual(parsed.get("revised_draft", {}).get("overview"), "ok")
+
+    def test_merge_report_draft_patch_v3_preserves_unmodified_sections(self):
+        base_draft = {
+            "overview": "旧概述",
+            "needs": [{"name": "需求A", "priority": "P1", "description": "旧", "evidence_refs": ["Q1"]}],
+            "analysis": {
+                "customer_needs": "旧客户需求",
+                "business_flow": "旧流程",
+                "tech_constraints": "旧技术",
+                "project_constraints": "旧项目",
+            },
+            "visualizations": {"business_flow_mermaid": "flowchart TD\nA-->B"},
+            "solutions": [{"title": "方案A", "owner": "产品", "timeline": "2周", "metric": "上线", "evidence_refs": ["Q1"]}],
+            "risks": [],
+            "actions": [{"action": "旧行动", "owner": "产品", "timeline": "2周", "metric": "完成", "evidence_refs": ["Q1"]}],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        revised_patch = {
+            "overview": "新概述",
+            "analysis": {"business_flow": "新流程"},
+            "actions": [{"action": "新行动", "owner": "运营", "timeline": "1周", "metric": "复盘完成", "evidence_refs": ["Q1"]}],
+        }
+
+        merged = self.server.merge_report_draft_patch_v3(base_draft, revised_patch)
+
+        self.assertEqual(merged.get("overview"), "新概述")
+        self.assertEqual(merged.get("analysis", {}).get("business_flow"), "新流程")
+        self.assertEqual(merged.get("analysis", {}).get("customer_needs"), "旧客户需求")
+        self.assertEqual(merged.get("needs", [])[0].get("name"), "需求A")
+        self.assertEqual(merged.get("actions", [])[0].get("action"), "新行动")
+
     def test_adaptive_report_timeout_and_tokens(self):
         short_timeout = self.server.compute_adaptive_report_timeout(120.0, 3000, timeout_cap=180.0)
         long_timeout = self.server.compute_adaptive_report_timeout(120.0, 13000, timeout_cap=180.0)
@@ -577,6 +621,108 @@ class SecurityRegressionTests(unittest.TestCase):
         finally:
             for key, value in backup.items():
                 setattr(self.server, key, value)
+
+    def test_generate_report_v3_pipeline_falls_back_to_alternate_draft_lane_once(self):
+        env_keys = [
+            "REPORT_V3_DRAFT_RETRY_COUNT",
+            "REPORT_V3_REVIEW_BASE_ROUNDS",
+            "REPORT_V3_QUALITY_FIX_ROUNDS",
+            "REPORT_V3_MIN_REVIEW_ROUNDS",
+            "REPORT_V3_QUALITY_FORCE_SINGLE_LANE",
+            "REPORT_V3_QUALITY_PRIMARY_LANE",
+        ]
+        env_backup = {key: os.environ.get(key) for key in env_keys}
+        fn_keys = [
+            "build_report_evidence_pack",
+            "build_report_draft_prompt_v3",
+            "parse_structured_json_response",
+            "validate_report_draft_v3",
+            "build_report_review_prompt_v3",
+            "parse_report_review_response_v3",
+            "compute_report_quality_meta_v3",
+            "build_quality_gate_issues_v3",
+            "render_report_from_draft_v3",
+            "call_claude",
+        ]
+        fn_backup = {key: getattr(self.server, key) for key in fn_keys}
+        client_keys = ["question_ai_client", "report_ai_client"]
+        client_backup = {key: getattr(self.server, key) for key in client_keys}
+        draft_calls = []
+        try:
+            os.environ["REPORT_V3_DRAFT_RETRY_COUNT"] = "1"
+            os.environ["REPORT_V3_REVIEW_BASE_ROUNDS"] = "1"
+            os.environ["REPORT_V3_QUALITY_FIX_ROUNDS"] = "0"
+            os.environ["REPORT_V3_MIN_REVIEW_ROUNDS"] = "1"
+            os.environ["REPORT_V3_QUALITY_FORCE_SINGLE_LANE"] = "true"
+            os.environ["REPORT_V3_QUALITY_PRIMARY_LANE"] = "report"
+
+            self.server.report_ai_client = object()
+            self.server.question_ai_client = object()
+            self.server.build_report_evidence_pack = lambda _session: {"facts": [{"q_id": "Q1"}], "overall_coverage": 1.0}
+            self.server.build_report_draft_prompt_v3 = lambda *_args, **_kwargs: "draft prompt"
+            self.server.parse_structured_json_response = lambda *_args, **_kwargs: {
+                "overview": "ok",
+                "needs": [],
+                "analysis": {},
+            }
+            self.server.validate_report_draft_v3 = lambda draft, _evidence: (draft, [])
+            self.server.build_report_review_prompt_v3 = lambda *_args, **_kwargs: "review prompt"
+            self.server.parse_report_review_response_v3 = lambda _raw, parse_meta=None: {
+                "passed": True,
+                "issues": [],
+                "revised_draft": {},
+            }
+            self.server.compute_report_quality_meta_v3 = lambda *_args, **_kwargs: {
+                "mode": "v3_structured_reviewed",
+                "evidence_coverage": 1.0,
+                "consistency": 1.0,
+                "actionability": 1.0,
+                "overall": 1.0,
+            }
+            self.server.build_quality_gate_issues_v3 = lambda *_args, **_kwargs: []
+            self.server.render_report_from_draft_v3 = lambda *_args, **_kwargs: "# mock report"
+
+            def _fake_call_claude(_prompt, **kwargs):
+                call_type = str(kwargs.get("call_type", "") or "")
+                preferred_lane = str(kwargs.get("preferred_lane", "") or "")
+                if call_type.startswith("report_v3_draft"):
+                    draft_calls.append((call_type, preferred_lane))
+                    if preferred_lane == "report":
+                        return ""
+                    if preferred_lane == "question":
+                        return '{"overview":"ok","needs":[],"analysis":{}}'
+                if call_type.startswith("report_v3_review_round_"):
+                    return '{"passed":true,"issues":[],"revised_draft":{}}'
+                return '{"ok":true}'
+
+            self.server.call_claude = _fake_call_claude
+
+            result = self.server.generate_report_v3_pipeline(
+                {"topic": "测试"},
+                report_profile="quality",
+                preferred_lane="report",
+            )
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result.get("status"), "success")
+            self.assertEqual(result.get("phase_lanes"), {"draft": "question", "review": "report"})
+            self.assertEqual(
+                draft_calls,
+                [
+                    ("report_v3_draft", "report"),
+                    ("report_v3_draft_fallback_question", "question"),
+                ],
+            )
+        finally:
+            for key, value in fn_backup.items():
+                setattr(self.server, key, value)
+            for key, value in client_backup.items():
+                setattr(self.server, key, value)
+            for key, value in env_backup.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_generate_report_v3_pipeline_quality_requires_at_least_two_review_rounds(self):
         env_keys = [
