@@ -23,6 +23,7 @@ from contextlib import contextmanager
 import hashlib
 import html
 import json
+import math
 import os
 import queue
 import re
@@ -578,18 +579,26 @@ QUESTION_LANE_SWITCH_SUCCESS_MARGIN = max(0.0, min(QUESTION_LANE_SWITCH_SUCCESS_
 QUESTION_LANE_SWITCH_LATENCY_RATIO = _cfg_float("QUESTION_LANE_SWITCH_LATENCY_RATIO", 0.18)
 QUESTION_LANE_SWITCH_LATENCY_RATIO = max(0.0, min(QUESTION_LANE_SWITCH_LATENCY_RATIO, 0.8))
 QUESTION_HEDGED_ENABLED = _cfg_bool("QUESTION_HEDGED_ENABLED", True)
-QUESTION_HEDGED_DELAY_SECONDS = _cfg_float("QUESTION_HEDGED_DELAY_SECONDS", 1.5)
+QUESTION_HEDGED_DELAY_SECONDS = _cfg_float("QUESTION_HEDGED_DELAY_SECONDS", 3.0)
 if QUESTION_HEDGED_DELAY_SECONDS < 0.5:
     QUESTION_HEDGED_DELAY_SECONDS = 0.5
 QUESTION_HEDGED_SECONDARY_LANE = _cfg_text("QUESTION_HEDGED_SECONDARY_LANE", "summary").strip().lower()
 if QUESTION_HEDGED_SECONDARY_LANE not in {"report", "summary", "search_decision"}:
     QUESTION_HEDGED_SECONDARY_LANE = "summary"
 QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT = _cfg_bool("QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT", True)
+QUESTION_HEDGE_ADAPTIVE_ENABLED = _cfg_bool("QUESTION_HEDGE_ADAPTIVE_ENABLED", True)
+QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES = _cfg_int("QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES", 8)
+if QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES < 3:
+    QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES = 3
+QUESTION_HEDGE_ADAPTIVE_PERCENTILE = _cfg_float("QUESTION_HEDGE_ADAPTIVE_PERCENTILE", 0.8)
+QUESTION_HEDGE_ADAPTIVE_PERCENTILE = max(0.5, min(QUESTION_HEDGE_ADAPTIVE_PERCENTILE, 0.99))
+QUESTION_HEDGE_ADAPTIVE_TIMEOUT_RATIO = _cfg_float("QUESTION_HEDGE_ADAPTIVE_TIMEOUT_RATIO", 0.45)
+QUESTION_HEDGE_ADAPTIVE_TIMEOUT_RATIO = max(0.1, min(QUESTION_HEDGE_ADAPTIVE_TIMEOUT_RATIO, 0.9))
 QUESTION_FAST_TIMEOUT_BY_LANE = _cfg_numeric_map("QUESTION_FAST_TIMEOUT_BY_LANE", {}, value_type="float")
 QUESTION_FAST_MAX_TOKENS_BY_LANE = _cfg_numeric_map("QUESTION_FAST_MAX_TOKENS_BY_LANE", {}, value_type="int")
 QUESTION_FULL_TIMEOUT_BY_LANE = _cfg_numeric_map("QUESTION_FULL_TIMEOUT_BY_LANE", {}, value_type="float")
 QUESTION_FULL_MAX_TOKENS_BY_LANE = _cfg_numeric_map("QUESTION_FULL_MAX_TOKENS_BY_LANE", {}, value_type="int")
-QUESTION_HEDGE_DELAY_BY_LANE = _cfg_numeric_map("QUESTION_HEDGE_DELAY_BY_LANE", {}, value_type="float")
+QUESTION_HEDGE_DELAY_BY_LANE = _cfg_numeric_map("QUESTION_HEDGE_DELAY_BY_LANE", {"question": 3.0, "summary": 1.2, "report": 2.2, "search_decision": 1.0}, value_type="float")
 PREFETCH_QUESTION_TIMEOUT = _cfg_float("PREFETCH_QUESTION_TIMEOUT", 60.0)
 if PREFETCH_QUESTION_TIMEOUT < 15.0:
     PREFETCH_QUESTION_TIMEOUT = 15.0
@@ -16153,6 +16162,108 @@ def _resolve_question_lane_runtime_params(
     return timeout, max_tokens, hedge_delay_seconds
 
 
+def _resolve_question_lane_call_runtime_overrides(
+    lane_runtime_overrides: Optional[dict],
+    lane: str,
+    timeout: Optional[float],
+    max_tokens: int,
+) -> tuple[Optional[float], int]:
+    normalized_lane = str(lane or "").strip().lower()
+    override_bucket = lane_runtime_overrides if isinstance(lane_runtime_overrides, dict) else {}
+    lane_override = override_bucket.get(normalized_lane, {}) if normalized_lane else {}
+    if not isinstance(lane_override, dict):
+        lane_override = {}
+
+    lane_timeout = lane_override.get("timeout", timeout)
+    lane_max_tokens = lane_override.get("max_tokens", max_tokens)
+
+    if lane_timeout is not None:
+        try:
+            lane_timeout = float(lane_timeout)
+        except Exception:
+            lane_timeout = timeout
+    try:
+        lane_max_tokens = int(lane_max_tokens)
+    except Exception:
+        lane_max_tokens = int(max_tokens)
+    return lane_timeout, lane_max_tokens
+
+
+def _compute_question_lane_latency_percentile_ms(
+    profile_name: str,
+    lane: str,
+    percentile: Optional[float] = None,
+    min_samples: int = 0,
+) -> float:
+    normalized_profile = str(profile_name or "").strip()
+    normalized_lane = str(lane or "").strip().lower()
+    if not normalized_profile or not normalized_lane:
+        return 0.0
+
+    try:
+        normalized_percentile = float(percentile if percentile is not None else QUESTION_HEDGE_ADAPTIVE_PERCENTILE)
+    except Exception:
+        normalized_percentile = float(QUESTION_HEDGE_ADAPTIVE_PERCENTILE)
+    normalized_percentile = max(0.5, min(normalized_percentile, 0.99))
+    normalized_min_samples = max(1, int(min_samples or QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES))
+
+    with question_lane_strategy_lock:
+        profile_bucket = question_lane_strategy_state.get(normalized_profile, {})
+        records = list(profile_bucket.get(normalized_lane) or [])[-QUESTION_LANE_STATS_WINDOW_SIZE:]
+
+    latency_values = []
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        try:
+            latency_ms = max(0.0, float(item.get("response_time_ms", 0.0) or 0.0))
+        except Exception:
+            latency_ms = 0.0
+        if latency_ms > 0.0:
+            latency_values.append(latency_ms)
+
+    if len(latency_values) < normalized_min_samples:
+        return 0.0
+
+    latency_values.sort()
+    rank_index = max(0, min(len(latency_values) - 1, math.ceil(normalized_percentile * len(latency_values)) - 1))
+    return round(float(latency_values[rank_index]), 2)
+
+
+def _resolve_question_hedge_trigger_delay(
+    hedge_delay_seconds: Optional[float],
+    primary_lane: str,
+    primary_timeout: Optional[float],
+    lane_profile_name: str = "",
+) -> float:
+    effective_delay = max(0.5, float(hedge_delay_seconds if hedge_delay_seconds is not None else QUESTION_HEDGED_DELAY_SECONDS))
+    normalized_primary = str(primary_lane or "").strip().lower()
+
+    try:
+        timeout_seconds = float(primary_timeout if primary_timeout is not None else API_TIMEOUT)
+    except Exception:
+        timeout_seconds = float(API_TIMEOUT)
+
+    if QUESTION_HEDGE_ADAPTIVE_ENABLED:
+        adaptive_latency_ms = _compute_question_lane_latency_percentile_ms(
+            lane_profile_name,
+            normalized_primary,
+            percentile=QUESTION_HEDGE_ADAPTIVE_PERCENTILE,
+            min_samples=QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES,
+        )
+        if adaptive_latency_ms > 0.0:
+            adaptive_delay_seconds = adaptive_latency_ms / 1000.0
+            adaptive_cap_seconds = max(0.5, timeout_seconds * float(QUESTION_HEDGE_ADAPTIVE_TIMEOUT_RATIO))
+            effective_delay = min(adaptive_delay_seconds, adaptive_cap_seconds)
+
+    if normalized_primary == "question":
+        min_grace_seconds = 2.5 if timeout_seconds <= 12.0 else 3.0
+        effective_delay = max(effective_delay, min(timeout_seconds * 0.4, min_grace_seconds))
+
+    effective_delay = min(effective_delay, max(0.5, timeout_seconds))
+    return round(effective_delay, 2)
+
+
 def _select_question_generation_runtime_profile(
     prompt: str,
     truncated_docs: Optional[list] = None,
@@ -16394,6 +16505,7 @@ def _call_question_with_optional_hedge(
     hedged_enabled: Optional[bool] = None,
     hedge_delay_seconds: Optional[float] = None,
     lane_profile_name: str = "",
+    lane_runtime_overrides: Optional[dict] = None,
 ) -> tuple[Optional[str], str, dict]:
     """问题生成可选竞速：主通道先发，延迟触发备用通道，谁先返回可用结果用谁。"""
     valid_lanes = {"question", "report", "summary", "search_decision"}
@@ -16404,22 +16516,40 @@ def _call_question_with_optional_hedge(
     if secondary_lane not in valid_lanes:
         secondary_lane = QUESTION_HEDGED_SECONDARY_LANE
     hedged_enabled = QUESTION_HEDGED_ENABLED if hedged_enabled is None else bool(hedged_enabled)
-    hedge_delay_seconds = max(0.5, float(hedge_delay_seconds if hedge_delay_seconds is not None else QUESTION_HEDGED_DELAY_SECONDS))
+    primary_timeout, _ = _resolve_question_lane_call_runtime_overrides(
+        lane_runtime_overrides,
+        primary_lane,
+        timeout,
+        max_tokens,
+    )
+    secondary_timeout, _ = _resolve_question_lane_call_runtime_overrides(
+        lane_runtime_overrides,
+        secondary_lane,
+        timeout,
+        max_tokens,
+    )
+    hedge_delay_seconds = _resolve_question_hedge_trigger_delay(hedge_delay_seconds, primary_lane, primary_timeout, lane_profile_name=lane_profile_name)
 
     def _run_single(lane: str, lane_call_type: str, hedge_flag: bool = False) -> tuple[Optional[str], dict]:
         started_at = _time.perf_counter()
+        lane_timeout, lane_max_tokens = _resolve_question_lane_call_runtime_overrides(
+            lane_runtime_overrides,
+            lane,
+            timeout,
+            max_tokens,
+        )
         raw_result = call_claude(
             prompt,
-            max_tokens=max_tokens,
+            max_tokens=lane_max_tokens,
             retry_on_timeout=retry_on_timeout,
             call_type=lane_call_type,
             truncated_docs=truncated_docs,
-            timeout=timeout,
+            timeout=lane_timeout,
             preferred_lane=lane,
             hedge_triggered=hedge_flag,
             return_meta=True,
         )
-        response_text, response_meta = _normalize_question_call_result(raw_result, lane=lane, max_tokens=max_tokens, timeout=timeout)
+        response_text, response_meta = _normalize_question_call_result(raw_result, lane=lane, max_tokens=lane_max_tokens, timeout=lane_timeout)
         response_meta = dict(response_meta or {})
         response_meta.setdefault("response_time_ms", round((_time.perf_counter() - started_at) * 1000.0, 2))
         _record_question_lane_strategy_outcome(lane_profile_name, lane, response_text, response_meta)
@@ -16430,6 +16560,12 @@ def _call_question_with_optional_hedge(
         for resp_lane, resp_text, resp_meta in responses:
             attempt_map[resp_lane] = _build_question_attempt_summary(resp_lane, resp_text, resp_meta)
         for lane_name in started_lanes:
+            lane_timeout, lane_max_tokens = _resolve_question_lane_call_runtime_overrides(
+                lane_runtime_overrides,
+                lane_name,
+                timeout,
+                max_tokens,
+            )
             attempt_map.setdefault(
                 lane_name,
                 _build_question_attempt_summary(
@@ -16437,8 +16573,8 @@ def _call_question_with_optional_hedge(
                     None,
                     {
                         "selected_lane": lane_name,
-                        "timeout_seconds": float(timeout if timeout is not None else API_TIMEOUT),
-                        "max_tokens": int(max_tokens),
+                        "timeout_seconds": float(lane_timeout if lane_timeout is not None else API_TIMEOUT),
+                        "max_tokens": int(lane_max_tokens),
                         "failure_reason": "no_result",
                     },
                 ),
@@ -16513,7 +16649,11 @@ def _call_question_with_optional_hedge(
         secondary_thread.start()
 
     expected_count = 1 + (1 if secondary_thread else 0)
-    finish_deadline = _time.time() + max(2.0, float(timeout if timeout is not None else API_TIMEOUT) + 2.0)
+    longest_timeout = max(
+        float(primary_timeout if primary_timeout is not None else API_TIMEOUT),
+        float(secondary_timeout if secondary_timeout is not None else API_TIMEOUT),
+    )
+    finish_deadline = _time.time() + max(2.0, longest_timeout + 2.0)
     while len(responses) < expected_count and _time.time() < finish_deadline:
         wait_timeout = max(0.01, min(0.2, finish_deadline - _time.time()))
         try:
@@ -16565,7 +16705,7 @@ def generate_question_with_tiered_strategy(
     hedge_delay_seconds = runtime_profile.get("hedge_delay_seconds", QUESTION_HEDGED_DELAY_SECONDS)
     fast_primary_lane, fast_secondary_lane, fast_lane_meta = _resolve_dynamic_question_lane_order(runtime_profile, phase="fast")
     full_primary_lane, full_secondary_lane, full_lane_meta = _resolve_dynamic_question_lane_order(runtime_profile, phase="full")
-    fast_timeout, fast_max_tokens, fast_hedge_delay_seconds = _resolve_question_lane_runtime_params(
+    fast_primary_timeout, fast_primary_max_tokens, fast_hedge_delay_seconds = _resolve_question_lane_runtime_params(
         runtime_profile,
         fast_primary_lane,
         "fast",
@@ -16573,7 +16713,15 @@ def generate_question_with_tiered_strategy(
         fast_max_tokens,
         hedge_delay_seconds,
     )
-    full_timeout, full_max_tokens, full_hedge_delay_seconds = _resolve_question_lane_runtime_params(
+    fast_secondary_timeout, fast_secondary_max_tokens, _ = _resolve_question_lane_runtime_params(
+        runtime_profile,
+        fast_secondary_lane,
+        "fast",
+        fast_timeout,
+        fast_max_tokens,
+        hedge_delay_seconds,
+    )
+    full_primary_timeout, full_primary_max_tokens, full_hedge_delay_seconds = _resolve_question_lane_runtime_params(
         runtime_profile,
         full_primary_lane,
         "full",
@@ -16581,6 +16729,22 @@ def generate_question_with_tiered_strategy(
         full_max_tokens,
         hedge_delay_seconds,
     )
+    full_secondary_timeout, full_secondary_max_tokens, _ = _resolve_question_lane_runtime_params(
+        runtime_profile,
+        full_secondary_lane,
+        "full",
+        full_timeout,
+        full_max_tokens,
+        hedge_delay_seconds,
+    )
+    fast_lane_runtime_overrides = {
+        fast_primary_lane: {"timeout": fast_primary_timeout, "max_tokens": fast_primary_max_tokens},
+        fast_secondary_lane: {"timeout": fast_secondary_timeout, "max_tokens": fast_secondary_max_tokens},
+    }
+    full_lane_runtime_overrides = {
+        full_primary_lane: {"timeout": full_primary_timeout, "max_tokens": full_primary_max_tokens},
+        full_secondary_lane: {"timeout": full_secondary_timeout, "max_tokens": full_secondary_max_tokens},
+    }
 
     if debug and runtime_profile:
         print(
@@ -16588,10 +16752,8 @@ def generate_question_with_tiered_strategy(
             f"profile={runtime_profile.get('profile_name', '-')},"
             f"fast_mode={runtime_profile.get('fast_prompt_mode', runtime_profile.get('fast_output_mode', 'full'))},"
             f"full_mode={runtime_profile.get('full_prompt_mode', 'full')},"
-            f"fast_timeout={fast_timeout},full_timeout={full_timeout},"
-            f"fast_tokens={fast_max_tokens},full_tokens={full_max_tokens},"
-            f"fast_lanes={fast_primary_lane}->{fast_secondary_lane},"
-            f"full_lanes={full_primary_lane}->{full_secondary_lane},"
+            f"fast_lanes={fast_primary_lane}({fast_primary_timeout}s/{fast_primary_max_tokens})->{fast_secondary_lane}({fast_secondary_timeout}s/{fast_secondary_max_tokens}),"
+            f"full_lanes={full_primary_lane}({full_primary_timeout}s/{full_primary_max_tokens})->{full_secondary_lane}({full_secondary_timeout}s/{full_secondary_max_tokens}),"
             f"reason={runtime_profile.get('selection_reason', '-') or '-'}"
         )
 
@@ -16602,10 +16764,10 @@ def generate_question_with_tiered_strategy(
     if effective_fast_allowed and not fast_skip_reason:
         fast_response, fast_lane, fast_meta = _call_question_with_optional_hedge(
             effective_fast_prompt,
-            max_tokens=fast_max_tokens,
+            max_tokens=fast_primary_max_tokens,
             call_type=f"{base_call_type}_fast",
             truncated_docs=truncated_docs,
-            timeout=fast_timeout,
+            timeout=fast_primary_timeout,
             retry_on_timeout=False,
             debug=debug,
             primary_lane=fast_primary_lane,
@@ -16613,6 +16775,7 @@ def generate_question_with_tiered_strategy(
             hedged_enabled=hedged_enabled,
             hedge_delay_seconds=fast_hedge_delay_seconds,
             lane_profile_name=str(fast_lane_meta.get("strategy_key", "") or ""),
+            lane_runtime_overrides=fast_lane_runtime_overrides,
         )
         if fast_response:
             fast_result = normalize_generated_question_result(parse_question_response(fast_response, debug=debug))
@@ -16632,10 +16795,10 @@ def generate_question_with_tiered_strategy(
 
     full_response, full_lane, full_meta = _call_question_with_optional_hedge(
         prompt,
-        max_tokens=full_max_tokens,
+        max_tokens=full_primary_max_tokens,
         call_type=base_call_type,
         truncated_docs=truncated_docs,
-        timeout=full_timeout,
+        timeout=full_primary_timeout,
         retry_on_timeout=True,
         debug=debug,
         primary_lane=full_primary_lane,
@@ -16643,6 +16806,7 @@ def generate_question_with_tiered_strategy(
         hedged_enabled=hedged_enabled,
         hedge_delay_seconds=full_hedge_delay_seconds,
         lane_profile_name=str(full_lane_meta.get("strategy_key", "") or ""),
+        lane_runtime_overrides=full_lane_runtime_overrides,
     )
     full_result = normalize_generated_question_result(parse_question_response(full_response, debug=debug)) if full_response else None
     if debug and not full_response:
@@ -21617,7 +21781,9 @@ if __name__ == '__main__':
             f"(timeout={QUESTION_FAST_TIMEOUT}s,tokens={QUESTION_FAST_MAX_TOKENS},"
             f"prompt<={QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS},adaptive={'on' if QUESTION_FAST_ADAPTIVE_ENABLED else 'off'}), "
             f"hedge={'on' if QUESTION_HEDGED_ENABLED else 'off'}"
-            f"(delay={QUESTION_HEDGED_DELAY_SECONDS}s,lane={QUESTION_HEDGED_SECONDARY_LANE})"
+            f"(delay={QUESTION_HEDGED_DELAY_SECONDS}s,lane={QUESTION_HEDGED_SECONDARY_LANE},"
+            f"adaptive={'on' if QUESTION_HEDGE_ADAPTIVE_ENABLED else 'off'},"
+            f"p={QUESTION_HEDGE_ADAPTIVE_PERCENTILE:.2f},samples>={QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES})"
         )
         print(
             "V3 配置: "
