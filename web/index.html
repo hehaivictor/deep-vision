@@ -1977,19 +1977,24 @@
                                                    x-model="otherAnswerText"
                                                    @focus="clearAiRecommendationApplied(); resetSingleSelectDisambiguation(); otherSelected = true; if (!currentQuestion.multiSelect) { selectedAnswers = []; }"
                                                    @input="singleSelectDisambiguationActive && resetSingleSelectDisambiguation()"
-                                                   placeholder="可自由输入，也可填“1、2 / 第一个和第二个 / 以上所有”引用上方选项"
+                                                   placeholder="可自由输入，也可填“1、2 / 第一个和第二个 / 都要 / 以上都要”引用上方选项"
                                                    rows="3"
                                                    class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cta/50 focus:border-cta resize-y min-h-[80px]"></textarea>
                                             <div x-show="singleSelectDisambiguationActive"
                                                  class="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                                                <p class="font-medium">本题为单选，检测到你引用了多个选项：</p>
+                                                <p class="font-medium">本题原本是单选，但检测到你引用了多个选项：</p>
                                                 <p class="mt-1" x-text="singleSelectDisambiguationOptions.join('、')"></p>
                                                 <div class="mt-2 flex flex-wrap items-center gap-2">
+                                                    <button type="button"
+                                                            @click="submitSingleSelectAsMultiSelect()"
+                                                            class="report-action-primary px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer">
+                                                        按多选提交本题
+                                                    </button>
                                                     <template x-for="(option, idx) in singleSelectDisambiguationOptions" :key="idx">
                                                         <button type="button"
                                                                 @click="chooseSingleSelectDisambiguation(option)"
                                                                 class="report-action-secondary px-2.5 py-1 rounded-md text-xs font-medium transition-colors cursor-pointer"
-                                                                x-text="`选为主：${option}`"></button>
+                                                                x-text="`只选主项：${option}`"></button>
                                                     </template>
                                                     <button type="button"
                                                             @click="continueSingleSelectWithCustomText()"

@@ -1811,6 +1811,32 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertIn("attrName.startsWith('on')", content)
         self.assertIn("isSafeUrl(url)", content)
 
+    def test_generate_interview_appendix_marks_escalated_single_answer_as_multi_select(self):
+        session = {
+            "dimensions": {"customer_needs": {"coverage": 0, "items": []}},
+            "interview_log": [
+                {
+                    "timestamp": "2026-03-05T12:00:01Z",
+                    "dimension": "customer_needs",
+                    "question": "需要哪些能力支持？",
+                    "answer": "A；B",
+                    "options": ["A", "B", "C"],
+                    "multi_select": True,
+                    "question_multi_select": False,
+                    "selection_escalated_from_single": True,
+                    "other_selected": True,
+                    "other_answer_text": "以上都要",
+                },
+            ],
+        }
+
+        appendix = self.server.generate_interview_appendix(session)
+
+        self.assertIn("<div>☑ A</div>", appendix)
+        self.assertIn("<div>☑ B</div>", appendix)
+        self.assertIn("<div>☐ C</div>", appendix)
+        self.assertIn("<div>☑ 其他（自由输入）：以上都要</div>", appendix)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

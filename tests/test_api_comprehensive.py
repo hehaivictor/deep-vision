@@ -1121,6 +1121,37 @@ class ComprehensiveApiTests(unittest.TestCase):
         finally:
             self.server.INSTANCE_SCOPE_KEY = old_scope
 
+    def test_submit_answer_persists_original_and_effective_selection_modes(self):
+        self._register()
+        created = self._create_session(topic="单选转多选提交")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        response = self.client.post(
+            f"/api/sessions/{session_id}/submit-answer",
+            json={
+                "question": "需要哪些能力支持？",
+                "answer": "A；B",
+                "dimension": dimension,
+                "options": ["A", "B", "C"],
+                "multi_select": True,
+                "question_multi_select": False,
+                "selection_escalated_from_single": True,
+                "other_selected": True,
+                "other_answer_text": "以上都要",
+                "is_follow_up": False,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        payload = response.get_json() or {}
+        log = (payload.get("interview_log") or [])[-1]
+        self.assertTrue(log["multi_select"])
+        self.assertFalse(log["question_multi_select"])
+        self.assertTrue(log["selection_escalated_from_single"])
+        self.assertTrue(log["other_selected"])
+        self.assertEqual(log["other_answer_text"], "以上都要")
+        self.assertEqual(payload["dimensions"][dimension]["items"][-1]["name"], "A；B")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
