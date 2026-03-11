@@ -6443,32 +6443,72 @@ class MCPClient:
         self.base_url = base_url
         self.session_id = None
         self.message_id = 0
+        self.initialized = False
+        self.available_tools = None
 
     def _get_next_id(self):
         """获取下一个消息ID"""
         self.message_id += 1
         return self.message_id
 
-    def _make_request(self, method: str, params: dict = None):
-        """发送MCP JSON-RPC请求"""
+    def _build_headers(self) -> dict:
         headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream"
+            "Accept": "application/json, text/event-stream",
+            "Authorization": f"Bearer {self.api_key}"
         }
 
-        # 如果有session_id，添加到header
         if self.session_id:
             headers["Mcp-Session-Id"] = self.session_id
 
-        # 在URL中添加Authorization参数
-        url = f"{self.base_url}?Authorization={self.api_key}"
+        return headers
+
+    def _build_url(self) -> str:
+        parsed = urlparse(self.base_url)
+        query_items = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query_items.setdefault("Authorization", self.api_key)
+        return urlunparse(parsed._replace(query=urlencode(query_items)))
+
+    def _parse_response_payload(self, response_text: str) -> dict:
+        text = str(response_text or "").strip()
+        if not text:
+            return {}
+
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            pass
+
+        for line in text.splitlines():
+            content = line.strip()
+            if not content.startswith("data:"):
+                continue
+            json_str = content[5:].strip()
+            if not json_str:
+                continue
+            try:
+                payload = json.loads(json_str)
+                if isinstance(payload, dict):
+                    return payload
+            except Exception:
+                continue
+
+        raise Exception(f"无法解析SSE响应: {text[:200]}")
+
+    def _make_request(self, method: str, params: dict = None, expect_response: bool = True):
+        """发送MCP JSON-RPC请求"""
+        headers = self._build_headers()
+        url = self._build_url()
 
         request_data = {
             "jsonrpc": "2.0",
-            "id": self._get_next_id(),
             "method": method,
             "params": params or {}
         }
+        if expect_response:
+            request_data["id"] = self._get_next_id()
 
         if ENABLE_DEBUG_LOG:
             print(f"📤 MCP请求: {method}")
@@ -6483,25 +6523,11 @@ class MCPClient:
             if ENABLE_DEBUG_LOG:
                 print(f"   📝 获得Session ID: {self.session_id}")
 
-        # 解析SSE格式的响应
-        response_text = response.text.strip()
+        if not expect_response:
+            return {}
 
-        # SSE格式: id:1\nevent:message\ndata:{json}\n\n
-        result_data = None
-        for line in response_text.split('\n'):
-            line = line.strip()
-            if line.startswith('data:'):
-                json_str = line[5:].strip()  # 去掉 "data:" 前缀
-                try:
-                    result_data = json.loads(json_str)
-                    break
-                except:
-                    continue
+        result_data = self._parse_response_payload(response.text)
 
-        if not result_data:
-            raise Exception(f"无法解析SSE响应: {response_text[:200]}")
-
-        # 检查是否有错误
         if "error" in result_data:
             raise Exception(f"MCP错误: {result_data['error']}")
 
@@ -6518,6 +6544,7 @@ class MCPClient:
                     "version": "1.0.0"
                 }
             })
+            self.initialized = True
             if ENABLE_DEBUG_LOG:
                 print(f"✅ MCP初始化成功")
             return result
@@ -6526,15 +6553,80 @@ class MCPClient:
                 print(f"❌ MCP初始化失败: {e}")
             raise
 
+    def notify_initialized(self):
+        """发送 initialized 通知，完成 MCP 握手"""
+        try:
+            self._make_request("notifications/initialized", {}, expect_response=False)
+            if ENABLE_DEBUG_LOG:
+                print("✅ MCP initialized 通知已发送")
+        except Exception as e:
+            if ENABLE_DEBUG_LOG:
+                print(f"⚠️  MCP initialized 通知失败，继续尝试后续流程: {e}")
+
+    def ensure_initialized(self):
+        """确保 MCP 初始化和通知流程完成"""
+        if self.initialized and self.session_id:
+            return
+        self.initialize()
+        self.notify_initialized()
+
+    def list_tools(self, force_refresh: bool = False) -> list:
+        """获取 MCP 服务暴露的工具列表"""
+        if self.available_tools is not None and not force_refresh:
+            return self.available_tools
+
+        self.ensure_initialized()
+        result = self._make_request("tools/list", {})
+        tools = result.get("tools") or []
+        self.available_tools = tools
+
+        if ENABLE_DEBUG_LOG:
+            tool_names = [tool.get("name", "") for tool in tools if isinstance(tool, dict)]
+            print(f"🧰 MCP可用工具: {tool_names}")
+
+        return tools
+
+    @staticmethod
+    def _normalize_tool_name(name: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+
+    def resolve_tool_name(self, requested_name: str) -> str:
+        """根据 tools/list 结果解析真实可用的工具名"""
+        tools = self.list_tools()
+        tool_names = [tool.get("name", "") for tool in tools if isinstance(tool, dict) and tool.get("name")]
+
+        if not tool_names:
+            return requested_name
+
+        if requested_name in tool_names:
+            return requested_name
+
+        normalized_requested = self._normalize_tool_name(requested_name)
+        exact_matches = [name for name in tool_names if self._normalize_tool_name(name) == normalized_requested]
+        if len(exact_matches) == 1:
+            return exact_matches[0]
+
+        fuzzy_matches = [
+            name for name in tool_names
+            if normalized_requested in self._normalize_tool_name(name)
+            or self._normalize_tool_name(name) in normalized_requested
+        ]
+        if len(fuzzy_matches) == 1:
+            return fuzzy_matches[0]
+
+        raise Exception(f"MCP工具不存在: {requested_name}，可用工具: {', '.join(tool_names)}")
+
     def call_tool(self, tool_name: str, arguments: dict):
         """调用MCP工具"""
         try:
-            # 确保已初始化
-            if not self.session_id:
-                self.initialize()
+            self.ensure_initialized()
+            resolved_tool_name = self.resolve_tool_name(tool_name)
+
+            if ENABLE_DEBUG_LOG and resolved_tool_name != tool_name:
+                print(f"🔀 MCP工具名自动映射: {tool_name} -> {resolved_tool_name}")
 
             result = self._make_request("tools/call", {
-                "name": tool_name,
+                "name": resolved_tool_name,
                 "arguments": arguments
             })
 
