@@ -162,6 +162,12 @@ class ComprehensiveApiTests(unittest.TestCase):
         with self.server.list_overload_stats_lock:
             for key in self.server.list_overload_stats.keys():
                 self.server.list_overload_stats[key]["rejected"] = 0
+        with self.server.question_result_cache_lock:
+            self.server.question_result_cache.clear()
+        with self.server.prefetch_cache_lock:
+            self.server.prefetch_cache.clear()
+        with self.server.question_prefetch_inflight_lock:
+            self.server.question_prefetch_inflight.clear()
         self.server.SESSIONS_LIST_SEMAPHORE = threading.BoundedSemaphore(self.server.SESSIONS_LIST_MAX_INFLIGHT)
         self.server.REPORTS_LIST_SEMAPHORE = threading.BoundedSemaphore(self.server.REPORTS_LIST_MAX_INFLIGHT)
 
@@ -575,6 +581,104 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertTrue(payload.get("question"))
         self.assertIsInstance(payload.get("options"), list)
         self.assertGreater(len(payload.get("options", [])), 0)
+
+    def test_next_question_waits_for_inflight_prefetch(self):
+        self._register()
+        created = self._create_session(topic="首题等待预生成")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+        session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+        session_signature = self.server.get_file_signature(session_file)
+        cache_key = self.server._build_question_result_cache_key(session_id, dimension, session_signature)
+        owner_event, is_owner = self.server._begin_question_prefetch_inflight(cache_key)
+        self.assertTrue(is_owner)
+
+        old_wait = self.server.QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS
+        old_resolve_ai_client = self.server.resolve_ai_client
+        old_generate_question = self.server.generate_question_with_tiered_strategy
+        try:
+            self.server.QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = 0.4
+            self.server.resolve_ai_client = lambda call_type="question": object()
+
+            def _should_not_generate(*_args, **_kwargs):
+                raise AssertionError("存在在途预生成时不应再触发实时出题")
+
+            self.server.generate_question_with_tiered_strategy = _should_not_generate
+
+            def _complete_prefetch():
+                time.sleep(0.05)
+                with self.server.prefetch_cache_lock:
+                    self.server.prefetch_cache.setdefault(session_id, {})[dimension] = {
+                        "question_data": {
+                            "question": "预生成首题",
+                            "options": ["选项A", "选项B"],
+                            "multi_select": False,
+                            "dimension": dimension,
+                            "ai_generated": True,
+                        },
+                        "created_at": time.time(),
+                        "topic": created.get("topic"),
+                        "session_signature": session_signature,
+                        "valid": True,
+                    }
+                self.server._end_question_prefetch_inflight(cache_key, owner_event)
+
+            worker = threading.Thread(target=_complete_prefetch, daemon=True)
+            worker.start()
+
+            next_q = self.client.post(
+                f"/api/sessions/{session_id}/next-question",
+                json={"dimension": dimension},
+            )
+            worker.join(timeout=1.0)
+
+            self.assertEqual(next_q.status_code, 200, next_q.get_data(as_text=True))
+            payload = next_q.get_json()
+            self.assertEqual(payload.get("question"), "预生成首题")
+            self.assertTrue(payload.get("prefetched"))
+            self.assertEqual(payload.get("dimension"), dimension)
+        finally:
+            self.server.QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = old_wait
+            self.server.resolve_ai_client = old_resolve_ai_client
+            self.server.generate_question_with_tiered_strategy = old_generate_question
+            self.server._end_question_prefetch_inflight(cache_key, owner_event)
+
+    def test_next_question_discards_stale_prefetch_after_signature_change(self):
+        self._register()
+        created = self._create_session(topic="过期预生成丢弃")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+        session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+        stale_signature = self.server.get_file_signature(session_file)
+
+        with self.server.prefetch_cache_lock:
+            self.server.prefetch_cache.setdefault(session_id, {})[dimension] = {
+                "question_data": {
+                    "question": "过期预生成题",
+                    "options": ["旧选项A", "旧选项B"],
+                    "multi_select": False,
+                    "dimension": dimension,
+                    "ai_generated": True,
+                },
+                "created_at": time.time(),
+                "topic": created.get("topic"),
+                "session_signature": stale_signature,
+                "valid": True,
+            }
+
+        self._submit_answer(session_id, dimension, question="Q1", answer="A1")
+
+        next_q = self.client.post(
+            f"/api/sessions/{session_id}/next-question",
+            json={"dimension": dimension},
+        )
+
+        self.assertEqual(next_q.status_code, 200, next_q.get_data(as_text=True))
+        payload = next_q.get_json()
+        self.assertNotEqual(payload.get("question"), "过期预生成题")
+        self.assertFalse(payload.get("prefetched", False))
+        with self.server.prefetch_cache_lock:
+            self.assertNotIn(dimension, self.server.prefetch_cache.get(session_id, {}))
 
     def test_complete_dimension_requires_coverage_threshold(self):
         self._register()
