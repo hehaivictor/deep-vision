@@ -2,9 +2,13 @@
 """
 Deep Vision 版本管理器
 
-自动根据 Git commit message 与本次提交改动更新 version.json。
+自动根据 Git commit message 与本次提交改动整理版本变更信息。
+默认保留传统的 version.json 直写能力，同时支持：
+- 功能分支写入 `changes/unreleased/*.json` 变更碎片，避免并行开发抢占正式版本号
+- 主线聚合所有变更碎片并生成正式 `web/version.json`
+
 优先使用规范的提交信息；当提交标题质量较差或缺少结构化正文时，
-回退为基于 HEAD 改动文件的结构化更新日志，提升按钮提交场景下的日志质量。
+回退为基于改动文件的结构化更新日志，提升按钮提交场景下的日志质量。
 
 Commit Message 规范：
 - feat: / feature: / 新增：/ 实现：/ 支持：  → minor 版本升级
@@ -13,7 +17,9 @@ Commit Message 规范：
 - docs: / style: / refactor: / test: / chore: / 文档：/ 测试： → 可按原规则跳过
 
 用法：
-    python version_manager.py                    # 根据最新 commit 自动更新
+    python version_manager.py                    # 兼容旧流程：根据最新 commit 自动更新 version.json
+    python version_manager.py fragment           # 根据当前分支相对主线的改动更新变更碎片
+    python version_manager.py release            # 聚合变更碎片并生成正式 version.json
     python version_manager.py --type minor       # 手动指定版本类型
     python version_manager.py --version 2.0.0    # 手动指定版本号
     python version_manager.py --dry-run          # 预览变更，不实际修改
@@ -25,12 +31,17 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 VERSION_FILE = PROJECT_ROOT / "web" / "version.json"
+CHANGELOG_ROOT = PROJECT_ROOT / "changes"
+UNRELEASED_DIR = CHANGELOG_ROOT / "unreleased"
+FRAGMENT_SCHEMA_VERSION = 1
+DEFAULT_BASE_REFS = ("origin/main", "main", "origin/master", "master")
+GENERATED_CHANGE_PATH_PREFIX = "changes/unreleased/"
 
 CONVENTIONAL_TYPE_MAP = {
     "feat": "minor",
@@ -102,11 +113,11 @@ SPECIAL_CHANGE_HINTS = (
     ),
     (
         (".githooks/post-commit",),
-        "工程：统一提交后自动升版流程，确保按钮提交也会生成结构化更新日志。",
+        "工程：统一提交后自动生成分支变更碎片，避免并行开发抢占正式版本号。",
     ),
     (
         ("scripts/install-hooks.sh",),
-        "工程：提供仓库 Hook 安装脚本，统一本地提交流程。",
+        "工程：提供仓库 Hook 安装脚本，统一本地变更碎片生成流程。",
     ),
     (
         ("tests/test_version_manager.py",),
@@ -171,6 +182,17 @@ def _run_git(args: List[str]) -> str:
     return result.stdout.strip()
 
 
+def _git_ok(args: List[str]) -> bool:
+    result = subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        cwd=PROJECT_ROOT,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def get_latest_commit_message() -> str:
     """获取最新的 commit message。"""
     try:
@@ -178,6 +200,14 @@ def get_latest_commit_message() -> str:
     except Exception as exc:
         print(f"获取 commit message 失败: {exc}")
         return ""
+
+
+def get_latest_commit_iso_datetime() -> str:
+    """获取最新 commit 的提交时间（ISO-8601）。"""
+    try:
+        return _run_git(["git", "log", "-1", "--pretty=%cI"])
+    except Exception:
+        return datetime.now().isoformat(timespec="seconds")
 
 
 def get_latest_commit_hash() -> str:
@@ -188,9 +218,41 @@ def get_latest_commit_hash() -> str:
         return ""
 
 
+def get_current_branch() -> str:
+    """获取当前分支名。"""
+    try:
+        branch = _run_git(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+        return branch or "HEAD"
+    except Exception:
+        return "HEAD"
+
+
+def resolve_base_ref(preferred_ref: Optional[str] = None) -> Optional[str]:
+    """解析当前分支用于比较的主线引用。"""
+    candidates: List[str] = []
+    if preferred_ref:
+        candidates.append(preferred_ref)
+    for ref in DEFAULT_BASE_REFS:
+        if ref not in candidates:
+            candidates.append(ref)
+    for ref in candidates:
+        if _git_ok(["git", "rev-parse", "--verify", "--quiet", ref]):
+            return ref
+    return None
+
+
 def _normalize_repo_path(path: str) -> str:
     normalized = _normalize_text(path)
     return normalized[2:] if normalized.startswith('./') else normalized
+
+
+def _should_ignore_generated_path(path: str) -> bool:
+    normalized = _normalize_repo_path(path)
+    if not normalized:
+        return True
+    if normalized == "web/version.json":
+        return True
+    return normalized.startswith(GENERATED_CHANGE_PATH_PREFIX)
 
 
 def get_head_changed_files() -> List[str]:
@@ -199,10 +261,58 @@ def get_head_changed_files() -> List[str]:
     files = []
     for line in output.splitlines():
         path = _normalize_repo_path(line)
-        if not path or path == "web/version.json":
+        if _should_ignore_generated_path(path):
             continue
         files.append(path)
     return _dedupe_keep_order(files)
+
+
+def get_branch_changed_files(base_ref: Optional[str] = None) -> List[str]:
+    """获取当前分支相对主线的累计改动文件。"""
+    resolved_base = resolve_base_ref(base_ref)
+    if not resolved_base:
+        return get_head_changed_files()
+
+    output = _run_git(["git", "diff", "--name-only", f"{resolved_base}...HEAD"])
+    files = []
+    for line in output.splitlines():
+        path = _normalize_repo_path(line)
+        if _should_ignore_generated_path(path):
+            continue
+        files.append(path)
+    return _dedupe_keep_order(files)
+
+
+def get_branch_commit_messages(base_ref: Optional[str] = None) -> List[str]:
+    """获取当前分支相对主线的所有提交信息。"""
+    resolved_base = resolve_base_ref(base_ref)
+    if not resolved_base:
+        latest_message = get_latest_commit_message()
+        return [latest_message] if latest_message else []
+
+    output = _run_git(["git", "log", "--format=%B%x1e", f"{resolved_base}..HEAD"])
+    messages = [_normalize_text(chunk) for chunk in output.split("\x1e")]
+    return [message for message in messages if message]
+
+
+def get_branch_commit_count(base_ref: Optional[str] = None) -> int:
+    """获取当前分支相对主线领先的提交数。"""
+    resolved_base = resolve_base_ref(base_ref)
+    if not resolved_base:
+        return 1 if get_latest_commit_hash() else 0
+    output = _run_git(["git", "rev-list", "--count", f"{resolved_base}..HEAD"])
+    try:
+        return int(output or "0")
+    except ValueError:
+        return 0
+
+
+def get_branch_context_message(base_ref: Optional[str] = None) -> str:
+    """汇总当前分支的提交信息，供版本归纳使用。"""
+    messages = get_branch_commit_messages(base_ref)
+    if not messages:
+        return get_latest_commit_message()
+    return "\n".join(messages)
 
 
 def _path_matches(path: str, pattern: str) -> bool:
@@ -411,9 +521,15 @@ def _build_title_from_files(changed_files: List[str]) -> str:
     return title
 
 
-def _infer_version_type_from_context(title: str, changes: List[str], changed_files: List[str]) -> str:
+def _infer_version_type_from_context(
+    title: str,
+    changes: List[str],
+    changed_files: List[str],
+    extra_text: str = "",
+) -> str:
     categories = set(_categorize_file(_normalize_repo_path(path)) for path in changed_files)
-    combined_text = "\n".join([title] + list(changes))
+    combined_parts = [title, _normalize_text(extra_text)] + list(changes)
+    combined_text = "\n".join(part for part in combined_parts if part)
 
     if categories and categories.issubset({"文档", "测试"}):
         return "skip"
@@ -428,14 +544,23 @@ def _infer_version_type_from_context(title: str, changes: List[str], changed_fil
     return "patch"
 
 
-def build_release_notes_from_context(message: str, changed_files: List[str]) -> Tuple[str, str, List[str]]:
+def build_release_notes_from_context(
+    message: str,
+    changed_files: List[str],
+    prefer_diff_title: bool = False,
+    prefer_inferred_type: bool = False,
+    prefer_diff_changes: bool = False,
+) -> Tuple[str, str, List[str]]:
     """基于提交信息与改动文件生成结构化版本日志。"""
     parsed_type, parsed_title, parsed_changes = parse_commit_message(message)
     explicit_type, _ = _extract_commit_type_and_title(_normalize_text(message.splitlines()[0]) if message.strip() else "")
 
-    title = parsed_title if _looks_like_clean_title(parsed_title) else _build_title_from_files(changed_files)
+    if prefer_diff_title:
+        title = _build_title_from_files(changed_files)
+    else:
+        title = parsed_title if _looks_like_clean_title(parsed_title) else _build_title_from_files(changed_files)
 
-    if _changes_need_diff_fallback(parsed_title, parsed_changes, changed_files):
+    if prefer_diff_changes or _changes_need_diff_fallback(parsed_title, parsed_changes, changed_files):
         changes = _build_changes_from_files(changed_files)
     else:
         changes = parsed_changes
@@ -443,8 +568,183 @@ def build_release_notes_from_context(message: str, changed_files: List[str]) -> 
     if not changes:
         changes = [title] if title else []
 
-    version_type = explicit_type or _infer_version_type_from_context(title, changes, changed_files)
+    version_type = (
+        _infer_version_type_from_context(title, changes, changed_files, extra_text=message)
+        if prefer_inferred_type
+        else explicit_type or _infer_version_type_from_context(title, changes, changed_files, extra_text=message)
+    )
     return version_type, title, _dedupe_keep_order(changes)
+
+
+def _sanitize_fragment_name(branch_name: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9._-]+", "-", _normalize_text(branch_name or ""))
+    sanitized = re.sub(r"-{2,}", "-", sanitized).strip("-._")
+    return sanitized or "detached-head"
+
+
+def get_fragment_path(branch_name: str) -> Path:
+    return UNRELEASED_DIR / f"{_sanitize_fragment_name(branch_name)}.json"
+
+
+def build_release_fragment(branch_name: Optional[str] = None, base_ref: Optional[str] = None) -> Optional[Dict[str, object]]:
+    """为当前分支构建唯一的变更碎片。"""
+    resolved_branch = branch_name or get_current_branch()
+    changed_files = get_branch_changed_files(base_ref)
+    if not changed_files:
+        return None
+
+    commit_count = get_branch_commit_count(base_ref)
+    context_message = get_branch_context_message(base_ref)
+    version_type, title, changes = build_release_notes_from_context(
+        context_message,
+        changed_files,
+        prefer_diff_title=commit_count > 1,
+        prefer_inferred_type=commit_count > 1,
+        prefer_diff_changes=commit_count > 1,
+    )
+    if version_type == "skip":
+        return None
+
+    return {
+        "schemaVersion": FRAGMENT_SCHEMA_VERSION,
+        "branch": resolved_branch,
+        "baseRef": resolve_base_ref(base_ref),
+        "sourceCommit": get_latest_commit_hash(),
+        "committedAt": get_latest_commit_iso_datetime(),
+        "versionType": version_type,
+        "title": title,
+        "changes": changes,
+        "changedFiles": changed_files,
+    }
+
+
+def save_release_fragment(fragment: Dict[str, object], branch_name: Optional[str] = None) -> Path:
+    """保存变更碎片。"""
+    resolved_branch = branch_name or str(fragment.get("branch") or get_current_branch())
+    fragment_path = get_fragment_path(resolved_branch)
+    fragment_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(fragment_path, "w", encoding="utf-8") as handle:
+        json.dump(fragment, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    return fragment_path
+
+
+def sync_release_fragment(branch_name: Optional[str] = None, base_ref: Optional[str] = None, dry_run: bool = False) -> bool:
+    """同步当前分支的唯一变更碎片。"""
+    resolved_branch = branch_name or get_current_branch()
+    fragment = build_release_fragment(branch_name=resolved_branch, base_ref=base_ref)
+    fragment_path = get_fragment_path(resolved_branch)
+
+    if fragment is None:
+        if fragment_path.exists() and not dry_run:
+            fragment_path.unlink()
+            print(f"已移除无需发布的变更碎片: {fragment_path.relative_to(PROJECT_ROOT)}")
+        else:
+            print("当前分支无须生成变更碎片")
+        return False
+
+    if dry_run:
+        print("\n========== 变更碎片预览 ==========")
+        print(f"分支: {resolved_branch}")
+        print(f"碎片文件: {fragment_path.relative_to(PROJECT_ROOT)}")
+        print(f"类型: {fragment['versionType']}")
+        print(f"标题: {fragment['title']}")
+        print("变更:")
+        for change in fragment.get("changes", []):
+            print(f"  - {change}")
+        print("===============================\n")
+        return True
+
+    save_release_fragment(fragment, branch_name=resolved_branch)
+    print(f"已更新变更碎片: {fragment_path.relative_to(PROJECT_ROOT)}")
+    return True
+
+
+def load_release_fragments() -> List[Tuple[Path, Dict[str, object]]]:
+    """加载待发布的所有变更碎片。"""
+    if not UNRELEASED_DIR.exists():
+        return []
+
+    fragments: List[Tuple[Path, Dict[str, object]]] = []
+    for path in sorted(UNRELEASED_DIR.glob("*.json")):
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if not payload.get("title") or not payload.get("changes"):
+            continue
+        fragments.append((path, payload))
+
+    fragments.sort(
+        key=lambda item: (
+            str(item[1].get("committedAt") or ""),
+            str(item[1].get("branch") or ""),
+            item[0].name,
+        )
+    )
+    return fragments
+
+
+def build_release_entries(current_version: str, fragments: List[Dict[str, object]]) -> Tuple[str, List[Dict[str, object]]]:
+    """根据碎片顺序生成正式版本条目。"""
+    next_version = current_version
+    entries: List[Dict[str, object]] = []
+    for fragment in fragments:
+        version_type = str(fragment.get("versionType") or "patch")
+        if version_type not in {"major", "minor", "patch"}:
+            version_type = "patch"
+        next_version = increment_version(next_version, version_type)
+        committed_at = _normalize_text(str(fragment.get("committedAt") or ""))
+        date_text = committed_at[:10] if committed_at else datetime.now().strftime("%Y-%m-%d")
+        entries.append(
+            {
+                "version": next_version,
+                "date": date_text,
+                "type": version_type,
+                "title": str(fragment.get("title") or f"版本 {next_version}"),
+                "changes": _dedupe_keep_order(fragment.get("changes") or []),
+            }
+        )
+    return next_version, entries
+
+
+def release_from_fragments(dry_run: bool = False, consume: bool = True) -> bool:
+    """聚合所有待发布碎片，生成正式 version.json。"""
+    loaded_fragments = load_release_fragments()
+    if not loaded_fragments:
+        print("未找到待发布的变更碎片")
+        return False
+
+    data = load_version_data()
+    current_version = data.get("version", "1.0.0")
+    next_version, entries = build_release_entries(current_version, [payload for _, payload in loaded_fragments])
+    if not entries:
+        print("没有可写入的版本条目")
+        return False
+
+    if dry_run:
+        print("\n========== 聚合发布预览 ==========")
+        print(f"版本: {current_version} → {next_version}")
+        print("碎片:")
+        for path, payload in loaded_fragments:
+            print(f"  - {path.relative_to(PROJECT_ROOT)} => {payload.get('title')}")
+        print("正式条目:")
+        for entry in entries:
+            print(f"  - {entry['version']} [{entry['type']}] {entry['title']}")
+        print("===============================\n")
+        return True
+
+    data["version"] = next_version
+    data["releaseDate"] = entries[-1]["date"]
+    if "changelog" not in data:
+        data["changelog"] = []
+    data["changelog"] = list(reversed(entries)) + list(data["changelog"])
+    save_version_data(data)
+
+    if consume:
+        for path, _ in loaded_fragments:
+            path.unlink(missing_ok=True)
+
+    print(f"已聚合 {len(entries)} 个变更碎片，版本更新为 {next_version}")
+    return True
 
 
 def update_version(
@@ -522,6 +822,16 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="Deep Vision 版本管理器")
+    subparsers = parser.add_subparsers(dest="command")
+
+    fragment_parser = subparsers.add_parser("fragment", help="根据当前分支累计改动更新变更碎片")
+    fragment_parser.add_argument("--base-ref", help="指定比较基线（默认自动解析 origin/main/main）")
+    fragment_parser.add_argument("--dry-run", "-n", action="store_true", help="预览变更碎片，不实际修改")
+
+    release_parser = subparsers.add_parser("release", help="聚合变更碎片并更新正式 version.json")
+    release_parser.add_argument("--dry-run", "-n", action="store_true", help="预览聚合结果，不实际修改")
+    release_parser.add_argument("--keep-fragments", action="store_true", help="聚合后保留碎片文件")
+
     parser.add_argument("--type", "-t", choices=["major", "minor", "patch"], help="手动指定版本类型")
     parser.add_argument("--version", "-v", help="手动指定版本号 (如 2.0.0)")
     parser.add_argument("--title", help="版本标题")
@@ -529,6 +839,14 @@ def main() -> None:
     parser.add_argument("--dry-run", "-n", action="store_true", help="预览变更，不实际修改")
 
     args = parser.parse_args()
+
+    if args.command == "fragment":
+        sync_release_fragment(base_ref=args.base_ref, dry_run=args.dry_run)
+        sys.exit(0)
+
+    if args.command == "release":
+        release_from_fragments(dry_run=args.dry_run, consume=not args.keep_fragments)
+        sys.exit(0)
 
     success = update_version(
         version_type=args.type,

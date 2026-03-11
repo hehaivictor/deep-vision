@@ -94,6 +94,7 @@ python3 -m unittest tests.test_scripts_comprehensive
 ```text
 DeepVision/
 ├── web/                 # 前后端主程序与静态资源
+├── changes/             # 待发布变更碎片（功能分支产出，主线自动聚合）
 ├── scripts/             # 运维/迁移/压测等脚本
 ├── resources/           # 内置场景资源
 ├── tests/               # 回归测试
@@ -106,11 +107,15 @@ DeepVision/
 
 - [scripts/admin_migrate_ownership.py](scripts/admin_migrate_ownership.py)：账号归属迁移
 - [scripts/loadtest_list_endpoints.py](scripts/loadtest_list_endpoints.py)：列表接口压测
-- [scripts/version_manager.py](scripts/version_manager.py)：版本号与变更记录维护
-- [scripts/install-hooks.sh](scripts/install-hooks.sh)：安装仓库内 Git Hook，统一按钮提交与命令行提交后的版本日志生成
+- [scripts/version_manager.py](scripts/version_manager.py)：变更碎片与正式版本日志维护
+- [scripts/install-hooks.sh](scripts/install-hooks.sh)：安装仓库内 Git Hook，统一按钮提交与命令行提交后的变更碎片生成
 
 ## 提交流程建议
 
 - 首次拉取仓库后执行 `./scripts/install-hooks.sh`，将 Git Hook 固定到仓库内的 `.githooks/`。
-- 提交信息如果本身规范，更新日志会优先沿用提交标题与正文。
-- 即使点击客户端的“提交”按钮只填写了简短标题，`post-commit` 也会根据本次改动文件自动整理出结构化更新日志，避免版本历史出现脏标题或重复单条。
+- 功能分支提交后，`post-commit` 会自动根据当前分支相对主线的累计改动更新 `changes/unreleased/*.json` 变更碎片，不再直接抢占 `web/version.json` 里的正式版本号。
+- 提交信息如果本身规范，变更碎片会优先沿用提交标题与正文；如果标题较脏或正文缺失，则自动根据累计改动文件整理结构化说明。
+- PR 合入 `main` / `master` 后，GitHub Actions 会自动聚合所有待发布碎片，更新正式 `web/version.json`，再清理已消费的碎片文件。
+- 需要本地预览时，可执行：
+  - `python3 scripts/version_manager.py fragment --dry-run`
+  - `python3 scripts/version_manager.py release --dry-run`

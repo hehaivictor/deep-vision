@@ -1,0 +1,54 @@
+name: 聚合版本碎片
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'changes/unreleased/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deepvision-release-version
+  cancel-in-progress: false
+
+jobs:
+  release-version:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip release-version]') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 聚合变更碎片
+        run: python3 scripts/version_manager.py release
+
+      - name: 检查是否有版本产物变更
+        id: diff
+        run: |
+          if git diff --quiet --exit-code -- web/version.json changes/unreleased; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 提交正式版本
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A web/version.json changes/unreleased
+          git commit -m "工程：聚合变更碎片并更新正式版本 [skip release-version]"
+          git push

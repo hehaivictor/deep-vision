@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Deep Vision post-commit hook
-# 自动更新 web/version.json（自动 amend，不产生额外提交）
+# 自动更新当前分支的变更碎片（自动 amend，不产生额外提交）
 #
 
 set -euo pipefail
@@ -33,19 +33,14 @@ fi
 PROJECT_ROOT=$(git rev-parse --show-toplevel)
 cd "$PROJECT_ROOT" || exit 0
 
-if git show --name-only --pretty="" HEAD | grep -Fxq "web/version.json"; then
-    echo "[version] 当前提交已包含 web/version.json，跳过自动版本更新"
-    exit 0
-fi
+echo "[version] 正在检查变更碎片..."
+python3 scripts/version_manager.py fragment >/tmp/deepvision-version-hook.log 2>&1 || true
 
-echo "[version] 正在检查版本更新..."
-python3 scripts/version_manager.py >/tmp/deepvision-version-hook.log 2>&1 || true
-
-if [[ -n "$(git status --porcelain web/version.json 2>/dev/null)" ]]; then
+if [[ -n "$(git status --porcelain changes/unreleased 2>/dev/null)" ]]; then
     echo "[version] 正在更新 commit..."
-    git add web/version.json
+    git add -A changes/unreleased
     VERSION_SKIP=1 git commit --amend --no-edit >/tmp/deepvision-version-amend.log 2>&1
-    echo "[version] 版本更新完成"
+    echo "[version] 变更碎片更新完成"
 else
-    echo "[version] 版本信息无需更新"
+    echo "[version] 变更碎片无需更新"
 fi
