@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#
+# Deep Vision post-commit hook
+# 自动更新 web/version.json（自动 amend，不产生额外提交）
+#
+
+set -euo pipefail
+
+if [[ -n "${VERSION_SKIP:-}" ]]; then
+    echo "[version] 跳过版本更新 (VERSION_SKIP 已设置)"
+    exit 0
+fi
+
+GIT_DIR=$(git rev-parse --git-dir 2>/dev/null || true)
+if [[ -z "$GIT_DIR" ]]; then
+    exit 0
+fi
+
+if [[ -d "$GIT_DIR/rebase-merge" ]] || [[ -d "$GIT_DIR/rebase-apply" ]] || [[ -f "$GIT_DIR/CHERRY_PICK_HEAD" ]] || [[ -f "$GIT_DIR/REVERT_HEAD" ]] || [[ -f "$GIT_DIR/MERGE_HEAD" ]]; then
+    echo "[version] 历史改写流程中，跳过版本更新"
+    exit 0
+fi
+
+COMMIT_MSG=$(git log -1 --pretty=%B)
+if [[ "$COMMIT_MSG" == *"[version]"* ]] || [[ "$COMMIT_MSG" == *"chore(version)"* ]] || [[ "$COMMIT_MSG" =~ ^更新版本号 ]]; then
+    exit 0
+fi
+
+if [[ "$COMMIT_MSG" == Merge* ]]; then
+    exit 0
+fi
+
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+cd "$PROJECT_ROOT" || exit 0
+
+if git show --name-only --pretty="" HEAD | grep -Fxq "web/version.json"; then
+    echo "[version] 当前提交已包含 web/version.json，跳过自动版本更新"
+    exit 0
+fi
+
+echo "[version] 正在检查版本更新..."
+python3 scripts/version_manager.py >/tmp/deepvision-version-hook.log 2>&1 || true
+
+if [[ -n "$(git status --porcelain web/version.json 2>/dev/null)" ]]; then
+    echo "[version] 正在更新 commit..."
+    git add web/version.json
+    VERSION_SKIP=1 git commit --amend --no-edit >/tmp/deepvision-version-amend.log 2>&1
+    echo "[version] 版本更新完成"
+else
+    echo "[version] 版本信息无需更新"
+fi

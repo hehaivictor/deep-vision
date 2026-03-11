@@ -379,7 +379,7 @@ const SITE_CONFIG = {
   // ============ 方案页配置 ============
   solution: {
     // 是否展示“查看方案”按钮
-    enabled: false,
+    enabled: true,
   },
 };
 

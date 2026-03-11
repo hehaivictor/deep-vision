@@ -107,3 +107,10 @@ DeepVision/
 - [scripts/admin_migrate_ownership.py](scripts/admin_migrate_ownership.py)：账号归属迁移
 - [scripts/loadtest_list_endpoints.py](scripts/loadtest_list_endpoints.py)：列表接口压测
 - [scripts/version_manager.py](scripts/version_manager.py)：版本号与变更记录维护
+- [scripts/install-hooks.sh](scripts/install-hooks.sh)：安装仓库内 Git Hook，统一按钮提交与命令行提交后的版本日志生成
+
+## 提交流程建议
+
+- 首次拉取仓库后执行 `./scripts/install-hooks.sh`，将 Git Hook 固定到仓库内的 `.githooks/`。
+- 提交信息如果本身规范，更新日志会优先沿用提交标题与正文。
+- 即使点击客户端的“提交”按钮只填写了简短标题，`post-commit` 也会根据本次改动文件自动整理出结构化更新日志，避免版本历史出现脏标题或重复单条。
