@@ -3323,6 +3323,105 @@ function deepVision() {
             };
         },
 
+        buildOtherResolutionPayload(inputText, otherReference) {
+            const sourceText = String(inputText || '').trim();
+            const matchedOptions = Array.isArray(otherReference?.matchedOptions)
+                ? otherReference.matchedOptions.map(item => String(item || '').trim()).filter(Boolean)
+                : [];
+            const customText = String(otherReference?.customText || '').trim();
+
+            if (!sourceText && matchedOptions.length === 0 && !customText) {
+                return null;
+            }
+
+            let mode = 'custom';
+            if (matchedOptions.length > 0 && customText) {
+                mode = 'mixed';
+            } else if (matchedOptions.length > 0) {
+                mode = 'reference';
+            }
+
+            return {
+                mode,
+                matched_options: Array.from(new Set(matchedOptions)),
+                custom_text: customText,
+                source_text: sourceText,
+            };
+        },
+
+        splitAnswerTokens(answerText) {
+            const text = String(answerText || '').trim();
+            if (!text) return [];
+            const tokens = text.split(/[；;]/).map(item => String(item || '').trim()).filter(Boolean);
+            return tokens.length > 0 ? tokens : [text];
+        },
+
+        getLogOtherResolution(log, options = []) {
+            if (!log || typeof log !== 'object') {
+                return null;
+            }
+
+            const raw = log.other_resolution;
+            if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+                return null;
+            }
+
+            const mode = String(raw.mode || '').trim().toLowerCase();
+            if (!['reference', 'mixed', 'custom'].includes(mode)) {
+                return null;
+            }
+
+            const optionSet = new Set(
+                (Array.isArray(options) ? options : [])
+                    .map(item => String(item || '').trim())
+                    .filter(Boolean)
+            );
+            const matchedOptions = Array.isArray(raw.matched_options)
+                ? raw.matched_options
+                    .map(item => String(item || '').trim())
+                    .filter(item => item && (!optionSet.size || optionSet.has(item)))
+                : [];
+            const customText = String(raw.custom_text || '').trim();
+            const sourceText = String(raw.source_text || '').trim();
+
+            if (mode === 'reference' && matchedOptions.length === 0) {
+                return null;
+            }
+            if (mode === 'mixed' && (matchedOptions.length === 0 || !customText)) {
+                return null;
+            }
+            if (mode === 'custom' && matchedOptions.length > 0) {
+                return null;
+            }
+
+            return {
+                mode,
+                matchedOptions: Array.from(new Set(matchedOptions)),
+                customText,
+                sourceText,
+            };
+        },
+
+        getLogSelectedOptions(log, options = [], otherResolution = null) {
+            const optionList = Array.isArray(options)
+                ? options.map(item => String(item || '').trim()).filter(Boolean)
+                : [];
+            if (optionList.length === 0) {
+                return [];
+            }
+
+            const tokenSet = new Set(this.splitAnswerTokens(log?.answer || ''));
+            if (otherResolution?.customText) {
+                tokenSet.delete(otherResolution.customText);
+            }
+
+            const selectedSet = new Set(optionList.filter(option => tokenSet.has(option)));
+            if (otherResolution?.matchedOptions?.length) {
+                otherResolution.matchedOptions.forEach(option => selectedSet.add(option));
+            }
+            return optionList.filter(option => selectedSet.has(option));
+        },
+
         resetSingleSelectDisambiguation() {
             this.singleSelectDisambiguationActive = false;
             this.singleSelectDisambiguationOptions = [];
@@ -3545,6 +3644,9 @@ function deepVision() {
             const otherReference = this.otherSelected
                 ? this.resolveOtherInputReferences(otherText, this.currentQuestion.options)
                 : { matchedOptions: [], customText: '', pureReference: false, intent: 'custom' };
+            const otherResolution = this.otherSelected
+                ? this.buildOtherResolutionPayload(otherText, otherReference)
+                : null;
             const questionMultiSelect = !!(this.currentQuestion.questionMultiSelect ?? this.currentQuestion.multiSelect);
             const canEscalateSingleSelect = !questionMultiSelect
                 && this.otherSelected
@@ -3613,6 +3715,7 @@ function deepVision() {
                             selection_escalated_from_single: selectionEscalatedFromSingle,
                             other_selected: this.otherSelected,
                             other_answer_text: this.otherSelected ? this.otherAnswerText : '',
+                            other_resolution: otherResolution || undefined,
                             is_follow_up: this.currentQuestion.isFollowUp || false
                         })
                     }
@@ -7319,6 +7422,25 @@ function deepVision() {
                 ? log.options.map(item => String(item || '').trim()).filter(Boolean)
                 : [];
             const otherInput = String(log.other_answer_text || '').trim();
+            const otherResolution = this.getLogOtherResolution(log, options);
+
+            if (otherResolution) {
+                const selectedOptions = this.getLogSelectedOptions(log, options, otherResolution);
+                if (otherResolution.mode === 'reference') {
+                    return selectedOptions.join('；') || answerText || otherResolution.sourceText;
+                }
+
+                if (otherResolution.mode === 'mixed') {
+                    const details = [];
+                    if (selectedOptions.length > 0) {
+                        details.push(`已选：${selectedOptions.join('；')}`);
+                    }
+                    if (otherResolution.customText) {
+                        details.push(`补充说明：${otherResolution.customText}`);
+                    }
+                    return details.join(' | ') || answerText || otherResolution.sourceText;
+                }
+            }
 
             const details = [];
             if (options.length > 0) {

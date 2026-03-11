@@ -1139,6 +1139,12 @@ class ComprehensiveApiTests(unittest.TestCase):
                 "selection_escalated_from_single": True,
                 "other_selected": True,
                 "other_answer_text": "以上都要",
+                "other_resolution": {
+                    "mode": "reference",
+                    "matched_options": ["A", "B"],
+                    "custom_text": "",
+                    "source_text": "以上都要",
+                },
                 "is_follow_up": False,
             },
         )
@@ -1150,7 +1156,82 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertTrue(log["selection_escalated_from_single"])
         self.assertTrue(log["other_selected"])
         self.assertEqual(log["other_answer_text"], "以上都要")
+        self.assertEqual(
+            log["other_resolution"],
+            {
+                "mode": "reference",
+                "matched_options": ["A", "B"],
+                "custom_text": "",
+                "source_text": "以上都要",
+            },
+        )
         self.assertEqual(payload["dimensions"][dimension]["items"][-1]["name"], "A；B")
+
+    def test_submit_answer_rejects_invalid_other_resolution(self):
+        self._register()
+        created = self._create_session(topic="非法其他解析")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        response = self.client.post(
+            f"/api/sessions/{session_id}/submit-answer",
+            json={
+                "question": "需要哪些能力支持？",
+                "answer": "A",
+                "dimension": dimension,
+                "options": ["A", "B", "C"],
+                "other_selected": True,
+                "other_answer_text": "A",
+                "other_resolution": {
+                    "mode": "custom",
+                    "matched_options": ["A"],
+                    "custom_text": "A",
+                    "source_text": "A",
+                },
+                "is_follow_up": False,
+            },
+        )
+
+        self.assertEqual(response.status_code, 400, response.get_data(as_text=True))
+        self.assertIn("other_resolution.custom", (response.get_json() or {}).get("error", ""))
+
+    def test_render_appendix_answer_block_honors_other_resolution_modes(self):
+        reference_log = {
+            "answer": "A；C",
+            "options": ["A", "B", "C"],
+            "other_selected": True,
+            "other_answer_text": "1、3",
+            "other_resolution": {
+                "mode": "reference",
+                "matched_options": ["A", "C"],
+                "custom_text": "",
+                "source_text": "1、3",
+            },
+        }
+        reference_block = self.server.render_appendix_answer_block(reference_log)
+        self.assertIn("<div>☑ A</div>", reference_block)
+        self.assertIn("<div>☐ B</div>", reference_block)
+        self.assertIn("<div>☑ C</div>", reference_block)
+        self.assertNotIn("其他（自由输入）", reference_block)
+
+        mixed_log = {
+            "answer": "A；C；另外还要支持导出",
+            "options": ["A", "B", "C"],
+            "other_selected": True,
+            "other_answer_text": "1、3，另外还要支持导出",
+            "other_resolution": {
+                "mode": "mixed",
+                "matched_options": ["A", "C"],
+                "custom_text": "另外还要支持导出",
+                "source_text": "1、3，另外还要支持导出",
+            },
+        }
+        mixed_block = self.server.render_appendix_answer_block(mixed_log)
+        self.assertIn("<div>☑ A</div>", mixed_block)
+        self.assertIn("<div>☐ B</div>", mixed_block)
+        self.assertIn("<div>☑ C</div>", mixed_block)
+        self.assertIn("<div>☑ 其他补充说明：另外还要支持导出</div>", mixed_block)
+        self.assertNotIn("其他（自由输入）", mixed_block)
 
 
 if __name__ == "__main__":

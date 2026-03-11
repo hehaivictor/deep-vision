@@ -16847,6 +16847,136 @@ def get_fallback_question(session: dict, dimension: str) -> dict:
     }
 
 
+OTHER_RESOLUTION_MODES = {"reference", "mixed", "custom"}
+
+
+def normalize_other_resolution_payload(
+    payload,
+    option_list: list[str],
+    *,
+    other_selected: bool,
+    other_answer_text: str,
+) -> Optional[dict]:
+    """标准化“其他”选项的解析结果元数据。"""
+    if payload is None or not other_selected:
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError("other_resolution必须是对象")
+
+    mode = str(payload.get("mode", "") or "").strip().lower()
+    if mode not in OTHER_RESOLUTION_MODES:
+        raise ValueError("other_resolution.mode无效")
+
+    raw_matched_options = payload.get("matched_options", [])
+    if raw_matched_options is None:
+        raw_matched_options = []
+    if not isinstance(raw_matched_options, list):
+        raise ValueError("other_resolution.matched_options必须是列表")
+
+    allowed_options = {
+        str(item or "").strip()
+        for item in option_list
+        if str(item or "").strip()
+    }
+    matched_options = []
+    seen_options = set()
+    for item in raw_matched_options:
+        if not isinstance(item, str):
+            raise ValueError("other_resolution.matched_options必须全部为字符串")
+        normalized_item = item.strip()
+        if not normalized_item:
+            continue
+        if allowed_options and normalized_item not in allowed_options:
+            raise ValueError("other_resolution.matched_options包含无效选项")
+        if normalized_item in seen_options:
+            continue
+        matched_options.append(normalized_item)
+        seen_options.add(normalized_item)
+
+    source_text = payload.get("source_text", other_answer_text)
+    custom_text = payload.get("custom_text", "")
+    if source_text is None:
+        source_text = other_answer_text
+    if custom_text is None:
+        custom_text = ""
+    if not isinstance(source_text, str):
+        raise ValueError("other_resolution.source_text必须是字符串")
+    if not isinstance(custom_text, str):
+        raise ValueError("other_resolution.custom_text必须是字符串")
+
+    source_text = source_text.strip()
+    custom_text = custom_text.strip()
+    if len(source_text) > 2000:
+        raise ValueError("other_resolution.source_text长度不能超过2000字符")
+    if len(custom_text) > 2000:
+        raise ValueError("other_resolution.custom_text长度不能超过2000字符")
+
+    if mode == "reference" and not matched_options:
+        raise ValueError("other_resolution.reference需要至少一个matched_options")
+    if mode == "mixed" and (not matched_options or not custom_text):
+        raise ValueError("other_resolution.mixed需要matched_options和custom_text")
+    if mode == "custom" and matched_options:
+        raise ValueError("other_resolution.custom不能包含matched_options")
+
+    return {
+        "mode": mode,
+        "matched_options": matched_options,
+        "custom_text": custom_text,
+        "source_text": source_text,
+    }
+
+
+def extract_other_resolution(log: dict, option_list: list[str]) -> Optional[dict]:
+    """读取已持久化的“其他”选项语义数据；历史数据缺失时返回 None。"""
+    if not isinstance(log, dict):
+        return None
+
+    raw_value = log.get("other_resolution")
+    if not isinstance(raw_value, dict):
+        return None
+
+    mode = str(raw_value.get("mode", "") or "").strip().lower()
+    if mode not in OTHER_RESOLUTION_MODES:
+        return None
+
+    matched_options = []
+    seen_options = set()
+    allowed_options = {
+        str(item or "").strip()
+        for item in option_list
+        if str(item or "").strip()
+    }
+    raw_matched_options = raw_value.get("matched_options", [])
+    if isinstance(raw_matched_options, list):
+        for item in raw_matched_options:
+            normalized_item = str(item or "").strip()
+            if not normalized_item:
+                continue
+            if allowed_options and normalized_item not in allowed_options:
+                continue
+            if normalized_item in seen_options:
+                continue
+            matched_options.append(normalized_item)
+            seen_options.add(normalized_item)
+
+    custom_text = str(raw_value.get("custom_text", "") or "").strip()
+    source_text = str(raw_value.get("source_text", "") or "").strip()
+
+    if mode == "reference" and not matched_options:
+        return None
+    if mode == "mixed" and (not matched_options or not custom_text):
+        return None
+    if mode == "custom" and matched_options:
+        return None
+
+    return {
+        "mode": mode,
+        "matched_options": matched_options,
+        "custom_text": custom_text,
+        "source_text": source_text,
+    }
+
+
 @app.route('/api/sessions/<session_id>/submit-answer', methods=['POST'])
 def submit_answer(session_id):
     """提交回答"""
@@ -16875,6 +17005,7 @@ def submit_answer(session_id):
     selection_escalated_from_single = data.get("selection_escalated_from_single", False)
     other_selected = data.get("other_selected", False)
     other_answer_text = data.get("other_answer_text", "")
+    other_resolution_payload = data.get("other_resolution")
     is_follow_up = data.get("is_follow_up", False)
 
     # 验证必需参数
@@ -16904,6 +17035,16 @@ def submit_answer(session_id):
         return jsonify({"error": "自定义答案长度不能超过2000字符"}), 400
     if not isinstance(is_follow_up, bool):
         return jsonify({"error": "is_follow_up必须是布尔值"}), 400
+
+    try:
+        other_resolution = normalize_other_resolution_payload(
+            other_resolution_payload,
+            options,
+            other_selected=other_selected,
+            other_answer_text=other_answer_text,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     # 使用增强版评估函数判断回答是否需要追问
     eval_result = evaluate_answer_depth(
@@ -16945,6 +17086,7 @@ def submit_answer(session_id):
         "selection_escalated_from_single": selection_escalated_from_single,
         "other_selected": other_selected,
         "other_answer_text": other_answer_text,
+        "other_resolution": other_resolution,
         "is_follow_up": is_follow_up,
         "needs_follow_up": needs_follow_up,
         "follow_up_signals": follow_up_signals,  # 记录检测到的信号
@@ -18416,9 +18558,6 @@ def resolve_selected_options(log: dict, option_list: list[str]) -> set[str]:
         return set()
 
     answer_text = str(log.get("answer", "") or "").strip()
-    if not answer_text:
-        return set()
-
     answer_tokens = {
         token.strip()
         for token in re.split(r"[；;]\s*", answer_text)
@@ -18427,11 +18566,19 @@ def resolve_selected_options(log: dict, option_list: list[str]) -> set[str]:
     if not answer_tokens and answer_text:
         answer_tokens.add(answer_text)
 
-    return {option for option in option_list if option in answer_tokens}
+    other_resolution = extract_other_resolution(log, option_list)
+    if other_resolution and other_resolution.get("custom_text"):
+        answer_tokens.discard(other_resolution["custom_text"])
+
+    selected_options = {option for option in option_list if option in answer_tokens}
+    if other_resolution:
+        selected_options.update(other_resolution.get("matched_options", []))
+
+    return selected_options
 
 
 def render_appendix_answer_block(log: dict) -> str:
-    """将附录回答渲染为“全选项 + 勾选态 + 其他输入”格式。"""
+    """将附录回答渲染为“全选项 + 勾选态 + 语义化其他输入”格式。"""
     if not isinstance(log, dict):
         text = str(log or "").strip()
         safe_text = html.escape(text or "（未填写）")
@@ -18443,6 +18590,7 @@ def render_appendix_answer_block(log: dict) -> str:
     if isinstance(options, list):
         option_list = [str(item or "").strip() for item in options if str(item or "").strip()]
 
+    other_resolution = extract_other_resolution(log, option_list)
     selected_options = resolve_selected_options(log, option_list)
 
     answer_lines = []
@@ -18455,7 +18603,14 @@ def render_appendix_answer_block(log: dict) -> str:
 
     other_selected = bool(log.get("other_selected"))
     other_input = str(log.get("other_answer_text", "") or "").strip()
-    if other_selected and other_input:
+    if other_resolution:
+        if other_resolution["mode"] == "mixed" and other_resolution["custom_text"]:
+            answer_lines.append(f"☑ 其他补充说明：{other_resolution['custom_text']}")
+        elif other_resolution["mode"] == "custom":
+            free_text = other_resolution["source_text"] or other_input
+            if free_text:
+                answer_lines.append(f"☑ 其他（自由输入）：{free_text}")
+    elif other_selected and other_input:
         answer_lines.append(f"☑ 其他（自由输入）：{other_input}")
 
     # 附录位于 <details> HTML 区块内，Markdown 换行在部分渲染器中会失效。

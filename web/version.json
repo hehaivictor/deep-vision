@@ -1,7 +1,16 @@
 {
-  "version": "2.22.0",
+  "version": "2.22.1",
   "releaseDate": "2026-03-11",
   "changelog": [
+    {
+      "version": "2.22.1",
+      "date": "2026-03-11",
+      "type": "patch",
+      "title": "实现其他选项语义化展示逻辑」} ভুল? need remove non",
+      "changes": [
+        "实现其他选项语义化展示逻辑」} ভুল? need remove non"
+      ]
+    },
     {
       "version": "2.22.0",
       "date": "2026-03-11",
