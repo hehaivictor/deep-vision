@@ -206,17 +206,15 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual(owner_resp.status_code, 200, owner_resp.get_data(as_text=True))
         owner_payload = owner_resp.get_json() or {}
         self.assertEqual(owner_payload.get('report_name'), report_name)
+        self.assertEqual(owner_payload.get('source_mode'), 'legacy_markdown')
         self.assertTrue(owner_payload.get('metrics'))
+        self.assertTrue(owner_payload.get('decision_summary'))
+        self.assertIsInstance(owner_payload.get('quality_signals'), dict)
+        self.assertTrue(owner_payload.get('sections'))
         self.assertEqual(
             [item.get('id') for item in owner_payload.get('nav_items', [])],
-            ['decision', 'comparison', 'modules', 'architecture', 'dataflow', 'value', 'roadmap', 'risks', 'actions'],
+            [section.get('id') for section in owner_payload.get('sections', [])],
         )
-        self.assertTrue(owner_payload.get('decision_summary'))
-        self.assertTrue(owner_payload.get('decision_cards'))
-        self.assertTrue(owner_payload.get('comparison_items'))
-        self.assertTrue(owner_payload.get('architecture_nodes'))
-        self.assertTrue(owner_payload.get('dataflow_steps'))
-        self.assertTrue(owner_payload.get('value_table'))
 
         other_client = self.server.app.test_client()
         self._register_user(client=other_client)
@@ -252,17 +250,7 @@ class SecurityRegressionTests(unittest.TestCase):
                 for item in value:
                     yield from iter_strings(item)
 
-        text_values = list(iter_strings({
-            'title': payload.get('title'),
-            'subtitle': payload.get('subtitle'),
-            'overview': payload.get('overview'),
-            'decision_summary': payload.get('decision_summary'),
-            'decision_cards': payload.get('decision_cards'),
-            'comparison_items': payload.get('comparison_items'),
-            'architecture_nodes': payload.get('architecture_nodes'),
-            'dataflow_steps': payload.get('dataflow_steps'),
-            'value_table': payload.get('value_table'),
-        }))
+        text_values = list(iter_strings(payload))
         self.assertTrue(text_values)
         for value in text_values:
             lowered = value.lower()

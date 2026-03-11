@@ -6554,6 +6554,54 @@ def resolve_session_bound_report_name(session: dict, user_id: int) -> str:
     return fallback_candidates[0][2]
 
 
+def get_bound_reports_for_session(session: dict) -> list[str]:
+    """汇总会话已绑定的报告名，兼容新旧字段与主题兜底。"""
+    if not isinstance(session, dict):
+        return []
+
+    try:
+        owner_user_id = int(session.get("owner_user_id"))
+    except (TypeError, ValueError):
+        owner_user_id = 0
+
+    session_scope_key = get_session_instance_scope_key(session)
+    bound_reports: list[str] = []
+    seen: set[str] = set()
+    direct_candidates: list[str] = []
+
+    current_report_name = str(session.get("current_report_name") or "").strip()
+    if current_report_name:
+        direct_candidates.append(current_report_name)
+
+    current_report_path = str(session.get("current_report_path") or "").strip()
+    if current_report_path:
+        derived_name = Path(current_report_path).name.strip()
+        if derived_name and derived_name not in direct_candidates:
+            direct_candidates.append(derived_name)
+
+    last_report_name = normalize_solution_report_filename(session.get("last_report_name", ""))
+    if last_report_name and last_report_name not in direct_candidates:
+        direct_candidates.append(last_report_name)
+
+    for report_name in direct_candidates:
+        report_path = REPORTS_DIR / report_name
+        if not report_path.exists() or not report_path.is_file():
+            continue
+        owner_ok = owner_user_id <= 0 or get_report_owner_id(report_name) == owner_user_id
+        scope_ok = not session_scope_key or get_report_scope_key(report_name) == session_scope_key
+        if not owner_ok or not scope_ok or report_name in seen:
+            continue
+        bound_reports.append(report_name)
+        seen.add(report_name)
+
+    for report_name in find_reports_by_session_topic(session):
+        if report_name in seen:
+            continue
+        bound_reports.append(report_name)
+        seen.add(report_name)
+    return bound_reports
+
+
 def unique_non_empty_strings(items) -> list:
     """去重并过滤空字符串。"""
     if not isinstance(items, list):
@@ -13793,8 +13841,11 @@ def generate_report_v3_pipeline(
                     "status": "success",
                     "profile": runtime_profile,
                     "report_content": report_content,
+                    "draft_snapshot": copy.deepcopy(current_draft),
                     "quality_meta": quality_meta,
                     "evidence_pack": evidence_pack,
+                    "report_template": resolve_report_template_for_session(session, evidence_pack=evidence_pack),
+                    "report_type": str(evidence_pack.get("report_type", "standard") or "standard").strip().lower() or "standard",
                     "review_issues": final_issues,
                     "phase_lanes": phase_lanes,
                     "review_rounds_executed": review_round_no,
@@ -15660,11 +15711,12 @@ def batch_delete_sessions():
                 continue
 
         if delete_reports:
-            linked_reports = find_reports_by_session_topic(session)
+            linked_reports = get_bound_reports_for_session(session)
             for report_name in linked_reports:
                 report_file = REPORTS_DIR / report_name
                 if report_file.exists():
                     mark_report_as_deleted(report_name)
+                    delete_solution_sidecar(report_name)
                     deleted_reports.add(report_name)
 
         try:
@@ -18232,8 +18284,11 @@ def attempt_salvage_v3_review_failure(session: dict, v3_result: Optional[dict]) 
 
         outcome["success"] = True
         outcome["note"] = "quality_gate_passed"
+        outcome["draft_snapshot"] = copy.deepcopy(sanitized_draft)
         outcome["quality_meta"] = quality_meta if isinstance(quality_meta, dict) else {}
         outcome["report_content"] = report_content
+        outcome["report_template"] = resolve_report_template_for_session(session, evidence_pack=evidence_pack)
+        outcome["report_type"] = str(evidence_pack.get("report_type", "standard") or "standard").strip().lower() or "standard"
         outcome["review_issues"] = merged_issues[:60]
         outcome["quality_gate_issues"] = []
         outcome["quality_gate_issue_types"] = []
@@ -18470,9 +18525,11 @@ def run_report_generation_job(
             if isinstance(latest_session, dict) and ensure_session_owner(latest_session, user_id):
                 latest_session["status"] = "completed"
                 latest_session["updated_at"] = get_utc_now()
+                report_updated_at = get_utc_now()
                 latest_session["current_report_name"] = filename
                 latest_session["current_report_path"] = str(report_file)
-                latest_session["current_report_updated_at"] = get_utc_now()
+                latest_session["current_report_updated_at"] = report_updated_at
+                latest_session["last_report_name"] = filename
                 if isinstance(quality_meta, dict):
                     latest_session["last_report_quality_meta"] = quality_meta
                 if isinstance(session.get("last_report_v3_debug"), dict):
@@ -18482,6 +18539,7 @@ def run_report_generation_job(
                 session["current_report_name"] = filename
                 session["current_report_path"] = str(report_file)
                 session["current_report_updated_at"] = latest_session["current_report_updated_at"]
+                session["last_report_name"] = filename
 
             return report_file, filename
 
@@ -18570,6 +18628,19 @@ def run_report_generation_job(
 
             update_report_generation_status(session_id, "saving", message=saving_message)
             report_file, filename = persist_report(report_content, quality_meta=quality_meta)
+            write_solution_sidecar(
+                filename,
+                build_solution_sidecar_snapshot(
+                    report_name=filename,
+                    session_id=session_id,
+                    session=session,
+                    draft_snapshot=result.get("draft_snapshot", {}),
+                    quality_meta=quality_meta,
+                    evidence_pack=result.get("evidence_pack", {}),
+                    report_template=result.get("report_template", ""),
+                    report_type=result.get("report_type", ""),
+                ),
+            )
             update_report_generation_status(session_id, "completed", active=False)
             set_report_generation_metadata(session_id, {
                 "request_id": request_id,
@@ -20897,7 +20968,7 @@ def build_solution_value_table(
     ]
 
 
-def build_solution_payload_from_report(report_name: str, report_content: str) -> dict:
+def build_legacy_solution_payload_from_report(report_name: str, report_content: str) -> dict:
     normalized_content = normalize_report_time_fields(str(report_content or ""))
     report_text = strip_inline_evidence_markers(normalized_content)
     main_report_text = report_text.split("## 附录：完整访谈记录", 1)[0].strip()
@@ -21050,6 +21121,1327 @@ def build_solution_payload_from_report(report_name: str, report_content: str) ->
         "dataflow_steps": dataflow_steps,
         "value_table": value_table,
     }
+
+
+SOLUTION_SIDECAR_SUFFIX = ".solution.json"
+SOLUTION_SNAPSHOT_VERSION = "solution_snapshot_v1"
+SOLUTION_SIMILARITY_LOOKBACK = 8
+SOLUTION_STRICT_FALLBACK_RATIO_THRESHOLD = 0.45
+SOLUTION_RELAXED_FALLBACK_RATIO_THRESHOLD = 0.58
+SOLUTION_MIN_EVIDENCE_BINDING_RATIO = 0.34
+SOLUTION_MAX_SIMILARITY_SCORE = 0.82
+SOLUTION_MIN_UNIQUE_TERM_RATIO = 0.55
+SOLUTION_SIMILARITY_NGRAM_SIZE = 2
+
+
+def get_solution_sidecar_path(report_name: str) -> Path:
+    normalized = normalize_solution_report_filename(report_name)
+    safe_name = Path(str(normalized or "report.md")).name or "report.md"
+    return REPORTS_DIR / f"{safe_name}{SOLUTION_SIDECAR_SUFFIX}"
+
+
+def read_solution_sidecar(report_name: str) -> dict:
+    path = get_solution_sidecar_path(report_name)
+    if not path.exists() or not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_solution_sidecar(report_name: str, snapshot: dict) -> None:
+    if not isinstance(snapshot, dict) or not snapshot:
+        return
+    payload = copy.deepcopy(snapshot)
+    payload["version"] = SOLUTION_SNAPSHOT_VERSION
+    payload["report_name"] = report_name
+    path = get_solution_sidecar_path(report_name)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def delete_solution_sidecar(report_name: str) -> None:
+    path = get_solution_sidecar_path(report_name)
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception:
+        return
+
+
+def _solution_report_title_from_content(report_content: str) -> str:
+    report_title = "访谈报告"
+    for raw_line in str(report_content or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith("# "):
+            report_title = clean_solution_text(line[2:].replace("访谈报告", ""), max_len=60) or "访谈报告"
+            break
+    return report_title
+
+
+def _solution_find_section_body(sections: list[tuple[str, str]], keywords: list[str]) -> str:
+    for title, body in sections:
+        normalized_title = clean_solution_text(title, max_len=80)
+        if any(keyword in normalized_title for keyword in keywords):
+            return body
+    return ""
+
+
+def _solution_strip_markdown_tables(text: str) -> str:
+    lines = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.rstrip()
+        if line.strip().startswith("|"):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _parse_solution_markdown_table(table_body: str) -> list[dict]:
+    lines = [line.strip() for line in str(table_body or "").splitlines() if line.strip().startswith("|")]
+    if len(lines) < 2:
+        return []
+
+    headers = [clean_solution_text(cell, max_len=48) for cell in lines[0].strip().strip("|").split("|")]
+    if not headers:
+        return []
+
+    rows = []
+    for raw_line in lines[2:]:
+        if re.match(r"^\|\s*[:\- ]+\|", raw_line):
+            continue
+        cells = [clean_solution_text(cell, max_len=240) for cell in raw_line.strip().strip("|").split("|")]
+        if not any(cell and cell != "-" for cell in cells):
+            continue
+        while len(cells) < len(headers):
+            cells.append("")
+        rows.append({headers[idx]: cells[idx] for idx in range(len(headers))})
+    return rows
+
+
+def _solution_extract_markdown_table_blocks(text: str) -> list[str]:
+    blocks = []
+    current_lines = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith("|"):
+            current_lines.append(line)
+            continue
+        if len(current_lines) >= 2:
+            blocks.append("\n".join(current_lines))
+        current_lines = []
+    if len(current_lines) >= 2:
+        blocks.append("\n".join(current_lines))
+    return blocks
+
+
+def _solution_parse_table_from_sections(sections: list[tuple[str, str]], keywords: list[str], fallback_body: str = "") -> list[dict]:
+    candidate_bodies = []
+    for title, body in sections:
+        normalized_title = clean_solution_text(title, max_len=80)
+        if any(keyword in normalized_title for keyword in keywords):
+            candidate_bodies.append(body)
+    if fallback_body:
+        candidate_bodies.append(fallback_body)
+
+    seen = set()
+    for body in candidate_bodies:
+        body_text = str(body or "")
+        key = clean_solution_text(body_text, max_len=0)
+        if key in seen:
+            continue
+        seen.add(key)
+        for block in _solution_extract_markdown_table_blocks(body_text):
+            rows = _parse_solution_markdown_table(block)
+            if rows:
+                return rows
+    return []
+
+
+def _normalize_solution_refs(value) -> list[str]:
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, str):
+        raw_items = re.split(r"[、,，;；/\s]+", value)
+    else:
+        raw_items = []
+
+    refs = []
+    seen = set()
+    for raw_item in raw_items:
+        text = clean_solution_text(raw_item, max_len=16).upper()
+        if not text or not re.fullmatch(r"Q\d+", text):
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        refs.append(text)
+    return refs
+
+
+def _normalize_solution_structured_list(raw_rows, kind: str) -> list[dict]:
+    mappings = {
+        "needs": {
+            "name": ["name", "需求项", "answer"],
+            "priority": ["priority", "优先级"],
+            "description": ["description", "描述", "detail", "来源痛点", "说明", "具体表现"],
+            "evidence_refs": ["evidence_refs", "证据"],
+        },
+        "solutions": {
+            "title": ["title", "方案建议", "建议项", "方向", "模块", "推荐思路"],
+            "description": ["description", "说明", "detail", "具体内容", "理由", "预期效果"],
+            "owner": ["owner", "Owner", "负责方", "责任方"],
+            "timeline": ["timeline", "时间计划", "时间建议", "时间节点", "排期"],
+            "metric": ["metric", "验收指标", "交付物", "预期效果", "产出"],
+            "evidence_refs": ["evidence_refs", "证据"],
+        },
+        "risks": {
+            "risk": ["risk", "风险项"],
+            "impact": ["impact", "影响", "风险等级", "可能性", "描述"],
+            "mitigation": ["mitigation", "缓解措施", "应对策略"],
+            "evidence_refs": ["evidence_refs", "证据"],
+        },
+        "actions": {
+            "action": ["action", "行动项", "事项", "任务"],
+            "owner": ["owner", "Owner", "负责方", "责任方"],
+            "timeline": ["timeline", "时间计划", "时间建议", "时间节点", "排期"],
+            "metric": ["metric", "验收指标", "交付物", "预期效果", "产出"],
+            "evidence_refs": ["evidence_refs", "证据"],
+        },
+        "open_questions": {
+            "question": ["question", "未决问题"],
+            "reason": ["reason", "原因"],
+            "impact": ["impact", "影响"],
+            "suggested_follow_up": ["suggested_follow_up", "建议补问"],
+            "evidence_refs": ["evidence_refs", "证据"],
+        },
+        "evidence_index": {
+            "claim": ["claim", "关键结论"],
+            "confidence": ["confidence", "置信度"],
+            "evidence_refs": ["evidence_refs", "证据"],
+        },
+    }
+    mapping = mappings.get(kind, {})
+    rows = []
+    for raw_row in raw_rows if isinstance(raw_rows, list) else []:
+        if not isinstance(raw_row, dict):
+            continue
+        row = {}
+        for target, aliases in mapping.items():
+            picked = None
+            for alias in aliases:
+                value = raw_row.get(alias)
+                if value not in (None, ""):
+                    picked = value
+                    break
+            if target == "evidence_refs":
+                row[target] = _normalize_solution_refs(picked)
+            elif target == "confidence":
+                confidence = clean_solution_text(picked or "medium", max_len=12).lower() or "medium"
+                row[target] = confidence if confidence in {"high", "medium", "low"} else "medium"
+            elif target == "priority":
+                priority = clean_solution_text(picked or "P1", max_len=8).upper() or "P1"
+                row[target] = priority if priority in {"P0", "P1", "P2", "P3"} else "P1"
+            else:
+                max_len = 240 if target in {"description", "impact", "mitigation", "suggested_follow_up"} else 120
+                row[target] = clean_solution_text(picked, max_len=max_len)
+
+        primary_key = {
+            "needs": "name",
+            "solutions": "title",
+            "risks": "risk",
+            "actions": "action",
+            "open_questions": "question",
+            "evidence_index": "claim",
+        }.get(kind, "")
+        if primary_key and not row.get(primary_key):
+            continue
+        rows.append(row)
+    return rows[:12]
+
+
+def _normalize_solution_snapshot(snapshot: dict) -> dict:
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    draft = snapshot.get("draft", {}) if isinstance(snapshot.get("draft", {}), dict) else {}
+    analysis_raw = draft.get("analysis", {}) if isinstance(draft.get("analysis", {}), dict) else {}
+    quality_meta = snapshot.get("quality_meta", {}) if isinstance(snapshot.get("quality_meta", {}), dict) else {}
+    quality_snapshot = snapshot.get("quality_snapshot", {}) if isinstance(snapshot.get("quality_snapshot", {}), dict) else {}
+    report_schema = snapshot.get("report_schema", {}) if isinstance(snapshot.get("report_schema", {}), dict) else {}
+
+    try:
+        overall_coverage = float(snapshot.get("overall_coverage", 0) or 0)
+    except Exception:
+        overall_coverage = 0.0
+
+    normalized = {
+        "version": str(snapshot.get("version") or SOLUTION_SNAPSHOT_VERSION),
+        "report_name": clean_solution_text(snapshot.get("report_name", ""), max_len=160),
+        "topic": clean_solution_text(snapshot.get("topic", ""), max_len=160),
+        "session_id": clean_solution_text(snapshot.get("session_id", ""), max_len=80),
+        "scenario_id": clean_solution_text(snapshot.get("scenario_id", ""), max_len=80),
+        "scenario_name": clean_solution_text(snapshot.get("scenario_name", ""), max_len=80),
+        "report_template": normalize_report_template_name(
+            snapshot.get("report_template", ""),
+            report_type=str(snapshot.get("report_type", "standard") or "standard").strip().lower(),
+        ),
+        "report_type": str(snapshot.get("report_type", "standard") or "standard").strip().lower() or "standard",
+        "report_schema": copy.deepcopy(report_schema),
+        "quality_meta": copy.deepcopy(quality_meta),
+        "quality_snapshot": copy.deepcopy(quality_snapshot),
+        "overall_coverage": max(0.0, min(overall_coverage, 1.0)),
+        "snapshot_origin": clean_solution_text(snapshot.get("snapshot_origin", ""), max_len=40),
+        "has_structured_evidence": bool(snapshot.get("has_structured_evidence", False)),
+        "draft": {
+            "overview": clean_solution_text(draft.get("overview", snapshot.get("overview", "")), max_len=3200),
+            "needs": _normalize_solution_structured_list(draft.get("needs", snapshot.get("needs", [])), "needs"),
+            "analysis": {
+                "customer_needs": clean_solution_text(analysis_raw.get("customer_needs", ""), max_len=2000),
+                "business_flow": clean_solution_text(analysis_raw.get("business_flow", ""), max_len=2000),
+                "tech_constraints": clean_solution_text(analysis_raw.get("tech_constraints", ""), max_len=2000),
+                "project_constraints": clean_solution_text(analysis_raw.get("project_constraints", ""), max_len=2000),
+            },
+            "visualizations": draft.get("visualizations", {}) if isinstance(draft.get("visualizations", {}), dict) else {},
+            "solutions": _normalize_solution_structured_list(draft.get("solutions", snapshot.get("solutions", [])), "solutions"),
+            "risks": _normalize_solution_structured_list(draft.get("risks", snapshot.get("risks", [])), "risks"),
+            "actions": _normalize_solution_structured_list(draft.get("actions", snapshot.get("actions", [])), "actions"),
+            "open_questions": _normalize_solution_structured_list(draft.get("open_questions", snapshot.get("open_questions", [])), "open_questions"),
+            "evidence_index": _normalize_solution_structured_list(draft.get("evidence_index", snapshot.get("evidence_index", [])), "evidence_index"),
+        },
+    }
+
+    if not normalized["has_structured_evidence"]:
+        normalized["has_structured_evidence"] = any(
+            item.get("evidence_refs")
+            for field in ["needs", "solutions", "risks", "actions", "open_questions", "evidence_index"]
+            for item in normalized["draft"][field]
+        )
+    return normalized
+
+
+def build_solution_sidecar_snapshot(
+    report_name: str,
+    session_id: str,
+    session: dict,
+    draft_snapshot: dict,
+    quality_meta: dict,
+    evidence_pack: dict,
+    report_template: str = "",
+    report_type: str = "",
+) -> dict:
+    scenario_config = session.get("scenario_config", {}) if isinstance(session.get("scenario_config", {}), dict) else {}
+    report_cfg = scenario_config.get("report", {}) if isinstance(scenario_config.get("report", {}), dict) else {}
+    report_schema = evidence_pack.get("report_schema", {}) if isinstance(evidence_pack.get("report_schema", {}), dict) else {}
+    if not report_schema and report_template == REPORT_TEMPLATE_CUSTOM_V1:
+        normalized_schema, _schema_issues = normalize_custom_report_schema(
+            report_cfg.get("schema"),
+            fallback_sections=report_cfg.get("sections"),
+        )
+        report_schema = normalized_schema
+
+    snapshot = {
+        "version": SOLUTION_SNAPSHOT_VERSION,
+        "report_name": report_name,
+        "topic": session.get("topic", ""),
+        "session_id": session_id,
+        "scenario_id": session.get("scenario_id", ""),
+        "scenario_name": scenario_config.get("name", ""),
+        "report_template": report_template or evidence_pack.get("report_template", ""),
+        "report_type": report_type or evidence_pack.get("report_type", "standard"),
+        "report_schema": report_schema,
+        "quality_meta": quality_meta if isinstance(quality_meta, dict) else {},
+        "quality_snapshot": evidence_pack.get("quality_snapshot", {}) if isinstance(evidence_pack.get("quality_snapshot", {}), dict) else {},
+        "overall_coverage": evidence_pack.get("overall_coverage", 0),
+        "snapshot_origin": "structured_sidecar",
+        "has_structured_evidence": True,
+        "draft": copy.deepcopy(draft_snapshot) if isinstance(draft_snapshot, dict) else {},
+    }
+    return _normalize_solution_snapshot(snapshot)
+
+
+def build_solution_snapshot_from_markdown_report(report_name: str, report_content: str) -> dict:
+    normalized_content = normalize_report_time_fields(str(report_content or ""))
+    report_text = strip_inline_evidence_markers(normalized_content)
+    main_report_text = report_text.split("## 附录：完整访谈记录", 1)[0].strip()
+    report_title = _solution_report_title_from_content(main_report_text)
+
+    sections_level2 = split_markdown_sections(main_report_text, "## ")
+    overview_section = _solution_find_section_body(sections_level2, ["访谈概述", "候选人概览"])
+    summary_section = _solution_find_section_body(sections_level2, ["需求摘要", "能力摘要"])
+    analysis_section = _solution_find_section_body(sections_level2, ["详细需求分析", "详细分析", "维度分析"])
+    solutions_section = _solution_find_section_body(sections_level2, ["方案建议", "培养建议", "录用建议"])
+    risks_section = _solution_find_section_body(sections_level2, ["风险评估", "风险清单"])
+    actions_section = _solution_find_section_body(sections_level2, ["下一步行动", "行动计划", "后续评估"])
+
+    overview_subsections = split_markdown_sections(overview_section, "### ")
+    summary_subsections = split_markdown_sections(summary_section, "### ")
+    analysis_subsections = split_markdown_sections(analysis_section, "### ")
+    solutions_subsections = split_markdown_sections(solutions_section, "### ")
+    risks_subsections = split_markdown_sections(risks_section, "### ")
+    actions_subsections = split_markdown_sections(actions_section, "### ")
+
+    overview_body = _solution_find_section_body(overview_subsections, ["执行摘要", "基本信息", "候选人概览"]) or overview_section
+    overview_text = clean_solution_text(_solution_strip_markdown_tables(overview_body), max_len=3000)
+
+    needs_rows = _solution_parse_table_from_sections(summary_subsections, ["核心需求", "能力评分", "能力概览"])
+    solutions_rows = _solution_parse_table_from_sections(
+        solutions_subsections,
+        ["建议清单", "方案建议", "录用建议", "培养建议", "关键设计建议", "工具选型建议", "设计建议", "选型建议"],
+        fallback_body=solutions_section,
+    )
+    risks_rows = _solution_parse_table_from_sections(risks_subsections, ["风险清单", "风险项"], fallback_body=risks_section)
+    actions_rows = _solution_parse_table_from_sections(actions_subsections, ["行动计划", "行动项", "后续行动"], fallback_body=actions_section)
+    open_question_rows = _solution_parse_table_from_sections(actions_subsections, ["未决问题", "补充问题", "待确认"])
+
+    structured_tables = [needs_rows, solutions_rows, risks_rows, actions_rows, open_question_rows]
+    has_structured_tables = any(rows for rows in structured_tables)
+    if not has_structured_tables:
+        return {}
+
+    analysis = {
+        "customer_needs": clean_solution_text(_solution_find_section_body(analysis_subsections, ["客户/用户需求", "客户需求", "能力优势"]), max_len=2000),
+        "business_flow": clean_solution_text(_solution_find_section_body(analysis_subsections, ["业务流程", "思维结构", "流程"]), max_len=2000),
+        "tech_constraints": clean_solution_text(_solution_find_section_body(analysis_subsections, ["技术约束", "经验边界", "技术"]), max_len=2000),
+        "project_constraints": clean_solution_text(_solution_find_section_body(analysis_subsections, ["项目约束", "录用约束", "岗位匹配"]), max_len=2000),
+    }
+
+    draft = {
+        "overview": overview_text,
+        "needs": _normalize_solution_structured_list(needs_rows, "needs"),
+        "analysis": analysis,
+        "visualizations": {},
+        "solutions": _normalize_solution_structured_list(solutions_rows, "solutions"),
+        "risks": _normalize_solution_structured_list(risks_rows, "risks"),
+        "actions": _normalize_solution_structured_list(actions_rows, "actions"),
+        "open_questions": _normalize_solution_structured_list(open_question_rows, "open_questions"),
+        "evidence_index": [],
+    }
+
+    snapshot = {
+        "version": SOLUTION_SNAPSHOT_VERSION,
+        "report_name": report_name,
+        "topic": report_title,
+        "session_id": "",
+        "scenario_id": "",
+        "scenario_name": "",
+        "report_template": REPORT_TEMPLATE_STANDARD_V1,
+        "report_type": "assessment" if "候选人概览" in main_report_text else "standard",
+        "report_schema": {},
+        "quality_meta": {},
+        "quality_snapshot": {},
+        "overall_coverage": 0.0,
+        "snapshot_origin": "legacy_markdown_v3",
+        "has_structured_evidence": any(
+            item.get("evidence_refs")
+            for field in ["needs", "solutions", "risks", "actions", "open_questions"]
+            for item in draft[field]
+        ),
+        "draft": draft,
+    }
+    return _normalize_solution_snapshot(snapshot)
+
+
+def _solution_phrase_set(values: list[object]) -> list[str]:
+    phrases = []
+    seen = set()
+    for value in values:
+        text = clean_solution_text(value, max_len=80)
+        if not text:
+            continue
+        key = re.sub(r"\s+", "", text.lower())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        phrases.append(text)
+    return phrases
+
+
+def _solution_signature_ngrams(text: str, n: int = SOLUTION_SIMILARITY_NGRAM_SIZE) -> set[str]:
+    normalized = re.sub(r"\s+", "", clean_solution_text(text, max_len=0).lower())
+    normalized = re.sub(r"[^0-9a-z\u4e00-\u9fff]", "", normalized)
+    if not normalized:
+        return set()
+    if len(normalized) <= n:
+        return {normalized}
+    return {normalized[idx: idx + n] for idx in range(0, len(normalized) - n + 1)}
+
+
+def _solution_jaccard_similarity(left: str, right: str) -> float:
+    left_set = _solution_signature_ngrams(left)
+    right_set = _solution_signature_ngrams(right)
+    if not left_set or not right_set:
+        return 0.0
+    return round(len(left_set & right_set) / max(1, len(left_set | right_set)), 3)
+
+
+def build_solution_similarity_text_from_snapshot(snapshot: dict) -> str:
+    normalized = _normalize_solution_snapshot(snapshot)
+    draft = normalized["draft"]
+    values = [
+        normalized.get("topic", ""),
+        normalized.get("scenario_name", ""),
+        draft.get("overview", ""),
+        *[item.get("name", "") for item in draft.get("needs", [])[:4]],
+        *[item.get("title", "") for item in draft.get("solutions", [])[:4]],
+        *[item.get("action", "") for item in draft.get("actions", [])[:4]],
+        *[item.get("risk", "") for item in draft.get("risks", [])[:3]],
+    ]
+    return " | ".join(_solution_phrase_set(values))
+
+
+def build_solution_fingerprint(snapshot: dict) -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    draft = normalized["draft"]
+    topic = simplify_solution_subject(normalized.get("topic", ""), max_len=24) or compact_solution_term(normalized.get("scenario_name", ""), max_len=24)
+    needs = draft.get("needs", [])
+    solutions = draft.get("solutions", [])
+    actions = draft.get("actions", [])
+    risks = draft.get("risks", [])
+    analysis = draft.get("analysis", {})
+
+    payload = {
+        "scene": topic or compact_solution_term(draft.get("overview", ""), max_len=24) or "访谈结论",
+        "pain_point": clean_solution_text(needs[0].get("name", "") if needs else "", max_len=40),
+        "entry_point": clean_solution_text(solutions[0].get("title", "") if solutions else (actions[0].get("action", "") if actions else ""), max_len=40),
+        "constraint": clean_solution_text(
+            analysis.get("project_constraints", "") or analysis.get("tech_constraints", "") or (risks[0].get("risk", "") if risks else ""),
+            max_len=40,
+        ),
+        "top_solutions": [clean_solution_text(item.get("title", ""), max_len=40) for item in solutions[:3]],
+        "top_actions": [clean_solution_text(item.get("action", ""), max_len=40) for item in actions[:3]],
+    }
+    payload["hash"] = hashlib.sha1(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    return payload
+
+
+def load_recent_solution_sidecars(exclude_report_name: str = "", limit: int = SOLUTION_SIMILARITY_LOOKBACK) -> list[dict]:
+    sidecar_files = sorted(
+        REPORTS_DIR.glob(f"*{SOLUTION_SIDECAR_SUFFIX}"),
+        key=lambda item: item.stat().st_mtime if item.exists() else 0,
+        reverse=True,
+    )
+    results = []
+    for path in sidecar_files:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        report_name = str(payload.get("report_name") or "").strip()
+        if not report_name:
+            report_name = path.name[:-len(SOLUTION_SIDECAR_SUFFIX)]
+            payload["report_name"] = report_name
+        if exclude_report_name and report_name == exclude_report_name:
+            continue
+        results.append(payload)
+        if len(results) >= limit:
+            break
+    return results
+
+
+def build_solution_quality_signals(snapshot: dict, source_mode: str = "structured_sidecar") -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    draft = normalized["draft"]
+    analysis = draft.get("analysis", {})
+    slot_values = {
+        "overview": bool(draft.get("overview")),
+        "needs": bool(draft.get("needs")),
+        "solutions": bool(draft.get("solutions")),
+        "actions": bool(draft.get("actions")),
+        "risks": bool(draft.get("risks")),
+        "analysis": any(bool(value) for value in analysis.values()),
+    }
+    fallback_ratio = round(sum(1 for present in slot_values.values() if not present) / max(1, len(slot_values)), 3)
+
+    structured_items = []
+    for field in ["needs", "solutions", "risks", "actions", "open_questions", "evidence_index"]:
+        structured_items.extend(draft.get(field, []))
+    evidence_bound_count = sum(1 for item in structured_items if _normalize_solution_refs(item.get("evidence_refs", [])))
+    evidence_binding_ratio = round(evidence_bound_count / max(1, len(structured_items)), 3) if structured_items else 0.0
+
+    phrases = _solution_phrase_set(
+        [
+            normalized.get("topic", ""),
+            normalized.get("scenario_name", ""),
+            *[item.get("name", "") for item in draft.get("needs", [])],
+            *[item.get("title", "") for item in draft.get("solutions", [])],
+            *[item.get("action", "") for item in draft.get("actions", [])],
+            *[item.get("risk", "") for item in draft.get("risks", [])],
+        ]
+    )
+    unique_term_ratio = round(len({phrase.lower() for phrase in phrases}) / max(1, len(phrases)), 3) if phrases else 0.0
+
+    fingerprint = build_solution_fingerprint(normalized)
+    signature = build_solution_similarity_text_from_snapshot(normalized)
+    max_similarity = 0.0
+    similar_report_name = ""
+    for other in load_recent_solution_sidecars(exclude_report_name=normalized.get("report_name", ""), limit=SOLUTION_SIMILARITY_LOOKBACK):
+        other_fingerprint = build_solution_fingerprint(other)
+        if other_fingerprint.get("hash") == fingerprint.get("hash"):
+            continue
+        score = _solution_jaccard_similarity(signature, build_solution_similarity_text_from_snapshot(other))
+        if score > max_similarity:
+            max_similarity = score
+            similar_report_name = str(other.get("report_name") or "")
+
+    strict_evidence = source_mode == "structured_sidecar" or bool(normalized.get("has_structured_evidence"))
+    degraded_reasons = []
+    fallback_threshold = SOLUTION_STRICT_FALLBACK_RATIO_THRESHOLD if strict_evidence else SOLUTION_RELAXED_FALLBACK_RATIO_THRESHOLD
+    if fallback_ratio >= fallback_threshold:
+        degraded_reasons.append("关键事实槽位不足，继续拼装会导致高比例模板话术。")
+    if strict_evidence and structured_items and evidence_binding_ratio < SOLUTION_MIN_EVIDENCE_BINDING_RATIO:
+        degraded_reasons.append("结构化条目缺少证据绑定，暂不输出完整落地方案。")
+    if similar_report_name and max_similarity >= SOLUTION_MAX_SIMILARITY_SCORE and unique_term_ratio <= SOLUTION_MIN_UNIQUE_TERM_RATIO:
+        degraded_reasons.append(f"与最近方案「{similar_report_name}」相似度过高，已停止生成雷同内容。")
+
+    return {
+        "fallback_ratio": fallback_ratio,
+        "evidence_binding_ratio": evidence_binding_ratio,
+        "unique_term_ratio": unique_term_ratio,
+        "similarity_score": round(max_similarity, 3),
+        "similar_report_name": similar_report_name,
+        "strict_evidence": strict_evidence,
+        "degraded_reasons": degraded_reasons,
+        "fingerprint": fingerprint,
+    }
+
+
+def infer_solution_profile(snapshot: dict) -> str:
+    normalized = _normalize_solution_snapshot(snapshot)
+    report_type = normalized.get("report_type", "standard")
+    report_template = normalized.get("report_template", REPORT_TEMPLATE_STANDARD_V1)
+    report_schema = normalized.get("report_schema", {})
+    if report_type == "assessment":
+        return "assessment"
+    if report_template == REPORT_TEMPLATE_CUSTOM_V1 and isinstance(report_schema.get("sections", []), list) and report_schema.get("sections"):
+        return "custom"
+
+    text = " ".join([
+        normalized.get("topic", ""),
+        normalized.get("scenario_name", ""),
+        normalized.get("scenario_id", ""),
+        normalized["draft"].get("overview", ""),
+        *[item.get("name", "") for item in normalized["draft"].get("needs", [])[:5]],
+        *[item.get("title", "") for item in normalized["draft"].get("solutions", [])[:5]],
+        *[item.get("action", "") for item in normalized["draft"].get("actions", [])[:5]],
+    ])
+    feedback_keywords = ["反馈", "满意度", "回访", "评价", "投诉", "voc", "nps", "反馈闭环"]
+    interview_keywords = ["交互式访谈", "访谈", "追问", "样本", "招募", "脚本", "问题编排", "洞察"]
+    feedback_score = sum(1 for keyword in feedback_keywords if keyword.lower() in text.lower())
+    interview_score = sum(1 for keyword in interview_keywords if keyword.lower() in text.lower())
+
+    if interview_score >= max(2, feedback_score + 1):
+        return "interactive_interview"
+    if feedback_score >= 1 or normalized.get("scenario_id") == "user-research":
+        return "feedback_loop"
+    return "structured_default"
+
+
+def _solution_refs_text(item: dict) -> str:
+    refs = _normalize_solution_refs(item.get("evidence_refs", []))
+    return "、".join(refs[:4])
+
+
+def _solution_join_meta(parts: list[str]) -> str:
+    return " · ".join([clean_solution_text(part, max_len=80) for part in parts if clean_solution_text(part, max_len=80)])
+
+
+def _solution_context_from_snapshot(snapshot: dict) -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    draft = normalized["draft"]
+    needs = draft.get("needs", [])
+    solutions = draft.get("solutions", [])
+    actions = draft.get("actions", [])
+    risks = draft.get("risks", [])
+    analysis = draft.get("analysis", {})
+
+    subject = simplify_solution_subject(
+        normalized.get("topic", "") or normalized.get("scenario_name", "") or normalized.get("report_name", ""),
+        max_len=24,
+    ) or compact_solution_term(normalized.get("scenario_name", "") or normalized.get("topic", ""), max_len=24)
+    if is_solution_generic_subject(subject):
+        subject = simplify_solution_subject(
+            (needs[0].get("name", "") if needs else "") or (solutions[0].get("title", "") if solutions else "") or subject,
+            max_len=24,
+        ) or subject
+
+    pain_point = clean_solution_text(needs[0].get("name", "") if needs else "", max_len=40)
+    entry_point = clean_solution_text(
+        (solutions[0].get("title", "") if solutions else "") or (actions[0].get("action", "") if actions else ""),
+        max_len=40,
+    )
+    constraint = clean_solution_text(
+        analysis.get("project_constraints", "") or analysis.get("tech_constraints", "") or (risks[0].get("risk", "") if risks else ""),
+        max_len=40,
+    )
+    summary = clean_solution_text(draft.get("overview", ""), max_len=260)
+    if not summary:
+        summary = clean_solution_text(
+            (needs[0].get("description", "") if needs else "") or (solutions[0].get("description", "") if solutions else "") or (actions[0].get("metric", "") if actions else ""),
+            max_len=260,
+        )
+
+    return {
+        "subject": subject or "访谈结论",
+        "pain_point": pain_point or "核心议题",
+        "entry_point": entry_point or "首轮动作",
+        "constraint": constraint or "交付边界",
+        "summary": summary or "当前报告已经沉淀出可直接评审的真实信息。",
+        "normalized": normalized,
+    }
+
+
+def _solution_metric_cards_from_snapshot(snapshot: dict, quality_signals: dict) -> list[dict]:
+    normalized = _normalize_solution_snapshot(snapshot)
+    draft = normalized["draft"]
+    return [
+        {
+            "label": "证据绑定率",
+            "value": f"{int(round(float(quality_signals.get('evidence_binding_ratio', 0.0) or 0.0) * 100))}%",
+            "note": "结构化条目与 Q 编号证据的绑定比例。",
+        },
+        {
+            "label": "调研覆盖度",
+            "value": f"{int(round(float(normalized.get('overall_coverage', 0.0) or 0.0) * 100))}%",
+            "note": "按会话覆盖度快照计算的当前访谈覆盖程度。",
+        },
+        {
+            "label": "方案建议数",
+            "value": str(len(draft.get("solutions", []))),
+            "note": "可直接进入评审或试点拆解的建议条目数。",
+        },
+        {
+            "label": "行动闭环数",
+            "value": str(len(draft.get("actions", []))),
+            "note": "带 owner / timeline / metric 的可执行行动条目数。",
+        },
+    ]
+
+
+def _solution_highlight_cards(context: dict, quality_signals: dict) -> list[dict]:
+    return [
+        {"label": "业务主题", "value": context.get("subject", "访谈结论"), "detail": "当前方案围绕的主主题。"},
+        {"label": "核心问题", "value": context.get("pain_point", "核心议题"), "detail": "需要优先验证与改善的问题。"},
+        {"label": "推进抓手", "value": context.get("entry_point", "首轮动作"), "detail": "建议先进入试点或对齐的切入口。"},
+        {"label": "质量信号", "value": f"差异度 {int(round((1 - float(quality_signals.get('similarity_score', 0.0) or 0.0)) * 100))}%", "detail": "基于近期方案相似度的差异化信号。"},
+    ]
+
+
+def _solution_need_cards(items: list[dict], limit: int = 4) -> list[dict]:
+    cards = []
+    for item in items[:limit]:
+        cards.append({
+            "eyebrow": clean_solution_text(item.get("priority", "需求"), max_len=8) or "需求",
+            "title": clean_solution_text(item.get("name", ""), max_len=48),
+            "summary": clean_solution_text(item.get("description", ""), max_len=120) or clean_solution_text(item.get("name", ""), max_len=120),
+            "detail": _solution_join_meta([
+                f"证据 {_solution_refs_text(item)}" if _solution_refs_text(item) else "",
+            ]),
+        })
+    return [card for card in cards if card.get("title")]
+
+
+def _solution_solution_cards(items: list[dict], limit: int = 4) -> list[dict]:
+    cards = []
+    for item in items[:limit]:
+        cards.append({
+            "eyebrow": clean_solution_text(item.get("owner", "方案"), max_len=16) or "方案",
+            "title": clean_solution_text(item.get("title", ""), max_len=48),
+            "summary": clean_solution_text(item.get("description", ""), max_len=120),
+            "detail": _solution_join_meta([
+                item.get("timeline", ""),
+                item.get("metric", ""),
+                f"证据 {_solution_refs_text(item)}" if _solution_refs_text(item) else "",
+            ]),
+        })
+    return [card for card in cards if card.get("title")]
+
+
+def _solution_risk_cards(items: list[dict], limit: int = 4) -> list[dict]:
+    cards = []
+    for item in items[:limit]:
+        cards.append({
+            "eyebrow": "风险",
+            "title": clean_solution_text(item.get("risk", ""), max_len=48),
+            "summary": clean_solution_text(item.get("impact", ""), max_len=120),
+            "detail": _solution_join_meta([
+                item.get("mitigation", ""),
+                f"证据 {_solution_refs_text(item)}" if _solution_refs_text(item) else "",
+            ]),
+        })
+    return [card for card in cards if card.get("title")]
+
+
+def _solution_action_timeline(items: list[dict], limit: int = 5) -> list[dict]:
+    steps = []
+    for index, item in enumerate(items[:limit], 1):
+        steps.append({
+            "step": f"{index:02d}",
+            "title": clean_solution_text(item.get("action", ""), max_len=56),
+            "summary": clean_solution_text(item.get("owner", "协作角色"), max_len=24) or "协作角色",
+            "detail": _solution_join_meta([
+                item.get("metric", ""),
+                f"证据 {_solution_refs_text(item)}" if _solution_refs_text(item) else "",
+            ]),
+            "timeline": clean_solution_text(item.get("timeline", "待排期"), max_len=24) or "待排期",
+        })
+    return [step for step in steps if step.get("title")]
+
+
+def _solution_action_checklist(items: list[dict], limit: int = 5) -> list[dict]:
+    checklist = []
+    for item in items[:limit]:
+        checklist.append({
+            "owner": clean_solution_text(item.get("owner", "待定"), max_len=20) or "待定",
+            "title": clean_solution_text(item.get("action", ""), max_len=56),
+            "detail": _solution_join_meta([
+                item.get("timeline", ""),
+                item.get("metric", ""),
+                f"证据 {_solution_refs_text(item)}" if _solution_refs_text(item) else "",
+            ]),
+        })
+    return [item for item in checklist if item.get("title")]
+
+
+def _solution_table_payload_from_items(kind: str, items: list[dict]) -> dict:
+    if kind == "needs":
+        return {
+            "columns": [
+                {"key": "priority", "label": "优先级"},
+                {"key": "name", "label": "需求项"},
+                {"key": "description", "label": "描述"},
+                {"key": "evidence", "label": "证据"},
+            ],
+            "rows": [
+                {
+                    "priority": item.get("priority", "P1"),
+                    "name": item.get("name", ""),
+                    "description": item.get("description", ""),
+                    "evidence": _solution_refs_text(item),
+                }
+                for item in items
+            ],
+        }
+    if kind == "solutions":
+        return {
+            "columns": [
+                {"key": "title", "label": "方案建议"},
+                {"key": "description", "label": "说明"},
+                {"key": "owner", "label": "Owner"},
+                {"key": "timeline", "label": "时间计划"},
+                {"key": "metric", "label": "验收指标"},
+                {"key": "evidence", "label": "证据"},
+            ],
+            "rows": [
+                {
+                    "title": item.get("title", ""),
+                    "description": item.get("description", ""),
+                    "owner": item.get("owner", ""),
+                    "timeline": item.get("timeline", ""),
+                    "metric": item.get("metric", ""),
+                    "evidence": _solution_refs_text(item),
+                }
+                for item in items
+            ],
+        }
+    if kind == "risks":
+        return {
+            "columns": [
+                {"key": "risk", "label": "风险项"},
+                {"key": "impact", "label": "影响"},
+                {"key": "mitigation", "label": "缓解措施"},
+                {"key": "evidence", "label": "证据"},
+            ],
+            "rows": [
+                {
+                    "risk": item.get("risk", ""),
+                    "impact": item.get("impact", ""),
+                    "mitigation": item.get("mitigation", ""),
+                    "evidence": _solution_refs_text(item),
+                }
+                for item in items
+            ],
+        }
+    if kind == "actions":
+        return {
+            "columns": [
+                {"key": "action", "label": "行动项"},
+                {"key": "owner", "label": "Owner"},
+                {"key": "timeline", "label": "时间计划"},
+                {"key": "metric", "label": "验收指标"},
+                {"key": "evidence", "label": "证据"},
+            ],
+            "rows": [
+                {
+                    "action": item.get("action", ""),
+                    "owner": item.get("owner", ""),
+                    "timeline": item.get("timeline", ""),
+                    "metric": item.get("metric", ""),
+                    "evidence": _solution_refs_text(item),
+                }
+                for item in items
+            ],
+        }
+    if kind == "open_questions":
+        return {
+            "columns": [
+                {"key": "question", "label": "未决问题"},
+                {"key": "reason", "label": "原因"},
+                {"key": "impact", "label": "影响"},
+                {"key": "suggested_follow_up", "label": "建议补问"},
+                {"key": "evidence", "label": "证据"},
+            ],
+            "rows": [
+                {
+                    "question": item.get("question", ""),
+                    "reason": item.get("reason", ""),
+                    "impact": item.get("impact", ""),
+                    "suggested_follow_up": item.get("suggested_follow_up", ""),
+                    "evidence": _solution_refs_text(item),
+                }
+                for item in items
+            ],
+        }
+    return {"columns": [], "rows": []}
+
+
+def _solution_section(section_id: str, label: str, title: str, description: str, layout: str, **kwargs) -> dict:
+    payload = {
+        "id": section_id,
+        "label": label,
+        "kicker": label,
+        "title": title,
+        "description": description,
+        "layout": layout,
+    }
+    payload.update(kwargs)
+    return payload
+
+
+def _build_solution_sections_from_custom_schema(snapshot: dict, context: dict) -> list[dict]:
+    normalized = _normalize_solution_snapshot(snapshot)
+    draft = normalized["draft"]
+    schema_sections = normalized.get("report_schema", {}).get("sections", []) if isinstance(normalized.get("report_schema", {}), dict) else []
+    sections = []
+    for index, config in enumerate(schema_sections, 1):
+        if not isinstance(config, dict):
+            continue
+        source = str(config.get("source", "") or "").strip()
+        component = str(config.get("component", "paragraph") or "paragraph").strip().lower()
+        title = clean_solution_text(config.get("title", "") or f"章节 {index}", max_len=40) or f"章节 {index}"
+        value = resolve_custom_report_source_value_v3(draft, source)
+        required = bool(config.get("required", False))
+        if is_custom_report_source_empty_v3(value) and not required:
+            continue
+
+        if component == "table":
+            if source == "needs":
+                table_payload = _solution_table_payload_from_items("needs", draft.get("needs", []))
+            elif source == "solutions":
+                table_payload = _solution_table_payload_from_items("solutions", draft.get("solutions", []))
+            elif source == "risks":
+                table_payload = _solution_table_payload_from_items("risks", draft.get("risks", []))
+            elif source == "actions":
+                table_payload = _solution_table_payload_from_items("actions", draft.get("actions", []))
+            elif source == "open_questions":
+                table_payload = _solution_table_payload_from_items("open_questions", draft.get("open_questions", []))
+            else:
+                table_payload = {"columns": [{"key": "content", "label": "内容"}], "rows": [{"content": clean_solution_text(value, max_len=240)}] if clean_solution_text(value, max_len=240) else []}
+            if table_payload.get("rows"):
+                sections.append(_solution_section(f"custom-{index}", title, title, "基于自定义报告 schema 同步映射。", "table", **table_payload))
+            continue
+
+        if component == "list":
+            items = []
+            if source == "needs":
+                items = _solution_need_cards(draft.get("needs", []), limit=6)
+            elif source == "solutions":
+                items = _solution_action_checklist([
+                    {"action": item.get("title", ""), "owner": item.get("owner", ""), "timeline": item.get("timeline", ""), "metric": item.get("metric", ""), "evidence_refs": item.get("evidence_refs", [])}
+                    for item in draft.get("solutions", [])
+                ], limit=6)
+            elif source == "actions":
+                items = _solution_action_checklist(draft.get("actions", []), limit=6)
+            elif source == "open_questions":
+                items = [
+                    {"owner": "补问", "title": item.get("question", ""), "detail": _solution_join_meta([item.get("reason", ""), item.get("suggested_follow_up", "")])}
+                    for item in draft.get("open_questions", [])[:6]
+                ]
+            if not items and clean_solution_text(value, max_len=240):
+                items = [{"owner": "摘要", "title": clean_solution_text(value, max_len=56), "detail": ""}]
+            if items:
+                sections.append(_solution_section(f"custom-{index}", title, title, "基于自定义报告 schema 同步映射。", "checklist", items=items))
+            continue
+
+        paragraphs = []
+        if component == "mermaid":
+            if clean_solution_text(value, max_len=120):
+                paragraphs = ["该图表型章节已在原报告中生成，方案页保留对应的结构化结论与推进动作。"]
+        else:
+            text = clean_solution_text(value, max_len=600)
+            if text:
+                paragraphs = [text]
+        if paragraphs:
+            sections.append(_solution_section(f"custom-{index}", title, title, "基于自定义报告 schema 同步映射。", "text", paragraphs=paragraphs))
+    return sections
+
+
+def _build_solution_sections_from_snapshot(snapshot: dict, quality_signals: dict) -> list[dict]:
+    context = _solution_context_from_snapshot(snapshot)
+    normalized = context["normalized"]
+    draft = normalized["draft"]
+    needs = draft.get("needs", [])
+    solutions = draft.get("solutions", [])
+    risks = draft.get("risks", [])
+    actions = draft.get("actions", [])
+    analysis = draft.get("analysis", {})
+    profile = infer_solution_profile(snapshot)
+
+    decision_items = [
+        {
+            "eyebrow": "判断",
+            "title": "为什么值得现在推进",
+            "summary": context.get("pain_point", "核心议题"),
+            "detail": context.get("summary", "当前报告已经沉淀出足够清晰的推进判断。"),
+        },
+        {
+            "eyebrow": "切口",
+            "title": "优先从哪里进入",
+            "summary": context.get("entry_point", "首轮动作"),
+            "detail": _solution_join_meta([
+                actions[0].get("timeline", "") if actions else "",
+                solutions[0].get("metric", "") if solutions else "",
+            ]) or "优先从最靠近业务闭环的动作进入。",
+        },
+        {
+            "eyebrow": "边界",
+            "title": "推进前必须锁定什么",
+            "summary": context.get("constraint", "交付边界"),
+            "detail": clean_solution_text(analysis.get("project_constraints", "") or analysis.get("tech_constraints", ""), max_len=140) or "需要先锁定资源、合规与交付边界。",
+        },
+    ]
+    sections = [
+        _solution_section(
+            "decision",
+            "推进判断",
+            "先做、先从哪里做、先锁定什么",
+            "不再重复报告全文，只保留真正影响立项与试点判断的三类结论。",
+            "cards",
+            columns=3,
+            items=decision_items,
+        )
+    ]
+
+    if profile == "custom":
+        sections.extend(_build_solution_sections_from_custom_schema(snapshot, context))
+    elif profile == "feedback_loop":
+        sections.extend([
+            _solution_section("problem-map", "问题分层", "问题分层", "把高优先级反馈拆成可治理的问题层级。", "cards", columns=2, items=_solution_need_cards(needs, limit=6)),
+            _solution_section("feedback-loop", "反馈闭环", "反馈闭环", "围绕真实 action 构建收集、归因、验证和复盘闭环。", "steps", items=_solution_action_timeline(actions, limit=5)),
+            _solution_section("dispatch", "分发机制", "分发机制", "将反馈处理动作分发给明确 owner 与时间计划。", "cards", columns=2, items=_solution_solution_cards(solutions, limit=6)),
+            _solution_section("priority", "优先级治理", "优先级治理", "直接使用报告中的结构化需求表作为治理底稿。", "table", **_solution_table_payload_from_items("needs", needs)),
+            _solution_section("roadmap", "迭代节奏", "迭代节奏", "按 timeline 组织首轮试点与后续迭代。", "timeline", items=_solution_action_timeline(actions, limit=6)),
+        ])
+    elif profile == "interactive_interview":
+        insight_rows = draft.get("evidence_index", []) or draft.get("open_questions", [])
+        sections.extend([
+            _solution_section("strategy", "访谈策略", "访谈策略", "先把访谈目标、优先问题和成功信号收敛出来。", "cards", columns=2, items=_solution_need_cards(needs, limit=5)),
+            _solution_section("orchestration", "问题编排", "问题编排", "把报告中的方案建议转成问题编排与执行动作。", "cards", columns=2, items=_solution_solution_cards(solutions, limit=5)),
+            _solution_section("sample-trigger", "样本触发", "样本触发", "基于真实行动计划安排样本触发、节奏和验收。", "steps", items=_solution_action_timeline(actions, limit=5)),
+            _solution_section("insight-repo", "洞察沉淀", "洞察沉淀", "沉淀关键结论、未决问题与后续补问。", "table", **_solution_table_payload_from_items("open_questions", insight_rows if insight_rows and insight_rows[0].get("question") else draft.get("open_questions", []))),
+            _solution_section("conversion-actions", "转化动作", "转化动作", "把高价值洞察继续转成跨角色的执行动作。", "checklist", items=_solution_action_checklist(actions, limit=6)),
+        ])
+    else:
+        sections.extend([
+            _solution_section("modules", "落地模块", "落地模块", "围绕结构化方案建议组织可协作、可交付的模块。", "cards", columns=2, items=_solution_solution_cards(solutions, limit=6)),
+            _solution_section("value", "价值测算", "价值测算", "直接基于结构化条目数量与质量信号呈现当前方案成熟度。", "cards", columns=2, items=[
+                {"eyebrow": card.get("label", "指标"), "title": card.get("value", ""), "summary": card.get("note", ""), "detail": ""}
+                for card in _solution_metric_cards_from_snapshot(snapshot, quality_signals)
+            ]),
+            _solution_section("roadmap", "实施路径", "实施路径", "按 owner / timeline / metric 组织试点推进路径。", "timeline", items=_solution_action_timeline(actions, limit=6)),
+            _solution_section("analysis", "分析焦点", "分析焦点", "当报告存在足够分析文本时，保留关键的约束与流程焦点。", "text", paragraphs=[
+                text for text in [analysis.get("customer_needs", ""), analysis.get("business_flow", ""), analysis.get("tech_constraints", ""), analysis.get("project_constraints", "")]
+                if clean_solution_text(text, max_len=200)
+            ][:3]),
+            _solution_section("actions", "下一步推进", "下一步推进", "把已有行动项按 owner 和验收标准组织成真正可执行的列表。", "checklist", items=_solution_action_checklist(actions, limit=6)),
+        ])
+
+    if risks:
+        sections.append(_solution_section("risks", "风险边界", "风险边界", "不回避风险，提前明确缓解动作与证据来源。", "cards", columns=2, items=_solution_risk_cards(risks, limit=6)))
+
+    filtered_sections = []
+    for section in sections:
+        layout = section.get("layout")
+        if layout in {"cards", "steps", "timeline", "checklist"} and not section.get("items"):
+            continue
+        if layout == "table" and not section.get("rows"):
+            continue
+        if layout == "text" and not section.get("paragraphs"):
+            continue
+        filtered_sections.append(section)
+    return filtered_sections
+
+
+def _build_solution_degraded_payload(snapshot: dict, source_mode: str, quality_signals: dict) -> dict:
+    context = _solution_context_from_snapshot(snapshot)
+    normalized = context["normalized"]
+    draft = normalized["draft"]
+    sections = [
+        _solution_section(
+            "degraded-reason",
+            "降级说明",
+            "已停止自动拼装完整落地方案",
+            "当前页面只展示报告中的真实结构化信息，避免继续产出高相似度模板方案。",
+            "checklist",
+            items=[{"owner": "系统门禁", "title": reason, "detail": ""} for reason in quality_signals.get("degraded_reasons", [])],
+        )
+    ]
+    if draft.get("needs"):
+        sections.append(_solution_section("real-needs", "真实需求", "真实需求", "直接展示报告中的结构化需求条目。", "table", **_solution_table_payload_from_items("needs", draft.get("needs", []))))
+    if draft.get("solutions"):
+        sections.append(_solution_section("real-solutions", "真实方案", "真实方案", "直接展示报告中的结构化方案建议。", "table", **_solution_table_payload_from_items("solutions", draft.get("solutions", []))))
+    elif draft.get("actions"):
+        sections.append(_solution_section("real-actions", "真实行动", "真实行动", "直接展示报告中的结构化行动计划。", "table", **_solution_table_payload_from_items("actions", draft.get("actions", []))))
+
+    metrics = _solution_metric_cards_from_snapshot(snapshot, quality_signals)
+    highlights = _solution_highlight_cards(context, quality_signals)
+    title = clean_solution_text(f"{context.get('subject', '访谈报告')}真实信息摘要", max_len=36)
+    subtitle = clean_solution_text("由于证据绑定不足、事实槽位不足或近期方案相似度过高，系统已降级为真实信息视图。", max_len=88)
+    nav_items = [{"id": section.get("id"), "label": section.get("label")} for section in sections]
+    return {
+        "report_name": normalized.get("report_name", ""),
+        "title": title,
+        "subtitle": subtitle,
+        "overview": context.get("summary", ""),
+        "source_mode": "degraded",
+        "fallback_source_mode": source_mode,
+        "report_template": normalized.get("report_template", REPORT_TEMPLATE_STANDARD_V1),
+        "report_type": normalized.get("report_type", "standard"),
+        "fingerprint": quality_signals.get("fingerprint", {}),
+        "quality_signals": quality_signals,
+        "hero": {
+            "eyebrow": "DeepVision 真实信息摘要",
+            "title": title,
+            "subtitle": subtitle,
+            "summary": context.get("summary", ""),
+            "highlights": highlights,
+            "actions": _solution_action_checklist(draft.get("actions", []), limit=3),
+            "metrics": metrics,
+        },
+        "headline_cards": highlights,
+        "metrics": metrics,
+        "decision_summary": context.get("summary", ""),
+        "nav_items": nav_items,
+        "sections": sections,
+    }
+
+
+def _build_solution_payload_from_snapshot(snapshot: dict, source_mode: str = "structured_sidecar") -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    quality_signals = build_solution_quality_signals(normalized, source_mode=source_mode)
+    if quality_signals.get("degraded_reasons"):
+        return _build_solution_degraded_payload(normalized, source_mode, quality_signals)
+
+    context = _solution_context_from_snapshot(normalized)
+    metrics = _solution_metric_cards_from_snapshot(normalized, quality_signals)
+    highlights = _solution_highlight_cards(context, quality_signals)
+    sections = _build_solution_sections_from_snapshot(normalized, quality_signals)
+    title = clean_solution_text(f"{context.get('subject', '访谈结论')}落地方案", max_len=40)
+    subtitle = clean_solution_text(
+        f"围绕「{context.get('pain_point', '核心议题')}」，优先通过「{context.get('entry_point', '首轮动作')}」形成首轮执行闭环。",
+        max_len=88,
+    )
+    nav_items = [{"id": section.get("id"), "label": section.get("label")} for section in sections]
+    return {
+        "report_name": normalized.get("report_name", ""),
+        "title": title,
+        "subtitle": subtitle,
+        "overview": context.get("summary", ""),
+        "source_mode": source_mode,
+        "report_template": normalized.get("report_template", REPORT_TEMPLATE_STANDARD_V1),
+        "report_type": normalized.get("report_type", "standard"),
+        "fingerprint": quality_signals.get("fingerprint", {}),
+        "quality_signals": quality_signals,
+        "hero": {
+            "eyebrow": "DeepVision 差异化方案",
+            "title": title,
+            "subtitle": subtitle,
+            "summary": context.get("summary", ""),
+            "highlights": highlights,
+            "actions": _solution_action_checklist(normalized["draft"].get("actions", []), limit=3),
+            "metrics": metrics,
+        },
+        "headline_cards": highlights,
+        "metrics": metrics,
+        "decision_summary": context.get("summary", ""),
+        "nav_items": nav_items,
+        "sections": sections,
+    }
+
+
+def _build_legacy_quality_signals(legacy_payload: dict) -> dict:
+    report_name = str(legacy_payload.get("report_name") or "").strip()
+    texts = [
+        legacy_payload.get("title", ""),
+        legacy_payload.get("subtitle", ""),
+        legacy_payload.get("overview", ""),
+        legacy_payload.get("decision_summary", ""),
+        *[item.get("value", "") for item in legacy_payload.get("headline_cards", []) if isinstance(item, dict)],
+        *[item.get("title", "") for item in legacy_payload.get("action_items", []) if isinstance(item, dict)],
+        *[item.get("phase", "") for item in legacy_payload.get("roadmap", []) if isinstance(item, dict)],
+    ]
+    placeholders = ["待明确", "核心问题", "关键触点", "访谈结论", "当前场景", "首轮动作"]
+    placeholder_hits = sum(1 for text in texts if any(token in str(text or "") for token in placeholders))
+    fallback_ratio = round(placeholder_hits / max(1, len(texts)), 3)
+    phrases = _solution_phrase_set(texts)
+    unique_term_ratio = round(len({phrase.lower() for phrase in phrases}) / max(1, len(phrases)), 3) if phrases else 0.0
+    signature = " | ".join(phrases)
+    max_similarity = 0.0
+    similar_report_name = ""
+    fingerprint = {
+        "scene": clean_solution_text(legacy_payload.get("title", ""), max_len=40),
+        "pain_point": clean_solution_text((legacy_payload.get("headline_cards", [{}])[1] or {}).get("value", ""), max_len=40) if legacy_payload.get("headline_cards") else "",
+        "entry_point": clean_solution_text((legacy_payload.get("headline_cards", [{}, {}, {}])[2] or {}).get("value", ""), max_len=40) if legacy_payload.get("headline_cards") else "",
+        "constraint": clean_solution_text((legacy_payload.get("headline_cards", [{}, {}, {}, {}])[3] or {}).get("value", ""), max_len=40) if legacy_payload.get("headline_cards") else "",
+        "top_solutions": [clean_solution_text(item.get("name", ""), max_len=40) for item in legacy_payload.get("dimension_cards", [])[:3] if isinstance(item, dict)],
+        "top_actions": [clean_solution_text(item.get("title", ""), max_len=40) for item in legacy_payload.get("action_items", [])[:3] if isinstance(item, dict)],
+    }
+    fingerprint["hash"] = hashlib.sha1(json.dumps(fingerprint, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    for other in load_recent_solution_sidecars(exclude_report_name=report_name, limit=SOLUTION_SIMILARITY_LOOKBACK):
+        other_fingerprint = build_solution_fingerprint(other)
+        if other_fingerprint.get("hash") == fingerprint.get("hash"):
+            continue
+        score = _solution_jaccard_similarity(signature, build_solution_similarity_text_from_snapshot(other))
+        if score > max_similarity:
+            max_similarity = score
+            similar_report_name = str(other.get("report_name") or "")
+
+    degraded_reasons = []
+    if fallback_ratio >= SOLUTION_RELAXED_FALLBACK_RATIO_THRESHOLD:
+        degraded_reasons.append("旧版 Markdown 能抽取到的真实事实不足，继续拼装会造成大面积模板化。")
+    if similar_report_name and max_similarity >= 0.9 and unique_term_ratio <= SOLUTION_MIN_UNIQUE_TERM_RATIO:
+        degraded_reasons.append(f"与最近方案「{similar_report_name}」过于相似，已停止输出完整旧版方案页。")
+
+    return {
+        "fallback_ratio": fallback_ratio,
+        "evidence_binding_ratio": 0.0,
+        "unique_term_ratio": unique_term_ratio,
+        "similarity_score": round(max_similarity, 3),
+        "similar_report_name": similar_report_name,
+        "strict_evidence": False,
+        "degraded_reasons": degraded_reasons,
+        "fingerprint": fingerprint,
+    }
+
+
+def _build_payload_from_legacy_solution(legacy_payload: dict) -> dict:
+    quality_signals = _build_legacy_quality_signals(legacy_payload)
+    headline_cards = legacy_payload.get("headline_cards", []) if isinstance(legacy_payload.get("headline_cards", []), list) else []
+    metrics = legacy_payload.get("metrics", []) if isinstance(legacy_payload.get("metrics", []), list) else []
+    sections = []
+    decision_cards = legacy_payload.get("decision_cards", []) if isinstance(legacy_payload.get("decision_cards", []), list) else []
+    if decision_cards:
+        sections.append(_solution_section("decision", "推进判断", "推进判断", "兼容旧版报告结构时，仅保留可直接支持判断的依据。", "cards", columns=3, items=[
+            {"eyebrow": "判断", "title": item.get("title", ""), "summary": item.get("summary", ""), "detail": item.get("detail", "")}
+            for item in decision_cards[:3]
+        ]))
+    dimension_cards = legacy_payload.get("dimension_cards", []) if isinstance(legacy_payload.get("dimension_cards", []), list) else []
+    if dimension_cards:
+        sections.append(_solution_section("modules", "落地模块", "落地模块", "兼容旧版摘要结构抽取出的模块信息。", "cards", columns=2, items=[
+            {"eyebrow": item.get("badge", "模块"), "title": item.get("name", ""), "summary": item.get("summary", ""), "detail": "、".join(item.get("points", [])[:3]) if isinstance(item.get("points", []), list) else ""}
+            for item in dimension_cards[:6]
+        ]))
+    roadmap = legacy_payload.get("roadmap", []) if isinstance(legacy_payload.get("roadmap", []), list) else []
+    if roadmap:
+        sections.append(_solution_section("roadmap", "实施路径", "实施路径", "兼容旧版方案路标。", "timeline", items=[
+            {"step": f"{idx + 1:02d}", "title": item.get("phase", ""), "summary": item.get("goal", ""), "detail": "、".join(item.get("tasks", [])[:3]) if isinstance(item.get("tasks", []), list) else "", "timeline": item.get("timeline", "")}
+            for idx, item in enumerate(roadmap[:5]) if isinstance(item, dict)
+        ]))
+    risk_cards = legacy_payload.get("risk_cards", []) if isinstance(legacy_payload.get("risk_cards", []), list) else []
+    if risk_cards:
+        sections.append(_solution_section("risks", "风险边界", "风险边界", "兼容旧版方案的风险与边界提示。", "cards", columns=2, items=[
+            {"eyebrow": "风险", "title": item.get("title", ""), "summary": item.get("summary", ""), "detail": item.get("detail", "")}
+            for item in risk_cards[:6] if isinstance(item, dict)
+        ]))
+    action_items = legacy_payload.get("action_items", []) if isinstance(legacy_payload.get("action_items", []), list) else []
+    if action_items:
+        sections.append(_solution_section("actions", "下一步推进", "下一步推进", "兼容旧版方案的执行动作清单。", "checklist", items=[
+            {"owner": item.get("owner", "待定"), "title": item.get("title", ""), "detail": item.get("detail", "")}
+            for item in action_items[:6] if isinstance(item, dict)
+        ]))
+    if metrics:
+        sections.append(_solution_section("value", "价值测算", "价值测算", "兼容旧版报告的指标概览。", "cards", columns=2, items=[
+            {"eyebrow": item.get("label", "指标"), "title": item.get("value", ""), "summary": item.get("note", ""), "detail": ""}
+            for item in metrics[:4] if isinstance(item, dict)
+        ]))
+
+    if quality_signals.get("degraded_reasons"):
+        return {
+            "report_name": legacy_payload.get("report_name", ""),
+            "title": clean_solution_text(f"{legacy_payload.get('title', '旧版报告')}真实信息摘要", max_len=40),
+            "subtitle": clean_solution_text("旧版报告只展示真实抽取信息，避免继续生成雷同模板方案。", max_len=72),
+            "overview": legacy_payload.get("overview", ""),
+            "source_mode": "degraded",
+            "fallback_source_mode": "legacy_markdown",
+            "report_template": REPORT_TEMPLATE_STANDARD_V1,
+            "report_type": "standard",
+            "fingerprint": quality_signals.get("fingerprint", {}),
+            "quality_signals": quality_signals,
+            "hero": {
+                "eyebrow": "DeepVision 旧版兼容视图",
+                "title": clean_solution_text(f"{legacy_payload.get('title', '旧版报告')}真实信息摘要", max_len=40),
+                "subtitle": clean_solution_text("旧版报告只展示真实抽取信息，避免继续生成雷同模板方案。", max_len=72),
+                "summary": legacy_payload.get("overview", ""),
+                "highlights": headline_cards,
+                "actions": [{"owner": "系统门禁", "title": reason, "detail": ""} for reason in quality_signals.get("degraded_reasons", [])],
+                "metrics": metrics,
+            },
+            "headline_cards": headline_cards,
+            "metrics": metrics,
+            "decision_summary": legacy_payload.get("decision_summary", ""),
+            "nav_items": [{"id": section.get("id"), "label": section.get("label")} for section in sections] if sections else [{"id": "overview", "label": "摘要"}],
+            "sections": sections if sections else [_solution_section("overview", "摘要", "摘要", "兼容旧版报告的概要信息。", "text", paragraphs=[legacy_payload.get("overview", "")])],
+        }
+
+    return {
+        "report_name": legacy_payload.get("report_name", ""),
+        "title": legacy_payload.get("title", ""),
+        "subtitle": legacy_payload.get("subtitle", ""),
+        "overview": legacy_payload.get("overview", ""),
+        "source_mode": "legacy_markdown",
+        "report_template": REPORT_TEMPLATE_STANDARD_V1,
+        "report_type": "standard",
+        "fingerprint": quality_signals.get("fingerprint", {}),
+        "quality_signals": quality_signals,
+        "hero": {
+            "eyebrow": "DeepVision 旧版兼容方案",
+            "title": legacy_payload.get("title", ""),
+            "subtitle": legacy_payload.get("subtitle", ""),
+            "summary": legacy_payload.get("overview", ""),
+            "highlights": headline_cards,
+            "actions": [{"owner": item.get("owner", "待定"), "title": item.get("title", ""), "detail": item.get("detail", "")} for item in action_items[:3] if isinstance(item, dict)],
+            "metrics": metrics,
+        },
+        "headline_cards": headline_cards,
+        "metrics": metrics,
+        "decision_summary": legacy_payload.get("decision_summary", ""),
+        "nav_items": [{"id": section.get("id"), "label": section.get("label")} for section in sections],
+        "sections": sections,
+    }
+
+
+def build_solution_payload_from_report(report_name: str, report_content: str) -> dict:
+    sidecar = read_solution_sidecar(report_name)
+    if sidecar:
+        return _build_solution_payload_from_snapshot(sidecar, source_mode="structured_sidecar")
+
+    markdown_snapshot = build_solution_snapshot_from_markdown_report(report_name, report_content)
+    if markdown_snapshot:
+        return _build_solution_payload_from_snapshot(markdown_snapshot, source_mode="legacy_markdown")
+
+    legacy_payload = build_legacy_solution_payload_from_report(report_name, report_content)
+    return _build_payload_from_legacy_solution(legacy_payload)
 
 
 @app.route('/api/reports', methods=['GET'])
@@ -21570,6 +22962,7 @@ def delete_report(filename):
     try:
         # 只标记为已删除，不真正删除文件
         mark_report_as_deleted(filename)
+        delete_solution_sidecar(filename)
         return jsonify({
             "message": "报告已从列表中移除（文件已存档）",
             "name": filename
@@ -21606,6 +22999,7 @@ def batch_delete_reports():
 
         try:
             mark_report_as_deleted(report_name)
+            delete_solution_sidecar(report_name)
             deleted_reports.append(report_name)
         except Exception as exc:
             skipped_reports.append({"name": report_name, "reason": f"标记删除失败: {str(exc)}"})
