@@ -1,7 +1,16 @@
 {
-  "version": "2.22.1",
+  "version": "2.22.2",
   "releaseDate": "2026-03-11",
   "changelog": [
+    {
+      "version": "2.22.2",
+      "date": "2026-03-11",
+      "type": "patch",
+      "title": "Fix MCP 客户端请求逻辑更新标题",
+      "changes": [
+        "后端：更新接口与数据处理逻辑。"
+      ]
+    },
     {
       "version": "2.22.1",
       "date": "2026-03-11",
