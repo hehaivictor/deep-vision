@@ -2,6 +2,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -85,6 +86,10 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.server.QUESTION_FULL_TIMEOUT_BY_LANE = {}
         self.server.QUESTION_FULL_MAX_TOKENS_BY_LANE = {}
         self.server.QUESTION_HEDGE_DELAY_BY_LANE = {}
+        self.server.QUESTION_HEDGE_ADAPTIVE_ENABLED = True
+        self.server.QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES = 3
+        self.server.QUESTION_HEDGE_ADAPTIVE_PERCENTILE = 0.75
+        self.server.QUESTION_HEDGE_ADAPTIVE_TIMEOUT_RATIO = 0.4
         self.server.PREFETCH_QUESTION_TIMEOUT = 48.0
         self.server.PREFETCH_QUESTION_MAX_TOKENS = 1200
         self.server.PREFETCH_QUESTION_FAST_TIMEOUT = 10.5
@@ -477,6 +482,110 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertEqual(calls[0]["max_tokens"], 580)
         self.assertEqual(calls[0]["kwargs"]["hedge_delay_seconds"], 0.8)
         self.assertEqual(tier_used, "fast:summary")
+
+    def test_call_question_hedge_uses_secondary_lane_runtime_params(self):
+        records = []
+        original_call = self.server.call_claude
+        original_resolve = self.server.resolve_ai_client
+        self.addCleanup(setattr, self.server, "call_claude", original_call)
+        self.addCleanup(setattr, self.server, "resolve_ai_client", original_resolve)
+
+        clients = {
+            "summary": object(),
+            "question": object(),
+        }
+
+        self.server.resolve_ai_client = lambda call_type="", model_name="", preferred_lane="": clients.get(preferred_lane)
+
+        def fake_call(prompt, max_tokens=None, retry_on_timeout=True, call_type="unknown", truncated_docs=None,
+                      timeout=None, model_name="", preferred_lane="", hedge_triggered=False,
+                      cache_hit=False, return_meta=False):
+            records.append({
+                "lane": preferred_lane,
+                "timeout": timeout,
+                "max_tokens": max_tokens,
+                "call_type": call_type,
+            })
+            if preferred_lane == "summary":
+                time.sleep(0.12)
+                payload = None
+            else:
+                payload = '{"question":"请补充说明最关键诉求","options":["效率","成本","体验"],"multi_select":false,"is_follow_up":false,"follow_up_reason":null}'
+            meta = {
+                "selected_lane": preferred_lane,
+                "timeout_seconds": timeout,
+                "max_tokens": max_tokens,
+            }
+            return (payload, meta) if return_meta else payload
+
+        self.server.call_claude = fake_call
+
+        response, lane, meta = self.server._call_question_with_optional_hedge(
+            "PROMPT",
+            max_tokens=580,
+            call_type="question_fast",
+            timeout=0.3,
+            retry_on_timeout=False,
+            debug=False,
+            primary_lane="summary",
+            secondary_lane="question",
+            hedged_enabled=True,
+            hedge_delay_seconds=0.05,
+            lane_runtime_overrides={
+                "summary": {"timeout": 0.3, "max_tokens": 580},
+                "question": {"timeout": 0.8, "max_tokens": 960},
+            },
+        )
+
+        self.assertEqual(lane, "question")
+        self.assertIsNotNone(response)
+        calls_by_lane = {item["lane"]: item for item in records}
+        self.assertEqual(calls_by_lane["summary"]["timeout"], 0.3)
+        self.assertEqual(calls_by_lane["summary"]["max_tokens"], 580)
+        self.assertEqual(calls_by_lane["question"]["timeout"], 0.8)
+        self.assertEqual(calls_by_lane["question"]["max_tokens"], 960)
+        attempts = meta.get("attempts", [])
+        self.assertEqual(len(attempts), 2)
+
+    def test_question_primary_hedge_delay_adds_grace_window(self):
+        self.assertEqual(
+            self.server._resolve_question_hedge_trigger_delay(1.0, "question", 8.0),
+            2.5,
+        )
+        self.assertEqual(
+            self.server._resolve_question_hedge_trigger_delay(1.0, "question", 24.0),
+            3.0,
+        )
+        self.assertEqual(
+            self.server._resolve_question_hedge_trigger_delay(1.0, "summary", 8.0),
+            1.0,
+        )
+
+    def test_question_hedge_delay_uses_latency_percentile_when_ready(self):
+        runtime_profile = {
+            "profile_name": "question_follow_up_light",
+            "fast_prompt_mode": "light",
+            "full_prompt_mode": "full",
+            "primary_lane": "question",
+            "secondary_lane": "summary",
+        }
+        strategy_key = self.server._build_question_lane_strategy_key(runtime_profile, "fast")
+        for latency in [2600.0, 3000.0, 3400.0]:
+            self.server._record_question_lane_strategy_outcome(
+                strategy_key,
+                "question",
+                "ok",
+                {"response_time_ms": latency},
+            )
+
+        self.assertEqual(
+            self.server._compute_question_lane_latency_percentile_ms(strategy_key, "question"),
+            3400.0,
+        )
+        self.assertEqual(
+            self.server._resolve_question_hedge_trigger_delay(1.0, "question", 12.0, lane_profile_name=strategy_key),
+            3.4,
+        )
 
 
     def test_prefetch_runtime_profile_uses_independent_params(self):
