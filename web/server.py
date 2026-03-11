@@ -615,6 +615,9 @@ if QUESTION_RESULT_CACHE_TTL_SECONDS < 0:
 QUESTION_RESULT_CACHE_MAX_ENTRIES = _cfg_int("QUESTION_RESULT_CACHE_MAX_ENTRIES", 512)
 if QUESTION_RESULT_CACHE_MAX_ENTRIES < 64:
     QUESTION_RESULT_CACHE_MAX_ENTRIES = 64
+QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = _cfg_float("QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS", 1.8)
+if QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS < 0.0:
+    QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = 0.0
 METRICS_ASYNC_FLUSH_INTERVAL_SECONDS = _cfg_float("METRICS_ASYNC_FLUSH_INTERVAL_SECONDS", 1.5)
 if METRICS_ASYNC_FLUSH_INTERVAL_SECONDS < 0.2:
     METRICS_ASYNC_FLUSH_INTERVAL_SECONDS = 0.2
@@ -1383,6 +1386,8 @@ search_result_inflight = {}  # { cache_key: { event: threading.Event, started_at
 # ============ 问题结果幂等缓存 ============
 question_result_cache_lock = threading.Lock()
 question_result_cache = {}  # { cache_key: { value: dict, expire_at: float } }
+question_prefetch_inflight_lock = threading.Lock()
+question_prefetch_inflight = {}  # { cache_key: { event: threading.Event, started_at: float } }
 
 # ============ 问题快档自适应控制 ============
 question_fast_strategy_lock = threading.Lock()
@@ -4586,7 +4591,73 @@ def clear_report_generation_status(session_id: str):
 
 # ============ 预生成缓存函数 ============
 
-def get_prefetch_result(session_id: str, dimension: str) -> Optional[dict]:
+def _normalize_session_signature_value(value) -> Optional[tuple[int, int]]:
+    if isinstance(value, tuple) and len(value) == 2:
+        try:
+            return int(value[0]), int(value[1])
+        except (TypeError, ValueError):
+            return None
+    if isinstance(value, list) and len(value) == 2:
+        try:
+            return int(value[0]), int(value[1])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _prefetch_entry_matches_signature(entry: Optional[dict], session_signature: Optional[tuple[int, int]]) -> bool:
+    expected_signature = _normalize_session_signature_value(session_signature)
+    if expected_signature is None:
+        return True
+    cached_signature = _normalize_session_signature_value((entry or {}).get("session_signature"))
+    if cached_signature is None:
+        return False
+    return cached_signature == expected_signature
+
+
+def _begin_question_prefetch_inflight(cache_key: str) -> tuple[Optional[threading.Event], bool]:
+    key = str(cache_key or "").strip()
+    if not key:
+        return None, False
+    with question_prefetch_inflight_lock:
+        inflight = question_prefetch_inflight.get(key)
+        event = inflight.get("event") if isinstance(inflight, dict) else None
+        if isinstance(event, threading.Event):
+            return event, False
+
+        owner_event = threading.Event()
+        question_prefetch_inflight[key] = {
+            "event": owner_event,
+            "started_at": _time.time(),
+        }
+        return owner_event, True
+
+
+def _end_question_prefetch_inflight(cache_key: str, owner_event: Optional[threading.Event]) -> None:
+    key = str(cache_key or "").strip()
+    if not key or not isinstance(owner_event, threading.Event):
+        return
+    with question_prefetch_inflight_lock:
+        inflight = question_prefetch_inflight.get(key)
+        if isinstance(inflight, dict) and inflight.get("event") is owner_event:
+            question_prefetch_inflight.pop(key, None)
+    owner_event.set()
+
+
+def _wait_for_question_prefetch_inflight(cache_key: str, wait_seconds: float) -> bool:
+    key = str(cache_key or "").strip()
+    if not key or wait_seconds <= 0:
+        return False
+    with question_prefetch_inflight_lock:
+        inflight = question_prefetch_inflight.get(key)
+        event = inflight.get("event") if isinstance(inflight, dict) else None
+    if not isinstance(event, threading.Event):
+        return False
+    event.wait(wait_seconds)
+    return True
+
+
+def get_prefetch_result(session_id: str, dimension: str, session_signature: Optional[tuple[int, int]] = None) -> Optional[dict]:
     """获取预生成结果（线程安全），命中则消费（删除缓存）
 
     Args:
@@ -4600,6 +4671,11 @@ def get_prefetch_result(session_id: str, dimension: str) -> Optional[dict]:
         session_cache = prefetch_cache.get(session_id, {})
         cached = session_cache.get(dimension)
         if cached and cached.get("valid"):
+            if not _prefetch_entry_matches_signature(cached, session_signature):
+                session_cache.pop(dimension, None)
+                if ENABLE_DEBUG_LOG:
+                    print(f"🧹 丢弃过期预生成缓存: session={session_id}, dim={dimension}")
+                return None
             # 检查TTL
             if _time.time() - cached["created_at"] < PREFETCH_TTL:
                 # 消费缓存（删除）
@@ -4629,7 +4705,7 @@ def invalidate_prefetch(session_id: str, dimension: str = None):
             prefetch_cache.pop(session_id, None)
 
 
-def trigger_prefetch_if_needed(session: dict, current_dimension: str):
+def trigger_prefetch_if_needed(session: dict, current_dimension: str, session_signature: Optional[tuple[int, int]] = None):
     """判断是否需要预生成下一维度首题，如果需要则启动后台线程
 
     预生成触发条件：当前维度正式问题数 >= 2
@@ -4672,11 +4748,23 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str):
     if not next_dimension:
         return
 
+    normalized_signature = _normalize_session_signature_value(session_signature)
+    question_cache_key = (
+        _build_question_result_cache_key(session_id, next_dimension, normalized_signature)
+        if normalized_signature is not None else ""
+    )
+
     # 检查缓存中是否已有
     with prefetch_cache_lock:
         existing = prefetch_cache.get(session_id, {}).get(next_dimension)
-        if existing and existing.get("valid"):
+        if existing and existing.get("valid") and _prefetch_entry_matches_signature(existing, normalized_signature):
             return  # 已有有效缓存，不重复生成
+
+    owner_event = None
+    if question_cache_key:
+        owner_event, is_owner = _begin_question_prefetch_inflight(question_cache_key)
+        if not is_owner:
+            return
 
     # 启动后台预生成线程
     def do_prefetch():
@@ -4695,7 +4783,11 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str):
                 return
 
             session_data = json.loads(session_file.read_text(encoding="utf-8"))
-            session_signature = get_file_signature(session_file)
+            fresh_signature = get_file_signature(session_file)
+            if normalized_signature is not None and fresh_signature != normalized_signature:
+                if ENABLE_DEBUG_LOG:
+                    print(f"⏭️  放弃过期预生成: session={session_id}, dim={next_dimension}")
+                return
             next_dim_logs = [l for l in session_data.get("interview_log", [])
                            if l.get("dimension") == next_dimension]
 
@@ -4703,7 +4795,7 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str):
                 session_data,
                 next_dimension,
                 next_dim_logs,
-                session_signature=session_signature,
+                session_signature=fresh_signature,
                 base_call_type="prefetch",
                 allow_fast_path=True,
             )
@@ -4731,6 +4823,7 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str):
                         "question_data": result,
                         "created_at": _time.time(),
                         "topic": session_data.get("topic"),
+                        "session_signature": fresh_signature,
                         "valid": True,
                     }
                 if ENABLE_DEBUG_LOG:
@@ -4740,6 +4833,8 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str):
                     print(f"⚠️ 预生成解析失败: session={session_id}, dim={next_dimension}")
         except Exception as e:
             print(f"⚠️ 预生成失败: {e}")
+        finally:
+            _end_question_prefetch_inflight(question_cache_key, owner_event)
 
     threading.Thread(target=do_prefetch, daemon=True).start()
 
@@ -4752,6 +4847,22 @@ def prefetch_first_question(session_id: str):
     Args:
         session_id: 会话ID
     """
+    session_file = SESSIONS_DIR / f"{session_id}.json"
+    if not session_file.exists():
+        return
+
+    try:
+        initial_session_data = json.loads(session_file.read_text(encoding="utf-8"))
+    except Exception:
+        return
+
+    initial_signature = get_file_signature(session_file)
+    first_dim = get_dimension_order_for_session(initial_session_data)[0] if get_dimension_order_for_session(initial_session_data) else "customer_needs"
+    question_cache_key = _build_question_result_cache_key(session_id, first_dim, initial_signature)
+    owner_event, is_owner = _begin_question_prefetch_inflight(question_cache_key)
+    if not is_owner:
+        return
+
     def do_prefetch():
         try:
             if ENABLE_DEBUG_LOG:
@@ -4766,21 +4877,21 @@ def prefetch_first_question(session_id: str):
                     print(f"⏭️  跳过首题预生成（主链路繁忙）: session={session_id}")
                 return
 
-            session_file = SESSIONS_DIR / f"{session_id}.json"
             if not session_file.exists():
                 return
 
             session_data = json.loads(session_file.read_text(encoding="utf-8"))
-            session_signature = get_file_signature(session_file)
-
-            # 获取第一个维度（动态场景支持）
-            first_dim = get_dimension_order_for_session(session_data)[0] if get_dimension_order_for_session(session_data) else "customer_needs"
+            fresh_signature = get_file_signature(session_file)
+            if fresh_signature != initial_signature:
+                if ENABLE_DEBUG_LOG:
+                    print(f"⏭️  放弃过期首题预生成: session={session_id}")
+                return
 
             prepared_runtime = _prepare_question_generation_runtime(
                 session_data,
                 first_dim,
                 [],
-                session_signature=session_signature,
+                session_signature=fresh_signature,
                 base_call_type="prefetch_first",
                 allow_fast_path=True,
             )
@@ -4808,6 +4919,7 @@ def prefetch_first_question(session_id: str):
                         "question_data": result,
                         "created_at": _time.time(),
                         "topic": session_data.get("topic"),
+                        "session_signature": fresh_signature,
                         "valid": True,
                     }
                 if ENABLE_DEBUG_LOG:
@@ -4815,6 +4927,7 @@ def prefetch_first_question(session_id: str):
         except Exception as e:
             print(f"⚠️ 首题预生成失败: {e}")
         finally:
+            _end_question_prefetch_inflight(question_cache_key, owner_event)
             _clear_first_question_prefetch_priority(session_id)
 
     threading.Thread(target=do_prefetch, daemon=True).start()
@@ -16567,8 +16680,17 @@ def get_next_question(session_id):
         cached_question_payload["cached"] = True
         return jsonify(cached_question_payload)
 
+    if _wait_for_question_prefetch_inflight(question_cache_key, QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS):
+        cached_question_payload = _get_question_result_cache(question_cache_key)
+        if isinstance(cached_question_payload, dict):
+            if ENABLE_DEBUG_LOG:
+                print(f"📦 等待后命中问题结果缓存: session={session_id}, dimension={dimension}")
+            _record_cache_hit_metric("question_result_cache_hit")
+            cached_question_payload["cached"] = True
+            return jsonify(cached_question_payload)
+
     # ========== 步骤5: 检查预生成缓存 ==========
-    prefetched = get_prefetch_result(session_id, dimension)
+    prefetched = get_prefetch_result(session_id, dimension, session_signature=session_signature)
     if prefetched:
         if ENABLE_DEBUG_LOG:
             print(f"🎯 预生成缓存命中: session={session_id}, dimension={dimension}")
@@ -16842,7 +16964,7 @@ def get_next_question(session_id):
             # 清除思考状态
             clear_thinking_status(session_id)
             # ========== 步骤5: 触发预生成（如果需要）==========
-            trigger_prefetch_if_needed(session, dimension)
+            trigger_prefetch_if_needed(session, dimension, session_signature=session_signature)
             _set_question_result_cache(question_cache_key, result)
             return jsonify(result)
 
