@@ -6273,6 +6273,28 @@ def mark_report_as_deleted(filename: str):
             _safe_log(f"⚠️ 标记 report_index 删除失败: {filename}, 错误: {exc}")
 
 
+def unmark_report_as_deleted(filename: str) -> None:
+    """取消报告删除标记，用于重新生成后恢复可见性。"""
+    name = str(filename or "").strip()
+    if not name:
+        return
+
+    deleted = get_deleted_reports()
+    if name not in deleted:
+        return
+
+    deleted.discard(name)
+    DELETED_REPORTS_FILE.write_text(
+        json.dumps({"deleted": list(deleted)}, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+    try:
+        sync_report_index_for_filename(name, deleted=False)
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            _safe_log(f"⚠️ 恢复 report_index 可见性失败: {name}, 错误: {exc}")
+
+
 def normalize_topic_slug(topic: str) -> str:
     """按报告命名规则生成主题 slug。"""
     if not isinstance(topic, str):
@@ -6343,6 +6365,71 @@ def find_reports_by_session_topic(session: dict) -> list:
             continue
         matched.append(report_name)
     return matched
+
+
+def is_report_bound_to_session(filename: str, session: dict, user_id: int) -> bool:
+    """校验报告是否可作为当前会话的绑定报告。"""
+    name = str(filename or "").strip()
+    if not name or not name.endswith(".md"):
+        return False
+
+    reports_root = REPORTS_DIR.resolve()
+    report_path = (REPORTS_DIR / name).resolve()
+    if report_path.parent != reports_root:
+        return False
+    if not report_path.exists() or not report_path.is_file():
+        return False
+
+    try:
+        owner_user_id = int(user_id)
+    except (TypeError, ValueError):
+        return False
+
+    if owner_user_id <= 0:
+        return False
+    if get_report_owner_id(name) != owner_user_id:
+        return False
+    if get_report_scope_key(name) != get_session_instance_scope_key(session):
+        return False
+    return True
+
+
+def resolve_session_bound_report_name(session: dict, user_id: int) -> str:
+    """解析会话当前应复用的报告文件名。"""
+    if not isinstance(session, dict):
+        return ""
+
+    direct_candidates = []
+    current_report_name = str(session.get("current_report_name") or "").strip()
+    if current_report_name:
+        direct_candidates.append(current_report_name)
+
+    current_report_path = str(session.get("current_report_path") or "").strip()
+    if current_report_path:
+        derived_name = Path(current_report_path).name.strip()
+        if derived_name and derived_name not in direct_candidates:
+            direct_candidates.append(derived_name)
+
+    for report_name in direct_candidates:
+        if is_report_bound_to_session(report_name, session, user_id):
+            return report_name
+
+    deleted_reports = get_deleted_reports()
+    fallback_candidates = []
+    for report_name in find_reports_by_session_topic(session):
+        report_path = REPORTS_DIR / report_name
+        try:
+            stat = report_path.stat()
+        except (FileNotFoundError, OSError):
+            continue
+        visible_rank = 1 if report_name not in deleted_reports else 0
+        fallback_candidates.append((visible_rank, float(stat.st_mtime), report_name))
+
+    if not fallback_candidates:
+        return ""
+
+    fallback_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return fallback_candidates[0][2]
 
 
 def unique_non_empty_strings(items) -> list:
@@ -18045,9 +18132,16 @@ def can_use_v3_failover_lane() -> bool:
     return target_client is not primary_client
 
 
-def run_report_generation_job(session_id: str, user_id: int, request_id: str, report_profile: str = "") -> None:
+def run_report_generation_job(
+    session_id: str,
+    user_id: int,
+    request_id: str,
+    report_profile: str = "",
+    action: str = "generate",
+) -> None:
     """后台生成报告任务。"""
     try:
+        requested_action = "regenerate" if str(action or "").strip() == "regenerate" else "generate"
         selected_report_profile = normalize_report_profile_choice(report_profile, fallback=REPORT_V3_PROFILE)
         set_report_generation_metadata(session_id, {"report_profile": selected_report_profile})
         loaded = load_session_for_user(session_id, user_id, include_missing=True)
@@ -18067,27 +18161,41 @@ def run_report_generation_job(session_id: str, user_id: int, request_id: str, re
 
         def persist_report(content: str, quality_meta: Optional[dict] = None) -> tuple[Path, str]:
             """保存报告并更新会话状态。"""
-            topic_slug = session.get("topic", "report").replace(" ", "-")[:30]
-            date_str = datetime.now().strftime("%Y%m%d")
-            scope_tag = get_instance_scope_short_tag()
-            if scope_tag:
-                filename = f"deep-vision-{date_str}-{scope_tag}-{topic_slug}.md"
-            else:
-                filename = f"deep-vision-{date_str}-{topic_slug}.md"
+            filename = ""
+            if requested_action == "regenerate":
+                filename = resolve_session_bound_report_name(session, user_id)
+
+            if not filename:
+                topic_slug = session.get("topic", "report").replace(" ", "-")[:30]
+                date_str = datetime.now().strftime("%Y%m%d")
+                scope_tag = get_instance_scope_short_tag()
+                if scope_tag:
+                    filename = f"deep-vision-{date_str}-{scope_tag}-{topic_slug}.md"
+                else:
+                    filename = f"deep-vision-{date_str}-{topic_slug}.md"
+
             report_file = REPORTS_DIR / filename
             normalized_content = normalize_report_time_fields(content)
             report_file.write_text(normalized_content, encoding="utf-8")
+            unmark_report_as_deleted(filename)
             set_report_owner_id(filename, user_id)
 
             latest_session = safe_load_session(session_file)
             if isinstance(latest_session, dict) and ensure_session_owner(latest_session, user_id):
                 latest_session["status"] = "completed"
                 latest_session["updated_at"] = get_utc_now()
+                latest_session["current_report_name"] = filename
+                latest_session["current_report_path"] = str(report_file)
+                latest_session["current_report_updated_at"] = get_utc_now()
                 if isinstance(quality_meta, dict):
                     latest_session["last_report_quality_meta"] = quality_meta
                 if isinstance(session.get("last_report_v3_debug"), dict):
                     latest_session["last_report_v3_debug"] = session["last_report_v3_debug"]
                 save_session_json_and_sync(session_file, latest_session)
+
+                session["current_report_name"] = filename
+                session["current_report_path"] = str(report_file)
+                session["current_report_updated_at"] = latest_session["current_report_updated_at"]
 
             return report_file, filename
 
@@ -18611,6 +18719,7 @@ def generate_report(session_id):
             user_id,
             request_id,
             report_profile,
+            action,
         )
     except Exception as exc:
         release_report_generation_slot()

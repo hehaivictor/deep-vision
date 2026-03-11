@@ -8,6 +8,7 @@ import time
 import types
 import unittest
 import uuid
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -213,6 +214,44 @@ class ComprehensiveApiTests(unittest.TestCase):
         if tag:
             return f"deep-vision-{date_str}-{tag}-{slug}.md"
         return f"deep-vision-{date_str}-{slug}.md"
+
+    def _wait_report_generation(self, session_id, expected_state="completed", attempts=120):
+        status_payload = {}
+        for _ in range(attempts):
+            status_resp = self.client.get(f"/api/status/report-generation/{session_id}")
+            self.assertEqual(status_resp.status_code, 200, status_resp.get_data(as_text=True))
+            status_payload = status_resp.get_json() or {}
+            if status_payload.get("state") == expected_state:
+                if expected_state != "completed" or status_payload.get("report_name"):
+                    break
+            time.sleep(0.05)
+
+        self.assertEqual(status_payload.get("state"), expected_state, status_payload)
+        return status_payload
+
+    def _generate_report_with_fixed_now(self, session_id, fixed_now: datetime, action="generate", report_profile="quality"):
+        real_datetime = self.server.datetime
+
+        class FixedDateTime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is not None:
+                    return fixed_now.replace(tzinfo=tz)
+                return fixed_now.replace(tzinfo=None)
+
+        self.server.datetime = FixedDateTime
+        try:
+            response = self.client.post(
+                f"/api/sessions/{session_id}/generate-report",
+                json={
+                    "action": action,
+                    "report_profile": report_profile,
+                },
+            )
+            self.assertEqual(response.status_code, 202, response.get_data(as_text=True))
+            return self._wait_report_generation(session_id)
+        finally:
+            self.server.datetime = real_datetime
 
     def test_auth_lifecycle(self):
         self._register()
@@ -875,15 +914,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         first_payload = gen_resp.get_json() or {}
         self.assertEqual(first_payload.get("report_profile"), "quality")
 
-        status_payload = {}
-        for _ in range(120):
-            status_resp = self.client.get(f"/api/status/report-generation/{session_id}")
-            self.assertEqual(status_resp.status_code, 200)
-            status_payload = status_resp.get_json() or {}
-            if status_payload.get("state") == "completed" and status_payload.get("report_name"):
-                break
-            time.sleep(0.05)
-        self.assertEqual(status_payload.get("state"), "completed", status_payload)
+        status_payload = self._wait_report_generation(session_id)
         self.assertEqual(status_payload.get("report_profile"), "quality")
         report_name = status_payload.get("report_name")
         self.assertTrue(report_name)
@@ -970,7 +1001,47 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(list_after_delete.status_code, 200)
         names_after_delete = [item["name"] for item in list_after_delete.get_json()]
         self.assertNotIn(report_name, names_after_delete)
-        self.assertGreater(user["id"], 0)
+
+    def test_regenerate_report_overwrites_current_session_report(self):
+        self._register()
+        created = self._create_session(topic="跨天重生成报告")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+        self._submit_answer(session_id, dimension, question="目标是什么？", answer="先生成首版")
+
+        first_payload = self._generate_report_with_fixed_now(
+            session_id,
+            datetime(2099, 1, 1, 9, 0),
+            action="generate",
+            report_profile="quality",
+        )
+        first_report_name = first_payload.get("report_name")
+        self.assertEqual(first_report_name, self._build_scoped_report_name(created["topic"], date_str="20990101"))
+
+        session_detail = self.client.get(f"/api/sessions/{session_id}")
+        self.assertEqual(session_detail.status_code, 200)
+        session_payload = session_detail.get_json() or {}
+        self.assertEqual(session_payload.get("current_report_name"), first_report_name)
+
+        second_payload = self._generate_report_with_fixed_now(
+            session_id,
+            datetime(2099, 1, 2, 10, 30),
+            action="regenerate",
+            report_profile="quality",
+        )
+        second_report_name = second_payload.get("report_name")
+        self.assertEqual(second_report_name, first_report_name)
+
+        reports_resp = self.client.get("/api/reports")
+        self.assertEqual(reports_resp.status_code, 200, reports_resp.get_data(as_text=True))
+        report_names = [item["name"] for item in (reports_resp.get_json() or [])]
+        self.assertEqual(report_names.count(first_report_name), 1)
+        self.assertEqual(len(report_names), 1)
+
+        refreshed_session = self.client.get(f"/api/sessions/{session_id}")
+        self.assertEqual(refreshed_session.status_code, 200)
+        refreshed_payload = refreshed_session.get_json() or {}
+        self.assertEqual(refreshed_payload.get("current_report_name"), first_report_name)
 
     def test_generate_report_returns_429_when_queue_full(self):
         self._register()
