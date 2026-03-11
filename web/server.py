@@ -8782,7 +8782,9 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 1. 生成 1 个清晰、聚焦的问题
 2. 提供 3-4 个简洁选项，优先使用短句
 3. 优先覆盖当前最关键的一个缺口，不要贪多
-4. 根据问题性质判断单选或多选
+4. 根据问题性质判断单选或多选：
+   - 问“哪些/哪些方面/哪些角色/哪些系统/哪些环节/希望解决哪些问题”时，优先输出多选
+   - 只有明确存在唯一主项时才输出单选，例如“最核心/最优先/唯一/当前最重要”
 5. 问题和选项都要便于用户快速选择，不要写成长段解释
 """
         else:
@@ -8798,6 +8800,8 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 4. 根据问题性质判断是单选还是多选：
    - 单选场景：互斥选项（是/否）、优先级选择、唯一选择
    - 多选场景：可并存的功能需求、多个痛点、多种用户角色
+   - 凡是“哪些/哪些方面/哪些角色/哪些系统/哪些环节/需要与哪些集成/希望解决哪些问题”这类可并存枚举题，优先输出多选
+   - 只有包含“最核心/最优先/唯一/当前最重要”等唯一性语义时才输出单选
 5. 如果用户的回答与参考文档内容有冲突，要在问题中指出并请求澄清
 """
 
@@ -15546,7 +15550,6 @@ def parse_question_response(response: str, debug: bool = False) -> Optional[dict
     # 验证结果
     if result is not None and isinstance(result, dict):
         if "question" in result and "options" in result:
-            # 补全可能缺失的字段
             if "multi_select" not in result:
                 result["multi_select"] = False
             if "is_follow_up" not in result:
@@ -15559,7 +15562,75 @@ def parse_question_response(response: str, debug: bool = False) -> Optional[dict
         print(f"📄 AI 响应前500字符:\n{response[:500] if response else 'None'}")
         print(f"📄 最后解析错误: {str(parse_error) if parse_error else '未知'}")
 
+
     return None
+
+
+def _normalize_generated_question_text(question: str) -> str:
+    return re.sub(r"\s+", "", str(question or "")).strip().lower()
+
+
+def _should_force_generated_multi_select(question: str, option_list: list[str]) -> bool:
+    normalized_question = _normalize_generated_question_text(question)
+    normalized_options = [str(option or "").strip() for option in option_list if str(option or "").strip()]
+    if not normalized_question or len(normalized_options) < 2:
+        return False
+
+    unique_signals = [
+        "最核心",
+        "最关键",
+        "最重要",
+        "最优先",
+        "当前最重要",
+        "当前最优先",
+        "唯一",
+        "哪一个",
+        "哪项最",
+        "哪种最",
+        "首要",
+    ]
+    if any(signal in normalized_question for signal in unique_signals):
+        return False
+
+    plural_signals = [
+        "哪些",
+        "哪几个",
+        "有哪些",
+        "涉及哪些",
+        "需要与哪些",
+        "需要哪些",
+        "集成哪些",
+        "对接哪些",
+        "希望解决哪些",
+        "哪些方面",
+        "哪些角色",
+        "哪些系统",
+        "哪些环节",
+        "哪些问题",
+    ]
+    return any(signal in normalized_question for signal in plural_signals)
+
+
+def normalize_generated_question_result(result: Optional[dict]) -> Optional[dict]:
+    if not isinstance(result, dict):
+        return result
+
+    if "multi_select" not in result:
+        result["multi_select"] = False
+    if "is_follow_up" not in result:
+        result["is_follow_up"] = False
+
+    original_multi_select = bool(result.get("multi_select", False))
+    option_list = result.get("options") if isinstance(result.get("options"), list) else []
+    normalized_options = [str(option or "").strip() for option in option_list if str(option or "").strip()]
+    result["question_multi_select"] = original_multi_select
+
+    if not original_multi_select and _should_force_generated_multi_select(result.get("question", ""), normalized_options):
+        result["multi_select"] = True
+    else:
+        result["multi_select"] = original_multi_select
+
+    return result
 
 
 def _normalize_question_call_result(raw_result, lane: str, max_tokens: int, timeout: Optional[float]) -> tuple[Optional[str], dict]:
@@ -16339,7 +16410,7 @@ def generate_question_with_tiered_strategy(
             lane_profile_name=str(fast_lane_meta.get("strategy_key", "") or ""),
         )
         if fast_response:
-            fast_result = parse_question_response(fast_response, debug=debug)
+            fast_result = normalize_generated_question_result(parse_question_response(fast_response, debug=debug))
             if fast_result:
                 _record_question_fast_outcome(True, lane=fast_lane, reason="ok")
                 return fast_response, fast_result, f"fast:{fast_lane}"
@@ -16368,7 +16439,7 @@ def generate_question_with_tiered_strategy(
         hedge_delay_seconds=full_hedge_delay_seconds,
         lane_profile_name=str(full_lane_meta.get("strategy_key", "") or ""),
     )
-    full_result = parse_question_response(full_response, debug=debug) if full_response else None
+    full_result = normalize_generated_question_result(parse_question_response(full_response, debug=debug)) if full_response else None
     if debug and not full_response:
         print(f"⚠️ 全量档未命中，原因: {_format_question_tier_attempts_for_log(full_meta)}")
     elif debug and full_response and not full_result:
@@ -16760,6 +16831,7 @@ def get_fallback_question(session: dict, dimension: str) -> dict:
             "question": q["question"],
             "options": q["options"],
             "multi_select": q.get("multi_select", False),
+            "question_multi_select": q.get("multi_select", False),
             "dimension": dimension,
             "ai_generated": False,
             "is_follow_up": False,
@@ -16798,6 +16870,9 @@ def submit_answer(session_id):
     answer = data.get("answer")
     dimension = data.get("dimension")
     options = data.get("options", [])
+    multi_select = data.get("multi_select", False)
+    question_multi_select = data.get("question_multi_select", multi_select)
+    selection_escalated_from_single = data.get("selection_escalated_from_single", False)
     other_selected = data.get("other_selected", False)
     other_answer_text = data.get("other_answer_text", "")
     is_follow_up = data.get("is_follow_up", False)
@@ -16813,6 +16888,12 @@ def submit_answer(session_id):
         return jsonify({"error": "无效的维度"}), 400
     if not isinstance(options, list):
         return jsonify({"error": "选项必须是列表"}), 400
+    if not isinstance(multi_select, bool):
+        return jsonify({"error": "multi_select必须是布尔值"}), 400
+    if not isinstance(question_multi_select, bool):
+        return jsonify({"error": "question_multi_select必须是布尔值"}), 400
+    if not isinstance(selection_escalated_from_single, bool):
+        return jsonify({"error": "selection_escalated_from_single必须是布尔值"}), 400
     if not isinstance(other_selected, bool):
         return jsonify({"error": "other_selected必须是布尔值"}), 400
     if other_answer_text is None:
@@ -16859,6 +16940,9 @@ def submit_answer(session_id):
         "answer": answer,
         "dimension": dimension,
         "options": options,
+        "multi_select": multi_select,
+        "question_multi_select": question_multi_select,
+        "selection_escalated_from_single": selection_escalated_from_single,
         "other_selected": other_selected,
         "other_answer_text": other_answer_text,
         "is_follow_up": is_follow_up,

@@ -697,6 +697,67 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertIsNotNone(cached)
         self.assertEqual(cached["question_data"]["question"], "后台预生成问题")
 
+    def test_generate_question_auto_corrects_plural_enumeration_to_multi_select(self):
+        original_call = self.server._call_question_with_optional_hedge
+        original_parse = self.server.parse_question_response
+        self.addCleanup(setattr, self.server, "_call_question_with_optional_hedge", original_call)
+        self.addCleanup(setattr, self.server, "parse_question_response", original_parse)
+
+        self.server._call_question_with_optional_hedge = lambda *args, **kwargs: (
+            '{"question":"需要与哪些现有系统集成？","options":["ERP系统","CRM系统","OA办公系统"],"multi_select":false,"is_follow_up":false,"follow_up_reason":null}',
+            "summary",
+            {"response_length": 96},
+        )
+        self.server.parse_question_response = lambda _response, debug=False: {
+            "question": "需要与哪些现有系统集成？",
+            "options": ["ERP系统", "CRM系统", "OA办公系统"],
+            "multi_select": False,
+            "is_follow_up": False,
+            "follow_up_reason": None,
+        }
+
+        _response, result, tier_used = self.server.generate_question_with_tiered_strategy(
+            "PROMPT",
+            truncated_docs=[],
+            debug=False,
+            base_call_type="question",
+            allow_fast_path=False,
+        )
+
+        self.assertEqual(tier_used, "full:summary")
+        self.assertFalse(result["question_multi_select"])
+        self.assertTrue(result["multi_select"])
+
+    def test_generate_question_keeps_single_select_for_unique_priority_prompt(self):
+        original_call = self.server._call_question_with_optional_hedge
+        original_parse = self.server.parse_question_response
+        self.addCleanup(setattr, self.server, "_call_question_with_optional_hedge", original_call)
+        self.addCleanup(setattr, self.server, "parse_question_response", original_parse)
+
+        self.server._call_question_with_optional_hedge = lambda *args, **kwargs: (
+            '{"question":"当前最优先解决的问题是什么？","options":["效率","成本","体验"],"multi_select":false,"is_follow_up":false,"follow_up_reason":null}',
+            "summary",
+            {"response_length": 88},
+        )
+        self.server.parse_question_response = lambda _response, debug=False: {
+            "question": "当前最优先解决的问题是什么？",
+            "options": ["效率", "成本", "体验"],
+            "multi_select": False,
+            "is_follow_up": False,
+            "follow_up_reason": None,
+        }
+
+        _response, result, _tier_used = self.server.generate_question_with_tiered_strategy(
+            "PROMPT",
+            truncated_docs=[],
+            debug=False,
+            base_call_type="question",
+            allow_fast_path=False,
+        )
+
+        self.assertFalse(result["question_multi_select"])
+        self.assertFalse(result["multi_select"])
+
 
 if __name__ == "__main__":
     unittest.main()
