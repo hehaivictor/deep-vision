@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "branch": "codex/test-shipctl-02",
+  "baseRef": "origin/main",
+  "sourceCommit": "a914ad9",
+  "committedAt": "2026-03-12T14:22:53+08:00",
+  "versionType": "patch",
+  "title": "补充 PR 冒烟工作流说明",
+  "changes": [
+    "工程：更新脚本与自动化流程。"
+  ],
+  "changedFiles": [
+    ".github/workflows/pr-smoke.yml"
+  ]
+}
