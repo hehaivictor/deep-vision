@@ -44,7 +44,9 @@ web/.env.*
 
 # 本地工具目录
 .claude/
-.codex/
+.codex/*
+!.codex/ship.yml
+!.codex/task.json
 
 # macOS
 .DS_Store

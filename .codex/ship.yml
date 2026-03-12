@@ -1,0 +1,39 @@
+project:
+  repo: hehaivictor/deep-vision
+  default_base: main
+  branch_prefix: codex/
+  task_metadata_file: .codex/task.json
+pr:
+  merge_method: squash
+  labels: []
+checks:
+  required_jobs:
+    - pr-smoke
+  setup_commands:
+    - "python3 -m pip install --upgrade pip"
+    - "python3 -m pip install pytest"
+  smoke_commands:
+    - "python3 -m pytest -q tests/test_version_manager.py tests/test_scripts_comprehensive.py"
+  python_version: 3.11
+  runner: ubuntu-latest
+versioning:
+  mode: fragment_release
+  fragment_refresh_command: "python3 scripts/version_manager.py fragment"
+  post_merge_workflow_name: 聚合版本碎片
+  structured_changelog: true
+autofix:
+  regenerate_command: "python3 scripts/version_manager.py fragment"
+  conflict_strategies:
+    web/version.json: keep_theirs
+    changes/unreleased/*.json: regenerate_with_command
+  ci_retry_limit: 1
+cleanup:
+  remove_remote_branch: true
+  remove_local_worktree: true
+  remove_local_branch: true
+  sync_main_after_batch: true
+ship:
+  wait_checks_poll_seconds: 30
+  wait_checks_timeout_minutes: 60
+  post_merge_poll_seconds: 20
+  post_merge_timeout_minutes: 30

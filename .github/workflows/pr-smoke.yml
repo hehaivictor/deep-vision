@@ -1,0 +1,33 @@
+name: PR Smoke
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pr-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 初始化环境
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pytest
+
+      - name: 执行冒烟检查
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q tests/test_version_manager.py tests/test_scripts_comprehensive.py
