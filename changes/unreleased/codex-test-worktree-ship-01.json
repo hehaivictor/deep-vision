@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "branch": "codex/test-worktree-ship-01",
+  "baseRef": "origin/main",
+  "sourceCommit": "563ab32",
+  "committedAt": "2026-03-12T14:09:22+08:00",
+  "versionType": "patch",
+  "title": "补充 PR 冒烟工作流注释",
+  "changes": [
+    "工程：更新脚本与自动化流程。"
+  ],
+  "changedFiles": [
+    ".github/workflows/pr-smoke.yml"
+  ]
+}
