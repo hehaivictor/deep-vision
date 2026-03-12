@@ -116,6 +116,7 @@ DeepVision/
 - 功能分支提交后，`post-commit` 会自动根据当前分支相对主线的累计改动更新 `changes/unreleased/*.json` 变更碎片，不再直接抢占 `web/version.json` 里的正式版本号。
 - 提交信息如果本身规范，变更碎片会优先沿用提交标题与正文；如果标题较脏或正文缺失，则自动根据累计改动文件整理结构化说明。
 - PR 合入 `main` / `master` 后，GitHub Actions 会自动聚合所有待发布碎片，更新正式 `web/version.json`，再清理已消费的碎片文件。
+- 使用工作树批量交付总控时，项目级约定见 [docs/worktree-shipping.md](docs/worktree-shipping.md)。
 - 需要本地预览时，可执行：
   - `python3 scripts/version_manager.py fragment --dry-run`
   - `python3 scripts/version_manager.py release --dry-run`
