@@ -90,6 +90,28 @@ class VersionManagerTests(unittest.TestCase):
         self.assertIn("前端：更新界面交互与展示逻辑。", changes)
         self.assertIn("后端：更新接口与数据处理逻辑。", changes)
 
+    def test_build_release_notes_skips_workflow_only_changes(self):
+        version_type, title, changes = self.module.build_release_notes_from_context(
+            "工程：调整 PR Smoke 工作流",
+            [".github/workflows/pr-smoke.yml"],
+        )
+
+        self.assertEqual(version_type, "skip")
+        self.assertEqual(title, "调整 PR Smoke 工作流")
+        self.assertEqual(changes, ["工程：更新脚本与自动化流程。"])
+
+    def test_build_release_notes_does_not_skip_when_workflow_and_feature_change_coexist(self):
+        version_type, title, changes = self.module.build_release_notes_from_context(
+            "工程：补齐交付链路并修复接口",
+            [".github/workflows/pr-smoke.yml", "web/server.py"],
+            prefer_inferred_type=True,
+            prefer_diff_changes=True,
+        )
+
+        self.assertEqual(version_type, "patch")
+        self.assertEqual(title, "补齐交付链路并修复接口")
+        self.assertIn("后端：更新接口与数据处理逻辑。", changes)
+
     def test_get_fragment_path_sanitizes_branch_name(self):
         path = self.module.get_fragment_path("codex/question-logic")
         self.assertEqual(path.as_posix(), str(self.module.UNRELEASED_DIR / "codex-question-logic.json"))

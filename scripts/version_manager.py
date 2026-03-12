@@ -42,6 +42,10 @@ UNRELEASED_DIR = CHANGELOG_ROOT / "unreleased"
 FRAGMENT_SCHEMA_VERSION = 1
 DEFAULT_BASE_REFS = ("origin/main", "main", "origin/master", "master")
 GENERATED_CHANGE_PATH_PREFIX = "changes/unreleased/"
+INTERNAL_RELEASE_SKIP_PATTERNS = (
+    ".github/workflows/",
+    ".github/actions/",
+)
 
 CONVENTIONAL_TYPE_MAP = {
     "feat": "minor",
@@ -323,6 +327,20 @@ def _path_matches(path: str, pattern: str) -> bool:
     return normalized_path.startswith(normalized_pattern + "/")
 
 
+def _is_internal_release_only_file(path: str) -> bool:
+    normalized = _normalize_repo_path(path)
+    if not normalized:
+        return False
+    return any(_path_matches(normalized, pattern) for pattern in INTERNAL_RELEASE_SKIP_PATTERNS)
+
+
+def _should_skip_release_from_files(changed_files: List[str]) -> bool:
+    normalized_files = _dedupe_keep_order(_normalize_repo_path(path) for path in changed_files)
+    if not normalized_files:
+        return False
+    return all(_is_internal_release_only_file(path) for path in normalized_files)
+
+
 def _categorize_file(path: str) -> str:
     if path.startswith("tests/"):
         return "测试"
@@ -527,6 +545,9 @@ def _infer_version_type_from_context(
     changed_files: List[str],
     extra_text: str = "",
 ) -> str:
+    if _should_skip_release_from_files(changed_files):
+        return "skip"
+
     categories = set(_categorize_file(_normalize_repo_path(path)) for path in changed_files)
     combined_parts = [title, _normalize_text(extra_text)] + list(changes)
     combined_text = "\n".join(part for part in combined_parts if part)
@@ -568,11 +589,14 @@ def build_release_notes_from_context(
     if not changes:
         changes = [title] if title else []
 
-    version_type = (
-        _infer_version_type_from_context(title, changes, changed_files, extra_text=message)
-        if prefer_inferred_type
-        else explicit_type or _infer_version_type_from_context(title, changes, changed_files, extra_text=message)
-    )
+    if _should_skip_release_from_files(changed_files):
+        version_type = "skip"
+    else:
+        version_type = (
+            _infer_version_type_from_context(title, changes, changed_files, extra_text=message)
+            if prefer_inferred_type
+            else explicit_type or _infer_version_type_from_context(title, changes, changed_files, extra_text=message)
+        )
     return version_type, title, _dedupe_keep_order(changes)
 
 

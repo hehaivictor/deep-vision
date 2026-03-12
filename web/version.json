@@ -1,25 +1,7 @@
 {
-  "version": "2.22.9",
-  "releaseDate": "2026-03-12",
+  "version": "2.22.7",
+  "releaseDate": "2026-03-11",
   "changelog": [
-    {
-      "version": "2.22.9",
-      "date": "2026-03-12",
-      "type": "patch",
-      "title": "优化工程脚本与提交流程",
-      "changes": [
-        "工程：更新脚本与自动化流程。"
-      ]
-    },
-    {
-      "version": "2.22.8",
-      "date": "2026-03-12",
-      "type": "patch",
-      "title": "优化工程脚本与提交流程",
-      "changes": [
-        "工程：更新脚本与自动化流程。"
-      ]
-    },
     {
       "version": "2.22.7",
       "date": "2026-03-11",
