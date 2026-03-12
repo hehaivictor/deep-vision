@@ -46,7 +46,6 @@ web/.env.*
 .claude/
 .codex/*
 !.codex/ship.yml
-!.codex/task.json
 
 # macOS
 .DS_Store
