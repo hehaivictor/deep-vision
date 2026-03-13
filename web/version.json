@@ -1,7 +1,16 @@
 {
-  "version": "2.23.0",
+  "version": "2.23.1",
   "releaseDate": "2026-03-13",
   "changelog": [
+    {
+      "version": "2.23.1",
+      "date": "2026-03-13",
+      "type": "patch",
+      "title": "优化前端交互与展示逻辑",
+      "changes": [
+        "前端：更新界面交互与展示逻辑。"
+      ]
+    },
     {
       "version": "2.23.0",
       "date": "2026-03-13",
