@@ -363,6 +363,7 @@ function deepVision() {
         reportDetailEnhanceTimer: null,
         reportDetailObserver: null,
         reportDetailSectionRegistry: [],
+        reportTableCleanupFns: [],
         interviewTopicMinHeight: 0,
         lastPresentationUrl: '',
 
@@ -2743,6 +2744,18 @@ function deepVision() {
                 document.removeEventListener('click', this.appendixExportOutsideHandler, true);
                 this.appendixExportOutsideHandler = null;
             }
+
+            if (Array.isArray(this.reportTableCleanupFns) && this.reportTableCleanupFns.length > 0) {
+                this.reportTableCleanupFns.forEach((cleanup) => {
+                    if (typeof cleanup !== 'function') return;
+                    try {
+                        cleanup();
+                    } catch (error) {
+                        console.warn('清理报告表格增强失败:', error);
+                    }
+                });
+            }
+            this.reportTableCleanupFns = [];
 
             this.reportDetailSectionRegistry = [];
             if (resetModel) {
@@ -5586,6 +5599,219 @@ function deepVision() {
             this.cleanupReportDetailEnhancements({ resetModel: false });
             this.renderMermaidCharts();
             this.injectReportSummaryAndToc(reportElement);
+            this.enhanceReportTables(reportElement);
+        },
+
+        enhanceReportTables(reportElement) {
+            if (!reportElement) return;
+
+            const prefersReducedMotion = typeof window !== 'undefined'
+                && typeof window.matchMedia === 'function'
+                && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            const tables = Array.from(reportElement.querySelectorAll('table'));
+
+            tables.forEach((table, index) => {
+                if (!(table instanceof HTMLTableElement) || table.closest('.dv-report-table-shell')) return;
+                const parent = table.parentNode;
+                if (!parent) return;
+
+                const shell = document.createElement('section');
+                shell.className = 'dv-report-table-shell';
+
+                const affordance = document.createElement('div');
+                affordance.className = 'dv-report-table-affordance';
+
+                const hint = document.createElement('span');
+                hint.className = 'dv-report-table-hint';
+                hint.textContent = '支持左右拖动、滚轮横移，也可点击两侧按钮查看隐藏列';
+
+                const actions = document.createElement('div');
+                actions.className = 'dv-report-table-actions';
+
+                const buildButton = (direction, label) => {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = `dv-report-table-button is-${direction}`;
+                    button.setAttribute('aria-label', label);
+                    button.innerHTML = direction === 'left'
+                        ? `
+                            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                                <path d="M12.5 4.5L7 10l5.5 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+                            </svg>
+                        `
+                        : `
+                            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                                <path d="M7.5 4.5L13 10l-5.5 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+                            </svg>
+                        `;
+                    return button;
+                };
+
+                const leftButton = buildButton('left', '向左查看表格');
+                const rightButton = buildButton('right', '向右查看表格');
+                actions.append(leftButton, rightButton);
+                affordance.append(hint, actions);
+
+                const scroller = document.createElement('div');
+                scroller.className = 'dv-report-table-scroll';
+                scroller.tabIndex = 0;
+                scroller.setAttribute('role', 'region');
+                const captionText = this.cleanReportText(table.querySelector('caption')?.textContent || '');
+                scroller.setAttribute('aria-label', captionText ? `${captionText}（可左右滚动）` : `表格 ${index + 1}（可左右滚动）`);
+
+                parent.insertBefore(shell, table);
+                scroller.appendChild(table);
+                shell.append(affordance, scroller);
+
+                let activePointerId = null;
+                let dragStartX = 0;
+                let dragStartScrollLeft = 0;
+
+                const getMaxScrollLeft = () => Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+                const getScrollStep = () => Math.max(220, Math.round(scroller.clientWidth * 0.72));
+
+                const updateState = () => {
+                    const maxScrollLeft = getMaxScrollLeft();
+                    const scrollLeft = Math.max(0, scroller.scrollLeft);
+                    const overflowing = maxScrollLeft > 8;
+                    const atStart = !overflowing || scrollLeft <= 4;
+                    const atEnd = !overflowing || scrollLeft >= maxScrollLeft - 4;
+
+                    shell.classList.toggle('is-overflowing', overflowing);
+                    shell.classList.toggle('is-at-start', atStart);
+                    shell.classList.toggle('is-at-end', atEnd);
+                    leftButton.disabled = atStart;
+                    rightButton.disabled = atEnd;
+                };
+
+                const scrollByStep = (direction) => {
+                    const nextLeft = direction === 'left'
+                        ? Math.max(0, scroller.scrollLeft - getScrollStep())
+                        : Math.min(getMaxScrollLeft(), scroller.scrollLeft + getScrollStep());
+                    scroller.scrollTo({
+                        left: nextLeft,
+                        behavior: prefersReducedMotion ? 'auto' : 'smooth'
+                    });
+                };
+
+                const stopDragging = () => {
+                    if (activePointerId !== null && typeof scroller.hasPointerCapture === 'function' && scroller.hasPointerCapture(activePointerId)) {
+                        scroller.releasePointerCapture(activePointerId);
+                    }
+                    activePointerId = null;
+                    shell.classList.remove('is-dragging');
+                };
+
+                const handleScroll = () => updateState();
+                const handleWheel = (event) => {
+                    const maxScrollLeft = getMaxScrollLeft();
+                    if (maxScrollLeft <= 0) return;
+                    if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+                    if (event.deltaY === 0) return;
+
+                    const movingLeft = event.deltaY < 0;
+                    const atStart = scroller.scrollLeft <= 1;
+                    const atEnd = scroller.scrollLeft >= maxScrollLeft - 1;
+                    if ((movingLeft && atStart) || (!movingLeft && atEnd)) return;
+
+                    event.preventDefault();
+                    scroller.scrollLeft += event.deltaY;
+                };
+
+                const handlePointerDown = (event) => {
+                    if (event.pointerType === 'touch' || event.button !== 0 || getMaxScrollLeft() <= 0) return;
+                    if (event.target instanceof Element && event.target.closest('a, button, input, textarea, select, summary')) return;
+
+                    activePointerId = event.pointerId;
+                    dragStartX = event.clientX;
+                    dragStartScrollLeft = scroller.scrollLeft;
+                    shell.classList.add('is-dragging');
+                    if (typeof scroller.setPointerCapture === 'function') {
+                        scroller.setPointerCapture(activePointerId);
+                    }
+                    event.preventDefault();
+                };
+
+                const handlePointerMove = (event) => {
+                    if (activePointerId === null || event.pointerId !== activePointerId) return;
+                    const deltaX = event.clientX - dragStartX;
+                    scroller.scrollLeft = dragStartScrollLeft - deltaX;
+                };
+
+                const handlePointerUp = (event) => {
+                    if (activePointerId === null || event.pointerId !== activePointerId) return;
+                    stopDragging();
+                };
+
+                const handleKeydown = (event) => {
+                    if (getMaxScrollLeft() <= 0) return;
+
+                    if (event.key === 'ArrowLeft') {
+                        event.preventDefault();
+                        scrollByStep('left');
+                        return;
+                    }
+                    if (event.key === 'ArrowRight') {
+                        event.preventDefault();
+                        scrollByStep('right');
+                        return;
+                    }
+                    if (event.key === 'Home') {
+                        event.preventDefault();
+                        scroller.scrollTo({ left: 0, behavior: prefersReducedMotion ? 'auto' : 'smooth' });
+                        return;
+                    }
+                    if (event.key === 'End') {
+                        event.preventDefault();
+                        scroller.scrollTo({ left: getMaxScrollLeft(), behavior: prefersReducedMotion ? 'auto' : 'smooth' });
+                    }
+                };
+
+                const handleWindowResize = () => updateState();
+                const handleLeftClick = () => scrollByStep('left');
+                const handleRightClick = () => scrollByStep('right');
+                const resizeObserver = typeof ResizeObserver !== 'undefined'
+                    ? new ResizeObserver(() => updateState())
+                    : null;
+
+                scroller.addEventListener('scroll', handleScroll, { passive: true });
+                scroller.addEventListener('wheel', handleWheel, { passive: false });
+                scroller.addEventListener('pointerdown', handlePointerDown);
+                scroller.addEventListener('pointermove', handlePointerMove);
+                scroller.addEventListener('pointerup', handlePointerUp);
+                scroller.addEventListener('pointercancel', handlePointerUp);
+                scroller.addEventListener('keydown', handleKeydown);
+                leftButton.addEventListener('click', handleLeftClick);
+                rightButton.addEventListener('click', handleRightClick);
+                window.addEventListener('resize', handleWindowResize);
+
+                if (resizeObserver) {
+                    resizeObserver.observe(scroller);
+                    resizeObserver.observe(table);
+                }
+
+                window.requestAnimationFrame(() => updateState());
+
+                this.reportTableCleanupFns.push(() => {
+                    stopDragging();
+                    scroller.removeEventListener('scroll', handleScroll);
+                    scroller.removeEventListener('wheel', handleWheel);
+                    scroller.removeEventListener('pointerdown', handlePointerDown);
+                    scroller.removeEventListener('pointermove', handlePointerMove);
+                    scroller.removeEventListener('pointerup', handlePointerUp);
+                    scroller.removeEventListener('pointercancel', handlePointerUp);
+                    scroller.removeEventListener('keydown', handleKeydown);
+                    leftButton.removeEventListener('click', handleLeftClick);
+                    rightButton.removeEventListener('click', handleRightClick);
+                    window.removeEventListener('resize', handleWindowResize);
+                    resizeObserver?.disconnect();
+
+                    if (shell.isConnected && scroller.contains(table)) {
+                        shell.parentNode?.insertBefore(table, shell);
+                        shell.remove();
+                    }
+                });
+            });
         },
 
         injectReportSummaryAndToc(reportElement) {

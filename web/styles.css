@@ -1219,6 +1219,159 @@
     overflow: hidden;
 }
 
+.dv-report-table-shell {
+    position: relative;
+    margin: 12px 0 18px;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    background: #ffffff;
+    overflow: hidden;
+}
+
+.dv-report-table-shell::before,
+.dv-report-table-shell::after {
+    content: "";
+    position: absolute;
+    top: 45px;
+    bottom: 10px;
+    width: 26px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dv-duration-base) var(--dv-ease-standard);
+    z-index: 2;
+}
+
+.dv-report-table-shell::before {
+    left: 1px;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.98) 0%, rgba(255, 255, 255, 0) 100%);
+}
+
+.dv-report-table-shell::after {
+    right: 1px;
+    background: linear-gradient(270deg, rgba(255, 255, 255, 0.98) 0%, rgba(255, 255, 255, 0) 100%);
+}
+
+.dv-report-table-shell.is-overflowing:not(.is-at-start)::before,
+.dv-report-table-shell.is-overflowing:not(.is-at-end)::after {
+    opacity: 1;
+}
+
+.dv-report-table-affordance {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
+    border-bottom: 1px solid #e2e8f0;
+    background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
+}
+
+.dv-report-table-shell:not(.is-overflowing) .dv-report-table-affordance {
+    display: none;
+}
+
+.dv-report-table-hint {
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.dv-report-table-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.dv-report-table-button {
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #cbd5e1;
+    border-radius: 999px;
+    background: #ffffff;
+    color: #334155;
+    cursor: pointer;
+    transition:
+        transform var(--dv-duration-base) var(--dv-ease-standard),
+        background-color var(--dv-duration-base) var(--dv-ease-standard),
+        border-color var(--dv-duration-base) var(--dv-ease-standard),
+        color var(--dv-duration-base) var(--dv-ease-standard);
+}
+
+.dv-report-table-button svg {
+    width: 16px;
+    height: 16px;
+}
+
+.dv-report-table-button:hover:not(:disabled) {
+    background: #eff6ff;
+    border-color: #93c5fd;
+    color: #2563eb;
+    transform: translateY(-1px);
+}
+
+.dv-report-table-button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.dv-report-table-button:focus-visible,
+.dv-report-table-scroll:focus-visible {
+    outline: none;
+    box-shadow:
+        0 0 0 2px var(--dv-focus-underlay),
+        0 0 0 4px var(--dv-focus-ring-strong);
+}
+
+.dv-report-table-scroll {
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-gutter: stable both-edges;
+}
+
+.dv-report-table-scroll::-webkit-scrollbar {
+    height: 10px;
+}
+
+.dv-report-table-scroll::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.dv-report-table-scroll::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.72);
+}
+
+.dv-report-table-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.72) transparent;
+}
+
+@media (pointer: fine) {
+    .dv-report-table-scroll {
+        cursor: grab;
+    }
+
+    .dv-report-table-shell.is-dragging .dv-report-table-scroll {
+        cursor: grabbing;
+        user-select: none;
+    }
+}
+
+.dv-report-table-scroll > table {
+    display: table;
+    width: auto;
+    min-width: max-content;
+    margin: 0;
+    border-collapse: collapse;
+    table-layout: auto;
+}
+
 .dv-report-markdown-body th,
 .dv-report-markdown-body td {
     border: 1px solid #e2e8f0;
@@ -1402,6 +1555,7 @@ html[data-theme="dark"] .dv-report-mobile-nav-toggle,
 html[data-theme="dark"] .dv-report-mobile-pill,
 html[data-theme="dark"] .dv-report-fact-item,
 html[data-theme="dark"] .dv-report-inline-toc,
+html[data-theme="dark"] .dv-report-table-shell,
 html[data-theme="dark"] .dv-report-markdown-body th,
 html[data-theme="dark"] .dv-report-markdown-body summary,
 html[data-theme="dark"] .dv-report-markdown-body details {
@@ -1426,6 +1580,43 @@ html[data-theme="dark"] .dv-report-markdown-body hr {
 html[data-theme="dark"] .dv-report-markdown-body th,
 html[data-theme="dark"] .dv-report-markdown-body td {
     border-color: rgba(148, 163, 184, 0.18);
+}
+
+html[data-theme="dark"] .dv-report-table-affordance {
+    background: linear-gradient(180deg, rgba(30, 41, 59, 0.86) 0%, rgba(15, 23, 42, 0.8) 100%);
+    border-color: rgba(148, 163, 184, 0.2);
+}
+
+html[data-theme="dark"] .dv-report-table-hint {
+    color: #94a3b8;
+}
+
+html[data-theme="dark"] .dv-report-table-button {
+    background: rgba(15, 23, 42, 0.92);
+    border-color: rgba(148, 163, 184, 0.24);
+    color: #cbd5e1;
+}
+
+html[data-theme="dark"] .dv-report-table-button:hover:not(:disabled) {
+    background: rgba(30, 64, 175, 0.18);
+    border-color: rgba(96, 165, 250, 0.3);
+    color: #93c5fd;
+}
+
+html[data-theme="dark"] .dv-report-table-shell::before {
+    background: linear-gradient(90deg, rgba(15, 23, 42, 0.98) 0%, rgba(15, 23, 42, 0) 100%);
+}
+
+html[data-theme="dark"] .dv-report-table-shell::after {
+    background: linear-gradient(270deg, rgba(15, 23, 42, 0.98) 0%, rgba(15, 23, 42, 0) 100%);
+}
+
+html[data-theme="dark"] .dv-report-table-scroll::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, 0.9);
+}
+
+html[data-theme="dark"] .dv-report-table-scroll {
+    scrollbar-color: rgba(100, 116, 139, 0.9) transparent;
 }
 
 html[data-theme="dark"] .dv-report-markdown-body :is(h2, h3).is-highlighted {
@@ -1483,6 +1674,14 @@ html[data-theme="dark"] .dv-report-markdown-body :is(h2, h3).is-highlighted {
     .dv-report-body-shell {
         padding: 16px;
     }
+
+    .dv-report-table-affordance {
+        padding: 8px 10px;
+    }
+
+    .dv-report-table-hint {
+        font-size: 11px;
+    }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1491,6 +1690,9 @@ html[data-theme="dark"] .dv-report-markdown-body :is(h2, h3).is-highlighted {
     .dv-report-mobile-nav-link,
     .dv-report-mobile-pill,
     .dv-report-mobile-nav-toggle,
+    .dv-report-table-button,
+    .dv-report-table-shell::before,
+    .dv-report-table-shell::after,
     .dv-report-markdown-body :is(h2, h3) {
         transition: none !important;
     }
