@@ -90,6 +90,9 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.server.QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES = 3
         self.server.QUESTION_HEDGE_ADAPTIVE_PERCENTILE = 0.75
         self.server.QUESTION_HEDGE_ADAPTIVE_TIMEOUT_RATIO = 0.4
+        self.server.QUESTION_HIGH_EVIDENCE_PRIMARY_LANE = "question"
+        self.server.QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = "report"
+        self.server.QUESTION_HIGH_EVIDENCE_DISABLE_DYNAMIC_LANE = True
         self.server.PREFETCH_QUESTION_TIMEOUT = 48.0
         self.server.PREFETCH_QUESTION_MAX_TOKENS = 1200
         self.server.PREFETCH_QUESTION_FAST_TIMEOUT = 10.5
@@ -186,6 +189,67 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertTrue(profile["allow_fast_path"])
         self.assertEqual(profile["fast_output_mode"], "light")
         self.assertLess(profile["fast_max_tokens"], self.server.MAX_TOKENS_QUESTION)
+
+    def test_runtime_profile_uses_evidence_profile_for_high_intent_question(self):
+        profile = self.server._select_question_generation_runtime_profile(
+            prompt="x" * 1600,
+            truncated_docs=[],
+            decision_meta={
+                "should_follow_up": True,
+                "has_search": False,
+                "has_reference_docs": False,
+                "has_truncated_docs": False,
+                "missing_aspects": ["角色分工"],
+                "formal_questions_count": 2,
+                "follow_up_round": 1,
+                "answer_mode": "pick_with_reason",
+                "requires_rationale": True,
+                "evidence_intent": "high",
+            },
+            base_call_type="question",
+            allow_fast_path=True,
+        )
+
+        self.assertEqual(profile["profile_name"], "question_follow_up_evidence")
+        self.assertFalse(profile["allow_fast_path"])
+        self.assertEqual(profile["primary_lane"], "question")
+        self.assertEqual(profile["secondary_lane"], "report")
+        self.assertFalse(profile["dynamic_lane_order_enabled"])
+        self.assertIn("summary", profile["disallowed_lanes"])
+
+    def test_dynamic_lane_order_respects_disallowed_summary_for_high_intent_question(self):
+        runtime_profile = {
+            "profile_name": "question_follow_up_evidence",
+            "fast_prompt_mode": "full",
+            "full_prompt_mode": "full",
+            "primary_lane": "question",
+            "secondary_lane": "report",
+            "dynamic_lane_order_enabled": False,
+            "disallowed_lanes": ["summary"],
+        }
+
+        primary_lane, secondary_lane, lane_meta = self.server._resolve_dynamic_question_lane_order(runtime_profile, phase="full")
+        self.assertEqual(primary_lane, "question")
+        self.assertEqual(secondary_lane, "report")
+        self.assertNotIn("summary", lane_meta["ordered_candidates"])
+        self.assertFalse(lane_meta["dynamic_enabled"])
+
+    def test_normalize_generated_question_result_uses_fallback_contract(self):
+        result = self.server.normalize_generated_question_result(
+            {
+                "question": "最关键的阻塞点是什么？",
+                "options": ["审批慢", "接口不稳", "资源不足"],
+            },
+            fallback_contract={
+                "answer_mode": "pick_with_reason",
+                "requires_rationale": True,
+                "evidence_intent": "high",
+            },
+        )
+
+        self.assertEqual(result["answer_mode"], "pick_with_reason")
+        self.assertTrue(result["requires_rationale"])
+        self.assertEqual(result["evidence_intent"], "high")
 
     def test_prepare_runtime_builds_light_prompt_variant(self):
         calls = []

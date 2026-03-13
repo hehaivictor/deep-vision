@@ -335,7 +335,7 @@ class SecurityRegressionTests(unittest.TestCase):
         }
         self.assertTrue(self.server.should_retry_v3_with_failover(payload))
 
-    def test_should_not_retry_v3_failover_when_multiple_gate_issues(self):
+    def test_should_retry_v3_failover_when_deterministic_issue_bucket(self):
         payload = {
             "status": "failed",
             "reason": "quality_gate_failed",
@@ -343,6 +343,18 @@ class SecurityRegressionTests(unittest.TestCase):
             "review_issues": [
                 {"type": "blindspot", "severity": "high", "target": "actions", "message": "盲区未处理"},
                 {"type": "quality_gate_table", "severity": "high", "target": "actions", "message": "表格化不足"},
+            ],
+        }
+        self.assertTrue(self.server.should_retry_v3_with_failover(payload))
+
+    def test_should_not_retry_v3_failover_when_issue_bucket_contains_non_deterministic_problem(self):
+        payload = {
+            "status": "failed",
+            "reason": "quality_gate_failed",
+            "final_issue_count": 2,
+            "review_issues": [
+                {"type": "blindspot", "severity": "high", "target": "actions", "message": "盲区未处理"},
+                {"type": "unresolved_contradiction", "severity": "high", "target": "risks", "message": "冲突未解释"},
             ],
         }
         self.assertFalse(self.server.should_retry_v3_with_failover(payload))
@@ -656,6 +668,9 @@ class SecurityRegressionTests(unittest.TestCase):
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+    def test_report_v3_failover_single_lane_default_disabled(self):
+        self.assertFalse(self.server.REPORT_V3_FAILOVER_FORCE_SINGLE_LANE)
 
     def test_resolve_report_v3_phase_lane_defaults_and_failover_behavior(self):
         keys = [
@@ -1049,6 +1064,72 @@ class SecurityRegressionTests(unittest.TestCase):
         )
         self.assertEqual(filtered, [])
 
+    def test_filter_model_review_issues_v3_soft_passes_blindspot_cleanup_issue(self):
+        draft = {
+            "overview": "ok",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [],
+            "open_questions": [
+                {
+                    "question": "Q1/Q2/Q3 的不确定信号是否属于同一类角色分工问题？",
+                    "reason": "描述重复",
+                    "impact": "影响清晰度",
+                    "suggested_follow_up": "去重合并",
+                    "evidence_refs": ["Q1"],
+                }
+            ],
+            "evidence_index": [],
+        }
+        model_issues = [
+            {
+                "type": "blindspot",
+                "severity": "medium",
+                "message": "open_questions 中 Q1/Q2/Q3 的重复不确定信号描述未合并，且描述过于通用，需去重以提高清晰度。",
+                "target": "open_questions[0..2]",
+            }
+        ]
+
+        filtered = self.server.filter_model_review_issues_v3(model_issues, draft, runtime_profile="balanced")
+        self.assertEqual(filtered, [])
+
+    def test_filter_model_review_issues_v3_ignores_binding_mode_no_evidence_hallucination(self):
+        draft = {
+            "overview": "ok",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [
+                {
+                    "title": "方案A",
+                    "description": "描述",
+                    "owner": "张三",
+                    "timeline": "2周内",
+                    "metric": "完成率>90%",
+                    "evidence_refs": ["Q1"],
+                    "evidence_binding_mode": "strong_explicit",
+                }
+            ],
+            "risks": [],
+            "actions": [],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        model_issues = [
+            {
+                "type": "no_evidence",
+                "severity": "medium",
+                "message": "solutions[0].evidence_binding_mode 字段为空",
+                "target": "solutions[0].evidence_binding_mode",
+            }
+        ]
+
+        filtered = self.server.filter_model_review_issues_v3(model_issues, draft, runtime_profile="balanced")
+        self.assertEqual(filtered, [])
+
     def test_apply_deterministic_report_repairs_v3_binds_and_prunes_no_evidence(self):
         draft = {
             "overview": "概述",
@@ -1183,6 +1264,321 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertGreater(meta.get("weak_binding_ratio", 0), 0)
         self.assertLess(meta.get("evidence_coverage", 1.0), 1.0)
 
+    def test_compute_report_quality_meta_v3_tracks_weak_binding_by_field_without_open_questions(self):
+        draft = {
+            "overview": "概述",
+            "needs": [{"name": "需求A", "priority": "P1", "description": "描述", "evidence_refs": ["Q1"]}],
+            "analysis": {
+                "customer_needs": "A",
+                "business_flow": "B",
+                "tech_constraints": "C",
+                "project_constraints": "D",
+            },
+            "visualizations": {},
+            "solutions": [
+                {
+                    "title": "方案A",
+                    "description": "描述",
+                    "owner": "张三",
+                    "timeline": "2周",
+                    "metric": "完成率>=90%",
+                    "evidence_refs": ["Q2"],
+                    "evidence_binding_mode": "weak_inferred",
+                }
+            ],
+            "risks": [
+                {
+                    "risk": "风险A",
+                    "impact": "高",
+                    "mitigation": "补采",
+                    "evidence_refs": ["Q3"],
+                    "evidence_binding_mode": "weak_inferred",
+                }
+            ],
+            "actions": [
+                {
+                    "action": "行动A",
+                    "owner": "负责人",
+                    "timeline": "2周内",
+                    "metric": "完成率>=90%",
+                    "evidence_refs": ["Q4"],
+                    "evidence_binding_mode": "strong_explicit",
+                }
+            ],
+            "open_questions": [
+                {
+                    "question": "还需确认什么？",
+                    "reason": "待补问",
+                    "impact": "影响判断",
+                    "suggested_follow_up": "继续访谈",
+                    "evidence_refs": ["Q5"],
+                    "evidence_binding_mode": "weak_inferred",
+                }
+            ],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "facts": [{"q_id": f"Q{i}"} for i in range(1, 6)],
+            "contradictions": [],
+            "unknowns": [],
+            "blindspots": [],
+            "quality_snapshot": {"average_quality_score": 0.52},
+        }
+
+        meta = self.server.compute_report_quality_meta_v3(draft, evidence_pack, [])
+
+        self.assertNotIn("open_questions", meta.get("weak_binding_ratio_by_field", {}))
+        self.assertAlmostEqual(1.0, meta["weak_binding_ratio_by_field"]["solutions"], places=3)
+        self.assertAlmostEqual(1.0, meta["weak_binding_ratio_by_field"]["risks"], places=3)
+        self.assertAlmostEqual(0.0, meta["weak_binding_ratio_by_field"]["actions"], places=3)
+
+    def test_compute_report_quality_meta_v3_excludes_pending_follow_up_open_questions_from_evidence_gate(self):
+        draft = {
+            "overview": "概述",
+            "needs": [{"name": "需求A", "priority": "P1", "description": "描述", "evidence_refs": ["Q1"]}],
+            "analysis": {
+                "customer_needs": "A",
+                "business_flow": "B",
+                "tech_constraints": "C",
+                "project_constraints": "D",
+            },
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [],
+            "open_questions": [
+                {
+                    "question": "是否需要补采？",
+                    "reason": "证据不足",
+                    "impact": "影响判断",
+                    "suggested_follow_up": "继续访谈",
+                    "evidence_refs": ["Q2"],
+                    "evidence_binding_mode": "pending_follow_up",
+                }
+            ],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "facts": [{"q_id": "Q1"}, {"q_id": "Q2"}],
+            "contradictions": [],
+            "unknowns": [{"q_id": "Q2"}],
+            "blindspots": [{"dimension": "业务流程", "aspect": "角色分工"}],
+            "quality_snapshot": {"average_quality_score": 0.28},
+        }
+        meta = self.server.compute_report_quality_meta_v3(draft, evidence_pack, [])
+        self.assertEqual(meta.get("claim_total"), 1)
+        self.assertEqual(meta.get("claim_with_evidence"), 1)
+        self.assertAlmostEqual(meta.get("evidence_coverage"), 1.0, places=3)
+
+    def test_validate_report_draft_v3_defaults_binding_mode_when_refs_present(self):
+        evidence_pack = {"facts": [{"q_id": "Q1"}], "contradictions": [], "blindspots": []}
+        draft = {
+            "overview": "概述",
+            "needs": [{"name": "需求A", "priority": "P1", "description": "描述", "evidence_refs": ["Q1"]}],
+            "analysis": {"customer_needs": "A", "business_flow": "B", "tech_constraints": "C", "project_constraints": "D"},
+            "visualizations": {},
+            "solutions": [{"title": "方案A", "description": "描述", "owner": "张三", "timeline": "2周", "metric": "完成率", "evidence_refs": ["Q1"]}],
+            "risks": [{"risk": "风险A", "impact": "高", "mitigation": "规避", "evidence_refs": ["Q1"]}],
+            "actions": [{"action": "行动A", "owner": "李四", "timeline": "1周", "metric": "完成", "evidence_refs": ["Q1"]}],
+            "open_questions": [],
+            "evidence_index": [{"claim": "结论A", "confidence": "high", "evidence_refs": ["Q1"]}],
+        }
+        normalized, issues = self.server.validate_report_draft_v3(draft, evidence_pack)
+        self.assertEqual([], [item for item in issues if item.get("type") == "invalid_evidence_ref"])
+        self.assertEqual("strong_explicit", normalized["needs"][0].get("evidence_binding_mode"))
+        self.assertEqual("strong_explicit", normalized["solutions"][0].get("evidence_binding_mode"))
+        self.assertEqual("strong_explicit", normalized["risks"][0].get("evidence_binding_mode"))
+        self.assertEqual("strong_explicit", normalized["actions"][0].get("evidence_binding_mode"))
+
+    def test_evaluate_answer_depth_does_not_penalize_single_select_answer_as_single_selection(self):
+        result = self.server.evaluate_answer_depth(
+            question="您当前最关注的场景是哪一个？",
+            answer="交易支付环节的风控体验",
+            dimension="customer_needs",
+            options=["交易支付环节的风控体验", "售后服务", "营销活动"],
+            is_follow_up=False,
+            multi_select=False,
+        )
+        self.assertNotIn("single_selection", result.get("signals", []))
+        self.assertNotIn("option_only", result.get("signals", []))
+
+    def test_evaluate_answer_depth_pick_only_mode_does_not_require_extra_rationale(self):
+        result = self.server.evaluate_answer_depth(
+            question="当前最优先的目标是什么？",
+            answer="提升审批效率",
+            dimension="customer_needs",
+            options=["提升审批效率", "降低成本", "减少风险"],
+            is_follow_up=False,
+            multi_select=False,
+            answer_mode="pick_only",
+            requires_rationale=False,
+            evidence_intent="low",
+        )
+        self.assertNotIn("missing_rationale", result.get("signals", []))
+        self.assertNotIn("option_only", result.get("signals", []))
+
+    def test_evaluate_answer_depth_pick_with_reason_mode_accepts_rich_option_answer(self):
+        result = self.server.evaluate_answer_depth(
+            question="当前最优先的目标是什么？",
+            answer="审批链条长导致整体处理慢",
+            dimension="customer_needs",
+            options=["审批链条长导致整体处理慢", "降低成本", "减少风险"],
+            is_follow_up=False,
+            multi_select=False,
+            answer_mode="pick_with_reason",
+            requires_rationale=True,
+            evidence_intent="high",
+        )
+        self.assertIn("rich_option_answer", result.get("signals", []))
+        self.assertNotIn("missing_rationale", result.get("signals", []))
+
+    def test_build_report_evidence_pack_does_not_mark_informative_option_answer_as_unknown(self):
+        quality_eval = self.server.evaluate_answer_quality(
+            eval_result=self.server.evaluate_answer_depth(
+                question="您当前最关注的场景是哪一个？",
+                answer="误拦截/拒付率高的归因（挖掘被误伤用户的心理特征）",
+                dimension="customer_needs",
+                options=[
+                    "误拦截/拒付率高的归因（挖掘被误伤用户的心理特征）",
+                    "售后服务体验",
+                    "营销转化问题",
+                ],
+                is_follow_up=False,
+                multi_select=False,
+            ),
+            answer="误拦截/拒付率高的归因（挖掘被误伤用户的心理特征）",
+            is_follow_up=False,
+            follow_up_round=0,
+        )
+        session = {
+            "topic": "测试",
+            "scenario_config": {"report": {"type": "standard"}},
+            "dimensions": {"customer_needs": {"coverage": 100}},
+            "interview_log": [{
+                "dimension": "customer_needs",
+                "question": "您当前最关注的场景是哪一个？",
+                "answer": "误拦截/拒付率高的归因（挖掘被误伤用户的心理特征）",
+                "options": [
+                    "误拦截/拒付率高的归因（挖掘被误伤用户的心理特征）",
+                    "售后服务体验",
+                    "营销转化问题",
+                ],
+                "multi_select": False,
+                "is_follow_up": False,
+                "follow_up_signals": quality_eval.get("quality_signals", []),
+                "quality_score": quality_eval.get("quality_score", 0),
+                "quality_signals": quality_eval.get("quality_signals", []),
+                "hard_triggered": quality_eval.get("hard_triggered", False),
+                "follow_up_round": 0,
+            }],
+        }
+        evidence_pack = self.server.build_report_evidence_pack(session)
+        self.assertEqual([], evidence_pack.get("unknowns", []))
+        self.assertEqual("rich_option", evidence_pack["facts"][0].get("answer_evidence_class"))
+
+    def test_build_report_evidence_pack_uses_quality_adjusted_coverage_and_raw_quality_average(self):
+        session = {
+            "topic": "测试",
+            "scenario_config": {"report": {"type": "standard"}},
+            "dimensions": {
+                "customer_needs": {"coverage": 100},
+                "business_flow": {"coverage": 100},
+            },
+            "interview_log": [
+                {
+                    "dimension": "customer_needs",
+                    "question": "Q1",
+                    "answer": "A1",
+                    "is_follow_up": False,
+                    "follow_up_round": 0,
+                    "quality_score": 1.0,
+                    "quality_signals": [],
+                    "follow_up_signals": [],
+                    "hard_triggered": False,
+                    "answer_mode": "pick_only",
+                    "requires_rationale": False,
+                    "evidence_intent": "low",
+                },
+                {
+                    "dimension": "business_flow",
+                    "question": "Q2",
+                    "answer": "A2",
+                    "is_follow_up": False,
+                    "follow_up_round": 0,
+                    "quality_score": 0.0,
+                    "quality_signals": ["too_short"],
+                    "follow_up_signals": ["too_short"],
+                    "hard_triggered": False,
+                    "answer_mode": "pick_with_reason",
+                    "requires_rationale": True,
+                    "evidence_intent": "high",
+                },
+            ],
+        }
+
+        original_get_dimension_info = self.server.get_dimension_info_for_session
+        original_missing_aspects = self.server.get_dimension_missing_aspects
+        self.addCleanup(setattr, self.server, "get_dimension_info_for_session", original_get_dimension_info)
+        self.addCleanup(setattr, self.server, "get_dimension_missing_aspects", original_missing_aspects)
+        self.server.get_dimension_info_for_session = lambda _session: {
+            "customer_needs": {"name": "客户需求", "key_aspects": ["目标", "场景"]},
+            "business_flow": {"name": "业务流程", "key_aspects": ["角色分工", "流程节点"]},
+        }
+        self.server.get_dimension_missing_aspects = lambda _session, dim_key: ["角色分工"] if dim_key == "business_flow" else []
+
+        evidence_pack = self.server.build_report_evidence_pack(session)
+
+        self.assertLess(evidence_pack["overall_coverage"], 1.0)
+        self.assertEqual(100, evidence_pack["dimension_coverage"]["customer_needs"]["coverage_percent"])
+        self.assertEqual(50, evidence_pack["dimension_coverage"]["business_flow"]["coverage_percent"])
+        self.assertAlmostEqual(0.5, evidence_pack["quality_snapshot"]["average_quality_score"], places=3)
+        self.assertAlmostEqual(0.5, evidence_pack["quality_snapshot"]["raw_average_quality_score"], places=3)
+        self.assertAlmostEqual(1.0, evidence_pack["quality_snapshot"]["positive_only_average_quality_score"], places=3)
+        self.assertEqual(1, evidence_pack["quality_snapshot"]["answer_mode_distribution"]["pick_only"])
+        self.assertEqual(1, evidence_pack["quality_snapshot"]["answer_mode_distribution"]["pick_with_reason"])
+
+    def test_compute_report_quality_meta_v3_assigns_mid_weight_to_rich_option_evidence(self):
+        draft = {
+            "overview": "概述",
+            "needs": [{"name": "需求A", "priority": "P1", "description": "描述", "evidence_refs": ["Q1"]}],
+            "analysis": {
+                "customer_needs": "A",
+                "business_flow": "B",
+                "tech_constraints": "C",
+                "project_constraints": "D",
+            },
+            "visualizations": {},
+            "solutions": [
+                {
+                    "title": "方案A",
+                    "description": "描述",
+                    "owner": "张三",
+                    "timeline": "2周",
+                    "metric": "完成率>=90%",
+                    "evidence_refs": ["Q2"],
+                }
+            ],
+            "risks": [],
+            "actions": [],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "facts": [
+                {"q_id": "Q1", "answer_evidence_class": "explicit"},
+                {"q_id": "Q2", "answer_evidence_class": "rich_option"},
+            ],
+            "contradictions": [],
+            "unknowns": [],
+            "blindspots": [],
+            "quality_snapshot": {"average_quality_score": 0.68},
+        }
+
+        meta = self.server.compute_report_quality_meta_v3(draft, evidence_pack, [])
+        self.assertEqual(1, meta.get("rich_option_count"))
+        self.assertAlmostEqual(0.89, meta.get("evidence_coverage"), places=2)
+        self.assertEqual(0, meta.get("weak_binding_count"))
+
     def test_build_quality_gate_issues_v3_relaxes_expression_threshold_when_evidence_is_noisy(self):
         quality_meta = {
             "runtime_profile": "balanced",
@@ -1207,6 +1603,62 @@ class SecurityRegressionTests(unittest.TestCase):
         issue_types = {item.get("type") for item in issues if isinstance(item, dict)}
         self.assertNotIn("quality_gate_actionability", issue_types)
         self.assertNotIn("quality_gate_table", issue_types)
+
+    def test_build_quality_gate_issues_v3_relaxes_evidence_threshold_when_evidence_is_sparse(self):
+        quality_meta = {
+            "runtime_profile": "balanced",
+            "evidence_coverage": 0.85,
+            "consistency": 0.92,
+            "actionability": 0.72,
+            "expression_structure": 0.70,
+            "table_readiness": 0.66,
+            "action_acceptance": 0.64,
+            "milestone_coverage": 0.50,
+            "weak_binding_ratio": 0.20,
+            "template_minimums": {"needs": 1, "solutions": 1, "risks": 1, "actions": 2, "open_questions": 1},
+            "list_counts": {"needs": 1, "solutions": 1, "risks": 1, "actions": 2, "open_questions": 2},
+            "evidence_context": {
+                "facts_count": 34,
+                "unknown_count": 29,
+                "unknown_ratio": 29 / 34,
+                "average_quality_score": 0.287,
+            },
+        }
+        issues = self.server.build_quality_gate_issues_v3(quality_meta)
+        issue_types = {item.get("type") for item in issues if isinstance(item, dict)}
+        self.assertNotIn("quality_gate_evidence", issue_types)
+
+    def test_build_quality_gate_issues_v3_uses_field_specific_weak_binding_limits(self):
+        quality_meta = {
+            "runtime_profile": "balanced",
+            "evidence_coverage": 0.95,
+            "consistency": 0.92,
+            "actionability": 0.86,
+            "expression_structure": 0.82,
+            "table_readiness": 0.80,
+            "action_acceptance": 0.76,
+            "milestone_coverage": 0.66,
+            "weak_binding_ratio": 0.20,
+            "weak_binding_ratio_by_field": {
+                "actions": 0.20,
+                "solutions": 0.25,
+                "risks": 0.78,
+            },
+            "template_minimums": {"needs": 1, "solutions": 1, "risks": 1, "actions": 2, "open_questions": 1},
+            "list_counts": {"needs": 1, "solutions": 1, "risks": 1, "actions": 2, "open_questions": 1},
+            "evidence_context": {
+                "facts_count": 20,
+                "unknown_count": 4,
+                "unknown_ratio": 0.2,
+                "average_quality_score": 0.62,
+            },
+        }
+
+        issues = self.server.build_quality_gate_issues_v3(quality_meta)
+        weak_binding_issues = [item for item in issues if item.get("type") == "quality_gate_weak_binding"]
+        self.assertEqual(1, len(weak_binding_issues))
+        self.assertEqual("risks", weak_binding_issues[0]["target"])
+
 
     def test_attempt_salvage_v3_review_failure_supports_quality_gate_failure_reason(self):
         backups = {

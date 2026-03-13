@@ -1,26 +1,33 @@
-# Task Plan: DeepVision 全面审查
+# Task Plan: V3 报告链路 P0-P2 实施
 
 ## Goal
-完成全栈 + 生效配置的只读审查，交付按 P0-P3 分级的风险审计报告。
+按既定 P0/P1/P2 方案完成问题链路、证据口径、V3 门禁与 failover 的代码落地，并通过定向回归验证主路径。
 
 ## Phases
-- [x] Phase 1: 仓库与基线探索
-- [x] Phase 2: 深入证据采集
-- [x] Phase 3: 形成风险报告
-- [x] Phase 4: 复核与交付
+- [x] Phase 1: 复盘失败会话与现有实现
+- [x] Phase 2: 识别设计问题、参数问题与隐藏问题
+- [x] Phase 3: 整理完整整改方案
+- [x] Phase 4: 落地问题采集契约与高取证问题运行时策略
+- [x] Phase 5: 落地 coverage/quality/weak binding/failover 改造
+- [x] Phase 6: 补前端提交字段与定向回归测试
+- [x] Phase 7: 去掉强制依据输入，改为 rich option + 轻追问补证据
 
 ## Key Questions
-1. 哪些问题属于立即止血的 P0/P1？
-2. 配置/文档/测试存在哪些漂移？
-3. 前端和后端的高风险输入输出链路在哪里？
+1. 取证型问题如何避免被 `summary` 竞速拉低证据密度？
+2. coverage 与质量均值如何从“看起来完整”改成“真实可用”？
+3. weak binding 与 failover 怎样从统一硬规则升级为字段感知和 deterministic bucket？
+4. 前后端如何透传问题契约，确保用户回答能直接服务 V3 证据链？
 
 ## Decisions Made
-- 输出形式: 风险报告
-- 审查范围: 全栈 + 生效配置（脱敏）
-- 不修改业务代码，仅交付审计结论与修复优先级
+- 问题链路新增 `answer_mode / requires_rationale / evidence_intent`，并由后端 runtime profile 驱动高取证档位。
+- 高取证问题禁用 `summary` 动态晋升，并固定使用 `question -> report` 竞速组合。
+- coverage 改为“关键方面覆盖 + 质量加权覆盖”，质量快照同时输出 raw/positive-only 均值。
+- weak binding 改为字段感知，failover 扩展为 deterministic bucket。
+- 前端不再强制“补充选择依据”，高取证题改为“单击优先 + 必要时下一题轻追问”。
+- 报告证据链新增 `answer_evidence_class`，将高信息量选项回答识别为 `rich_option` 并按中间权重计入 V3 质量门。
 
 ## Errors Encountered
-- 基线测试失败: REPORT_V3_QUALITY_FORCE_SINGLE_LANE 默认策略与测试/示例配置漂移
+- `py_compile` 默认写系统缓存目录被沙箱拒绝，已改用 `PYTHONPYCACHEPREFIX=/tmp/pycache` 规避。
 
 ## Status
-**Completed** - 审计报告已生成于 `docs/audits/2026-03-11-deepvision-risk-audit.md`
+**Currently Completed** - P0/P1/P2 与“rich option + 轻追问”补强已完成代码落地，`python3 -m pytest tests/test_question_fast_strategy.py tests/test_security_regression.py -q` 共 94 个用例通过。
