@@ -631,16 +631,31 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertIn("style_template_violation", issue_types)
 
     def test_report_v3_runtime_quality_single_lane_defaults(self):
-        cfg = self.server.get_report_v3_runtime_config("quality")
-        self.assertTrue(cfg.get("quality_force_single_lane"))
-        self.assertEqual(cfg.get("quality_primary_lane"), "report")
-        self.assertTrue(cfg.get("weak_binding_enabled"))
-        self.assertTrue(cfg.get("salvage_on_quality_gate_failure"))
-        self.assertTrue(cfg.get("failover_on_single_issue"))
-        self.assertTrue(cfg.get("blindspot_action_required_quality"))
-        self.assertFalse(cfg.get("blindspot_action_required_balanced"))
-        self.assertTrue(cfg.get("unknown_followup_enabled"))
-        self.assertGreaterEqual(cfg.get("unknown_followup_max_items", 0), 1)
+        env_keys = [
+            "REPORT_V3_QUALITY_FORCE_SINGLE_LANE",
+            "REPORT_V3_QUALITY_PRIMARY_LANE",
+        ]
+        env_backup = {key: os.environ.get(key) for key in env_keys}
+        try:
+            for key in env_keys:
+                os.environ.pop(key, None)
+
+            cfg = self.server.get_report_v3_runtime_config("quality")
+            self.assertTrue(cfg.get("quality_force_single_lane"))
+            self.assertEqual(cfg.get("quality_primary_lane"), "report")
+            self.assertTrue(cfg.get("weak_binding_enabled"))
+            self.assertTrue(cfg.get("salvage_on_quality_gate_failure"))
+            self.assertTrue(cfg.get("failover_on_single_issue"))
+            self.assertTrue(cfg.get("blindspot_action_required_quality"))
+            self.assertFalse(cfg.get("blindspot_action_required_balanced"))
+            self.assertTrue(cfg.get("unknown_followup_enabled"))
+            self.assertGreaterEqual(cfg.get("unknown_followup_max_items", 0), 1)
+        finally:
+            for key, value in env_backup.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_resolve_report_v3_phase_lane_defaults_and_failover_behavior(self):
         keys = [
@@ -856,6 +871,100 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertTrue(all(lane == "report" for lane in report_phase_calls))
         finally:
             for key, value in fn_backup.items():
+                setattr(self.server, key, value)
+            for key, value in env_backup.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_generate_report_v3_pipeline_recovers_from_review_parse_failure_via_repair(self):
+        env_keys = [
+            "REPORT_V3_REVIEW_BASE_ROUNDS",
+            "REPORT_V3_QUALITY_FIX_ROUNDS",
+            "REPORT_V3_MIN_REVIEW_ROUNDS",
+            "REPORT_V3_REVIEW_REPAIR_RETRY_ENABLED",
+            "REPORT_V3_REVIEW_REPAIR_MAX_TOKENS",
+            "REPORT_V3_REVIEW_REPAIR_TIMEOUT",
+        ]
+        env_backup = {key: os.environ.get(key) for key in env_keys}
+        fn_keys = [
+            "build_report_evidence_pack",
+            "build_report_draft_prompt_v3",
+            "build_report_review_prompt_v3",
+            "validate_report_draft_v3",
+            "compute_report_quality_meta_v3",
+            "build_quality_gate_issues_v3",
+            "render_report_from_draft_v3",
+            "call_claude",
+        ]
+        fn_backup = {key: getattr(self.server, key) for key in fn_keys}
+        lane_keys = [
+            "REPORT_V3_DRAFT_PRIMARY_LANE",
+            "REPORT_V3_REVIEW_PRIMARY_LANE",
+        ]
+        lane_backup = {key: getattr(self.server, key) for key in lane_keys}
+        call_types = []
+        try:
+            os.environ["REPORT_V3_REVIEW_BASE_ROUNDS"] = "1"
+            os.environ["REPORT_V3_QUALITY_FIX_ROUNDS"] = "0"
+            os.environ["REPORT_V3_MIN_REVIEW_ROUNDS"] = "1"
+            os.environ["REPORT_V3_REVIEW_REPAIR_RETRY_ENABLED"] = "true"
+            os.environ["REPORT_V3_REVIEW_REPAIR_MAX_TOKENS"] = "1800"
+            os.environ["REPORT_V3_REVIEW_REPAIR_TIMEOUT"] = "20"
+            self.server.REPORT_V3_DRAFT_PRIMARY_LANE = "report"
+            self.server.REPORT_V3_REVIEW_PRIMARY_LANE = "report"
+
+            self.server.build_report_evidence_pack = lambda _session: {"facts": [{"q_id": "Q1"}], "overall_coverage": 1.0}
+            self.server.build_report_draft_prompt_v3 = lambda *_args, **_kwargs: "draft prompt"
+            self.server.build_report_review_prompt_v3 = lambda *_args, **_kwargs: "review prompt"
+            self.server.validate_report_draft_v3 = lambda draft, _evidence: (draft, [])
+            self.server.compute_report_quality_meta_v3 = lambda *_args, **_kwargs: {
+                "mode": "v3_structured_reviewed",
+                "evidence_coverage": 1.0,
+                "consistency": 1.0,
+                "actionability": 1.0,
+                "overall": 1.0,
+            }
+            self.server.build_quality_gate_issues_v3 = lambda *_args, **_kwargs: []
+            self.server.render_report_from_draft_v3 = lambda *_args, **_kwargs: "# repaired report"
+
+            def _fake_call_claude(_prompt, **kwargs):
+                call_type = str(kwargs.get("call_type", "") or "")
+                call_types.append(call_type)
+                if call_type.startswith("report_v3_draft"):
+                    return (
+                        '{"overview":"初版","needs":[{"name":"需求稳定性","priority":"P0","description":"控制需求频繁变更","evidence_refs":["Q1"]}],'
+                        '"analysis":{"customer_needs":"需要稳定节奏","business_flow":"跨团队链路长","tech_constraints":"质量门槛高","project_constraints":"协调成本高"},'
+                        '"visualizations":{},"solutions":[],"risks":[],"actions":[],"open_questions":[],"evidence_index":[]}'
+                    )
+                if call_type.startswith("report_v3_review_round_"):
+                    return "这是上一轮审稿的非 JSON 输出，请转成结构化结果。"
+                if call_type.startswith("report_v3_review_parse_repair_round_"):
+                    return (
+                        '{"passed": true, "issues": [], '
+                        '"revised_draft": {"overview": "修复后的概述", '
+                        '"actions": [{"action": "建立变更冻结窗口", "owner": "产品经理", "timeline": "两周内", "metric": "需求变更率下降20%", "evidence_refs": ["Q1"]}]}}'
+                    )
+                return ""
+
+            self.server.call_claude = _fake_call_claude
+
+            result = self.server.generate_report_v3_pipeline(
+                {"topic": "测试"},
+                report_profile="balanced",
+                preferred_lane="report",
+            )
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result.get("status"), "success")
+            self.assertEqual(result.get("phase_lanes"), {"draft": "report", "review": "report"})
+            self.assertEqual(result.get("draft_snapshot", {}).get("overview"), "修复后的概述")
+            self.assertIn("report_v3_review_parse_repair_round_1", call_types)
+        finally:
+            for key, value in fn_backup.items():
+                setattr(self.server, key, value)
+            for key, value in lane_backup.items():
                 setattr(self.server, key, value)
             for key, value in env_backup.items():
                 if value is None:
@@ -1264,6 +1373,34 @@ class SecurityRegressionTests(unittest.TestCase):
             for key, value in backup.items():
                 setattr(self.server, key, value)
 
+    def test_report_phase_success_clears_legacy_report_cooldown(self):
+        keys = [
+            "GATEWAY_CIRCUIT_BREAKER_ENABLED",
+            "GATEWAY_CIRCUIT_FAIL_THRESHOLD",
+            "GATEWAY_CIRCUIT_COOLDOWN_SECONDS",
+            "GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+
+        try:
+            self.server.GATEWAY_CIRCUIT_BREAKER_ENABLED = True
+            self.server.GATEWAY_CIRCUIT_FAIL_THRESHOLD = 2
+            self.server.GATEWAY_CIRCUIT_COOLDOWN_SECONDS = 120.0
+            self.server.GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = 180.0
+            self.server.reset_gateway_circuit_state()
+
+            self.server.record_gateway_lane_failure("report", "http_5xx")
+            self.server.record_gateway_lane_failure("report", "timeout")
+            self.assertTrue(self.server.is_gateway_lane_in_cooldown("report_draft"))
+
+            self.server.record_gateway_lane_success("report_draft")
+            self.assertFalse(self.server.is_gateway_lane_in_cooldown("report"))
+            self.assertFalse(self.server.is_gateway_lane_in_cooldown("report_draft"))
+        finally:
+            self.server.reset_gateway_circuit_state()
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+
     def test_resolve_ai_client_with_lane_skips_cooled_report_lane(self):
         keys = [
             "GATEWAY_CIRCUIT_BREAKER_ENABLED",
@@ -1272,6 +1409,8 @@ class SecurityRegressionTests(unittest.TestCase):
             "GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS",
             "question_ai_client",
             "report_ai_client",
+            "report_draft_ai_client",
+            "report_review_ai_client",
             "summary_ai_client",
             "search_decision_ai_client",
         ]
@@ -1285,9 +1424,12 @@ class SecurityRegressionTests(unittest.TestCase):
             self.server.reset_gateway_circuit_state()
 
             question_client = object()
-            report_client = object()
+            draft_client = object()
+            review_client = object()
             self.server.question_ai_client = question_client
-            self.server.report_ai_client = report_client
+            self.server.report_ai_client = review_client
+            self.server.report_draft_ai_client = draft_client
+            self.server.report_review_ai_client = review_client
             self.server.summary_ai_client = None
             self.server.search_decision_ai_client = None
 
@@ -1303,6 +1445,52 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertIn("report", meta.get("skipped_open_lanes", []))
         finally:
             self.server.reset_gateway_circuit_state()
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+
+    def test_resolve_ai_client_with_lane_prefers_report_phase_clients(self):
+        keys = [
+            "question_ai_client",
+            "report_ai_client",
+            "report_draft_ai_client",
+            "report_review_ai_client",
+            "summary_ai_client",
+            "search_decision_ai_client",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+
+        try:
+            question_client = object()
+            draft_client = object()
+            review_client = object()
+            self.server.question_ai_client = question_client
+            self.server.report_ai_client = review_client
+            self.server.report_draft_ai_client = draft_client
+            self.server.report_review_ai_client = review_client
+            self.server.summary_ai_client = None
+            self.server.search_decision_ai_client = None
+
+            selected_client, selected_lane, _meta = self.server.resolve_ai_client_with_lane(
+                call_type="report_v3_draft",
+                preferred_lane="report",
+            )
+            self.assertIs(selected_client, draft_client)
+            self.assertEqual(selected_lane, "report_draft")
+
+            selected_client, selected_lane, _meta = self.server.resolve_ai_client_with_lane(
+                call_type="report_v3_review_round_1",
+                preferred_lane="report",
+            )
+            self.assertIs(selected_client, review_client)
+            self.assertEqual(selected_lane, "report_review")
+
+            selected_client, selected_lane, _meta = self.server.resolve_ai_client_with_lane(
+                call_type="report_v3_review_parse_repair_round_1",
+                preferred_lane="report",
+            )
+            self.assertIs(selected_client, review_client)
+            self.assertEqual(selected_lane, "report_review")
+        finally:
             for key, value in backup.items():
                 setattr(self.server, key, value)
 
@@ -1327,6 +1515,8 @@ class SecurityRegressionTests(unittest.TestCase):
             "GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS",
             "question_ai_client",
             "report_ai_client",
+            "report_draft_ai_client",
+            "report_review_ai_client",
             "summary_ai_client",
             "search_decision_ai_client",
         ]
@@ -1340,9 +1530,12 @@ class SecurityRegressionTests(unittest.TestCase):
             self.server.reset_gateway_circuit_state()
 
             question_client = _DummyClient("question-lane-ok")
-            report_client = _DummyClient("report-lane-ok")
+            draft_client = _DummyClient("draft-lane-ok")
+            review_client = _DummyClient("review-lane-ok")
             self.server.question_ai_client = question_client
-            self.server.report_ai_client = report_client
+            self.server.report_ai_client = review_client
+            self.server.report_draft_ai_client = draft_client
+            self.server.report_review_ai_client = review_client
             self.server.summary_ai_client = None
             self.server.search_decision_ai_client = None
 
@@ -1358,7 +1551,8 @@ class SecurityRegressionTests(unittest.TestCase):
                 timeout=10.0,
             )
             self.assertEqual(result, "question-lane-ok")
-            self.assertEqual(report_client.messages.calls, 0)
+            self.assertEqual(draft_client.messages.calls, 0)
+            self.assertEqual(review_client.messages.calls, 0)
             self.assertEqual(question_client.messages.calls, 1)
         finally:
             self.server.reset_gateway_circuit_state()

@@ -43,8 +43,9 @@ DeepVision 现在支持按实例作用域隔离会话和报告。系统在读取
 
 推荐做法：
 
-- 主配置写入 `web/.env`
-- 同步在 `web/config.py` 中保留相同值，作为显式兜底
+- 部署环境优先写入 `web/.env` 或进程环境变量
+- `web/config.py` 仅建议作为本地开发或临时排障时的兜底配置
+- 如果同时维护 `web/.env` 与 `web/config.py`，请确保两处值完全一致，避免排查时混淆
 
 ## 推荐命名规则
 
@@ -84,7 +85,7 @@ WECHAT_REDIRECT_URI=https://your-instance.example.com/api/auth/wechat/callback
 INSTANCE_SCOPE_KEY=your-instance-example-com
 ```
 
-`web/config.py`：
+如需保留本地兜底，也可以在 `web/config.py` 中写入同值：
 
 ```python
 WECHAT_REDIRECT_URI = "https://your-instance.example.com/api/auth/wechat/callback"
@@ -212,7 +213,7 @@ pod-3 -> INSTANCE_SCOPE_KEY=pod-3
 访问链接:
 是否共享 data 目录: 是 / 否
 INSTANCE_SCOPE_KEY:
-配置位置: web/.env / 环境变量 / web/config.py
+配置位置: web/.env（推荐） / 环境变量 / web/config.py（本地兜底）
 备注:
 ```
 
@@ -223,6 +224,6 @@ INSTANCE_SCOPE_KEY:
 访问链接: https://wjkuhannejiw.sealosbja.site
 是否共享 data 目录: 是
 INSTANCE_SCOPE_KEY: wjkuhannejiw-sealosbja-site
-配置位置: web/.env + web/config.py
+配置位置: web/.env
 备注: 同链接下所有副本统一使用该值
 ```

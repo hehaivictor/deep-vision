@@ -73,7 +73,7 @@ def _parse_env_assignment(line: str) -> Optional[tuple[str, str]]:
     return key, raw_value
 
 
-def load_env_files() -> None:
+def load_env_files() -> dict:
     """加载 .env 文件到 os.environ（默认不覆盖已存在环境变量）。"""
     current_dir = Path(__file__).resolve().parent
     project_dir = current_dir.parent
@@ -93,11 +93,14 @@ def load_env_files() -> None:
         ])
 
     loaded_any = False
+    loaded_files: list[str] = []
+    loaded_keys: set[str] = set()
     for env_path in candidates:
         if not env_path.exists() or not env_path.is_file():
             continue
 
         try:
+            applied_keys = 0
             for raw_line in env_path.read_text(encoding="utf-8").splitlines():
                 parsed = _parse_env_assignment(raw_line)
                 if not parsed:
@@ -106,16 +109,33 @@ def load_env_files() -> None:
                 if not override_existing and key in os.environ:
                     continue
                 os.environ[key] = value
+                loaded_keys.add(key)
+                applied_keys += 1
             loaded_any = True
+            loaded_files.append(str(env_path))
             print(f"✅ 已加载环境变量文件: {env_path}")
+            if applied_keys <= 0:
+                print("ℹ️  环境变量文件已读取，但未写入新键")
         except Exception as exc:
             print(f"⚠️  读取环境变量文件失败: {env_path}, 错误: {exc}")
 
     if explicit_env_file and not loaded_any:
         print(f"⚠️  指定的环境变量文件不存在或不可读: {explicit_env_file}")
 
+    return {
+        "loaded_any_file": bool(loaded_any),
+        "loaded_files": loaded_files,
+        "loaded_keys": loaded_keys,
+        "loaded_key_count": len(loaded_keys),
+        "override_existing": bool(override_existing),
+        "explicit_env_file": explicit_env_file,
+    }
 
-load_env_files()
+
+ENV_LOAD_METADATA = load_env_files()
+LOADED_ENV_FILES = list(ENV_LOAD_METADATA.get("loaded_files", []) or [])
+LOADED_ENV_KEYS = set(ENV_LOAD_METADATA.get("loaded_keys", set()) or set())
+LOADED_ENV_KEY_COUNT = int(ENV_LOAD_METADATA.get("loaded_key_count", 0) or 0)
 
 try:
     import config as runtime_config
@@ -171,6 +191,80 @@ except Exception:
     ImageFont = None
     PIL_AVAILABLE = False
 
+# 配置源策略：
+# - auto: 检测到 .env 且其中存在实际键时，AI 运行参数优先使用 env/default，不再回落 config.py
+# - hybrid: 保留历史行为，env 未命中时继续回落 config.py
+# - env_only: 只使用 env/default，不回落 config.py
+CONFIG_RESOLUTION_MODE = str(
+    os.environ.get("DEEPVISION_CONFIG_RESOLUTION_MODE")
+    or os.environ.get("CONFIG_RESOLUTION_MODE")
+    or "auto"
+).strip().lower()
+if CONFIG_RESOLUTION_MODE not in {"auto", "hybrid", "env_only"}:
+    CONFIG_RESOLUTION_MODE = "auto"
+
+
+AI_RUNTIME_ENV_ONLY_EXACT_KEYS = {
+    "MODEL_NAME",
+    "ENABLE_AI",
+    "ENABLE_DEBUG_LOG",
+    "ENABLE_WEB_SEARCH",
+    "API_TIMEOUT",
+    "REPORT_API_TIMEOUT",
+    "REPORT_DRAFT_API_TIMEOUT",
+    "REPORT_REVIEW_API_TIMEOUT",
+    "SEARCH_MAX_RESULTS",
+    "SEARCH_TIMEOUT",
+    "MAX_IMAGE_SIZE_MB",
+    "SUPPORTED_IMAGE_TYPES",
+}
+AI_RUNTIME_ENV_ONLY_PREFIXES = (
+    "AI_CLIENT_",
+    "ANTHROPIC_",
+    "QUESTION_",
+    "SUMMARY_",
+    "SEARCH_DECISION_",
+    "ASSESSMENT_",
+    "PREFETCH_QUESTION_",
+    "REPORT_V3_",
+    "REPORT_DRAFT_",
+    "REPORT_REVIEW_",
+    "ZHIPU_",
+    "VISION_",
+    "REFLY_",
+)
+AI_RUNTIME_ENV_ONLY_SUFFIXES = (
+    "_API_KEY",
+    "_BASE_URL",
+    "_USE_BEARER_AUTH",
+)
+
+
+def _is_ai_runtime_config_key(name: str) -> bool:
+    normalized = str(name or "").strip().upper()
+    if not normalized:
+        return False
+    if normalized in AI_RUNTIME_ENV_ONLY_EXACT_KEYS:
+        return True
+    if normalized.startswith("MAX_TOKENS_"):
+        return True
+    if normalized.endswith(AI_RUNTIME_ENV_ONLY_SUFFIXES):
+        return True
+    return normalized.startswith(AI_RUNTIME_ENV_ONLY_PREFIXES)
+
+
+def _should_use_runtime_config_fallback(name: str) -> bool:
+    if not runtime_config or not hasattr(runtime_config, name):
+        return False
+    if CONFIG_RESOLUTION_MODE == "hybrid":
+        return True
+    if CONFIG_RESOLUTION_MODE == "env_only":
+        return False
+    if LOADED_ENV_KEY_COUNT <= 0:
+        return True
+    return not _is_ai_runtime_config_key(name)
+
+
 # ============ 配置读取工具 ============
 def _cfg_get(name: str, default):
     # 生产环境可通过 DEEPVISION_ 前缀变量覆盖（优先级最高）
@@ -183,8 +277,8 @@ def _cfg_get(name: str, default):
     if env_val is not None:
         return env_val
 
-    # 本地开发默认从 config.py 读取
-    if runtime_config and hasattr(runtime_config, name):
+    # 自动模式下，若已加载 .env，则 AI 运行参数不再回落 config.py，避免旧配置“偷生效”
+    if _should_use_runtime_config_fallback(name):
         return getattr(runtime_config, name)
     return default
 
@@ -444,8 +538,11 @@ if REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS < 1:
 _base_model_name = _cfg_text("MODEL_NAME", str(MODEL_NAME or "").strip())
 QUESTION_MODEL_NAME = _cfg_text("QUESTION_MODEL_NAME", _base_model_name) or _base_model_name
 REPORT_MODEL_NAME = _cfg_text("REPORT_MODEL_NAME", QUESTION_MODEL_NAME) or QUESTION_MODEL_NAME
+REPORT_DRAFT_MODEL_NAME = _cfg_text("REPORT_DRAFT_MODEL_NAME", REPORT_MODEL_NAME) or REPORT_MODEL_NAME
+REPORT_REVIEW_MODEL_NAME = _cfg_text("REPORT_REVIEW_MODEL_NAME", REPORT_MODEL_NAME) or REPORT_MODEL_NAME
 SUMMARY_MODEL_NAME = _cfg_text("SUMMARY_MODEL_NAME", QUESTION_MODEL_NAME) or QUESTION_MODEL_NAME
 SEARCH_DECISION_MODEL_NAME = _cfg_text("SEARCH_DECISION_MODEL_NAME", SUMMARY_MODEL_NAME) or SUMMARY_MODEL_NAME
+ASSESSMENT_MODEL_NAME = _cfg_text("ASSESSMENT_MODEL_NAME", SEARCH_DECISION_MODEL_NAME) or SEARCH_DECISION_MODEL_NAME
 
 # 鉴权路由配置：兼容 Anthropic x-api-key 与 Bearer Authorization 两种网关模式
 # 未显式配置时，按网关地址自动推断（aicodemirror 默认 Bearer）。
@@ -453,6 +550,8 @@ _auto_use_bearer_auth = _guess_bearer_auth_default()
 _global_use_bearer_auth = _cfg_bool("ANTHROPIC_USE_BEARER_AUTH", _auto_use_bearer_auth)
 QUESTION_USE_BEARER_AUTH = _cfg_bool("QUESTION_USE_BEARER_AUTH", _global_use_bearer_auth)
 REPORT_USE_BEARER_AUTH = _cfg_bool("REPORT_USE_BEARER_AUTH", QUESTION_USE_BEARER_AUTH)
+REPORT_DRAFT_USE_BEARER_AUTH = _cfg_bool("REPORT_DRAFT_USE_BEARER_AUTH", REPORT_USE_BEARER_AUTH)
+REPORT_REVIEW_USE_BEARER_AUTH = _cfg_bool("REPORT_REVIEW_USE_BEARER_AUTH", REPORT_USE_BEARER_AUTH)
 
 # 网关路由配置：支持问题/报告分别使用不同 API Key 和 Base URL
 _cfg_question_api_key = _first_non_empty(
@@ -471,6 +570,22 @@ _cfg_report_base_url = _first_non_empty(
     _cfg_text("REPORT_BASE_URL", ""),
     _cfg_text("REPORT_ANTHROPIC_BASE_URL", ""),
 )
+_cfg_report_draft_api_key = _first_non_empty(
+    _cfg_text("REPORT_DRAFT_API_KEY", ""),
+    _cfg_text("REPORT_DRAFT_ANTHROPIC_API_KEY", ""),
+)
+_cfg_report_draft_base_url = _first_non_empty(
+    _cfg_text("REPORT_DRAFT_BASE_URL", ""),
+    _cfg_text("REPORT_DRAFT_ANTHROPIC_BASE_URL", ""),
+)
+_cfg_report_review_api_key = _first_non_empty(
+    _cfg_text("REPORT_REVIEW_API_KEY", ""),
+    _cfg_text("REPORT_REVIEW_ANTHROPIC_API_KEY", ""),
+)
+_cfg_report_review_base_url = _first_non_empty(
+    _cfg_text("REPORT_REVIEW_BASE_URL", ""),
+    _cfg_text("REPORT_REVIEW_ANTHROPIC_BASE_URL", ""),
+)
 _cfg_summary_api_key = _first_non_empty(
     _cfg_text("SUMMARY_API_KEY", ""),
     _cfg_text("SUMMARY_ANTHROPIC_API_KEY", ""),
@@ -487,18 +602,33 @@ _cfg_search_decision_base_url = _first_non_empty(
     _cfg_text("SEARCH_DECISION_BASE_URL", ""),
     _cfg_text("SEARCH_DECISION_ANTHROPIC_BASE_URL", ""),
 )
+_cfg_assessment_api_key = _first_non_empty(
+    _cfg_text("ASSESSMENT_API_KEY", ""),
+    _cfg_text("ASSESSMENT_ANTHROPIC_API_KEY", ""),
+)
+_cfg_assessment_base_url = _first_non_empty(
+    _cfg_text("ASSESSMENT_BASE_URL", ""),
+    _cfg_text("ASSESSMENT_ANTHROPIC_BASE_URL", ""),
+)
 
 QUESTION_API_KEY = _cfg_question_api_key or _cfg_text("ANTHROPIC_API_KEY", str(ANTHROPIC_API_KEY or "").strip())
 QUESTION_BASE_URL = _cfg_question_base_url or _cfg_text("ANTHROPIC_BASE_URL", str(ANTHROPIC_BASE_URL or "").strip())
 REPORT_API_KEY = _cfg_report_api_key or QUESTION_API_KEY
 REPORT_BASE_URL = _cfg_report_base_url or QUESTION_BASE_URL
+REPORT_DRAFT_API_KEY = _cfg_report_draft_api_key or REPORT_API_KEY
+REPORT_DRAFT_BASE_URL = _cfg_report_draft_base_url or REPORT_BASE_URL
+REPORT_REVIEW_API_KEY = _cfg_report_review_api_key or REPORT_API_KEY
+REPORT_REVIEW_BASE_URL = _cfg_report_review_base_url or REPORT_BASE_URL
 SUMMARY_API_KEY = _cfg_summary_api_key or REPORT_API_KEY
 SUMMARY_BASE_URL = _cfg_summary_base_url or REPORT_BASE_URL
 SEARCH_DECISION_API_KEY = _cfg_search_decision_api_key or SUMMARY_API_KEY
 SEARCH_DECISION_BASE_URL = _cfg_search_decision_base_url or SUMMARY_BASE_URL
+ASSESSMENT_API_KEY = _cfg_assessment_api_key or SEARCH_DECISION_API_KEY
+ASSESSMENT_BASE_URL = _cfg_assessment_base_url or SEARCH_DECISION_BASE_URL
 
 SUMMARY_USE_BEARER_AUTH = _cfg_bool("SUMMARY_USE_BEARER_AUTH", REPORT_USE_BEARER_AUTH)
 SEARCH_DECISION_USE_BEARER_AUTH = _cfg_bool("SEARCH_DECISION_USE_BEARER_AUTH", SUMMARY_USE_BEARER_AUTH)
+ASSESSMENT_USE_BEARER_AUTH = _cfg_bool("ASSESSMENT_USE_BEARER_AUTH", SEARCH_DECISION_USE_BEARER_AUTH)
 
 # 兼容历史代码中直接引用 MODEL_NAME 的位置：默认指向问题模型
 MODEL_NAME = QUESTION_MODEL_NAME
@@ -612,12 +742,12 @@ PREFETCH_QUESTION_FAST_MAX_TOKENS = max(500, min(PREFETCH_QUESTION_FAST_MAX_TOKE
 PREFETCH_QUESTION_HEDGE_DELAY_SECONDS = _cfg_float("PREFETCH_QUESTION_HEDGE_DELAY_SECONDS", 2.2)
 if PREFETCH_QUESTION_HEDGE_DELAY_SECONDS < 0.5:
     PREFETCH_QUESTION_HEDGE_DELAY_SECONDS = 0.5
-PREFETCH_QUESTION_PRIMARY_LANE = _cfg_text("PREFETCH_QUESTION_PRIMARY_LANE", "summary").strip().lower()
+PREFETCH_QUESTION_PRIMARY_LANE = _cfg_text("PREFETCH_QUESTION_PRIMARY_LANE", "question").strip().lower()
 if PREFETCH_QUESTION_PRIMARY_LANE not in {"question", "summary", "report", "search_decision"}:
-    PREFETCH_QUESTION_PRIMARY_LANE = "summary"
-PREFETCH_QUESTION_SECONDARY_LANE = _cfg_text("PREFETCH_QUESTION_SECONDARY_LANE", "question").strip().lower()
+    PREFETCH_QUESTION_PRIMARY_LANE = "question"
+PREFETCH_QUESTION_SECONDARY_LANE = _cfg_text("PREFETCH_QUESTION_SECONDARY_LANE", "summary").strip().lower()
 if PREFETCH_QUESTION_SECONDARY_LANE not in {"question", "summary", "report", "search_decision"}:
-    PREFETCH_QUESTION_SECONDARY_LANE = "question"
+    PREFETCH_QUESTION_SECONDARY_LANE = "summary"
 QUESTION_RESULT_CACHE_TTL_SECONDS = _cfg_int("QUESTION_RESULT_CACHE_TTL_SECONDS", 120)
 if QUESTION_RESULT_CACHE_TTL_SECONDS < 0:
     QUESTION_RESULT_CACHE_TTL_SECONDS = 0
@@ -651,6 +781,9 @@ if REPORT_API_TIMEOUT < API_TIMEOUT:
 REPORT_V3_PROFILE = _cfg_text("REPORT_V3_PROFILE", "balanced").strip().lower()
 if REPORT_V3_PROFILE not in {"balanced", "quality"}:
     REPORT_V3_PROFILE = "balanced"
+report_default_review_timeout = min(REPORT_API_TIMEOUT, 120.0 if REPORT_V3_PROFILE == "balanced" else 150.0)
+REPORT_REVIEW_API_TIMEOUT = _cfg_float("REPORT_REVIEW_API_TIMEOUT", report_default_review_timeout)
+REPORT_REVIEW_API_TIMEOUT = max(30.0, min(REPORT_REVIEW_API_TIMEOUT, REPORT_API_TIMEOUT))
 report_default_draft_timeout = min(REPORT_API_TIMEOUT, 140.0 if REPORT_V3_PROFILE == "balanced" else 180.0)
 REPORT_DRAFT_API_TIMEOUT = _cfg_float("REPORT_DRAFT_API_TIMEOUT", report_default_draft_timeout)
 REPORT_DRAFT_API_TIMEOUT = max(30.0, min(REPORT_DRAFT_API_TIMEOUT, REPORT_API_TIMEOUT))
@@ -681,14 +814,19 @@ REPORT_V3_REVIEW_BASE_ROUNDS = _cfg_int("REPORT_V3_REVIEW_BASE_ROUNDS", report_d
 REPORT_V3_REVIEW_BASE_ROUNDS = max(1, min(REPORT_V3_REVIEW_BASE_ROUNDS, 4))
 REPORT_V3_QUALITY_FIX_ROUNDS = _cfg_int("REPORT_V3_QUALITY_FIX_ROUNDS", 1)
 REPORT_V3_QUALITY_FIX_ROUNDS = max(0, min(REPORT_V3_QUALITY_FIX_ROUNDS, 2))
+REPORT_V3_REVIEW_REPAIR_RETRY_ENABLED = _cfg_bool("REPORT_V3_REVIEW_REPAIR_RETRY_ENABLED", True)
+REPORT_V3_REVIEW_REPAIR_MAX_TOKENS = _cfg_int("REPORT_V3_REVIEW_REPAIR_MAX_TOKENS", 2200)
+REPORT_V3_REVIEW_REPAIR_MAX_TOKENS = max(800, min(REPORT_V3_REVIEW_REPAIR_MAX_TOKENS, MAX_TOKENS_REPORT))
+REPORT_V3_REVIEW_REPAIR_TIMEOUT = _cfg_float("REPORT_V3_REVIEW_REPAIR_TIMEOUT", 45.0)
+REPORT_V3_REVIEW_REPAIR_TIMEOUT = max(12.0, min(REPORT_V3_REVIEW_REPAIR_TIMEOUT, REPORT_REVIEW_API_TIMEOUT))
 REPORT_V3_FAILOVER_ENABLED = _cfg_bool("REPORT_V3_FAILOVER_ENABLED", True)
 REPORT_V3_FAILOVER_LANE = _cfg_text("REPORT_V3_FAILOVER_LANE", "question").lower()
 if REPORT_V3_FAILOVER_LANE not in {"question", "report"}:
     REPORT_V3_FAILOVER_LANE = "question"
 REPORT_V3_DUAL_STAGE_ENABLED = _cfg_bool("REPORT_V3_DUAL_STAGE_ENABLED", True)
-REPORT_V3_DRAFT_PRIMARY_LANE = _cfg_text("REPORT_V3_DRAFT_PRIMARY_LANE", "question").strip().lower()
+REPORT_V3_DRAFT_PRIMARY_LANE = _cfg_text("REPORT_V3_DRAFT_PRIMARY_LANE", "report").strip().lower()
 if REPORT_V3_DRAFT_PRIMARY_LANE not in {"question", "report"}:
-    REPORT_V3_DRAFT_PRIMARY_LANE = "question"
+    REPORT_V3_DRAFT_PRIMARY_LANE = "report"
 REPORT_V3_REVIEW_PRIMARY_LANE = _cfg_text("REPORT_V3_REVIEW_PRIMARY_LANE", "report").strip().lower()
 if REPORT_V3_REVIEW_PRIMARY_LANE not in {"question", "report"}:
     REPORT_V3_REVIEW_PRIMARY_LANE = "report"
@@ -742,6 +880,9 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
     draft_timeout_default = min(REPORT_API_TIMEOUT, 140.0 if profile == "balanced" else 180.0)
     draft_timeout = _cfg_float("REPORT_DRAFT_API_TIMEOUT", draft_timeout_default)
     draft_timeout = max(30.0, min(draft_timeout, REPORT_API_TIMEOUT))
+    review_timeout_default = min(REPORT_API_TIMEOUT, 120.0 if profile == "balanced" else 150.0)
+    review_timeout = _cfg_float("REPORT_REVIEW_API_TIMEOUT", review_timeout_default)
+    review_timeout = max(30.0, min(review_timeout, REPORT_API_TIMEOUT))
 
     draft_tokens_default = 4200 if profile == "balanced" else 5500
     draft_max_tokens = _cfg_int("REPORT_V3_DRAFT_MAX_TOKENS", draft_tokens_default)
@@ -775,6 +916,11 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
 
     quality_fix_rounds = _cfg_int("REPORT_V3_QUALITY_FIX_ROUNDS", 1)
     quality_fix_rounds = max(0, min(quality_fix_rounds, 2))
+    review_repair_retry_enabled = _cfg_bool("REPORT_V3_REVIEW_REPAIR_RETRY_ENABLED", True)
+    review_repair_max_tokens = _cfg_int("REPORT_V3_REVIEW_REPAIR_MAX_TOKENS", 2200)
+    review_repair_max_tokens = max(800, min(review_repair_max_tokens, MAX_TOKENS_REPORT))
+    review_repair_timeout = _cfg_float("REPORT_V3_REVIEW_REPAIR_TIMEOUT", 45.0)
+    review_repair_timeout = max(12.0, min(review_repair_timeout, review_timeout))
 
     min_review_rounds_default = 1 if profile == "balanced" else 2
     configured_min_required_review_rounds = _cfg_int("REPORT_V3_MIN_REVIEW_ROUNDS", min_review_rounds_default)
@@ -805,6 +951,7 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
     return {
         "profile": profile,
         "draft_timeout": float(draft_timeout),
+        "review_timeout": float(review_timeout),
         "draft_max_tokens": int(draft_max_tokens),
         "draft_facts_limit": int(draft_facts_limit),
         "draft_min_facts_limit": int(draft_min_facts_limit),
@@ -814,6 +961,9 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
         "review_max_tokens": int(review_max_tokens),
         "review_base_rounds": int(review_base_rounds),
         "quality_fix_rounds": int(quality_fix_rounds),
+        "review_repair_retry_enabled": bool(review_repair_retry_enabled),
+        "review_repair_max_tokens": int(review_repair_max_tokens),
+        "review_repair_timeout": float(review_repair_timeout),
         "min_required_review_rounds": int(min_required_review_rounds),
         "quality_force_single_lane": bool(quality_force_single_lane),
         "quality_primary_lane": quality_primary_lane,
@@ -1116,6 +1266,12 @@ SMART_SUMMARY_THRESHOLD = _cfg_int("SMART_SUMMARY_THRESHOLD", 1500)
 SMART_SUMMARY_TARGET = _cfg_int("SMART_SUMMARY_TARGET", 800)
 SUMMARY_CACHE_ENABLED = _cfg_bool("SUMMARY_CACHE_ENABLED", True)
 MAX_TOKENS_SUMMARY = _cfg_int("MAX_TOKENS_SUMMARY", 500)
+SEARCH_DECISION_FIRST_MAX_TOKENS = _cfg_int("SEARCH_DECISION_FIRST_MAX_TOKENS", 220)
+SEARCH_DECISION_FIRST_MAX_TOKENS = max(64, SEARCH_DECISION_FIRST_MAX_TOKENS)
+SEARCH_DECISION_RETRY_MAX_TOKENS = _cfg_int("SEARCH_DECISION_RETRY_MAX_TOKENS", 420)
+SEARCH_DECISION_RETRY_MAX_TOKENS = max(SEARCH_DECISION_FIRST_MAX_TOKENS, SEARCH_DECISION_RETRY_MAX_TOKENS)
+ASSESSMENT_SCORE_MAX_TOKENS = _cfg_int("ASSESSMENT_SCORE_MAX_TOKENS", 96)
+ASSESSMENT_SCORE_MAX_TOKENS = max(32, ASSESSMENT_SCORE_MAX_TOKENS)
 
 # 集中读取后复用
 CONFIG_SECRET_KEY = _cfg_text("SECRET_KEY", "")
@@ -1129,17 +1285,58 @@ def _build_lane_signature(api_key: str, base_url: str, use_bearer_auth: bool) ->
     return (str(api_key or "").strip(), str(base_url or "").strip(), bool(use_bearer_auth))
 
 
+def _resolve_lane_signature(lane: str) -> tuple[str, str, bool]:
+    normalized_lane = str(lane or "").strip().lower()
+    if normalized_lane == "report_draft":
+        return _build_lane_signature(REPORT_DRAFT_API_KEY, REPORT_DRAFT_BASE_URL, REPORT_DRAFT_USE_BEARER_AUTH)
+    if normalized_lane == "report_review":
+        return _build_lane_signature(REPORT_REVIEW_API_KEY, REPORT_REVIEW_BASE_URL, REPORT_REVIEW_USE_BEARER_AUTH)
+    if normalized_lane == "report":
+        return _build_lane_signature(REPORT_API_KEY, REPORT_BASE_URL, REPORT_USE_BEARER_AUTH)
+    if normalized_lane == "summary":
+        return _build_lane_signature(SUMMARY_API_KEY, SUMMARY_BASE_URL, SUMMARY_USE_BEARER_AUTH)
+    if normalized_lane == "search_decision":
+        return _build_lane_signature(
+            SEARCH_DECISION_API_KEY,
+            SEARCH_DECISION_BASE_URL,
+            SEARCH_DECISION_USE_BEARER_AUTH,
+        )
+    if normalized_lane == "assessment":
+        return _build_lane_signature(
+            ASSESSMENT_API_KEY,
+            ASSESSMENT_BASE_URL,
+            ASSESSMENT_USE_BEARER_AUTH,
+        )
+    return _build_lane_signature(QUESTION_API_KEY, QUESTION_BASE_URL, QUESTION_USE_BEARER_AUTH)
+
+
+def _is_report_draft_call_type(call_type: str = "") -> bool:
+    lowered = str(call_type or "").strip().lower()
+    return "report_v3_draft" in lowered
+
+
+def _is_report_review_call_type(call_type: str = "") -> bool:
+    lowered = str(call_type or "").strip().lower()
+    return "report_v3_review" in lowered or "review_parse_repair" in lowered
+
+
 def _resolve_lane_model_name(lane: str) -> str:
     """根据 lane 的实际网关签名选择模型，避免模型与网关供应商不匹配。"""
     normalized_lane = str(lane or "").strip().lower()
 
+    if normalized_lane == "report_draft":
+        return REPORT_DRAFT_MODEL_NAME or REPORT_MODEL_NAME or QUESTION_MODEL_NAME
+
+    if normalized_lane == "report_review":
+        return REPORT_REVIEW_MODEL_NAME or REPORT_MODEL_NAME or QUESTION_MODEL_NAME
+
     if normalized_lane == "report":
-        return REPORT_MODEL_NAME or QUESTION_MODEL_NAME
+        return REPORT_MODEL_NAME or REPORT_DRAFT_MODEL_NAME or REPORT_REVIEW_MODEL_NAME or QUESTION_MODEL_NAME
 
     if normalized_lane == "summary":
         default_model = SUMMARY_MODEL_NAME or QUESTION_MODEL_NAME
-        summary_signature = _build_lane_signature(SUMMARY_API_KEY, SUMMARY_BASE_URL, SUMMARY_USE_BEARER_AUTH)
-        report_signature = _build_lane_signature(REPORT_API_KEY, REPORT_BASE_URL, REPORT_USE_BEARER_AUTH)
+        summary_signature = _resolve_lane_signature("summary")
+        report_signature = _resolve_lane_signature("report")
         if (
             summary_signature == report_signature
             and default_model == QUESTION_MODEL_NAME
@@ -1151,12 +1348,8 @@ def _resolve_lane_model_name(lane: str) -> str:
 
     if normalized_lane == "search_decision":
         default_model = SEARCH_DECISION_MODEL_NAME or SUMMARY_MODEL_NAME or QUESTION_MODEL_NAME
-        search_signature = _build_lane_signature(
-            SEARCH_DECISION_API_KEY,
-            SEARCH_DECISION_BASE_URL,
-            SEARCH_DECISION_USE_BEARER_AUTH,
-        )
-        report_signature = _build_lane_signature(REPORT_API_KEY, REPORT_BASE_URL, REPORT_USE_BEARER_AUTH)
+        search_signature = _resolve_lane_signature("search_decision")
+        report_signature = _resolve_lane_signature("report")
         if (
             search_signature == report_signature
             and default_model in {QUESTION_MODEL_NAME, SUMMARY_MODEL_NAME}
@@ -1164,12 +1357,47 @@ def _resolve_lane_model_name(lane: str) -> str:
             and REPORT_MODEL_NAME != default_model
         ):
             return REPORT_MODEL_NAME
-        summary_signature = _build_lane_signature(SUMMARY_API_KEY, SUMMARY_BASE_URL, SUMMARY_USE_BEARER_AUTH)
+        summary_signature = _resolve_lane_signature("summary")
         if search_signature == summary_signature:
             return _resolve_lane_model_name("summary")
         return default_model
 
+    if normalized_lane == "assessment":
+        default_model = ASSESSMENT_MODEL_NAME or SEARCH_DECISION_MODEL_NAME or SUMMARY_MODEL_NAME or QUESTION_MODEL_NAME
+        assessment_signature = _resolve_lane_signature("assessment")
+        search_signature = _resolve_lane_signature("search_decision")
+        if assessment_signature == search_signature and default_model in {
+            SEARCH_DECISION_MODEL_NAME,
+            SUMMARY_MODEL_NAME,
+            QUESTION_MODEL_NAME,
+        }:
+            return _resolve_lane_model_name("search_decision")
+        summary_signature = _resolve_lane_signature("summary")
+        if assessment_signature == summary_signature and default_model in {
+            SUMMARY_MODEL_NAME,
+            QUESTION_MODEL_NAME,
+        }:
+            return _resolve_lane_model_name("summary")
+        return default_model
+
     return QUESTION_MODEL_NAME
+
+
+def _resolve_report_phase_model_name(call_type: str = "", selected_lane: str = "") -> str:
+    """在 report lane 下允许为草案/审稿阶段指定不同模型。"""
+    normalized_lane = str(selected_lane or "").strip().lower()
+    if normalized_lane == "report_draft":
+        return REPORT_DRAFT_MODEL_NAME or REPORT_MODEL_NAME
+    if normalized_lane == "report_review":
+        return REPORT_REVIEW_MODEL_NAME or REPORT_MODEL_NAME
+    if normalized_lane and normalized_lane != "report":
+        return ""
+
+    if _is_report_review_call_type(call_type):
+        return REPORT_REVIEW_MODEL_NAME or REPORT_MODEL_NAME
+    if _is_report_draft_call_type(call_type):
+        return REPORT_DRAFT_MODEL_NAME or REPORT_MODEL_NAME
+    return ""
 
 
 def resolve_model_name(call_type: str = "", model_name: str = "") -> str:
@@ -1179,10 +1407,15 @@ def resolve_model_name(call_type: str = "", model_name: str = "") -> str:
         return explicit
 
     lowered = (call_type or "").lower()
+    if "assessment" in lowered:
+        return _resolve_lane_model_name("assessment")
     if "search_decision" in lowered:
         return _resolve_lane_model_name("search_decision")
     if "summary" in lowered:
         return _resolve_lane_model_name("summary")
+    report_phase_model = _resolve_report_phase_model_name(call_type=call_type)
+    if report_phase_model:
+        return report_phase_model
     if "report" in lowered:
         return _resolve_lane_model_name("report")
     return QUESTION_MODEL_NAME
@@ -1195,7 +1428,11 @@ def resolve_model_name_for_lane(call_type: str = "", model_name: str = "", selec
         return explicit
 
     lane = str(selected_lane or "").strip().lower()
-    if lane in {"question", "report", "summary", "search_decision"}:
+    report_phase_model = _resolve_report_phase_model_name(call_type=call_type, selected_lane=lane)
+    if report_phase_model:
+        return report_phase_model
+
+    if lane in {"question", "report", "report_draft", "report_review", "summary", "search_decision", "assessment"}:
         lane_model = _resolve_lane_model_name(lane)
         if lane_model:
             return lane_model
@@ -1206,6 +1443,8 @@ def resolve_model_name_for_lane(call_type: str = "", model_name: str = "", selec
 def resolve_call_lane(call_type: str = "", model_name: str = "") -> str:
     """根据调用类型判断应该优先使用的问题/报告网关。"""
     lowered = (call_type or "").lower()
+    if "assessment" in lowered:
+        return "assessment"
     if "search_decision" in lowered:
         return "search_decision"
     if "summary" in lowered:
@@ -5520,10 +5759,22 @@ def record_pipeline_stage_metric(
 claude_client = None  # 历史兼容：默认指向可用的主客户端
 question_ai_client = None
 report_ai_client = None
+report_draft_ai_client = None
+report_review_ai_client = None
 summary_ai_client = None
 search_decision_ai_client = None
-GATEWAY_CIRCUIT_LANES = ("question", "report", "summary", "search_decision")
+assessment_ai_client = None
+AI_CLIENT_EAGER_INIT = _cfg_bool("AI_CLIENT_EAGER_INIT", False)
+AI_CLIENT_INIT_CONNECTION_TEST = _cfg_bool("AI_CLIENT_INIT_CONNECTION_TEST", False)
+GATEWAY_CIRCUIT_LANES = ("question", "report", "report_draft", "report_review", "summary", "search_decision", "assessment")
 gateway_circuit_lock = threading.RLock()
+ai_client_init_lock = threading.RLock()
+ai_client_bootstrap_state = {
+    "attempted": False,
+    "initialized": False,
+    "attempt_count": 0,
+    "reason": "pending",
+}
 
 
 def _new_gateway_circuit_entry() -> dict:
@@ -5543,6 +5794,17 @@ def _normalize_gateway_lane(lane: str) -> str:
     if normalized in GATEWAY_CIRCUIT_LANES:
         return normalized
     return ""
+
+
+def _gateway_circuit_guard_lanes(lane: str) -> list[str]:
+    normalized = _normalize_gateway_lane(lane)
+    if normalized == "report_draft":
+        return ["report_draft", "report"]
+    if normalized == "report_review":
+        return ["report_review", "report"]
+    if normalized:
+        return [normalized]
+    return []
 
 
 def _cleanup_gateway_circuit_entry_locked(entry: dict, now_ts: float) -> None:
@@ -5590,16 +5852,24 @@ def get_gateway_circuit_snapshot(lane: str) -> dict:
         }
 
 
-def is_gateway_lane_in_cooldown(lane: str, now_ts: float = None) -> bool:
+def _get_gateway_cooldown_lanes(lane: str, now_ts: float = None) -> list[str]:
     lane_name = _normalize_gateway_lane(lane)
     if not lane_name or not GATEWAY_CIRCUIT_BREAKER_ENABLED:
-        return False
+        return []
 
     current_ts = float(now_ts) if now_ts is not None else _time.time()
+    blocked_lanes = []
     with gateway_circuit_lock:
-        entry = gateway_circuit_state.setdefault(lane_name, _new_gateway_circuit_entry())
-        _cleanup_gateway_circuit_entry_locked(entry, current_ts)
-        return float(entry.get("cooldown_until", 0.0) or 0.0) > current_ts
+        for guard_lane in _gateway_circuit_guard_lanes(lane_name):
+            entry = gateway_circuit_state.setdefault(guard_lane, _new_gateway_circuit_entry())
+            _cleanup_gateway_circuit_entry_locked(entry, current_ts)
+            if float(entry.get("cooldown_until", 0.0) or 0.0) > current_ts:
+                blocked_lanes.append(guard_lane)
+    return blocked_lanes
+
+
+def is_gateway_lane_in_cooldown(lane: str, now_ts: float = None) -> bool:
+    return bool(_get_gateway_cooldown_lanes(lane, now_ts=now_ts))
 
 
 def classify_gateway_failure_kind(raw_error_message: str) -> str:
@@ -5667,7 +5937,8 @@ def record_gateway_lane_success(lane: str) -> None:
     if not lane_name:
         return
     with gateway_circuit_lock:
-        gateway_circuit_state[lane_name] = _new_gateway_circuit_entry()
+        for reset_lane in _gateway_circuit_guard_lanes(lane_name):
+            gateway_circuit_state[reset_lane] = _new_gateway_circuit_entry()
 
 # 检查 API Key 是否有效
 def is_valid_api_key(api_key: str) -> bool:
@@ -5694,7 +5965,14 @@ def _create_anthropic_client(api_key: str, base_url: str, use_bearer_auth: bool 
     return anthropic.Anthropic(**kwargs)
 
 
-def _init_lane_client(lane_name: str, api_key: str, base_url: str, test_model: str, use_bearer_auth: bool = False):
+def _init_lane_client(
+    lane_name: str,
+    api_key: str,
+    base_url: str,
+    test_model: str,
+    use_bearer_auth: bool = False,
+    run_connection_test: bool = False,
+):
     if not is_valid_api_key(api_key):
         print(f"⚠️  {lane_name} 网关 API Key 未配置或为占位值，跳过初始化")
         return None
@@ -5711,17 +5989,20 @@ def _init_lane_client(lane_name: str, api_key: str, base_url: str, test_model: s
         print(f"   Base URL: {endpoint}")
         print(f"   鉴权模式: {'Bearer Authorization' if use_bearer_auth else 'Anthropic x-api-key'}")
 
-        # 连接测试失败不阻断服务，保留客户端以便后续重试
-        try:
-            client.messages.create(
-                model=test_model,
-                max_tokens=5,
-                messages=[{"role": "user", "content": "Hi"}]
-            )
-            print(f"✅ {lane_name} 网关连接测试成功")
-        except Exception as e:
-            print(f"⚠️  {lane_name} 网关连接测试失败: {e}")
-            print("   客户端已保留，运行时会继续尝试请求")
+        if run_connection_test:
+            # 连接测试失败不阻断服务，保留客户端以便后续重试
+            try:
+                client.messages.create(
+                    model=test_model,
+                    max_tokens=5,
+                    messages=[{"role": "user", "content": "Hi"}]
+                )
+                print(f"✅ {lane_name} 网关连接测试成功")
+            except Exception as e:
+                print(f"⚠️  {lane_name} 网关连接测试失败: {e}")
+                print("   客户端已保留，运行时会继续尝试请求")
+        else:
+            print("   连接探测: 已跳过（按需初始化）")
 
         return client
     except Exception as e:
@@ -5736,94 +6017,282 @@ def _pick_reused_client(signature: tuple, lane_signatures: list[tuple]) -> tuple
     return None, ""
 
 
-if ENABLE_AI and HAS_ANTHROPIC:
-    question_signature = (QUESTION_API_KEY, QUESTION_BASE_URL, QUESTION_USE_BEARER_AUTH)
-    report_signature = (REPORT_API_KEY, REPORT_BASE_URL, REPORT_USE_BEARER_AUTH)
-    summary_signature = (SUMMARY_API_KEY, SUMMARY_BASE_URL, SUMMARY_USE_BEARER_AUTH)
-    search_decision_signature = (
-        SEARCH_DECISION_API_KEY,
-        SEARCH_DECISION_BASE_URL,
-        SEARCH_DECISION_USE_BEARER_AUTH,
-    )
+def _any_ai_client_available() -> bool:
+    return any([
+        question_ai_client,
+        report_ai_client,
+        report_draft_ai_client,
+        report_review_ai_client,
+        summary_ai_client,
+        search_decision_ai_client,
+        assessment_ai_client,
+    ])
 
-    question_ai_client = _init_lane_client(
-        lane_name="问题",
-        api_key=QUESTION_API_KEY,
-        base_url=QUESTION_BASE_URL,
-        test_model=QUESTION_MODEL_NAME,
-        use_bearer_auth=QUESTION_USE_BEARER_AUTH,
-    )
 
-    if report_signature == question_signature:
-        report_ai_client = question_ai_client
+def reset_ai_clients(force_reason: str = "reset") -> None:
+    """重置 AI 客户端与懒加载状态（测试/运维排障使用）。"""
+    global claude_client, question_ai_client, report_ai_client, report_draft_ai_client, report_review_ai_client, summary_ai_client, search_decision_ai_client, assessment_ai_client
+    with ai_client_init_lock:
+        claude_client = None
+        question_ai_client = None
+        report_ai_client = None
+        report_draft_ai_client = None
+        report_review_ai_client = None
+        summary_ai_client = None
+        search_decision_ai_client = None
+        assessment_ai_client = None
+        ai_client_bootstrap_state.update({
+            "attempted": False,
+            "initialized": False,
+            "reason": str(force_reason or "reset"),
+        })
+
+
+def get_ai_client_bootstrap_snapshot() -> dict:
+    with ai_client_init_lock:
+        snapshot = dict(ai_client_bootstrap_state)
+        available_clients = [
+            question_ai_client,
+            report_ai_client,
+            report_draft_ai_client,
+            report_review_ai_client,
+            summary_ai_client,
+            search_decision_ai_client,
+            assessment_ai_client,
+        ]
+        snapshot["available_client_count"] = int(len({id(item) for item in available_clients if item}))
+        snapshot["question_ai_available"] = question_ai_client is not None
+        snapshot["report_ai_available"] = report_ai_client is not None
+        snapshot["report_draft_ai_available"] = report_draft_ai_client is not None
+        snapshot["report_review_ai_available"] = report_review_ai_client is not None
+        snapshot["summary_ai_available"] = summary_ai_client is not None
+        snapshot["search_decision_ai_available"] = search_decision_ai_client is not None
+        snapshot["assessment_ai_available"] = assessment_ai_client is not None
+        return snapshot
+
+
+def ensure_ai_clients_initialized(force: bool = False) -> dict:
+    """按需初始化 AI 客户端，避免导入模块即触发真实外部连接。"""
+    global claude_client, question_ai_client, report_ai_client, report_draft_ai_client, report_review_ai_client, summary_ai_client, search_decision_ai_client, assessment_ai_client
+
+    with ai_client_init_lock:
+        if _any_ai_client_available():
+            ai_client_bootstrap_state["attempted"] = True
+            ai_client_bootstrap_state["initialized"] = True
+            ai_client_bootstrap_state["reason"] = "ready"
+            claude_client = claude_client or question_ai_client or report_review_ai_client or report_draft_ai_client or report_ai_client or summary_ai_client or search_decision_ai_client or assessment_ai_client
+            return get_ai_client_bootstrap_snapshot()
+
+        if not force and ai_client_bootstrap_state.get("attempted"):
+            return get_ai_client_bootstrap_snapshot()
+
+        ai_client_bootstrap_state["attempted"] = True
+        ai_client_bootstrap_state["attempt_count"] = int(ai_client_bootstrap_state.get("attempt_count", 0) or 0) + 1
+        ai_client_bootstrap_state["initialized"] = False
+        ai_client_bootstrap_state["reason"] = "pending"
+
+        claude_client = None
+        question_ai_client = None
+        report_ai_client = None
+        report_draft_ai_client = None
+        report_review_ai_client = None
+        summary_ai_client = None
+        search_decision_ai_client = None
+        assessment_ai_client = None
+
+        if not ENABLE_AI:
+            ai_client_bootstrap_state["reason"] = "disabled"
+            return get_ai_client_bootstrap_snapshot()
+        if not HAS_ANTHROPIC:
+            ai_client_bootstrap_state["reason"] = "anthropic_missing"
+            return get_ai_client_bootstrap_snapshot()
+
+        question_signature = (QUESTION_API_KEY, QUESTION_BASE_URL, QUESTION_USE_BEARER_AUTH)
+        report_draft_signature = (REPORT_DRAFT_API_KEY, REPORT_DRAFT_BASE_URL, REPORT_DRAFT_USE_BEARER_AUTH)
+        report_review_signature = (REPORT_REVIEW_API_KEY, REPORT_REVIEW_BASE_URL, REPORT_REVIEW_USE_BEARER_AUTH)
+        summary_signature = (SUMMARY_API_KEY, SUMMARY_BASE_URL, SUMMARY_USE_BEARER_AUTH)
+        search_decision_signature = (
+            SEARCH_DECISION_API_KEY,
+            SEARCH_DECISION_BASE_URL,
+            SEARCH_DECISION_USE_BEARER_AUTH,
+        )
+        assessment_signature = (
+            ASSESSMENT_API_KEY,
+            ASSESSMENT_BASE_URL,
+            ASSESSMENT_USE_BEARER_AUTH,
+        )
+
+        question_ai_client = _init_lane_client(
+            lane_name="问题",
+            api_key=QUESTION_API_KEY,
+            base_url=QUESTION_BASE_URL,
+            test_model=QUESTION_MODEL_NAME,
+            use_bearer_auth=QUESTION_USE_BEARER_AUTH,
+            run_connection_test=AI_CLIENT_INIT_CONNECTION_TEST,
+        )
+
+        reusable_lanes = [("问题", question_signature, question_ai_client)]
+
+        report_draft_ai_client, draft_reuse_lane = _pick_reused_client(report_draft_signature, reusable_lanes)
+        if report_draft_ai_client and draft_reuse_lane:
+            print(f"ℹ️  报告草案网关复用{draft_reuse_lane}网关客户端（相同 Key/Base URL）")
+        else:
+            report_draft_ai_client = _init_lane_client(
+                lane_name="报告草案",
+                api_key=REPORT_DRAFT_API_KEY,
+                base_url=REPORT_DRAFT_BASE_URL,
+                test_model=REPORT_DRAFT_MODEL_NAME or REPORT_MODEL_NAME,
+                use_bearer_auth=REPORT_DRAFT_USE_BEARER_AUTH,
+                run_connection_test=AI_CLIENT_INIT_CONNECTION_TEST,
+            )
+
+        reusable_lanes.append(("报告草案", report_draft_signature, report_draft_ai_client))
+
+        report_review_ai_client, review_reuse_lane = _pick_reused_client(report_review_signature, reusable_lanes)
+        if report_review_ai_client and review_reuse_lane:
+            print(f"ℹ️  报告审稿网关复用{review_reuse_lane}网关客户端（相同 Key/Base URL）")
+        else:
+            report_review_ai_client = _init_lane_client(
+                lane_name="报告审稿",
+                api_key=REPORT_REVIEW_API_KEY,
+                base_url=REPORT_REVIEW_BASE_URL,
+                test_model=REPORT_REVIEW_MODEL_NAME or REPORT_MODEL_NAME,
+                use_bearer_auth=REPORT_REVIEW_USE_BEARER_AUTH,
+                run_connection_test=AI_CLIENT_INIT_CONNECTION_TEST,
+            )
+
+        reusable_lanes.append(("报告审稿", report_review_signature, report_review_ai_client))
+        report_ai_client = report_review_ai_client or report_draft_ai_client
         if report_ai_client:
-            print("ℹ️  报告网关复用问题网关客户端（相同 Key/Base URL）")
-    else:
-        report_ai_client = _init_lane_client(
-            lane_name="报告",
-            api_key=REPORT_API_KEY,
-            base_url=REPORT_BASE_URL,
-            test_model=REPORT_MODEL_NAME,
-            use_bearer_auth=REPORT_USE_BEARER_AUTH,
-        )
+            if report_ai_client is report_review_ai_client:
+                print("ℹ️  历史 report lane 默认复用报告审稿网关客户端")
+            elif report_ai_client is report_draft_ai_client:
+                print("ℹ️  历史 report lane 默认复用报告草案网关客户端")
 
-    reusable_lanes = [
-        ("问题", question_signature, question_ai_client),
-        ("报告", report_signature, report_ai_client),
-    ]
+        summary_ai_client, summary_reuse_lane = _pick_reused_client(summary_signature, reusable_lanes)
+        if summary_ai_client and summary_reuse_lane:
+            print(f"ℹ️  摘要网关复用{summary_reuse_lane}网关客户端（相同 Key/Base URL）")
+        else:
+            summary_ai_client = _init_lane_client(
+                lane_name="摘要",
+                api_key=SUMMARY_API_KEY,
+                base_url=SUMMARY_BASE_URL,
+                test_model=SUMMARY_MODEL_NAME,
+                use_bearer_auth=SUMMARY_USE_BEARER_AUTH,
+                run_connection_test=AI_CLIENT_INIT_CONNECTION_TEST,
+            )
 
-    summary_ai_client, summary_reuse_lane = _pick_reused_client(summary_signature, reusable_lanes)
-    if summary_ai_client and summary_reuse_lane:
-        print(f"ℹ️  摘要网关复用{summary_reuse_lane}网关客户端（相同 Key/Base URL）")
-    else:
-        summary_ai_client = _init_lane_client(
-            lane_name="摘要",
-            api_key=SUMMARY_API_KEY,
-            base_url=SUMMARY_BASE_URL,
-            test_model=SUMMARY_MODEL_NAME,
-            use_bearer_auth=SUMMARY_USE_BEARER_AUTH,
-        )
+        reusable_lanes.append(("摘要", summary_signature, summary_ai_client))
+        search_decision_ai_client, search_reuse_lane = _pick_reused_client(search_decision_signature, reusable_lanes)
+        if search_decision_ai_client and search_reuse_lane:
+            print(f"ℹ️  搜索决策网关复用{search_reuse_lane}网关客户端（相同 Key/Base URL）")
+        else:
+            search_decision_ai_client = _init_lane_client(
+                lane_name="搜索决策",
+                api_key=SEARCH_DECISION_API_KEY,
+                base_url=SEARCH_DECISION_BASE_URL,
+                test_model=SEARCH_DECISION_MODEL_NAME,
+                use_bearer_auth=SEARCH_DECISION_USE_BEARER_AUTH,
+                run_connection_test=AI_CLIENT_INIT_CONNECTION_TEST,
+            )
 
-    reusable_lanes.append(("摘要", summary_signature, summary_ai_client))
-    search_decision_ai_client, search_reuse_lane = _pick_reused_client(search_decision_signature, reusable_lanes)
-    if search_decision_ai_client and search_reuse_lane:
-        print(f"ℹ️  搜索决策网关复用{search_reuse_lane}网关客户端（相同 Key/Base URL）")
-    else:
-        search_decision_ai_client = _init_lane_client(
-            lane_name="搜索决策",
-            api_key=SEARCH_DECISION_API_KEY,
-            base_url=SEARCH_DECISION_BASE_URL,
-            test_model=SEARCH_DECISION_MODEL_NAME,
-            use_bearer_auth=SEARCH_DECISION_USE_BEARER_AUTH,
-        )
+        reusable_lanes.append(("搜索决策", search_decision_signature, search_decision_ai_client))
+        assessment_ai_client, assessment_reuse_lane = _pick_reused_client(assessment_signature, reusable_lanes)
+        if assessment_ai_client and assessment_reuse_lane:
+            print(f"ℹ️  评分网关复用{assessment_reuse_lane}网关客户端（相同 Key/Base URL）")
+        else:
+            assessment_ai_client = _init_lane_client(
+                lane_name="评分",
+                api_key=ASSESSMENT_API_KEY,
+                base_url=ASSESSMENT_BASE_URL,
+                test_model=ASSESSMENT_MODEL_NAME,
+                use_bearer_auth=ASSESSMENT_USE_BEARER_AUTH,
+                run_connection_test=AI_CLIENT_INIT_CONNECTION_TEST,
+            )
 
-    claude_client = question_ai_client or report_ai_client or summary_ai_client or search_decision_ai_client
-    if not claude_client:
-        print("❌ AI 客户端初始化失败：所有网关均不可用")
+        claude_client = question_ai_client or report_review_ai_client or report_draft_ai_client or report_ai_client or summary_ai_client or search_decision_ai_client or assessment_ai_client
+        if not claude_client:
+            ai_client_bootstrap_state["reason"] = "no_available_client"
+            return get_ai_client_bootstrap_snapshot()
+
+        ai_client_bootstrap_state["initialized"] = True
+        ai_client_bootstrap_state["reason"] = "ready"
+        return get_ai_client_bootstrap_snapshot()
+
+
+if AI_CLIENT_EAGER_INIT:
+    ensure_ai_clients_initialized(force=True)
+elif not ENABLE_AI:
+    ai_client_bootstrap_state["reason"] = "disabled"
+elif not HAS_ANTHROPIC:
+    ai_client_bootstrap_state["reason"] = "anthropic_missing"
 else:
-    if not ENABLE_AI:
-        print("ℹ️  AI 功能已禁用（ENABLE_AI=False）")
-    elif not HAS_ANTHROPIC:
-        print("❌ anthropic 库未安装")
-    else:
-        print("❌ AI 客户端初始化前置条件不满足")
+    ai_client_bootstrap_state["reason"] = "lazy_pending"
 
 
 def _lane_client_by_name(lane: str):
+    if not _any_ai_client_available():
+        ensure_ai_clients_initialized()
     lane_name = str(lane or "").strip().lower()
     if lane_name == "question":
         return question_ai_client
+    if lane_name == "report_draft":
+        return report_draft_ai_client or report_ai_client or report_review_ai_client
+    if lane_name == "report_review":
+        return report_review_ai_client or report_ai_client or report_draft_ai_client
     if lane_name == "report":
-        return report_ai_client
+        return report_ai_client or report_review_ai_client or report_draft_ai_client
     if lane_name == "summary":
         return summary_ai_client
     if lane_name == "search_decision":
         return search_decision_ai_client
+    if lane_name == "assessment":
+        return assessment_ai_client
     return None
+
+
+def _dedupe_lane_candidates(candidates: list[str]) -> list[str]:
+    ordered = []
+    seen = set()
+    for lane_name in candidates:
+        normalized = str(lane_name or "").strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        ordered.append(normalized)
+        seen.add(normalized)
+    return ordered
+
+
+def _resolve_report_gateway_lane_candidates(call_type: str = "", primary_lane: str = "report") -> list[str]:
+    normalized_primary_lane = str(primary_lane or "").strip().lower()
+    if normalized_primary_lane not in {"question", "report", "report_draft", "report_review"}:
+        normalized_primary_lane = "report"
+
+    if normalized_primary_lane == "report_draft":
+        return _dedupe_lane_candidates(["report_draft", "question", "report_review"])
+    if normalized_primary_lane == "report_review":
+        return _dedupe_lane_candidates(["report_review", "report_draft", "question"])
+
+    if normalized_primary_lane == "question":
+        if _is_report_review_call_type(call_type):
+            return _dedupe_lane_candidates(["question", "report_review", "report_draft"])
+        if _is_report_draft_call_type(call_type):
+            return _dedupe_lane_candidates(["question", "report_draft", "report_review"])
+        return _dedupe_lane_candidates(["question", "report_draft", "report_review"])
+
+    if _is_report_review_call_type(call_type):
+        return _dedupe_lane_candidates(["report_review", "report_draft", "question"])
+    if _is_report_draft_call_type(call_type):
+        return _dedupe_lane_candidates(["report_draft", "question", "report_review"])
+    return _dedupe_lane_candidates(["report_draft", "report_review", "question"])
 
 
 def _lane_candidates_for_client_resolution(call_type: str = "", model_name: str = "", preferred_lane: str = "") -> list[str]:
     forced_lane = str(preferred_lane or "").strip().lower()
+    if forced_lane in {"report", "question", "report_draft", "report_review"} and "report" in str(call_type or "").lower():
+        return _resolve_report_gateway_lane_candidates(call_type=call_type, primary_lane=forced_lane)
+    if forced_lane == "assessment":
+        return ["assessment", "search_decision", "summary", "question", "report"]
     if forced_lane == "search_decision":
         return ["search_decision", "summary", "question", "report"]
     if forced_lane == "summary":
@@ -5834,13 +6303,15 @@ def _lane_candidates_for_client_resolution(call_type: str = "", model_name: str 
         return ["question", "report"]
 
     lane = resolve_call_lane(call_type=call_type, model_name=model_name)
+    if lane == "report":
+        return _resolve_report_gateway_lane_candidates(call_type=call_type, primary_lane=lane)
+    if lane == "assessment":
+        return ["assessment", "search_decision", "summary", "question", "report"]
     if lane == "search_decision":
         return ["search_decision", "summary", "question", "report"]
     if lane == "summary":
         return ["summary", "report", "question", "search_decision"]
-    if lane == "report":
-        return ["report", "question"]
-    return ["question", "report", "summary", "search_decision"]
+    return ["question", "report", "summary", "search_decision", "assessment"]
 
 
 def resolve_ai_client_with_lane(
@@ -5865,8 +6336,11 @@ def resolve_ai_client_with_lane(
         if not client:
             continue
         fallback_pool.append((lane_name, client))
-        if skip_open and is_gateway_lane_in_cooldown(lane_name):
-            skipped_open_lanes.append(lane_name)
+        blocked_lanes = _get_gateway_cooldown_lanes(lane_name) if skip_open else []
+        if blocked_lanes:
+            for blocked_lane in blocked_lanes:
+                if blocked_lane not in skipped_open_lanes:
+                    skipped_open_lanes.append(blocked_lane)
             continue
         return client, lane_name, {
             "requested_lane": requested_lane,
@@ -7163,12 +7637,12 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
         result = None
         attempts = [
             {
-                "max_tokens": 220,
+                "max_tokens": SEARCH_DECISION_FIRST_MAX_TOKENS,
                 "timeout": 10.0,
                 "extra_instruction": "",
             },
             {
-                "max_tokens": 420,
+                "max_tokens": SEARCH_DECISION_RETRY_MAX_TOKENS,
                 "timeout": 18.0,
                 "extra_instruction": "只输出一行 JSON，不要 markdown 代码块，不要额外解释，不要换行。",
             },
@@ -7198,8 +7672,8 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
                 )
                 break
             except Exception as retry_error:
-                if ENABLE_DEBUG_LOG:
-                    print(f"⚠️  AI搜索决策第{idx}次解析失败: {retry_error}")
+                if ENABLE_DEBUG_LOG and idx < len(attempts):
+                    print(f"ℹ️  AI搜索决策第{idx}次解析失败，准备重试: {retry_error}")
 
         if result is None:
             raise ValueError("AI 搜索决策结果解析失败")
@@ -8642,7 +9116,7 @@ def score_assessment_answer(session: dict, dimension: str, question: str, answer
         with ai_call_priority_slot("assessment_score"):
             response = ai_client.messages.create(
                 model=resolve_model_name(call_type="assessment_score"),
-                max_tokens=96,  # MiniMax 在低 token 下容易只返回 thinking，适当提高稳定性
+                max_tokens=ASSESSMENT_SCORE_MAX_TOKENS,  # 低 token 容易只返回 thinking，保留可调默认值
                 timeout=15.0,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -11116,21 +11590,8 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
     return normalized, issues
 
 
-def build_report_review_prompt_v3(session: dict, evidence_pack: dict, draft: dict, issues: list) -> str:
-    """构建 V3 审稿与修复 Prompt。"""
-    topic = session.get("topic", "未知主题")
-    contradiction_text = "\n".join(
-        [f"- {item.get('detail')}（证据: {', '.join(item.get('evidence_refs', []))}）" for item in evidence_pack.get("contradictions", [])[:20]]
-    ) or "- 无"
-    blindspot_text = "\n".join(
-        [f"- {item.get('dimension')}: {item.get('aspect')}" for item in evidence_pack.get("blindspots", [])[:20]]
-    ) or "- 无"
-
-    issue_text = "\n".join(
-        [f"- [{item.get('severity', 'medium')}] {item.get('type')}: {item.get('message')} @ {item.get('target', 'unknown')}" for item in issues[:30]]
-    ) or "- 无已知问题"
-
-    response_schema = {
+def _report_review_response_schema_v3() -> dict:
+    return {
         "passed": True,
         "issues": [
             {
@@ -11152,6 +11613,23 @@ def build_report_review_prompt_v3(session: dict, evidence_pack: dict, draft: dic
             "evidence_index": []
         }
     }
+
+
+def build_report_review_prompt_v3(session: dict, evidence_pack: dict, draft: dict, issues: list) -> str:
+    """构建 V3 审稿与修复 Prompt。"""
+    topic = session.get("topic", "未知主题")
+    contradiction_text = "\n".join(
+        [f"- {item.get('detail')}（证据: {', '.join(item.get('evidence_refs', []))}）" for item in evidence_pack.get("contradictions", [])[:20]]
+    ) or "- 无"
+    blindspot_text = "\n".join(
+        [f"- {item.get('dimension')}: {item.get('aspect')}" for item in evidence_pack.get("blindspots", [])[:20]]
+    ) or "- 无"
+
+    issue_text = "\n".join(
+        [f"- [{item.get('severity', 'medium')}] {item.get('type')}: {item.get('message')} @ {item.get('target', 'unknown')}" for item in issues[:30]]
+    ) or "- 无已知问题"
+
+    response_schema = _report_review_response_schema_v3()
 
     return f"""你是报告质量审稿专家。请对草案执行一致性审稿并直接修复，输出 JSON。
 
@@ -11201,6 +11679,40 @@ def build_report_review_prompt_v3(session: dict, evidence_pack: dict, draft: dic
 """
 
 
+def build_report_review_repair_prompt_v3(raw_review: str, draft: dict, review_issues: list) -> str:
+    """当审稿响应无法解析时，要求模型只做结构化转写与轻修复。"""
+    issue_text = "\n".join(
+        [f"- [{item.get('severity', 'medium')}] {item.get('type')}: {item.get('message')} @ {item.get('target', 'unknown')}" for item in review_issues[:20]]
+    ) or "- 无已知问题"
+    response_schema = _report_review_response_schema_v3()
+
+    return f"""你是 JSON 修复助手。以下内容是上一轮审稿模型的原始输出，但当前系统无法解析。
+
+你的任务不是重新长篇审稿，而是基于原始输出和当前草案，整理出一个合法 JSON。
+
+## 当前已知问题
+{issue_text}
+
+## 当前草案 JSON
+{json.dumps(draft, ensure_ascii=False)}
+
+## 原始审稿输出
+{str(raw_review or '')[:12000]}
+
+## 修复要求
+- 仅输出合法 JSON，禁止 markdown 代码块、解释文字、前后缀文本。
+- 必须包含 passed、issues、revised_draft 三个字段。
+- 若原始输出已表达“通过”，passed=true；否则按内容谨慎判断。
+- revised_draft 可为空对象 {{}}，但必须是对象。
+- issues 必须是数组；数组元素包含 type、severity、message、target。
+- 不要新增模板外顶层字段。
+- 如果原始输出信息不足，请保守返回 passed=false，并在 issues 中说明无法解析的关键问题。
+
+## 输出模板
+{json.dumps(response_schema, ensure_ascii=False, indent=2)}
+"""
+
+
 def parse_report_review_response_v3(raw_text: str, parse_meta: Optional[dict] = None) -> Optional[dict]:
     """解析 V3 审稿响应。"""
     parsed = parse_structured_json_response(
@@ -11234,6 +11746,53 @@ def parse_report_review_response_v3(raw_text: str, parse_meta: Optional[dict] = 
         "issues": issues,
         "revised_draft": revised_draft,
     }
+
+
+def repair_report_review_response_v3(
+    review_raw: str,
+    current_draft: dict,
+    review_issues: list,
+    preferred_lane: str,
+    review_round_no: int,
+    call_type_suffix: str = "",
+    max_tokens: int = 2200,
+    timeout: float = 45.0,
+) -> tuple[Optional[dict], dict, str]:
+    """对无法解析的审稿输出发起一次严格 JSON 修复重试。"""
+    if not REPORT_V3_REVIEW_REPAIR_RETRY_ENABLED or not review_raw:
+        return None, {"attempted": False, "last_error": ""}, ""
+
+    repair_prompt = build_report_review_repair_prompt_v3(review_raw, current_draft, review_issues)
+    repair_call_type = f"report_v3_review_parse_repair_round_{max(1, int(review_round_no or 1))}{call_type_suffix}"
+    repair_raw = call_claude(
+        repair_prompt,
+        max_tokens=max_tokens,
+        call_type=repair_call_type,
+        timeout=timeout,
+        preferred_lane=preferred_lane,
+    )
+    repair_parse_meta = {
+        "attempted": True,
+        "repair_call_type": repair_call_type,
+        "last_error": "",
+    }
+    if not repair_raw:
+        repair_parse_meta["last_error"] = "repair_generation_failed"
+        return None, repair_parse_meta, ""
+
+    parsed_meta = {}
+    repaired = parse_report_review_response_v3(repair_raw, parse_meta=parsed_meta)
+    repair_parse_meta.update({
+        "repair_applied": bool(parsed_meta.get("repair_applied", False)),
+        "selected_source": str(parsed_meta.get("selected_source", "") or ""),
+        "candidate_count": int(parsed_meta.get("candidate_count", 0) or 0),
+        "parse_attempts": int(parsed_meta.get("parse_attempts", 0) or 0),
+        "missing_keys": list(parsed_meta.get("missing_keys", []) or []),
+        "last_error": str(parsed_meta.get("last_error", "") or repair_parse_meta.get("last_error", "")),
+    })
+    if not repaired and not repair_parse_meta.get("last_error"):
+        repair_parse_meta["last_error"] = "repair_parse_failed"
+    return repaired, repair_parse_meta, repair_raw or ""
 
 
 def merge_report_draft_patch_v3(base_draft: dict, revised_patch: dict) -> dict:
@@ -13687,9 +14246,9 @@ def generate_report_v3_pipeline(
                 floor_tokens=2400,
             )
             review_timeout = compute_adaptive_report_timeout(
-                REPORT_API_TIMEOUT,
+                runtime_cfg["review_timeout"],
                 review_prompt_length,
-                timeout_cap=max(REPORT_API_TIMEOUT, runtime_cfg["draft_timeout"] + 60),
+                timeout_cap=max(REPORT_REVIEW_API_TIMEOUT, runtime_cfg["review_timeout"] + 60),
             )
             review_raw = call_claude(
                 review_prompt,
@@ -13733,6 +14292,52 @@ def generate_report_v3_pipeline(
                 model=review_phase_model,
                 error_msg=str(review_parse_meta.get("last_error", "") or ""),
             )
+            repair_review_raw = ""
+            repair_review_meta = {}
+            if not review_parsed and runtime_cfg.get("review_repair_retry_enabled", True):
+                repair_start = _time.perf_counter()
+                repaired_review, repair_review_meta, repair_review_raw = repair_report_review_response_v3(
+                    review_raw=review_raw,
+                    current_draft=current_draft,
+                    review_issues=review_issues,
+                    preferred_lane=review_phase_lane,
+                    review_round_no=review_round_no,
+                    call_type_suffix=call_type_suffix,
+                    max_tokens=min(
+                        int(runtime_cfg.get("review_repair_max_tokens", REPORT_V3_REVIEW_REPAIR_MAX_TOKENS) or REPORT_V3_REVIEW_REPAIR_MAX_TOKENS),
+                        review_max_tokens,
+                    ),
+                    timeout=min(
+                        float(runtime_cfg.get("review_repair_timeout", REPORT_V3_REVIEW_REPAIR_TIMEOUT) or REPORT_V3_REVIEW_REPAIR_TIMEOUT),
+                        review_timeout,
+                    ),
+                )
+                repair_elapsed = _time.perf_counter() - repair_start
+                record_pipeline_stage_metric(
+                    stage="review_parse_repair",
+                    success=bool(repaired_review),
+                    elapsed_seconds=repair_elapsed,
+                    lane=review_phase_lane,
+                    model=review_phase_model,
+                    error_msg=str(repair_review_meta.get("last_error", "") or ""),
+                )
+                if repaired_review:
+                    review_parsed = repaired_review
+                    review_parse_meta["repair_applied"] = True
+                    review_parse_meta["selected_source"] = str(
+                        repair_review_meta.get("selected_source", "")
+                        or repair_review_meta.get("repair_call_type", "")
+                    )
+                    review_parse_meta["candidate_count"] = int(repair_review_meta.get("candidate_count", 0) or 0)
+                    review_parse_meta["parse_attempts"] = int(repair_review_meta.get("parse_attempts", 0) or 0)
+                    review_parse_meta["missing_keys"] = list(repair_review_meta.get("missing_keys", []) or [])
+                    review_parse_meta["last_error"] = ""
+                else:
+                    review_parse_meta["last_error"] = str(
+                        repair_review_meta.get("last_error", "")
+                        or review_parse_meta.get("last_error", "")
+                        or ""
+                    )
             if not review_parsed:
                 return {
                     "status": "failed",
@@ -13749,7 +14354,7 @@ def generate_report_v3_pipeline(
                     "profile": runtime_profile,
                     "lane": pipeline_lane,
                     "phase_lanes": phase_lanes,
-                    "raw_excerpt": str(review_raw or "")[:360],
+                    "raw_excerpt": str(repair_review_raw or review_raw or "")[:360],
                     "repair_applied": bool(review_parse_meta.get("repair_applied", False)),
                     "draft_snapshot": current_draft if isinstance(current_draft, dict) else {},
                     "parse_meta": {
@@ -13758,6 +14363,7 @@ def generate_report_v3_pipeline(
                         "selected_source": str(review_parse_meta.get("selected_source", "") or ""),
                         "missing_keys": list(review_parse_meta.get("missing_keys", []) or []),
                         "last_error": str(review_parse_meta.get("last_error", "") or ""),
+                        "repair_attempted": bool(repair_review_meta.get("attempted", False)),
                     },
                     "evidence_pack": evidence_pack,
                     "review_issues": final_issues,
@@ -15762,10 +16368,27 @@ def parse_question_response(response: str, debug: bool = False) -> Optional[dict
     if debug:
         print(f"📝 AI 原始响应 (前500字): {response[:500]}")
 
+    # 方法0: 复用通用结构化解析器，优先处理代码块/前后缀/轻微缺损 JSON
+    structured_parse_meta = {}
+    structured_result = parse_structured_json_response(
+        response,
+        required_keys=["question", "options"],
+        require_all_keys=True,
+        parse_meta=structured_parse_meta,
+    )
+    if isinstance(structured_result, dict):
+        result = structured_result
+        if debug:
+            print(
+                "✅ 方法0成功: 通用结构化解析 "
+                f"(source={structured_parse_meta.get('selected_source', '-')},"
+                f"repair={structured_parse_meta.get('repair_applied', False)})"
+            )
+
     # 方法1: 直接尝试解析（如果AI严格遵守指令）
     try:
         cleaned = response.strip()
-        if cleaned.startswith('{') and cleaned.endswith('}'):
+        if result is None and cleaned.startswith('{') and cleaned.endswith('}'):
             result = json.loads(cleaned)
             if debug:
                 print(f"✅ 方法1成功: 直接解析")
@@ -18460,12 +19083,16 @@ def normalize_report_time_fields(content: str, generated_at: Optional[datetime] 
 
 def can_use_v3_failover_lane() -> bool:
     """是否具备可用且独立的备用网关 lane。"""
-    if REPORT_V3_FAILOVER_LANE == "question":
-        target_client = question_ai_client
-    else:
-        target_client = report_ai_client
-
-    primary_client = report_ai_client or question_ai_client
+    primary_client, _, _ = resolve_ai_client_with_lane(
+        call_type="report_v3_review_round_1",
+        preferred_lane="report",
+        respect_circuit_breaker=False,
+    )
+    target_client, _, _ = resolve_ai_client_with_lane(
+        call_type="report_v3_review_round_1",
+        preferred_lane=REPORT_V3_FAILOVER_LANE,
+        respect_circuit_breaker=False,
+    )
     if not target_client or not primary_client:
         return False
 
@@ -23034,7 +23661,9 @@ def get_status():
         })
 
     question_available = resolve_ai_client(call_type="question") is not None
-    report_available = resolve_ai_client(call_type="report") is not None
+    report_draft_available = resolve_ai_client(call_type="report_v3_draft", preferred_lane="report") is not None
+    report_review_available = resolve_ai_client(call_type="report_v3_review_round_1", preferred_lane="report") is not None
+    report_available = report_draft_available or report_review_available or resolve_ai_client(call_type="report") is not None
     ai_available = question_available or report_available
     mode_names = ["quick", "standard", "deep"]
     mode_configs_effective = {
@@ -23050,8 +23679,10 @@ def get_status():
         "sms_code_length": SMS_CODE_LENGTH,
         "sms_cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
         "ai_available": ai_available,
-        "question_ai_available": question_ai_client is not None,
-        "report_ai_available": report_ai_client is not None,
+        "question_ai_available": question_available,
+        "report_ai_available": report_available,
+        "report_draft_ai_available": report_draft_available,
+        "report_review_ai_available": report_review_available,
         "report_profile_default": REPORT_V3_PROFILE,
         "report_profile_options": ["balanced", "quality"],
         "interview_depth_v2": {
@@ -23258,25 +23889,44 @@ class SelectiveAccessLogRequestHandler(WSGIRequestHandler):
 
 
 if __name__ == '__main__':
+    ai_bootstrap_snapshot = get_ai_client_bootstrap_snapshot()
+    ai_state_reason = str(ai_bootstrap_snapshot.get("reason", "") or "")
+    if claude_client:
+        ai_state_label = "已初始化"
+    elif ENABLE_AI and HAS_ANTHROPIC:
+        ai_state_label = "已启用（懒加载）" if ai_state_reason in {"lazy_pending", "pending"} else f"未就绪({ai_state_reason})"
+    elif not ENABLE_AI:
+        ai_state_label = "未启用"
+    else:
+        ai_state_label = "不可用"
+
     print("=" * 60)
     print("Deep Vision Web Server - AI 驱动版本")
     print("=" * 60)
     print(f"Sessions: {SESSIONS_DIR}")
     print(f"Reports: {REPORTS_DIR}")
-    print(f"AI 状态: {'已启用' if claude_client else '未启用'}")
-    if claude_client:
-        question_endpoint = QUESTION_BASE_URL or "(Anthropic 官方默认地址)"
-        report_endpoint = REPORT_BASE_URL or "(Anthropic 官方默认地址)"
-        summary_endpoint = SUMMARY_BASE_URL or "(Anthropic 官方默认地址)"
-        search_decision_endpoint = SEARCH_DECISION_BASE_URL or "(Anthropic 官方默认地址)"
+    print(f"AI 状态: {ai_state_label}")
+    print(f"配置解析: mode={CONFIG_RESOLUTION_MODE}, env_keys={LOADED_ENV_KEY_COUNT}, env_files={len(LOADED_ENV_FILES)}")
+    question_endpoint = QUESTION_BASE_URL or "(Anthropic 官方默认地址)"
+    report_endpoint = REPORT_BASE_URL or "(Anthropic 官方默认地址)"
+    report_draft_endpoint = REPORT_DRAFT_BASE_URL or report_endpoint
+    report_review_endpoint = REPORT_REVIEW_BASE_URL or report_endpoint
+    summary_endpoint = SUMMARY_BASE_URL or "(Anthropic 官方默认地址)"
+    search_decision_endpoint = SEARCH_DECISION_BASE_URL or "(Anthropic 官方默认地址)"
+    assessment_endpoint = ASSESSMENT_BASE_URL or "(Anthropic 官方默认地址)"
+    if ENABLE_AI and HAS_ANTHROPIC:
         print(f"问题模型: {QUESTION_MODEL_NAME}")
-        print(f"问题网关: {'可用' if question_ai_client else '不可用'} @ {question_endpoint}")
-        print(f"报告模型: {REPORT_MODEL_NAME}")
-        print(f"报告网关: {'可用' if report_ai_client else '不可用'} @ {report_endpoint}")
+        print(f"问题网关: {'可用' if question_ai_client else '待初始化'} @ {question_endpoint}")
+        print(f"报告模型: {REPORT_MODEL_NAME} (draft={REPORT_DRAFT_MODEL_NAME}, review={REPORT_REVIEW_MODEL_NAME})")
+        print(f"报告草案网关: {'可用' if report_draft_ai_client else '待初始化'} @ {report_draft_endpoint}")
+        print(f"报告审稿网关: {'可用' if report_review_ai_client else '待初始化'} @ {report_review_endpoint}")
+        print(f"历史报告网关: {'可用' if report_ai_client else '待初始化'} @ {report_endpoint}")
         print(f"摘要模型: {SUMMARY_MODEL_NAME}")
-        print(f"摘要网关: {'可用' if summary_ai_client else '不可用'} @ {summary_endpoint}")
+        print(f"摘要网关: {'可用' if summary_ai_client else '待初始化'} @ {summary_endpoint}")
         print(f"搜索决策模型: {SEARCH_DECISION_MODEL_NAME}")
-        print(f"搜索决策网关: {'可用' if search_decision_ai_client else '不可用'} @ {search_decision_endpoint}")
+        print(f"搜索决策网关: {'可用' if search_decision_ai_client else '待初始化'} @ {search_decision_endpoint}")
+        print(f"评分模型: {ASSESSMENT_MODEL_NAME}")
+        print(f"评分网关: {'可用' if assessment_ai_client else '待初始化'} @ {assessment_endpoint}")
         print(f"搜索决策缓存: TTL={SEARCH_DECISION_CACHE_TTL_SECONDS}s, MAX={SEARCH_DECISION_CACHE_MAX_ENTRIES}")
         print(
             "问题策略: "
@@ -23292,6 +23942,7 @@ if __name__ == '__main__':
             "V3 配置: "
             f"profile={REPORT_V3_PROFILE}, "
             f"draft_timeout={REPORT_DRAFT_API_TIMEOUT}s, "
+            f"review_timeout={REPORT_REVIEW_API_TIMEOUT}s, "
             f"draft_tokens={REPORT_V3_DRAFT_MAX_TOKENS}, "
             f"facts_limit={REPORT_V3_DRAFT_FACTS_LIMIT}, "
             f"draft_retries={REPORT_V3_DRAFT_RETRY_COUNT}, "
@@ -23302,8 +23953,12 @@ if __name__ == '__main__':
             f"circuit={'on' if GATEWAY_CIRCUIT_BREAKER_ENABLED else 'off'}"
             f"(threshold={GATEWAY_CIRCUIT_FAIL_THRESHOLD},"
             f"cooldown={int(GATEWAY_CIRCUIT_COOLDOWN_SECONDS)}s,"
-            f"window={int(GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS)}s)"
+                f"window={int(GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS)}s)"
         )
+        if not claude_client:
+            print("AI 网关将在首次真实调用时初始化，避免导入阶段触发外部连接。")
+    elif ENABLE_AI and HAS_ANTHROPIC:
+        print("AI 网关将在首次真实调用时初始化，避免导入阶段触发外部连接。")
 
     # 搜索功能状态
     search_enabled = ENABLE_WEB_SEARCH and ZHIPU_API_KEY and ZHIPU_API_KEY != "your-zhipu-api-key-here"
