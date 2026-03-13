@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "ca7a769",
+  "committedAt": "2026-03-13T10:25:22+08:00",
+  "versionType": "patch",
+  "title": "优化前端交互与展示逻辑",
+  "changes": [
+    "前端：更新界面交互与展示逻辑。"
+  ],
+  "changedFiles": [
+    "web/app.js",
+    "web/index.html",
+    "web/styles.css"
+  ]
+}

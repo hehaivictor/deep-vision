@@ -342,6 +342,27 @@ function deepVision() {
         reportGroupBy: 'none',
         reportSearchDebounceTimer: null,
         appendixExportOutsideHandler: null,
+        selectedReportMeta: {
+            name: '',
+            title: '',
+            scenarioName: '',
+            createdAt: '',
+            templateLabel: ''
+        },
+        reportDetailModel: {
+            sections: [],
+            currentSectionId: '',
+            currentSectionLabel: '阅读中',
+            progressPercent: 0,
+            remainingLabel: '-',
+            summaryText: '',
+            overviewItems: [],
+            actionItems: [],
+            mobileNavOpen: false
+        },
+        reportDetailEnhanceTimer: null,
+        reportDetailObserver: null,
+        reportDetailSectionRegistry: [],
         interviewTopicMinHeight: 0,
         lastPresentationUrl: '',
 
@@ -694,8 +715,10 @@ function deepVision() {
             this.filteredReports = [];
             this.filteredSessions = [];
             this.reportItems = [];
+            this.cleanupReportDetailEnhancements();
             this.selectedReport = null;
             this.reportContent = '';
+            this.selectedReportMeta = this.createEmptySelectedReportMeta();
             this.showNewSessionModal = false;
             this.showDeleteModal = false;
             this.showLogoutConfirmModal = false;
@@ -2640,6 +2663,175 @@ function deepVision() {
             return '未分类场景';
         },
 
+        createEmptySelectedReportMeta() {
+            return {
+                name: '',
+                title: '',
+                scenarioName: '',
+                createdAt: '',
+                templateLabel: ''
+            };
+        },
+
+        createEmptyReportDetailModel() {
+            return {
+                sections: [],
+                primarySections: [],
+                currentSectionId: '',
+                currentTopSectionId: '',
+                currentSectionLabel: '阅读中',
+                progressPercent: 0,
+                remainingLabel: '-',
+                summaryText: '',
+                overviewItems: [],
+                actionItems: [],
+                mobileNavOpen: false
+            };
+        },
+
+        resolveReportTemplateLabel(report, matchedSession = null) {
+            const explicitTemplate = String(
+                report?.report_template ||
+                report?.template_name ||
+                report?.template ||
+                ''
+            ).trim();
+            if (explicitTemplate) return explicitTemplate;
+
+            const linkedSession = matchedSession || this.findMatchedSessionForReport(report);
+            const reportType = String(
+                report?.report_type ||
+                linkedSession?.scenario_config?.report_type ||
+                ''
+            ).trim().toLowerCase();
+
+            if (reportType === 'assessment') return '评估模板';
+            if (reportType === 'standard') return '标准模板';
+            return '';
+        },
+
+        buildSelectedReportMeta(filename) {
+            const record = Array.isArray(this.reports)
+                ? this.reports.find(item => item?.name === filename)
+                : null;
+            const fallbackReport = record || { name: filename };
+            const matchedSession = this.findMatchedSessionForReport(fallbackReport);
+
+            return {
+                name: filename || '',
+                title: this.resolveReportDisplayTitle(fallbackReport, matchedSession),
+                scenarioName: this.resolveReportScenarioName(fallbackReport, matchedSession),
+                createdAt: fallbackReport?.created_at || matchedSession?.updated_at || matchedSession?.created_at || '',
+                templateLabel: this.resolveReportTemplateLabel(fallbackReport, matchedSession)
+            };
+        },
+
+        cleanupReportDetailEnhancements(options = {}) {
+            const { resetModel = true } = options;
+
+            if (this.reportDetailEnhanceTimer) {
+                window.clearTimeout(this.reportDetailEnhanceTimer);
+                this.reportDetailEnhanceTimer = null;
+            }
+
+            if (this.reportDetailObserver) {
+                this.reportDetailObserver.disconnect();
+                this.reportDetailObserver = null;
+            }
+
+            if (this.appendixExportOutsideHandler) {
+                document.removeEventListener('click', this.appendixExportOutsideHandler, true);
+                this.appendixExportOutsideHandler = null;
+            }
+
+            this.reportDetailSectionRegistry = [];
+            if (resetModel) {
+                this.reportDetailModel = this.createEmptyReportDetailModel();
+            } else if (this.reportDetailModel) {
+                this.reportDetailModel.mobileNavOpen = false;
+            }
+        },
+
+        closeSelectedReportDetail() {
+            this.cleanupReportDetailEnhancements();
+            this.selectedReport = null;
+            this.reportContent = '';
+            this.selectedReportMeta = this.createEmptySelectedReportMeta();
+            this.presentationPdfUrl = '';
+            this.presentationLocalUrl = '';
+            this.stopPresentationPolling();
+            this.resetPresentationProgressFeedback();
+        },
+
+        scheduleReportDetailEnhancement() {
+            if (!this.selectedReport || !this.reportContent) return;
+
+            this.cleanupReportDetailEnhancements({ resetModel: false });
+            this.reportDetailEnhanceTimer = window.setTimeout(() => {
+                this.reportDetailEnhanceTimer = null;
+                this.onReportRendered();
+            }, 140);
+        },
+
+        goToReportSection(sectionId) {
+            const target = document.getElementById(String(sectionId || '').trim());
+            if (!target) return;
+
+            this.updateActiveReportSection(sectionId);
+
+            const prefersReducedMotion = typeof window !== 'undefined'
+                && typeof window.matchMedia === 'function'
+                && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+            target.scrollIntoView({
+                behavior: prefersReducedMotion ? 'auto' : 'smooth',
+                block: 'start'
+            });
+            target.classList.add('is-highlighted');
+            window.setTimeout(() => target.classList.remove('is-highlighted'), 1200);
+            this.reportDetailModel.mobileNavOpen = false;
+            if (typeof target.focus === 'function') {
+                target.focus({ preventScroll: true });
+            }
+        },
+
+        isReportNavItemActive(section) {
+            if (!section || !this.reportDetailModel) return false;
+            const depth = Number(section.depth || 0);
+            if (depth === 0) {
+                return this.reportDetailModel.currentTopSectionId === section.id;
+            }
+            return this.reportDetailModel.currentSectionId === section.id;
+        },
+
+        ensureReportNavItemVisible(sectionId) {
+            if (!sectionId || !this.$nextTick) return;
+
+            this.$nextTick(() => {
+                const root = this.$refs?.reportDetailView || document;
+                const selector = `[data-section-id="${String(sectionId)}"]`;
+                const navTargets = [
+                    root?.querySelector?.('.dv-report-sidebar-nav'),
+                    root?.querySelector?.('.dv-report-mobile-nav-list')
+                ].filter(Boolean);
+
+                navTargets.forEach((container) => {
+                    const target = container.querySelector(selector);
+                    if (!target) return;
+
+                    const containerRect = container.getBoundingClientRect();
+                    const targetRect = target.getBoundingClientRect();
+                    const padding = 10;
+
+                    if (targetRect.top < containerRect.top) {
+                        container.scrollTop -= (containerRect.top - targetRect.top) + padding;
+                    } else if (targetRect.bottom > containerRect.bottom) {
+                        container.scrollTop += (targetRect.bottom - containerRect.bottom) + padding;
+                    }
+                });
+            });
+        },
+
         estimateLinkedReportCount(sessionIds) {
             if (!Array.isArray(sessionIds) || sessionIds.length === 0) return 0;
             const reportNames = new Set();
@@ -2726,10 +2918,7 @@ function deepVision() {
                 const selectedReportName = this.selectedReport;
                 await this.loadReports();
                 if (selectedReportName && !this.reports.find(report => report.name === selectedReportName)) {
-                    this.selectedReport = null;
-                    this.reportContent = '';
-                    this.presentationPdfUrl = '';
-                    this.presentationLocalUrl = '';
+                    this.closeSelectedReportDetail();
                 }
 
                 this.closeBatchDeleteModal();
@@ -4559,10 +4748,13 @@ function deepVision() {
 
         async viewReport(filename) {
             try {
+                this.cleanupReportDetailEnhancements();
                 this.stopPresentationPolling();
                 const data = await this.apiCall(`/reports/${encodeURIComponent(filename)}`);
                 this.reportContent = data.content;
                 this.selectedReport = filename;
+                this.selectedReportMeta = this.buildSelectedReportMeta(filename);
+                this.$nextTick(() => this.scheduleReportDetailEnhancement());
                 await this.fetchPresentationStatus();
             } catch (error) {
                 this.showToast('加载报告失败', 'error');
@@ -5388,72 +5580,500 @@ function deepVision() {
 
         // 当报告内容渲染完成后调用（由 x-effect 触发）
         onReportRendered() {
-            this.renderMermaidCharts();
-            this.injectReportSummaryAndToc();
-        },
-
-        injectReportSummaryAndToc() {
-            const reportElement = document.querySelector('.markdown-body');
+            const reportElement = this.$refs?.reportMarkdown || document.querySelector('.dv-report-markdown-body');
             if (!reportElement) return;
 
-            const existingSummary = reportElement.querySelector('#report-summary-block');
-            if (existingSummary) existingSummary.remove();
-            const existingToc = reportElement.querySelector('#report-toc-block');
-            if (existingToc) existingToc.remove();
+            this.cleanupReportDetailEnhancements({ resetModel: false });
+            this.renderMermaidCharts();
+            this.injectReportSummaryAndToc(reportElement);
+        },
 
-            // 兼容历史报告：移除“报告质量指标”展示区块
+        injectReportSummaryAndToc(reportElement) {
+            if (!reportElement) return;
+
+            this.removeReportInjectedArtifacts(reportElement);
+            this.stripLegacyReportQualitySection(reportElement);
+
+            const sections = this.collectReportSections(reportElement);
+            if (sections.length === 0) {
+                this.reportDetailModel = {
+                    ...this.createEmptyReportDetailModel(),
+                    summaryText: '当前报告已按原始 Markdown 展示，可继续使用顶部操作完成导出与分享。'
+                };
+                this.enhanceAppendixToggle(reportElement);
+                return;
+            }
+
+            const navItems = this.buildReportDetailNavItems(sections);
+            this.reportDetailModel = this.buildReportDetailModel(reportElement, sections, navItems);
+            this.reportDetailSectionRegistry = navItems.map(item => ({
+                id: item.id,
+                title: item.title,
+                breadcrumbLabel: item.breadcrumbLabel || item.title,
+                indexLabel: item.indexLabel,
+                isAppendix: item.isAppendix,
+                depth: item.depth || 0,
+                topLevelId: item.topLevelId || item.id,
+                charCount: item.charCount || 0,
+                startChars: item.startChars || 0,
+                element: item.element
+            }));
+            this.setupReportSectionObserver();
+            this.enhanceAppendixToggle(reportElement);
+        },
+
+        removeReportInjectedArtifacts(reportElement) {
+            if (!reportElement) return;
+            reportElement.querySelectorAll('#report-summary-block, #report-toc-block, .dv-report-inline-toc, .dv-appendix-export-wrap')
+                .forEach(node => node.remove());
+            reportElement.querySelectorAll('.dv-appendix-heading')
+                .forEach(node => node.classList.remove('dv-appendix-heading'));
+        },
+
+        stripLegacyReportQualitySection(reportElement) {
             const headingsForQuality = Array.from(reportElement.querySelectorAll('h2, h3'));
             headingsForQuality.forEach(heading => {
-                const text = (heading.textContent || '').trim();
+                const text = this.cleanReportText(heading.textContent || '');
                 if (text !== '报告质量指标') return;
 
                 let cursor = heading.nextElementSibling;
                 while (cursor) {
-                    if (/^H[23]$/i.test(cursor.tagName)) {
-                        break;
-                    }
+                    if (/^H[23]$/i.test(cursor.tagName)) break;
                     const next = cursor.nextElementSibling;
                     cursor.remove();
                     cursor = next;
                 }
                 heading.remove();
             });
+        },
 
-            const headings = Array.from(reportElement.querySelectorAll('h2, h3'));
-            if (headings.length === 0) return;
+        cleanReportText(value) {
+            return String(value || '')
+                .replace(/\s+/g, ' ')
+                .trim();
+        },
 
-            headings.forEach((heading, index) => {
-                if (!heading.id) {
-                    heading.id = `report-section-${index + 1}`;
+        normalizeReportHeadingLabel(value) {
+            const raw = this.cleanReportText(value);
+            if (!raw) return '';
+
+            const normalized = raw
+                .replace(/^第\s*0*\d+\s*[章节部分]\s*/i, '')
+                .replace(/^\d+(?:\.\d+)*\s*[、.．]\s*/u, '')
+                .replace(/^\d+(?:\.\d+)*\s+/u, '')
+                .replace(/^[（(]\d+[)）]\s*/u, '')
+                .trim();
+
+            return normalized || raw;
+        },
+
+        normalizeReportHeadingKey(value) {
+            return this.normalizeReportHeadingLabel(value)
+                .toLowerCase()
+                .replace(/[\s:：、,，.．\-_/（）()\[\]【】]+/g, '');
+        },
+
+        extractReadableChars(value) {
+            return this.cleanReportText(value).replace(/\s+/g, '').length;
+        },
+
+        extractReportNodesText(nodes = []) {
+            return nodes
+                .map(node => this.cleanReportText(node?.textContent || ''))
+                .filter(Boolean)
+                .join(' ');
+        },
+
+        collectReportSections(reportElement) {
+            const headings = Array.from(reportElement.querySelectorAll('h2'));
+            if (headings.length === 0) return [];
+
+            let visibleIndex = 0;
+            let accumulatedChars = 0;
+
+            return headings.map((heading, index) => {
+                const rawTitle = this.cleanReportText(heading.textContent || '');
+                const normalizedTitle = this.normalizeReportHeadingLabel(rawTitle) || rawTitle || `章节 ${index + 1}`;
+                const normalizedKey = this.normalizeReportHeadingKey(normalizedTitle);
+                const isAppendix = normalizedKey.includes('附录');
+                if (!isAppendix) {
+                    visibleIndex += 1;
+                }
+
+                const sectionId = `report-section-${index + 1}`;
+                heading.id = sectionId;
+                heading.setAttribute('tabindex', '-1');
+                heading.classList.add('dv-report-section-heading');
+                heading.classList.toggle('is-appendix', isAppendix);
+
+                const nextHeading = headings[index + 1] || null;
+                const nodes = [];
+                let cursor = heading.nextElementSibling;
+                while (cursor && cursor !== nextHeading) {
+                    nodes.push(cursor);
+                    cursor = cursor.nextElementSibling;
+                }
+
+                const children = [];
+                let childIndex = 0;
+                const childCounters = [];
+                const ancestorIds = [];
+                const ancestorTitles = [];
+                nodes.forEach(node => {
+                    const tagName = String(node?.tagName || '').toUpperCase();
+                    if (!/^H[3-6]$/.test(tagName)) return;
+
+                    const level = Number(tagName.slice(1));
+                    const depth = Math.max(1, level - 2);
+                    childIndex += 1;
+                    const childId = `${sectionId}-sub-${childIndex}`;
+                    node.id = childId;
+                    node.setAttribute('tabindex', '-1');
+                    node.classList.add('dv-report-subheading');
+                    const childTitle = this.normalizeReportHeadingLabel(node.textContent || '') || `小节 ${childIndex}`;
+                    childCounters.length = depth;
+                    ancestorIds.length = Math.max(depth - 1, 0);
+                    ancestorTitles.length = Math.max(depth - 1, 0);
+                    childCounters[depth - 1] = (childCounters[depth - 1] || 0) + 1;
+
+                    const parentId = depth === 1
+                        ? sectionId
+                        : (ancestorIds[depth - 2] || sectionId);
+                    const indexParts = isAppendix
+                        ? ['附录', ...childCounters.slice(0, depth).map(value => String(value))]
+                        : [String(visibleIndex), ...childCounters.slice(0, depth).map(value => String(value))];
+                    const breadcrumbParts = [normalizedTitle, ...ancestorTitles, childTitle]
+                        .map(part => this.cleanReportText(part))
+                        .filter(Boolean);
+
+                    children.push({
+                        id: childId,
+                        title: childTitle,
+                        indexLabel: indexParts.join('.'),
+                        depth,
+                        level,
+                        parentId,
+                        topLevelId: sectionId,
+                        element: node,
+                        breadcrumbLabel: breadcrumbParts.join(' / ')
+                    });
+
+                    ancestorIds[depth - 1] = childId;
+                    ancestorTitles[depth - 1] = childTitle;
+                });
+
+                const textContent = this.extractReportNodesText(nodes);
+                const charCount = Math.max(this.extractReadableChars(textContent), children.length > 0 ? children.length * 18 : 48);
+                const startChars = accumulatedChars;
+                if (!isAppendix) {
+                    accumulatedChars += charCount;
+                }
+
+                return {
+                    id: sectionId,
+                    element: heading,
+                    title: isAppendix ? '附录：原始记录' : normalizedTitle,
+                    rawTitle,
+                    key: normalizedKey,
+                    indexLabel: isAppendix ? '附录' : String(visibleIndex),
+                    children,
+                    nodes,
+                    charCount,
+                    startChars,
+                    isAppendix
+                };
+            });
+        },
+
+        buildReportDetailNavItems(sections = []) {
+            return sections.flatMap(section => {
+                const topItem = {
+                    id: section.id,
+                    title: section.title,
+                    breadcrumbLabel: section.title,
+                    indexLabel: section.indexLabel,
+                    isAppendix: section.isAppendix,
+                    depth: 0,
+                    topLevelId: section.id,
+                    charCount: section.charCount,
+                    startChars: section.startChars,
+                    element: section.element
+                };
+
+                const childItems = Array.isArray(section.children)
+                    ? section.children.map(child => ({
+                        ...child,
+                        isAppendix: section.isAppendix || child.isAppendix === true,
+                        topLevelId: child.topLevelId || section.id
+                    }))
+                    : [];
+
+                return [topItem, ...childItems];
+            });
+        },
+
+        findReportSectionByKeywords(sections = [], keywords = []) {
+            const normalizedKeywords = keywords
+                .map(keyword => this.normalizeReportHeadingKey(keyword))
+                .filter(Boolean);
+
+            return sections.find(section => normalizedKeywords.some(keyword => section.key.includes(keyword))) || null;
+        },
+
+        extractSectionParagraphs(section) {
+            if (!section?.nodes?.length) return [];
+
+            const paragraphs = [];
+            section.nodes.forEach(node => {
+                if (!(node instanceof Element)) return;
+                if (node.tagName === 'P') {
+                    paragraphs.push(node);
+                }
+                node.querySelectorAll('p').forEach(paragraph => paragraphs.push(paragraph));
+            });
+
+            return paragraphs
+                .map(paragraph => this.cleanReportText(paragraph.textContent || ''))
+                .filter(text => text.length >= 24);
+        },
+
+        extractSectionListItems(section, maxItems = 3) {
+            if (!section?.nodes?.length) return [];
+
+            const values = [];
+            section.nodes.forEach(node => {
+                if (!(node instanceof Element)) return;
+                const items = [];
+                if (node.tagName === 'LI') items.push(node);
+                node.querySelectorAll('li').forEach(item => items.push(item));
+                items.forEach(item => {
+                    const text = this.cleanReportText(item.textContent || '');
+                    if (!text || values.includes(text)) return;
+                    values.push(text);
+                });
+            });
+
+            return values.slice(0, maxItems);
+        },
+
+        extractSectionTableFirstColumn(section, maxItems = 3) {
+            if (!section?.nodes?.length) return [];
+
+            const values = [];
+            const tables = section.nodes
+                .filter(node => node instanceof Element)
+                .flatMap(node => {
+                    const collection = [];
+                    if (node.tagName === 'TABLE') collection.push(node);
+                    node.querySelectorAll('table').forEach(table => collection.push(table));
+                    return collection;
+                });
+
+            tables.forEach(table => {
+                Array.from(table.querySelectorAll('tbody tr, tr')).forEach(row => {
+                    if (row.closest('thead')) return;
+                    const cells = Array.from(row.querySelectorAll('td'));
+                    if (cells.length === 0) return;
+                    const firstText = this.cleanReportText(cells[0]?.textContent || '');
+                    const secondText = this.cleanReportText(cells[1]?.textContent || '');
+                    const looksLikePriority = /^P\d$/i.test(firstText) || /优先级|priority/i.test(firstText);
+                    const text = looksLikePriority && secondText ? secondText : firstText;
+                    if (!text || values.includes(text)) return;
+                    values.push(text);
+                });
+            });
+
+            return values.slice(0, maxItems);
+        },
+
+        extractOverviewFacts(section, maxItems = 4) {
+            if (!section?.nodes?.length) return [];
+
+            const tables = section.nodes
+                .filter(node => node instanceof Element)
+                .flatMap(node => {
+                    const collection = [];
+                    if (node.tagName === 'TABLE') collection.push(node);
+                    node.querySelectorAll('table').forEach(table => collection.push(table));
+                    return collection;
+                });
+            const table = tables[0];
+            if (!table) return [];
+
+            return Array.from(table.querySelectorAll('tbody tr, tr'))
+                .filter(row => !row.closest('thead'))
+                .map(row => Array.from(row.querySelectorAll('td')))
+                .filter(cells => cells.length >= 2)
+                .map(cells => ({
+                    label: this.cleanReportText(cells[0].textContent || ''),
+                    value: this.cleanReportText(cells[1].textContent || '')
+                }))
+                .filter(item => item.label && item.value)
+                .slice(0, maxItems);
+        },
+
+        buildReportDetailModel(reportElement, sections = [], navItems = []) {
+            const mainSections = sections.filter(section => !section.isAppendix);
+            const totalChars = mainSections.reduce((sum, section) => sum + section.charCount, 0);
+            const flatNavItems = Array.isArray(navItems) && navItems.length > 0
+                ? navItems
+                : this.buildReportDetailNavItems(sections);
+            const primarySections = flatNavItems.filter(item => Number(item.depth || 0) === 0);
+            const overviewSection = this.findReportSectionByKeywords(sections, ['访谈概述']);
+            const nextActionSection = this.findReportSectionByKeywords(sections, ['下一步行动']);
+            const proposalSection = this.findReportSectionByKeywords(sections, ['方案建议']);
+            const summaryCandidates = mainSections
+                .flatMap(section => this.extractSectionParagraphs(section))
+                .slice(0, 3);
+            const primaryActions = this.extractSectionListItems(nextActionSection, 3);
+            const primaryActionFallback = this.extractSectionTableFirstColumn(nextActionSection, 3);
+            const proposalActions = this.extractSectionListItems(proposalSection, 3);
+            const proposalActionFallback = this.extractSectionTableFirstColumn(proposalSection, 3);
+
+            const summaryText = summaryCandidates[0]
+                || '当前报告已按章节组织为可阅读文档，可通过左侧目录快速定位重点。';
+
+            const actionItems = primaryActions.length
+                ? primaryActions
+                : (
+                    primaryActionFallback.length
+                        ? primaryActionFallback
+                        : (
+                            proposalActions.length
+                                ? proposalActions
+                                : proposalActionFallback
+                        )
+                );
+
+            const currentSection = flatNavItems[0] || null;
+            const currentTopSection = primarySections[0] || null;
+            const progressPercent = currentTopSection
+                ? this.calculateReportProgressPercent(currentTopSection.id, sections, totalChars)
+                : 0;
+            const remainingLabel = currentTopSection
+                ? this.calculateReportRemainingLabel(currentTopSection.id, sections, totalChars)
+                : '-';
+
+            return {
+                sections: flatNavItems.map(item => ({
+                    id: item.id,
+                    title: item.title,
+                    breadcrumbLabel: item.breadcrumbLabel || item.title,
+                    indexLabel: item.indexLabel,
+                    isAppendix: item.isAppendix,
+                    depth: item.depth || 0,
+                    topLevelId: item.topLevelId || item.id
+                })),
+                primarySections: primarySections.map(item => ({
+                    id: item.id,
+                    title: item.title,
+                    indexLabel: item.indexLabel,
+                    isAppendix: item.isAppendix,
+                    depth: 0
+                })),
+                currentSectionId: currentSection?.id || '',
+                currentTopSectionId: currentTopSection?.id || currentSection?.id || '',
+                currentSectionLabel: currentSection?.breadcrumbLabel || currentSection?.title || '阅读中',
+                progressPercent,
+                remainingLabel,
+                summaryText,
+                overviewItems: this.extractOverviewFacts(overviewSection, 4),
+                actionItems,
+                mobileNavOpen: false
+            };
+        },
+
+        calculateReportProgressPercent(sectionId, sections = [], totalChars = 0) {
+            if (!sectionId || totalChars <= 0) return 0;
+            const target = sections.find(section => section.id === sectionId) || null;
+            if (!target) return 0;
+            if (target.isAppendix) return 100;
+
+            const estimate = (target.startChars + target.charCount * 0.4) / totalChars;
+            return Math.max(6, Math.min(99, Math.round(estimate * 100)));
+        },
+
+        calculateReportRemainingLabel(sectionId, sections = [], totalChars = 0) {
+            if (!sectionId || totalChars <= 0) return '-';
+            const target = sections.find(section => section.id === sectionId) || null;
+            if (!target) return '-';
+            if (target.isAppendix) return '附录 / 原始记录';
+
+            const remainingChars = Math.max(totalChars - target.startChars, 0);
+            const remainingMinutes = Math.max(1, Math.ceil(remainingChars / 320));
+            return `约 ${remainingMinutes} 分钟`;
+        },
+
+        setupReportSectionObserver() {
+            if (!Array.isArray(this.reportDetailSectionRegistry) || this.reportDetailSectionRegistry.length === 0) {
+                return;
+            }
+
+            if (this.reportDetailObserver) {
+                this.reportDetailObserver.disconnect();
+            }
+
+            this.reportDetailObserver = new IntersectionObserver((entries) => {
+                const activeEntry = entries
+                    .filter(entry => entry.isIntersecting)
+                    .sort((a, b) => {
+                        if (b.intersectionRatio !== a.intersectionRatio) {
+                            return b.intersectionRatio - a.intersectionRatio;
+                        }
+                        return a.boundingClientRect.top - b.boundingClientRect.top;
+                    })[0];
+
+                if (!activeEntry?.target?.id) return;
+                this.updateActiveReportSection(activeEntry.target.id);
+            }, {
+                rootMargin: '-18% 0px -62% 0px',
+                threshold: [0.12, 0.3, 0.6]
+            });
+
+            this.reportDetailSectionRegistry.forEach(section => {
+                if (section?.element) {
+                    this.reportDetailObserver.observe(section.element);
                 }
             });
 
-            const tocItems = headings.filter(h => h.tagName === 'H2');
-            if (tocItems.length > 0) {
-                const toc = document.createElement('div');
-                toc.id = 'report-toc-block';
-                toc.className = 'border border-gray-200 rounded-xl p-4 mb-4 bg-white';
-                const title = document.createElement('div');
-                title.className = 'text-sm font-semibold text-primary mb-2';
-                title.textContent = '目录';
-                toc.appendChild(title);
-                const list = document.createElement('div');
-                list.className = 'flex flex-wrap gap-2';
-                tocItems.forEach(item => {
-                    const btn = document.createElement('button');
-                    btn.type = 'button';
-                    btn.className = 'tag-pill tag-pill--xs hover:bg-gray-200 transition-colors';
-                    btn.textContent = item.textContent.trim();
-                    btn.addEventListener('click', () => {
-                        item.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    });
-                    list.appendChild(btn);
-                });
-                toc.appendChild(list);
-                reportElement.prepend(toc);
+            const fallbackSectionId = this.reportDetailSectionRegistry[0]?.id || '';
+            if (fallbackSectionId) {
+                this.updateActiveReportSection(fallbackSectionId);
             }
+        },
 
-            this.enhanceAppendixToggle(reportElement);
+        updateActiveReportSection(sectionId) {
+            if (!sectionId || !this.reportDetailModel) return;
+
+            const target = this.reportDetailSectionRegistry.find(section => section.id === sectionId) || null;
+            if (!target) return;
+
+            const primarySections = this.reportDetailSectionRegistry
+                .filter(section => Number(section.depth || 0) === 0);
+            const totalChars = primarySections
+                .filter(section => !section.isAppendix)
+                .reduce((sum, section) => sum + section.charCount, 0);
+            const progressSectionId = target.topLevelId || target.id;
+
+            this.reportDetailModel.currentSectionId = sectionId;
+            this.reportDetailModel.currentTopSectionId = progressSectionId;
+            this.reportDetailModel.currentSectionLabel = target.breadcrumbLabel || target.title;
+            this.reportDetailModel.progressPercent = this.calculateReportProgressPercent(
+                progressSectionId,
+                primarySections,
+                totalChars
+            );
+            this.reportDetailModel.remainingLabel = this.calculateReportRemainingLabel(
+                progressSectionId,
+                primarySections,
+                totalChars
+            );
+
+            this.reportDetailSectionRegistry.forEach(section => {
+                if (!section?.element) return;
+                section.element.classList.toggle('is-active', section.id === sectionId);
+            });
+            this.ensureReportNavItemVisible(sectionId);
         },
 
         enhanceAppendixToggle(reportElement) {
@@ -5532,12 +6152,15 @@ function deepVision() {
                 existingWrap.remove();
             }
 
-            const menuWrap = document.createElement('details');
+            const menuWrap = document.createElement('div');
             menuWrap.className = 'dv-appendix-export-wrap';
 
-            const summary = document.createElement('summary');
-            summary.className = 'dv-appendix-export-trigger';
-            summary.innerHTML = `
+            const trigger = document.createElement('button');
+            trigger.type = 'button';
+            trigger.className = 'dv-appendix-export-trigger';
+            trigger.setAttribute('aria-haspopup', 'menu');
+            trigger.setAttribute('aria-expanded', 'false');
+            trigger.innerHTML = `
                 <svg class="dv-appendix-export-trigger-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
                 </svg>
@@ -5546,10 +6169,30 @@ function deepVision() {
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
                 </svg>
             `;
-            menuWrap.appendChild(summary);
+            menuWrap.appendChild(trigger);
 
             const panel = document.createElement('div');
             panel.className = 'dv-appendix-export-menu dv-popover-panel';
+            panel.setAttribute('role', 'menu');
+            panel.setAttribute('aria-hidden', 'true');
+
+            const openMenu = () => {
+                menuWrap.classList.add('is-open');
+                trigger.setAttribute('aria-expanded', 'true');
+                panel.setAttribute('aria-hidden', 'false');
+                const firstItem = panel.querySelector('[data-first-item="1"]');
+                firstItem?.focus();
+            };
+
+            const closeMenu = (options = {}) => {
+                const { restoreFocus = false } = options;
+                menuWrap.classList.remove('is-open');
+                trigger.setAttribute('aria-expanded', 'false');
+                panel.setAttribute('aria-hidden', 'true');
+                if (restoreFocus) {
+                    trigger.focus();
+                }
+            };
 
             const options = [
                 {
@@ -5596,31 +6239,42 @@ function deepVision() {
                     event.preventDefault();
                     event.stopPropagation();
                     this.downloadAppendix(item.format);
-                    menuWrap.removeAttribute('open');
-                    summary.focus();
+                    closeMenu({ restoreFocus: true });
                 });
                 panel.appendChild(btn);
             });
 
-            menuWrap.addEventListener('toggle', () => {
-                if (!menuWrap.open) return;
-                const firstItem = panel.querySelector('[data-first-item="1"]');
-                firstItem?.focus();
+            trigger.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (menuWrap.classList.contains('is-open')) {
+                    closeMenu();
+                    return;
+                }
+                openMenu();
             });
+
+            trigger.addEventListener('keydown', (event) => {
+                if (event.key !== 'ArrowDown') return;
+                event.preventDefault();
+                if (!menuWrap.classList.contains('is-open')) {
+                    openMenu();
+                }
+            });
+
             menuWrap.addEventListener('keydown', (event) => {
                 if (event.key !== 'Escape') return;
                 event.preventDefault();
-                menuWrap.removeAttribute('open');
-                summary.focus();
+                closeMenu({ restoreFocus: true });
             });
 
             menuWrap.appendChild(panel);
             appendixHeading.appendChild(menuWrap);
 
             this.appendixExportOutsideHandler = (event) => {
-                if (!menuWrap.open) return;
+                if (!menuWrap.classList.contains('is-open')) return;
                 if (menuWrap.contains(event.target)) return;
-                menuWrap.removeAttribute('open');
+                closeMenu();
             };
             document.addEventListener('click', this.appendixExportOutsideHandler, true);
         },
@@ -7257,7 +7911,10 @@ function deepVision() {
                 this.stopSessionsAutoRefresh();
             }
             this.currentView = view;
+            this.cleanupReportDetailEnhancements();
             this.selectedReport = null;
+            this.reportContent = '';
+            this.selectedReportMeta = this.createEmptySelectedReportMeta();
             this.presentationPdfUrl = '';
             this.presentationLocalUrl = '';
             this.stopPresentationPolling();
