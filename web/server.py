@@ -716,6 +716,13 @@ QUESTION_HEDGED_SECONDARY_LANE = _cfg_text("QUESTION_HEDGED_SECONDARY_LANE", "su
 if QUESTION_HEDGED_SECONDARY_LANE not in {"report", "summary", "search_decision"}:
     QUESTION_HEDGED_SECONDARY_LANE = "summary"
 QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT = _cfg_bool("QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT", True)
+QUESTION_HIGH_EVIDENCE_PRIMARY_LANE = _cfg_text("QUESTION_HIGH_EVIDENCE_PRIMARY_LANE", "question").strip().lower()
+if QUESTION_HIGH_EVIDENCE_PRIMARY_LANE not in {"question", "report"}:
+    QUESTION_HIGH_EVIDENCE_PRIMARY_LANE = "question"
+QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = _cfg_text("QUESTION_HIGH_EVIDENCE_SECONDARY_LANE", "report").strip().lower()
+if QUESTION_HIGH_EVIDENCE_SECONDARY_LANE not in {"question", "report", "search_decision"}:
+    QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = "report"
+QUESTION_HIGH_EVIDENCE_DISABLE_DYNAMIC_LANE = _cfg_bool("QUESTION_HIGH_EVIDENCE_DISABLE_DYNAMIC_LANE", True)
 QUESTION_HEDGE_ADAPTIVE_ENABLED = _cfg_bool("QUESTION_HEDGE_ADAPTIVE_ENABLED", True)
 QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES = _cfg_int("QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES", 8)
 if QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES < 3:
@@ -830,7 +837,7 @@ if REPORT_V3_DRAFT_PRIMARY_LANE not in {"question", "report"}:
 REPORT_V3_REVIEW_PRIMARY_LANE = _cfg_text("REPORT_V3_REVIEW_PRIMARY_LANE", "report").strip().lower()
 if REPORT_V3_REVIEW_PRIMARY_LANE not in {"question", "report"}:
     REPORT_V3_REVIEW_PRIMARY_LANE = "report"
-REPORT_V3_FAILOVER_FORCE_SINGLE_LANE = _cfg_bool("REPORT_V3_FAILOVER_FORCE_SINGLE_LANE", True)
+REPORT_V3_FAILOVER_FORCE_SINGLE_LANE = _cfg_bool("REPORT_V3_FAILOVER_FORCE_SINGLE_LANE", False)
 REPORT_V3_QUALITY_FORCE_SINGLE_LANE = _cfg_bool("REPORT_V3_QUALITY_FORCE_SINGLE_LANE", True)
 REPORT_V3_QUALITY_PRIMARY_LANE = _cfg_text("REPORT_V3_QUALITY_PRIMARY_LANE", "report").strip().lower()
 if REPORT_V3_QUALITY_PRIMARY_LANE not in {"question", "report"}:
@@ -841,6 +848,9 @@ REPORT_V3_WEAK_BINDING_MIN_SCORE = _cfg_float("REPORT_V3_WEAK_BINDING_MIN_SCORE"
 REPORT_V3_WEAK_BINDING_MIN_SCORE = max(0.2, min(REPORT_V3_WEAK_BINDING_MIN_SCORE, 0.9))
 REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE = _cfg_bool("REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE", True)
 REPORT_V3_FAILOVER_ON_SINGLE_ISSUE = _cfg_bool("REPORT_V3_FAILOVER_ON_SINGLE_ISSUE", True)
+REPORT_V3_FAILOVER_ON_DETERMINISTIC_BUCKET = _cfg_bool("REPORT_V3_FAILOVER_ON_DETERMINISTIC_BUCKET", True)
+REPORT_V3_FAILOVER_DETERMINISTIC_MAX_ISSUES = _cfg_int("REPORT_V3_FAILOVER_DETERMINISTIC_MAX_ISSUES", 3)
+REPORT_V3_FAILOVER_DETERMINISTIC_MAX_ISSUES = max(1, min(REPORT_V3_FAILOVER_DETERMINISTIC_MAX_ISSUES, 8))
 REPORT_V3_BLINDSPOT_ACTION_REQUIRED_BALANCED = _cfg_bool("REPORT_V3_BLINDSPOT_ACTION_REQUIRED_BALANCED", False)
 REPORT_V3_BLINDSPOT_ACTION_REQUIRED_QUALITY = _cfg_bool("REPORT_V3_BLINDSPOT_ACTION_REQUIRED_QUALITY", True)
 REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_ENABLED = _cfg_bool("REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_ENABLED", True)
@@ -1768,17 +1778,25 @@ def _build_question_lane_strategy_key(runtime_profile: Optional[dict], phase: st
 def _resolve_dynamic_question_lane_order(runtime_profile: Optional[dict], phase: str = "full") -> tuple[str, str, dict]:
     profile = dict(runtime_profile or {})
     normalized_phase = "fast" if str(phase or "").strip().lower() == "fast" else "full"
+    dynamic_lane_order_enabled = bool(profile.get("dynamic_lane_order_enabled", True))
+    disallowed_lanes = {
+        str(item or "").strip().lower()
+        for item in (profile.get("disallowed_lanes", []) if isinstance(profile.get("disallowed_lanes", []), list) else [])
+        if str(item or "").strip()
+    }
     base_candidates = []
     primary_lane = str(profile.get("primary_lane", "question") or "question").strip().lower() or "question"
     secondary_lane = str(profile.get("secondary_lane", QUESTION_HEDGED_SECONDARY_LANE) or QUESTION_HEDGED_SECONDARY_LANE).strip().lower() or QUESTION_HEDGED_SECONDARY_LANE
     for lane_name in [primary_lane, secondary_lane]:
-        if lane_name and lane_name not in base_candidates:
+        if lane_name and lane_name not in disallowed_lanes and lane_name not in base_candidates:
             base_candidates.append(lane_name)
 
     fallback_candidates = ["question", "summary", "report", "search_decision"]
     if normalized_phase == "full":
         fallback_candidates = ["question", "report", "summary", "search_decision"]
     for lane_name in fallback_candidates:
+        if lane_name in disallowed_lanes:
+            continue
         if lane_name not in base_candidates:
             base_candidates.append(lane_name)
 
@@ -1787,7 +1805,7 @@ def _resolve_dynamic_question_lane_order(runtime_profile: Optional[dict], phase:
     strategy_key = _build_question_lane_strategy_key(profile, normalized_phase)
     snapshot = _build_question_lane_strategy_snapshot(strategy_key, ordered_candidates)
 
-    if QUESTION_LANE_DYNAMIC_ENABLED and len(ordered_candidates) > 1:
+    if QUESTION_LANE_DYNAMIC_ENABLED and dynamic_lane_order_enabled and len(ordered_candidates) > 1:
         ranked = list(ordered_candidates)
         for index in range(1, len(ranked)):
             candidate_lane = ranked[index]
@@ -1814,7 +1832,8 @@ def _resolve_dynamic_question_lane_order(runtime_profile: Optional[dict], phase:
         "strategy_key": strategy_key,
         "ordered_candidates": ordered_candidates,
         "snapshot": snapshot,
-        "dynamic_enabled": bool(QUESTION_LANE_DYNAMIC_ENABLED),
+        "dynamic_enabled": bool(QUESTION_LANE_DYNAMIC_ENABLED and dynamic_lane_order_enabled),
+        "disallowed_lanes": sorted(disallowed_lanes),
     }
 
 # ============ 访谈 Prompt 构建缓存 ============
@@ -5063,6 +5082,14 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str, session_si
             if response and result:
                 result["dimension"] = next_dimension
                 result["ai_generated"] = True
+                selected_lane = tier_used.split(":", 1)[1] if ":" in tier_used else ""
+                decision_meta = dict(prepared_runtime.get("decision_meta", {}) or {})
+                decision_meta["tier_used"] = tier_used
+                decision_meta["selected_lane"] = selected_lane
+                result["decision_meta"] = decision_meta
+                result["question_generation_tier"] = tier_used
+                result["question_selected_lane"] = selected_lane
+                result["question_runtime_profile"] = prepared_runtime.get("runtime_profile", {}).get("profile_name", "")
 
                 with prefetch_cache_lock:
                     if session_id not in prefetch_cache:
@@ -5159,6 +5186,14 @@ def prefetch_first_question(session_id: str):
             if response and result:
                 result["dimension"] = first_dim
                 result["ai_generated"] = True
+                selected_lane = tier_used.split(":", 1)[1] if ":" in tier_used else ""
+                decision_meta = dict(prepared_runtime.get("decision_meta", {}) or {})
+                decision_meta["tier_used"] = tier_used
+                decision_meta["selected_lane"] = selected_lane
+                result["decision_meta"] = decision_meta
+                result["question_generation_tier"] = tier_used
+                result["question_selected_lane"] = selected_lane
+                result["question_runtime_profile"] = prepared_runtime.get("runtime_profile", {}).get("profile_name", "")
 
                 with prefetch_cache_lock:
                     if session_id not in prefetch_cache:
@@ -8400,7 +8435,6 @@ DEFAULT_INTERVIEW_MODE = "standard"
 HARD_FOLLOW_UP_SIGNALS = {
     "vague_expression",
     "generic_answer",
-    "option_only",
     "contradiction_detected",
 }
 
@@ -8776,6 +8810,128 @@ def has_pending_forced_follow_up(session: dict, dimension: str) -> bool:
     return False
 
 
+QUESTION_ANSWER_MODES = {"pick_only", "pick_with_reason"}
+QUESTION_EVIDENCE_INTENTS = {"low", "medium", "high"}
+
+
+def normalize_question_answer_mode(answer_mode: str, fallback: str = "pick_only") -> str:
+    normalized = str(answer_mode or "").strip().lower()
+    if normalized in QUESTION_ANSWER_MODES:
+        return normalized
+    fallback_mode = str(fallback or "").strip().lower()
+    if fallback_mode in QUESTION_ANSWER_MODES:
+        return fallback_mode
+    return "pick_only"
+
+
+def normalize_question_evidence_intent(evidence_intent: str, fallback: str = "low") -> str:
+    normalized = str(evidence_intent or "").strip().lower()
+    if normalized in QUESTION_EVIDENCE_INTENTS:
+        return normalized
+    fallback_intent = str(fallback or "").strip().lower()
+    if fallback_intent in QUESTION_EVIDENCE_INTENTS:
+        return fallback_intent
+    return "low"
+
+
+def build_question_capture_contract(
+    *,
+    should_follow_up: bool,
+    hard_triggered: bool,
+    missing_aspects: Optional[list] = None,
+    formal_questions_count: int = 0,
+    dimension: str = "",
+) -> dict:
+    """根据当前访谈上下文决定问题的采集契约。"""
+    missing_count = len(list(missing_aspects or []))
+    normalized_dimension = str(dimension or "").strip().lower()
+
+    answer_mode = "pick_only"
+    requires_rationale = False
+    evidence_intent = "low"
+
+    if should_follow_up or hard_triggered or missing_count > 0:
+        answer_mode = "pick_with_reason"
+        requires_rationale = True
+        evidence_intent = "high"
+    elif formal_questions_count >= 2 or normalized_dimension in {"tech_constraints", "project_constraints"}:
+        answer_mode = "pick_with_reason"
+        requires_rationale = True
+        evidence_intent = "medium"
+
+    return {
+        "answer_mode": answer_mode,
+        "requires_rationale": requires_rationale,
+        "evidence_intent": evidence_intent,
+    }
+
+
+RICH_OPTION_CAUSE_KEYWORDS = (
+    "导致", "影响", "因为", "所以", "瓶颈", "阻塞", "误拦截", "投诉", "风险", "失败", "延迟",
+)
+RICH_OPTION_CONTEXT_KEYWORDS = (
+    "高峰期", "夜间", "白天", "审批", "接口", "流程", "场景", "订单", "工单", "客户", "用户",
+)
+RICH_OPTION_ROLE_KEYWORDS = (
+    "客服", "销售", "运营", "风控", "研发", "产品", "实施", "财务", "法务", "商家",
+)
+RICH_OPTION_PROCESS_KEYWORDS = (
+    "流转", "复核", "上线", "对接", "集成", "回访", "分配", "排查", "协作", "审核",
+)
+
+
+def _score_rich_option_answer(question: str, answer: str, options: list = None, dimension: str = "") -> dict:
+    """识别“只点选项但选项本身信息密度足够高”的回答。"""
+    answer_text = str(answer or "").strip()
+    option_list = [str(item or "").strip() for item in (options or []) if str(item or "").strip()]
+    if not answer_text or not option_list:
+        return {"is_rich_option": False, "score": 0, "primary_option": "", "matched_options": [], "exact_option": False}
+
+    exact_option = answer_text in option_list
+    matched_options = [option for option in option_list if option and option in answer_text]
+    if not exact_option and not matched_options:
+        return {"is_rich_option": False, "score": 0, "primary_option": "", "matched_options": [], "exact_option": False}
+
+    primary_option = answer_text if exact_option else max(matched_options, key=len)
+    normalized_question = str(question or "").strip()
+    normalized_dimension = str(dimension or "").strip().lower()
+    score = 0
+
+    if exact_option:
+        score += 1
+    if len(primary_option) >= 10:
+        score += 1
+    if len(primary_option) >= 16:
+        score += 1
+    if any(token in primary_option for token in ("（", ")", "：", ":", "/", "-", "，")):
+        score += 1
+    if any(token in primary_option for token in RICH_OPTION_CAUSE_KEYWORDS):
+        score += 1
+    if any(token in primary_option for token in RICH_OPTION_CONTEXT_KEYWORDS):
+        score += 1
+    if any(token in primary_option for token in RICH_OPTION_ROLE_KEYWORDS):
+        score += 1
+    if any(token in primary_option for token in RICH_OPTION_PROCESS_KEYWORDS):
+        score += 1
+    if any(char.isdigit() for char in primary_option):
+        score += 1
+    if any(token in normalized_question for token in ("原因", "场景", "影响", "频次", "角色", "流程", "瓶颈")):
+        score += 1
+    if normalized_dimension in {"tech_constraints", "project_constraints"} and any(
+        token in primary_option for token in ("分钟", "小时", "天", "周", "月", "成本", "预算", "上线")
+    ):
+        score += 1
+
+    is_rich_option = score >= 4 or (exact_option and score >= 3 and len(primary_option) >= 12)
+    return {
+        "is_rich_option": bool(is_rich_option),
+        "score": score,
+        "primary_option": primary_option,
+        "matched_options": matched_options,
+        "exact_option": exact_option,
+    }
+
+
 def evaluate_answer_quality(eval_result: dict, answer: str, is_follow_up: bool, follow_up_round: int) -> dict:
     """将回答评估结果映射为质量分数与标签。"""
     signals = eval_result.get("signals", [])
@@ -8795,6 +8951,8 @@ def evaluate_answer_quality(eval_result: dict, answer: str, is_follow_up: bool, 
     scenario_keywords = ["比如", "例如", "当", "如果", "场景", "案例"]
     if any(keyword in (answer or "") for keyword in scenario_keywords):
         quality_score += 0.1
+    if "rich_option_answer" in signals:
+        quality_score += 0.12
 
     negative_penalty = {
         "too_short": 0.2,
@@ -8819,6 +8977,8 @@ def evaluate_answer_quality(eval_result: dict, answer: str, is_follow_up: bool, 
         quality_signals.append("quantified")
     if answer_len >= 80:
         quality_signals.append("detailed")
+    if "rich_option_answer" in signals:
+        quality_signals.append("rich_option")
 
     for signal in signals:
         if signal not in quality_signals:
@@ -9137,7 +9297,11 @@ def score_assessment_answer(session: dict, dimension: str, question: str, answer
 
 
 def evaluate_answer_depth(question: str, answer: str, dimension: str,
-                          options: list = None, is_follow_up: bool = False) -> dict:
+                          options: list = None, is_follow_up: bool = False,
+                          multi_select: bool = False,
+                          answer_mode: str = "",
+                          requires_rationale: bool = False,
+                          evidence_intent: str = "") -> dict:
     """
     评估回答深度，判断是否需要追问
 
@@ -9158,12 +9322,29 @@ def evaluate_answer_depth(question: str, answer: str, dimension: str,
     answer_stripped = answer.strip()
     answer_len = len(answer_stripped)
     sensitivity = DIMENSION_FOLLOW_UP_SENSITIVITY.get(dimension, 0.5)
+    normalized_answer_mode = normalize_question_answer_mode(
+        answer_mode,
+        fallback="pick_with_reason" if requires_rationale else "pick_only",
+    )
+    normalized_requires_rationale = bool(requires_rationale or normalized_answer_mode == "pick_with_reason")
+    normalized_evidence_intent = normalize_question_evidence_intent(
+        evidence_intent,
+        fallback="high" if normalized_requires_rationale else "low",
+    )
+    pick_only_mode = normalized_answer_mode == "pick_only" and not normalized_requires_rationale
+    rich_option_meta = _score_rich_option_answer(question, answer_stripped, options=options, dimension=dimension)
+    is_rich_option_answer = bool(rich_option_meta.get("is_rich_option", False))
 
     # ---- 第一层：明确需要追问的情况 ----
 
     # 1. 回答过短（根据维度敏感度调整阈值）
     short_threshold = int(20 + sensitivity * 20)  # 客户需求36字符，项目约束28字符
-    if answer_len < short_threshold:
+    if options:
+        if pick_only_mode:
+            short_threshold = min(short_threshold, 10 if multi_select else 6)
+        else:
+            short_threshold = min(short_threshold, 18 if multi_select else 12)
+    if answer_len < short_threshold and not is_rich_option_answer:
         signals.append("too_short")
 
     # 2. 模糊表达检测（扩展词库）
@@ -9191,10 +9372,17 @@ def evaluate_answer_depth(question: str, answer: str, dimension: str,
 
     # 4. 仅选择了预设选项没有补充（答案等于某个选项原文）
     if options:
-        is_exact_option = answer_stripped in options
-        # 单选且答案就是选项原文，缺乏自己的思考
-        if is_exact_option and answer_len < 40:
+        is_exact_option = bool(rich_option_meta.get("exact_option", False))
+        informative_option = (
+            answer_len >= 10
+            or is_rich_option_answer
+            or any(token in answer_stripped for token in ("（", ")", "：", ":", "如", "例如", "比如", "因为"))
+        )
+        # 只有非常短的“机械选项回填”才视为 option_only；收敛型问题不处罚。
+        if not pick_only_mode and is_exact_option and answer_len < 16 and not informative_option:
             signals.append("option_only")
+        if is_rich_option_answer:
+            signals.append("rich_option_answer")
 
     # 5. 缺乏量化信息（对某些维度重要）
     has_numbers = any(c.isdigit() for c in answer_stripped)
@@ -9203,7 +9391,7 @@ def evaluate_answer_depth(question: str, answer: str, dimension: str,
         signals.append("no_quantification")
 
     # 6. 多选但只选了一个（可能需要补充）
-    if options and "；" not in answer_stripped and len(options) >= 3:
+    if multi_select and options and "；" not in answer_stripped and len(options) >= 3 and not is_rich_option_answer:
         # 检查是否是多选题但只选了一个
         selected_count = sum(1 for opt in options if opt in answer_stripped)
         if selected_count <= 1 and answer_len < 30:
@@ -9235,6 +9423,8 @@ def evaluate_answer_depth(question: str, answer: str, dimension: str,
         sufficient_signals.append("multi_point_answer")
     if has_numbers and answer_len > 30:
         sufficient_signals.append("quantified_answer")
+    if is_rich_option_answer:
+        sufficient_signals.append("rich_option_answer")
 
     # ---- 第三层：综合判断 ----
 
@@ -9256,6 +9446,7 @@ def evaluate_answer_depth(question: str, answer: str, dimension: str,
         "detailed_answer": 0.5,
         "multi_point_answer": 0.3,
         "quantified_answer": 0.2,
+        "rich_option_answer": 0.25 if normalized_evidence_intent == "high" else 0.18,
     }
     sufficient_score = sum(sufficient_weights.get(s, 0) for s in sufficient_signals)
     follow_up_score -= sufficient_score
@@ -9294,7 +9485,7 @@ def _build_follow_up_reason(signals: list) -> str:
         "too_short": "回答过于简短，需要补充具体细节",
         "vague_expression": "回答包含模糊表述，需要明确具体要求",
         "generic_answer": "回答过于笼统，需要深入了解具体需求",
-        "option_only": "仅选择了预设选项，需要了解具体场景和考量",
+        "option_only": "当前答案方向明确，但仍需补一个关键依据以支撑后续结论",
         "no_quantification": "缺少量化指标，需要明确具体数据要求",
         "single_selection": "只选择了单一选项，需要了解是否还有其他需求",
         "contradiction_detected": "回答中存在前后冲突，需要澄清真实约束",
@@ -9494,6 +9685,10 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
             dimension=dimension,
             options=last_options,
             is_follow_up=last_is_follow_up,
+            multi_select=bool(last_log.get("multi_select", False)),
+            answer_mode=last_log.get("answer_mode", ""),
+            requires_rationale=bool(last_log.get("requires_rationale", False)),
+            evidence_intent=last_log.get("evidence_intent", ""),
         )
 
         eval_signals = eval_result["signals"]
@@ -9525,6 +9720,17 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
             if fatigue:
                 print(f"   疲劳度: {fatigue.get('fatigue_score', 0):.0%}, 信号: {fatigue.get('detected_signals', [])}")
 
+    capture_contract = build_question_capture_contract(
+        should_follow_up=should_follow_up,
+        hard_triggered=hard_triggered,
+        missing_aspects=missing_aspects,
+        formal_questions_count=formal_questions_count,
+        dimension=dimension,
+    )
+    answer_mode = capture_contract.get("answer_mode", "pick_only")
+    requires_rationale = bool(capture_contract.get("requires_rationale", False))
+    evidence_intent = capture_contract.get("evidence_intent", "low")
+
     # 构建 AI 评估提示（当规则未明确触发但建议AI判断时）
     ai_eval_guidance = ""
     if suggest_ai_eval and last_log and not is_lightweight_output:
@@ -9538,7 +9744,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 **检测信号**: {', '.join(eval_signals) if eval_signals else '无明显问题'}
 
 判断标准（满足任一条即应追问）：
-1. 回答只是选择了选项，没有说明具体场景或原因
+1. 回答只是选择了抽象选项，选项文本本身也没有体现具体场景、原因或角色
 2. 缺少量化指标（如时间、数量、频率等）
 3. 回答比较笼统，没有针对性细节
 4. 可能隐藏了更深层的需求或顾虑
@@ -9547,6 +9753,8 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 - 设置 is_follow_up: true
 - 针对上一个回答进行深入提问
 - 问题要更具体，引导用户给出明确答案
+
+如果本题 answer_mode 为 pick_with_reason，请优先设计自带场景、原因、角色或流程信息的高信息量选项；若证据仍不足，再通过下一题补一个轻量追问。
 
 如果判断不需要追问，请生成新问题继续访谈。
 """
@@ -9581,7 +9789,8 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 1. 必须设置 is_follow_up: true
 2. 追问必须紧扣上一条回答，不要跳题
 3. 问题尽量简洁，优先问最关键的一个缺口
-4. 选项要短、清晰、便于直接选择
+4. 选项要短、清晰；若 answer_mode=pick_with_reason，优先提供可一键选择的原因/影响/频次类补充项
+5. 不要要求用户长篇输入，优先让用户通过下一题的一次点击补齐关键依据
 """
         else:
             follow_up_section = f"""## 追问模式（必须执行）
@@ -9595,8 +9804,8 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 1. 必须设置 is_follow_up: true
 2. 针对上一个回答进行深入提问，不要跳到新话题
 3. 追问问题要更具体、更有针对性
-4. 引导用户给出具体的场景、数据、或明确的选择
-5. 可以使用"您提到的XXX，能否具体说明..."这样的句式
+4. 优先通过 3-4 个高信息量选项收集原因、频次、角色或影响，不要依赖开放式长输入
+5. 可以使用"您提到的XXX，主要是因为哪一种情况？"这样的句式，让用户一键补齐关键依据
 """
     else:
         if is_lightweight_output:
@@ -9609,6 +9818,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
    - 问“哪些/哪些方面/哪些角色/哪些系统/哪些环节/希望解决哪些问题”时，优先输出多选
    - 只有明确存在唯一主项时才输出单选，例如“最核心/最优先/唯一/当前最重要”
 5. 问题和选项都要便于用户快速选择，不要写成长段解释
+6. 若 answer_mode=pick_with_reason，优先输出自带场景、原因或角色信息的选项，不要依赖用户额外填写说明
 """
         else:
             follow_up_section = """## 问题生成要求
@@ -9626,6 +9836,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
    - 凡是“哪些/哪些方面/哪些角色/哪些系统/哪些环节/需要与哪些集成/希望解决哪些问题”这类可并存枚举题，优先输出多选
    - 只有包含“最核心/最优先/唯一/当前最重要”等唯一性语义时才输出单选
 5. 如果用户的回答与参考文档内容有冲突，要在问题中指出并请求澄清
+6. 若 answer_mode=pick_with_reason，优先生成高信息量选项；只有证据仍不足时，才通过后续问题补一个轻追问
 """
 
     if is_lightweight_output:
@@ -9653,6 +9864,9 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         "question": "你的问题",
         "options": ["选项1", "选项2", "选项3"],
         "multi_select": false,
+        "answer_mode": {json.dumps(answer_mode, ensure_ascii=False)},
+        "requires_rationale": {'true' if requires_rationale else 'false'},
+        "evidence_intent": {json.dumps(evidence_intent, ensure_ascii=False)},
         "is_follow_up": {'true' if should_follow_up else 'false'},
         "follow_up_reason": {json.dumps(follow_up_reason, ensure_ascii=False) if should_follow_up else 'null'}
     }}
@@ -9661,6 +9875,9 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 - question: 一句话问题，尽量直接、清晰
 - options: 3-4 个选项；每个选项尽量不超过 18 个字
 - multi_select: true=多选，false=单选
+- answer_mode: 严格按模板输出，pick_only 或 pick_with_reason
+- requires_rationale: 严格按模板输出，表示该题属于高取证契约，系统必要时可在后续补追问
+- evidence_intent: 严格按模板输出，low/medium/high
 - is_follow_up: 必须严格按模板给定的值输出
 - follow_up_reason: 追问时输出原因，否则输出 null
 
@@ -9697,6 +9914,9 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         "question": "你的问题",
         "options": ["选项1", "选项2", "选项3", "选项4"],
         "multi_select": false,
+        "answer_mode": {json.dumps(answer_mode, ensure_ascii=False)},
+        "requires_rationale": {'true' if requires_rationale else 'false'},
+        "evidence_intent": {json.dumps(evidence_intent, ensure_ascii=False)},
         "is_follow_up": {'true' if should_follow_up else 'false'},
         "follow_up_reason": {json.dumps(follow_up_reason, ensure_ascii=False) if should_follow_up else 'null'},
         "conflict_detected": false,
@@ -9716,6 +9936,9 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 - question: 字符串，你要问的问题
 - options: 字符串数组，3-4 个选项
 - multi_select: 布尔值，true=可多选，false=单选
+- answer_mode: "pick_only" | "pick_with_reason"
+- requires_rationale: 布尔值，true 表示该题需要更强证据，系统必要时会自动补追问
+- evidence_intent: "low" | "medium" | "high"
 - is_follow_up: 布尔值，true=追问（针对上一回答深入），false=新问题
 - follow_up_reason: 字符串或 null，追问时说明原因
 - conflict_detected: 布尔值
@@ -9742,6 +9965,9 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         "hard_triggered": hard_triggered,
         "missing_aspects": missing_aspects,
         "should_follow_up": should_follow_up,
+        "answer_mode": answer_mode,
+        "requires_rationale": requires_rationale,
+        "evidence_intent": evidence_intent,
         "has_search": bool(will_search and search_query),
         "output_mode": normalized_output_mode,
         "formal_questions_count": formal_questions_count,
@@ -10490,6 +10716,22 @@ def strip_inline_evidence_markers(text: str) -> str:
     return cleaned.strip()
 
 
+def classify_answer_evidence_class_v3(signals: list, quality_score: float, evidence_intent: str) -> str:
+    normalized_signals = {str(item or "").strip().lower() for item in (signals or []) if str(item or "").strip()}
+    normalized_intent = normalize_question_evidence_intent(evidence_intent, fallback="low")
+    normalized_quality = max(0.0, min(1.0, _safe_float(quality_score, default=0.0)))
+
+    if "rich_option_answer" in normalized_signals:
+        return "rich_option"
+    if any(signal in normalized_signals for signal in {"vague_expression", "generic_answer", "contradiction_detected"}):
+        return "pending_follow_up" if normalized_intent in {"medium", "high"} else "weak_inferred"
+    if any(signal in normalized_signals for signal in {"too_short", "option_only", "no_quantification", "single_selection"}):
+        return "pending_follow_up" if normalized_intent == "high" else "weak_inferred"
+    if normalized_quality < 0.35 and normalized_intent in {"medium", "high"}:
+        return "weak_inferred"
+    return "explicit"
+
+
 def build_report_evidence_pack(session: dict) -> dict:
     """构建报告 V3 证据包。"""
     interview_log = session.get("interview_log", [])
@@ -10497,7 +10739,7 @@ def build_report_evidence_pack(session: dict) -> dict:
     mode_config = get_interview_mode_config(session)
 
     vague_terms = ["看情况", "不确定", "都可以", "不知道", "可能", "暂时不清楚", "以后再说", "差不多"]
-    unknown_signals = {"vague_expression", "generic_answer", "option_only"}
+    unknown_signals = {"vague_expression", "generic_answer"}
 
     contradiction_patterns = [
         ("need", "需要", "不需要", "需求取向冲突"),
@@ -10514,6 +10756,14 @@ def build_report_evidence_pack(session: dict) -> dict:
     contradiction_state = {}
     contradiction_keys = set()
     unknown_keys = set()
+    answer_mode_distribution = {mode: 0 for mode in QUESTION_ANSWER_MODES}
+    evidence_intent_distribution = {intent: 0 for intent in QUESTION_EVIDENCE_INTENTS}
+    answer_evidence_class_distribution = {
+        "explicit": 0,
+        "rich_option": 0,
+        "weak_inferred": 0,
+        "pending_follow_up": 0,
+    }
 
     for idx, log in enumerate(interview_log, 1):
         q_id = f"Q{idx}"
@@ -10527,6 +10777,16 @@ def build_report_evidence_pack(session: dict) -> dict:
         except Exception:
             quality_score = 0.0
         quality_score = max(0.0, min(1.0, quality_score))
+        answer_mode = normalize_question_answer_mode(log.get("answer_mode", ""), fallback="pick_only")
+        requires_rationale = bool(log.get("requires_rationale", False) or answer_mode == "pick_with_reason")
+        evidence_intent = normalize_question_evidence_intent(
+            log.get("evidence_intent", ""),
+            fallback="high" if requires_rationale else ("medium" if answer_mode == "pick_with_reason" else "low"),
+        )
+        answer_mode_distribution[answer_mode] = answer_mode_distribution.get(answer_mode, 0) + 1
+        evidence_intent_distribution[evidence_intent] = evidence_intent_distribution.get(evidence_intent, 0) + 1
+        answer_evidence_class = classify_answer_evidence_class_v3(signals, quality_score, evidence_intent)
+        answer_evidence_class_distribution[answer_evidence_class] = answer_evidence_class_distribution.get(answer_evidence_class, 0) + 1
 
         fact = {
             "q_id": q_id,
@@ -10540,15 +10800,19 @@ def build_report_evidence_pack(session: dict) -> dict:
             "quality_signals": log.get("quality_signals", []) if isinstance(log.get("quality_signals"), list) else [],
             "follow_up_signals": signals,
             "hard_triggered": bool(log.get("hard_triggered", False)),
+            "answer_mode": answer_mode,
+            "requires_rationale": requires_rationale,
+            "evidence_intent": evidence_intent,
+            "answer_evidence_class": answer_evidence_class,
         }
         facts.append(fact)
 
         unknown_reasons = []
-        if any(signal in unknown_signals for signal in signals):
+        if answer_evidence_class != "rich_option" and any(signal in unknown_signals for signal in signals):
             unknown_reasons.append("命中模糊回答信号")
         if any(term in answer for term in vague_terms):
             unknown_reasons.append("回答存在模糊表述")
-        if quality_score > 0 and quality_score < 0.45:
+        if answer_evidence_class != "rich_option" and quality_score > 0 and quality_score < 0.45:
             unknown_reasons.append("回答质量偏低")
         if unknown_reasons:
             unknown_key = f"{q_id}:{'|'.join(sorted(set(unknown_reasons)))}"
@@ -10600,14 +10864,33 @@ def build_report_evidence_pack(session: dict) -> dict:
 
     dimension_coverage = {}
     coverage_values = []
+    question_count_coverage_values = []
     for dim_key, info in dim_info.items():
         dim_logs = [log for log in interview_log if log.get("dimension") == dim_key]
+        dim_facts = [fact for fact in facts if fact.get("dimension") == dim_key]
         formal_count = len([log for log in dim_logs if not log.get("is_follow_up", False)])
         follow_up_count = len([log for log in dim_logs if log.get("is_follow_up", False)])
         dim_state = session.get("dimensions", {}).get(dim_key, {})
-        coverage_percent = int(dim_state.get("coverage", 0) or 0)
-        coverage_values.append(max(0, min(100, coverage_percent)) / 100.0)
+        question_count_coverage_percent = int(dim_state.get("coverage", 0) or 0)
+        question_count_ratio = max(0, min(100, question_count_coverage_percent)) / 100.0
         missing_aspects = get_dimension_missing_aspects(session, dim_key)
+        key_aspects = info.get("key_aspects", []) if isinstance(info.get("key_aspects", []), list) else []
+        if key_aspects:
+            aspect_total = len(key_aspects)
+            aspect_missing = min(aspect_total, len(missing_aspects))
+            coverage_ratio = max(0.0, min(1.0, (aspect_total - aspect_missing) / aspect_total))
+            coverage_percent = int(round(coverage_ratio * 100))
+        else:
+            coverage_percent = question_count_coverage_percent
+            coverage_ratio = question_count_ratio
+        dim_quality_scores = [
+            max(0.0, min(1.0, _safe_float(fact.get("quality_score", 0.0), default=0.0)))
+            for fact in dim_facts
+        ]
+        dim_raw_average_quality = (sum(dim_quality_scores) / len(dim_quality_scores)) if dim_quality_scores else 0.0
+        quality_adjusted_coverage = max(0.0, min(1.0, coverage_ratio * (0.35 + 0.65 * dim_raw_average_quality)))
+        coverage_values.append(quality_adjusted_coverage)
+        question_count_coverage_values.append(question_count_ratio)
 
         for aspect in missing_aspects:
             blindspots.append({
@@ -10618,18 +10901,28 @@ def build_report_evidence_pack(session: dict) -> dict:
         dimension_coverage[dim_key] = {
             "name": info.get("name", dim_key),
             "coverage_percent": max(0, min(100, coverage_percent)),
-            "coverage_ratio": round(max(0, min(100, coverage_percent)) / 100.0, 2),
+            "coverage_ratio": round(coverage_ratio, 2),
+            "question_count_coverage_percent": max(0, min(100, question_count_coverage_percent)),
+            "question_count_coverage_ratio": round(question_count_ratio, 2),
+            "quality_adjusted_coverage": round(quality_adjusted_coverage, 3),
+            "raw_average_quality_score": round(dim_raw_average_quality, 3),
             "formal_count": formal_count,
             "follow_up_count": follow_up_count,
             "minimum_formal": mode_config.get("formal_questions_per_dim", 3),
             "maximum_formal": mode_config.get("max_formal_questions_per_dim", mode_config.get("formal_questions_per_dim", 3)),
             "missing_aspects": missing_aspects,
-            "key_aspects": info.get("key_aspects", []),
+            "key_aspects": key_aspects,
         }
 
-    valid_quality_scores = [fact["quality_score"] for fact in facts if fact.get("quality_score", 0) > 0]
-    average_quality = sum(valid_quality_scores) / len(valid_quality_scores) if valid_quality_scores else 0.0
+    raw_quality_scores = [
+        max(0.0, min(1.0, _safe_float(fact.get("quality_score", 0.0), default=0.0)))
+        for fact in facts
+    ]
+    valid_quality_scores = [score for score in raw_quality_scores if score > 0]
+    average_quality = sum(raw_quality_scores) / len(raw_quality_scores) if raw_quality_scores else 0.0
+    positive_only_average_quality = sum(valid_quality_scores) / len(valid_quality_scores) if valid_quality_scores else 0.0
     overall_coverage = sum(coverage_values) / len(coverage_values) if coverage_values else 0.0
+    question_count_overall_coverage = sum(question_count_coverage_values) / len(question_count_coverage_values) if question_count_coverage_values else 0.0
 
     total_formal = len([fact for fact in facts if not fact.get("is_follow_up", False)])
     total_follow_up = len([fact for fact in facts if fact.get("is_follow_up", False)])
@@ -10658,13 +10951,19 @@ def build_report_evidence_pack(session: dict) -> dict:
         "blindspots": blindspots,
         "dimension_coverage": dimension_coverage,
         "overall_coverage": round(overall_coverage, 3),
+        "question_count_overall_coverage": round(question_count_overall_coverage, 3),
         "quality_snapshot": {
             "average_quality_score": round(average_quality, 3),
+            "raw_average_quality_score": round(average_quality, 3),
+            "positive_only_average_quality_score": round(positive_only_average_quality, 3),
             "hard_triggered_count": len([fact for fact in facts if fact.get("hard_triggered")]),
             "total_questions": len(facts),
             "total_formal_questions": total_formal,
             "total_follow_up_questions": total_follow_up,
             "follow_up_ratio": round(total_follow_up / len(facts), 3) if facts else 0.0,
+            "answer_mode_distribution": answer_mode_distribution,
+            "evidence_intent_distribution": evidence_intent_distribution,
+            "answer_evidence_class_distribution": answer_evidence_class_distribution,
         },
     }
 
@@ -10688,6 +10987,8 @@ def summarize_evidence_pack_for_debug(evidence_pack: dict) -> dict:
             dimension_summary[dim_key] = {
                 "name": dim_meta.get("name", dim_key),
                 "coverage_percent": int(dim_meta.get("coverage_percent", 0) or 0),
+                "question_count_coverage_percent": int(dim_meta.get("question_count_coverage_percent", dim_meta.get("coverage_percent", 0)) or 0),
+                "quality_adjusted_coverage": float(dim_meta.get("quality_adjusted_coverage", 0.0) or 0.0),
                 "formal_count": int(dim_meta.get("formal_count", 0) or 0),
                 "follow_up_count": int(dim_meta.get("follow_up_count", 0) or 0),
                 "missing_aspects": (dim_meta.get("missing_aspects", []) if isinstance(dim_meta.get("missing_aspects", []), list) else [])[:8],
@@ -10699,17 +11000,23 @@ def summarize_evidence_pack_for_debug(evidence_pack: dict) -> dict:
 
     return {
         "overall_coverage": float(evidence_pack.get("overall_coverage", 0) or 0),
+        "question_count_overall_coverage": float(evidence_pack.get("question_count_overall_coverage", 0) or 0),
         "facts_count": len(facts) if isinstance(facts, list) else 0,
         "contradictions_count": len(contradictions) if isinstance(contradictions, list) else 0,
         "unknowns_count": len(unknowns) if isinstance(unknowns, list) else 0,
         "blindspots_count": len(blindspots) if isinstance(blindspots, list) else 0,
         "quality_snapshot": {
             "average_quality_score": float(quality_snapshot.get("average_quality_score", 0) or 0),
+            "raw_average_quality_score": float(quality_snapshot.get("raw_average_quality_score", quality_snapshot.get("average_quality_score", 0)) or 0),
+            "positive_only_average_quality_score": float(quality_snapshot.get("positive_only_average_quality_score", 0) or 0),
             "hard_triggered_count": int(quality_snapshot.get("hard_triggered_count", 0) or 0),
             "total_questions": int(quality_snapshot.get("total_questions", 0) or 0),
             "total_formal_questions": int(quality_snapshot.get("total_formal_questions", 0) or 0),
             "total_follow_up_questions": int(quality_snapshot.get("total_follow_up_questions", 0) or 0),
             "follow_up_ratio": float(quality_snapshot.get("follow_up_ratio", 0) or 0),
+            "answer_mode_distribution": dict(quality_snapshot.get("answer_mode_distribution", {}) or {}),
+            "evidence_intent_distribution": dict(quality_snapshot.get("evidence_intent_distribution", {}) or {}),
+            "answer_evidence_class_distribution": dict(quality_snapshot.get("answer_evidence_class_distribution", {}) or {}),
         },
         "dimension_coverage": dimension_summary,
     }
@@ -10869,7 +11176,7 @@ def build_report_draft_prompt_assessment_v1(
         answer_text = (fact.get("answer", "") or "").replace("\n", " ").strip()[:150]
         facts_lines.append(
             f"- {fact.get('q_id')} [{fact.get('dimension_name', '未分类')}] "
-            f"Q: {question_text} | A: {answer_text} | quality={fact.get('quality_score', 0):.2f}"
+            f"Q: {question_text} | A: {answer_text} | quality={fact.get('quality_score', 0):.2f} | evidence={fact.get('answer_evidence_class', 'explicit')}"
         )
     facts_text = "\n".join(facts_lines) if facts_lines else "- 无有效问答证据"
 
@@ -11028,7 +11335,7 @@ def build_report_draft_prompt_custom_v1(
         answer_text = (fact.get("answer", "") or "").replace("\n", " ").strip()[:150]
         facts_lines.append(
             f"- {fact.get('q_id')} [{fact.get('dimension_name', '未分类')}] "
-            f"Q: {question_text} | A: {answer_text} | quality={fact.get('quality_score', 0):.2f}"
+            f"Q: {question_text} | A: {answer_text} | quality={fact.get('quality_score', 0):.2f} | evidence={fact.get('answer_evidence_class', 'explicit')}"
         )
     facts_text = "\n".join(facts_lines) if facts_lines else "- 无有效问答证据"
 
@@ -11165,7 +11472,7 @@ def build_report_draft_prompt_v3(
         answer_text = (fact.get("answer", "") or "").replace("\n", " ").strip()[:150]
         facts_lines.append(
             f"- {fact.get('q_id')} [{fact.get('dimension_name', '未分类')}] "
-            f"Q: {question_text} | A: {answer_text} | quality={fact.get('quality_score', 0):.2f}"
+            f"Q: {question_text} | A: {answer_text} | quality={fact.get('quality_score', 0):.2f} | evidence={fact.get('answer_evidence_class', 'explicit')}"
         )
     facts_text = "\n".join(facts_lines) if facts_lines else "- 无有效问答证据"
     facts_source_count = len(evidence_pack.get("facts", [])) if isinstance(evidence_pack.get("facts", []), list) else 0
@@ -11453,6 +11760,8 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
                 "evidence_refs": refs,
                 "evidence_binding_mode": str(item.get("evidence_binding_mode", "") or "").strip().lower(),
             }
+            if refs and not normalized_item["evidence_binding_mode"]:
+                normalized_item["evidence_binding_mode"] = "strong_explicit"
             if not normalized_item["name"]:
                 add_issue("structure_error", "medium", "needs.name 不能为空", f"needs[{idx}].name")
             if not refs:
@@ -11473,6 +11782,8 @@ def validate_report_draft_v3(draft: dict, evidence_pack: dict) -> tuple[dict, li
             normalized_item[id_field] = sanitize_text(item.get(id_field, ""))
             normalized_item["evidence_refs"] = refs
             normalized_item["evidence_binding_mode"] = str(item.get("evidence_binding_mode", "") or "").strip().lower()
+            if refs and not normalized_item["evidence_binding_mode"]:
+                normalized_item["evidence_binding_mode"] = "strong_explicit"
 
             if field in {"solutions", "actions"}:
                 normalized_item["owner"] = sanitize_text(item.get("owner", ""))
@@ -12021,6 +12332,35 @@ def _should_soft_pass_blindspot_issue_v3(
     return _is_evidence_sparse_v3(evidence_pack)
 
 
+def _is_blindspot_cleanup_issue_v3(issue: dict) -> bool:
+    """将 open_questions 去重/清晰化类问题视为样式优化，不阻断主流程。"""
+    if not isinstance(issue, dict):
+        return False
+
+    issue_type = str(issue.get("type", "") or "").strip().lower()
+    if issue_type != "blindspot":
+        return False
+
+    target = str(issue.get("target", "") or "").strip().lower()
+    if not target.startswith("open_questions"):
+        return False
+
+    message = str(issue.get("message", "") or "").strip().lower()
+    cleanup_markers = (
+        "重复",
+        "去重",
+        "合并",
+        "清晰",
+        "通用",
+        "泛化",
+        "clarity",
+        "duplicate",
+        "dedup",
+        "merge",
+    )
+    return any(marker in message for marker in cleanup_markers)
+
+
 def _extract_issue_field_index_v3(target: str) -> tuple[str, int]:
     text = str(target or "").strip()
     match = re.match(r"^(needs|solutions|risks|actions|open_questions|evidence_index)\[(\d+)\]", text)
@@ -12070,6 +12410,10 @@ def filter_model_review_issues_v3(
         if issue_type.startswith(REVIEW_GATE_MANAGED_ISSUE_PREFIXES_V3) or issue_type in REVIEW_GATE_MANAGED_ISSUE_TYPES_V3:
             continue
         if "acceptance_criteria" in message_lower:
+            continue
+        if issue_type == "no_evidence" and str(target).endswith(".evidence_binding_mode"):
+            continue
+        if issue_type == "blindspot" and _is_blindspot_cleanup_issue_v3(issue):
             continue
         if issue_type == "blindspot" and _should_soft_pass_blindspot_issue_v3(
             issue,
@@ -12547,10 +12891,14 @@ def _collect_claim_entries_for_quality(draft: dict) -> list:
         for item in values:
             if not isinstance(item, dict):
                 continue
+            binding_mode = str(item.get("evidence_binding_mode", "") or "").strip().lower()
+            if field == "open_questions" and binding_mode == "pending_follow_up":
+                # 待补问项本质上是“尚未形成结论”的缺口，不应拉低硬性证据覆盖率。
+                continue
             claim_entries.append({
                 "field": field,
                 "evidence_refs": _normalize_evidence_refs(item.get("evidence_refs", [])),
-                "evidence_binding_mode": str(item.get("evidence_binding_mode", "") or "").strip().lower(),
+                "evidence_binding_mode": binding_mode,
                 "owner": str(item.get("owner", "")).strip(),
                 "timeline": str(item.get("timeline", "")).strip(),
                 "metric": str(item.get("metric", "")).strip(),
@@ -12604,7 +12952,8 @@ def _adapt_quality_gate_thresholds_by_evidence_v3(limit: dict, quality_meta: dic
     if facts_count <= 0:
         return adapted
 
-    # 仅对表达/模板类门禁做有限放宽，证据覆盖与一致性门禁保持刚性。
+    # 证据较稀疏时，适度放宽 evidence_coverage，避免“待补问项”把主流程整体卡死；
+    # 一致性门禁仍保持刚性。
     tension = 0.0
     if unknown_ratio > 0.60:
         tension += min(0.12, (unknown_ratio - 0.60) * 0.30)
@@ -12614,11 +12963,38 @@ def _adapt_quality_gate_thresholds_by_evidence_v3(limit: dict, quality_meta: dic
     if tension <= 0.0:
         return adapted
 
+    current_evidence_limit = float(adapted.get("evidence_coverage", 0.9) or 0.9)
+    adapted["evidence_coverage"] = max(0.82, current_evidence_limit - min(0.06, tension * 0.70))
     for key in ("actionability", "expression_structure", "table_readiness", "action_acceptance", "milestone_coverage"):
         current = float(adapted.get(key, 0.0) or 0.0)
         adapted[key] = max(0.45, current - tension)
     adapted["max_weak_binding_ratio"] = min(0.60, max(float(adapted.get("max_weak_binding_ratio", 0.35) or 0.35), 0.35 + tension))
     return adapted
+
+
+def _get_weak_binding_field_limits_v3(runtime_profile: str, quality_meta: Optional[dict] = None) -> dict:
+    normalized_profile = normalize_report_profile_choice(runtime_profile, fallback="balanced")
+    if normalized_profile == "quality":
+        limits = {
+            "actions": 0.25,
+            "solutions": 0.35,
+            "risks": 0.55,
+        }
+    else:
+        limits = {
+            "actions": 0.35,
+            "solutions": 0.45,
+            "risks": 0.70,
+        }
+
+    evidence_context = quality_meta.get("evidence_context", {}) if isinstance(quality_meta, dict) else {}
+    unknown_ratio = max(0.0, min(1.0, _safe_float((evidence_context or {}).get("unknown_ratio", 0.0), default=0.0)))
+    avg_quality = max(0.0, min(1.0, _safe_float((evidence_context or {}).get("average_quality_score", 0.0), default=0.0)))
+    if unknown_ratio >= 0.65 or avg_quality <= 0.32:
+        limits["risks"] = min(0.80, limits["risks"] + 0.10)
+        limits["solutions"] = min(0.60, limits["solutions"] + 0.05)
+        limits["actions"] = min(0.45, limits["actions"] + 0.03)
+    return limits
 
 
 def build_quality_gate_issues_v3(quality_meta: dict, thresholds: Optional[dict] = None) -> list:
@@ -12639,7 +13015,7 @@ def build_quality_gate_issues_v3(quality_meta: dict, thresholds: Optional[dict] 
     limit = _adapt_quality_gate_thresholds_by_evidence_v3(limit, quality_meta)
 
     checks = [
-        ("evidence_coverage", "quality_gate_evidence", "证据覆盖率", "needs/solutions/actions/risks/open_questions/evidence_index"),
+        ("evidence_coverage", "quality_gate_evidence", "证据覆盖率", "needs/solutions/actions/risks/evidence_index"),
         ("consistency", "quality_gate_consistency", "冲突解释完成度", "risks/open_questions"),
         ("actionability", "quality_gate_actionability", "可执行建议占比", "solutions/actions"),
         ("expression_structure", "quality_gate_expression", "表达结构完整度", "overview/analysis/needs/solutions/risks/actions"),
@@ -12662,12 +13038,33 @@ def build_quality_gate_issues_v3(quality_meta: dict, thresholds: Optional[dict] 
 
     weak_binding_ratio = max(0.0, min(1.0, _safe_float(quality_meta.get("weak_binding_ratio", 0.0), default=0.0)))
     weak_binding_limit = max(0.0, min(1.0, _safe_float(limit.get("max_weak_binding_ratio", 0.35), default=0.35)))
-    if weak_binding_ratio > weak_binding_limit + 1e-9:
+    weak_binding_ratio_by_field = quality_meta.get("weak_binding_ratio_by_field", {})
+    field_limits = _get_weak_binding_field_limits_v3(runtime_profile, quality_meta)
+    weak_binding_field_issues = []
+    if isinstance(weak_binding_ratio_by_field, dict):
+        field_display_names = {
+            "actions": "行动项",
+            "solutions": "方案建议",
+            "risks": "风险项",
+        }
+        for field, field_limit in field_limits.items():
+            current_ratio = max(0.0, min(1.0, _safe_float(weak_binding_ratio_by_field.get(field, 0.0), default=0.0)))
+            if current_ratio > field_limit + 1e-9:
+                weak_binding_field_issues.append({
+                    "type": "quality_gate_weak_binding",
+                    "severity": "high" if runtime_profile == "quality" else "medium",
+                    "message": f"{field_display_names.get(field, field)}弱证据绑定占比过高（当前{current_ratio:.1%}，允许≤{field_limit:.1%}）",
+                    "target": field,
+                })
+
+    if weak_binding_field_issues:
+        issues.extend(weak_binding_field_issues)
+    elif weak_binding_ratio > weak_binding_limit + 1e-9:
         issues.append({
             "type": "quality_gate_weak_binding",
             "severity": "high" if runtime_profile == "quality" else "medium",
             "message": f"弱证据绑定占比过高（当前{weak_binding_ratio:.1%}，允许≤{weak_binding_limit:.1%}）",
-            "target": "risks/actions/open_questions",
+            "target": "solutions/risks/actions",
         })
 
     template_minimums = quality_meta.get("template_minimums", {})
@@ -12761,21 +13158,69 @@ def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: lis
     weighted_evidence_score = 0.0
     evidence_covered = 0
     weak_binding_count = 0
+    rich_option_count = 0
+    evidence_covered_by_field = {}
+    weak_binding_count_by_field = {}
+    answer_evidence_class_index = {}
+    for fact in evidence_pack.get("facts", []) if isinstance(evidence_pack.get("facts", []), list) else []:
+        if not isinstance(fact, dict):
+            continue
+        q_id = str(fact.get("q_id", "") or "").upper().strip()
+        if not re.fullmatch(r"Q\d+", q_id):
+            continue
+        answer_evidence_class_index[q_id] = str(fact.get("answer_evidence_class", "") or "").strip().lower() or "explicit"
+    weak_binding_weights = {
+        "actions": 1.0,
+        "solutions": 0.85,
+        "risks": 0.55,
+    }
     for entry in claim_entries:
         refs = entry.get("evidence_refs", [])
+        field = str(entry.get("field", "") or "").strip().lower()
         if not refs:
             continue
         evidence_covered += 1
+        evidence_covered_by_field[field] = evidence_covered_by_field.get(field, 0) + 1
         binding_mode = str(entry.get("evidence_binding_mode", "") or "").strip().lower()
+        if binding_mode not in {"weak_inferred", "pending_follow_up", "rich_option"}:
+            ref_classes = [
+                answer_evidence_class_index.get(ref, "")
+                for ref in refs
+                if answer_evidence_class_index.get(ref, "")
+            ]
+            if "pending_follow_up" in ref_classes:
+                binding_mode = "pending_follow_up"
+            elif "weak_inferred" in ref_classes:
+                binding_mode = "weak_inferred"
+            elif "rich_option" in ref_classes:
+                binding_mode = "rich_option"
+            else:
+                binding_mode = binding_mode or "strong_explicit"
         if binding_mode == "weak_inferred":
-            weak_binding_count += 1
+            if field in weak_binding_weights:
+                weak_binding_count += 1
+                weak_binding_count_by_field[field] = weak_binding_count_by_field.get(field, 0) + 1
             weighted_evidence_score += 0.45
+        elif binding_mode == "rich_option":
+            rich_option_count += 1
+            weighted_evidence_score += 0.78
         elif binding_mode == "pending_follow_up":
             weighted_evidence_score += 0.0
         else:
             weighted_evidence_score += 1.0
     evidence_coverage = (weighted_evidence_score / claim_total) if claim_total > 0 else 0.0
-    weak_binding_ratio = (weak_binding_count / evidence_covered) if evidence_covered > 0 else 0.0
+    weak_binding_ratio_by_field = {}
+    weighted_ratio_total = 0.0
+    weighted_ratio_weight = 0.0
+    for field, weight in weak_binding_weights.items():
+        covered_count = int(evidence_covered_by_field.get(field, 0) or 0)
+        weak_count = int(weak_binding_count_by_field.get(field, 0) or 0)
+        ratio = (weak_count / covered_count) if covered_count > 0 else 0.0
+        weak_binding_ratio_by_field[field] = round(ratio, 3)
+        if covered_count > 0:
+            weighted_ratio_total += ratio * weight
+            weighted_ratio_weight += weight
+    weak_binding_ratio = (weighted_ratio_total / weighted_ratio_weight) if weighted_ratio_weight > 0 else 0.0
 
     contradiction_total = len(evidence_pack.get("contradictions", []))
     unresolved_contradictions = len([item for item in issues if item.get("type") == "unresolved_contradiction"])
@@ -12920,7 +13365,11 @@ def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: lis
         "claim_total": claim_total,
         "claim_with_evidence": evidence_covered,
         "weak_binding_count": weak_binding_count,
+        "rich_option_count": rich_option_count,
         "weak_binding_ratio": round(weak_binding_ratio, 3),
+        "weak_binding_count_by_field": weak_binding_count_by_field,
+        "weak_binding_ratio_by_field": weak_binding_ratio_by_field,
+        "evidence_covered_by_field": evidence_covered_by_field,
         "analysis_section_filled": analysis_filled,
         "list_counts": list_counts,
         "template_minimums": template_minimums,
@@ -16587,14 +17036,38 @@ def _should_force_generated_multi_select(question: str, option_list: list[str]) 
     return any(signal in normalized_question for signal in plural_signals)
 
 
-def normalize_generated_question_result(result: Optional[dict]) -> Optional[dict]:
+def normalize_generated_question_result(result: Optional[dict], fallback_contract: Optional[dict] = None) -> Optional[dict]:
     if not isinstance(result, dict):
         return result
 
+    fallback_contract = dict(fallback_contract or {})
     if "multi_select" not in result:
         result["multi_select"] = False
     if "is_follow_up" not in result:
         result["is_follow_up"] = False
+
+    fallback_answer_mode = normalize_question_answer_mode(fallback_contract.get("answer_mode", ""), fallback="pick_only")
+    fallback_requires_rationale = bool(
+        fallback_contract.get("requires_rationale", False)
+        or fallback_answer_mode == "pick_with_reason"
+    )
+    fallback_evidence_intent = normalize_question_evidence_intent(
+        fallback_contract.get("evidence_intent", ""),
+        fallback="high" if fallback_requires_rationale else ("medium" if fallback_answer_mode == "pick_with_reason" else "low"),
+    )
+
+    answer_mode = normalize_question_answer_mode(result.get("answer_mode", ""), fallback=fallback_answer_mode)
+    requires_rationale = bool(result.get("requires_rationale", fallback_requires_rationale) or answer_mode == "pick_with_reason")
+    if requires_rationale and answer_mode == "pick_only":
+        answer_mode = "pick_with_reason"
+    evidence_intent = normalize_question_evidence_intent(
+        result.get("evidence_intent", ""),
+        fallback=fallback_evidence_intent,
+    )
+
+    result["answer_mode"] = answer_mode
+    result["requires_rationale"] = requires_rationale
+    result["evidence_intent"] = evidence_intent
 
     original_multi_select = bool(result.get("multi_select", False))
     option_list = result.get("options") if isinstance(result.get("options"), list) else []
@@ -17047,6 +17520,13 @@ def _select_question_generation_runtime_profile(
     missing_aspects = list(normalized_meta.get("missing_aspects", []) or [])
     follow_up_round = max(0, int(normalized_meta.get("follow_up_round", 0) or 0))
     formal_questions_count = max(0, int(normalized_meta.get("formal_questions_count", 0) or 0))
+    answer_mode = normalize_question_answer_mode(normalized_meta.get("answer_mode", ""), fallback="pick_only")
+    requires_rationale = bool(normalized_meta.get("requires_rationale", False) or answer_mode == "pick_with_reason")
+    evidence_intent = normalize_question_evidence_intent(
+        normalized_meta.get("evidence_intent", ""),
+        fallback="high" if requires_rationale else ("medium" if answer_mode == "pick_with_reason" else "low"),
+    )
+    high_evidence_intent = evidence_intent == "high" and not is_prefetch
     can_use_light_prompt = not has_search and not has_reference_docs and not has_truncated_docs
     effective_fast_allowed = bool(allow_fast_path)
 
@@ -17056,6 +17536,8 @@ def _select_question_generation_runtime_profile(
     secondary_lane = QUESTION_HEDGED_SECONDARY_LANE
     hedged_enabled = bool(QUESTION_HEDGED_ENABLED)
     hedge_delay_seconds = float(QUESTION_HEDGED_DELAY_SECONDS)
+    dynamic_lane_order_enabled = True
+    disallowed_lanes = []
     fast_timeout = _clamp_question_generation_timeout(QUESTION_FAST_TIMEOUT, minimum=5.0)
     fast_max_tokens = _clamp_question_generation_tokens(QUESTION_FAST_MAX_TOKENS, minimum=500)
     full_timeout = None
@@ -17091,13 +17573,48 @@ def _select_question_generation_runtime_profile(
         full_max_tokens_by_lane = {}
         hedge_delay_by_lane = {}
 
+    if high_evidence_intent:
+        primary_lane = QUESTION_HIGH_EVIDENCE_PRIMARY_LANE
+        secondary_lane = QUESTION_HIGH_EVIDENCE_SECONDARY_LANE
+        effective_fast_allowed = False
+        fast_output_mode = "full"
+        full_timeout = _clamp_question_generation_timeout(
+            max((15.0 if is_prefetch else 18.0), float((full_timeout or fast_timeout)) if full_timeout is not None else float(fast_timeout) + 10.0),
+            minimum=15.0 if is_prefetch else 18.0,
+        )
+        full_max_tokens = _clamp_question_generation_tokens(
+            min(max_tokens_ceiling, max(1400, int(full_max_tokens or 0))),
+            minimum=900,
+            ceiling=max_tokens_ceiling,
+        )
+        disallowed_lanes.append("summary")
+        dynamic_lane_order_enabled = not QUESTION_HIGH_EVIDENCE_DISABLE_DYNAMIC_LANE
+        reasons.append("high_evidence_intent")
+        if requires_rationale:
+            reasons.append("requires_rationale")
+
     if has_search or has_truncated_docs:
-        profile_name = f"{profile_prefix}_search_full"
+        profile_name = f"{profile_prefix}_evidence_search_full" if high_evidence_intent else f"{profile_prefix}_search_full"
         effective_fast_allowed = False
         if has_search:
             reasons.append("has_search")
         if has_truncated_docs:
             reasons.append("has_truncated_docs")
+    elif high_evidence_intent:
+        if should_follow_up:
+            profile_name = f"{profile_prefix}_follow_up_evidence"
+        elif hard_triggered or missing_aspects or formal_questions_count >= 2:
+            profile_name = f"{profile_prefix}_probe_evidence"
+        else:
+            profile_name = f"{profile_prefix}_evidence_full"
+        if should_follow_up:
+            reasons.append("follow_up")
+        if hard_triggered:
+            reasons.append("hard_triggered")
+        if missing_aspects:
+            reasons.append(f"missing_aspects={len(missing_aspects)}")
+        if formal_questions_count >= 2:
+            reasons.append(f"formal_questions={formal_questions_count}")
     elif can_use_light_prompt and should_follow_up:
         profile_name = f"{profile_prefix}_follow_up_light"
         fast_output_mode = "light"
@@ -17182,6 +17699,11 @@ def _select_question_generation_runtime_profile(
         "full_timeout_by_lane": full_timeout_by_lane,
         "full_max_tokens_by_lane": full_max_tokens_by_lane,
         "hedge_delay_by_lane": hedge_delay_by_lane,
+        "dynamic_lane_order_enabled": dynamic_lane_order_enabled,
+        "disallowed_lanes": sorted(set(disallowed_lanes)),
+        "answer_mode": answer_mode,
+        "requires_rationale": requires_rationale,
+        "evidence_intent": evidence_intent,
     }
 
 def _prepare_question_generation_runtime(
@@ -17243,7 +17765,15 @@ def _prepare_question_generation_runtime(
         "secondary_lane": runtime_profile.get("secondary_lane", QUESTION_HEDGED_SECONDARY_LANE),
         "fast_prompt_length": len(fast_prompt or ""),
         "full_prompt_length": len(full_prompt or ""),
+        "dynamic_lane_order_enabled": bool(runtime_profile.get("dynamic_lane_order_enabled", True)),
+        "disallowed_lanes": list(runtime_profile.get("disallowed_lanes", []) or []),
+        "answer_mode": runtime_profile.get("answer_mode", enriched_decision_meta.get("answer_mode", "pick_only")),
+        "requires_rationale": bool(runtime_profile.get("requires_rationale", enriched_decision_meta.get("requires_rationale", False))),
+        "evidence_intent": runtime_profile.get("evidence_intent", enriched_decision_meta.get("evidence_intent", "low")),
     })
+    runtime_profile["answer_mode"] = enriched_decision_meta.get("answer_mode", "pick_only")
+    runtime_profile["requires_rationale"] = bool(enriched_decision_meta.get("requires_rationale", False))
+    runtime_profile["evidence_intent"] = enriched_decision_meta.get("evidence_intent", "low")
 
     return {
         "fast_prompt": fast_prompt,
@@ -17540,7 +18070,10 @@ def generate_question_with_tiered_strategy(
             lane_runtime_overrides=fast_lane_runtime_overrides,
         )
         if fast_response:
-            fast_result = normalize_generated_question_result(parse_question_response(fast_response, debug=debug))
+            fast_result = normalize_generated_question_result(
+                parse_question_response(fast_response, debug=debug),
+                fallback_contract=runtime_profile,
+            )
             if fast_result:
                 _record_question_fast_outcome(True, lane=fast_lane, reason="ok")
                 return fast_response, fast_result, f"fast:{fast_lane}"
@@ -17570,7 +18103,10 @@ def generate_question_with_tiered_strategy(
         lane_profile_name=str(full_lane_meta.get("strategy_key", "") or ""),
         lane_runtime_overrides=full_lane_runtime_overrides,
     )
-    full_result = normalize_generated_question_result(parse_question_response(full_response, debug=debug)) if full_response else None
+    full_result = normalize_generated_question_result(
+        parse_question_response(full_response, debug=debug),
+        fallback_contract=runtime_profile,
+    ) if full_response else None
     if debug and not full_response:
         print(f"⚠️ 全量档未命中，原因: {_format_question_tier_attempts_for_log(full_meta)}")
     elif debug and full_response and not full_result:
@@ -17666,6 +18202,10 @@ def get_next_question(session_id):
                 dimension=dimension,
                 options=last_log.get("options", []),
                 is_follow_up=last_log.get("is_follow_up", False),
+                multi_select=bool(last_log.get("multi_select", False)),
+                answer_mode=last_log.get("answer_mode", ""),
+                requires_rationale=bool(last_log.get("requires_rationale", False)),
+                evidence_intent=last_log.get("evidence_intent", ""),
             )
             comprehensive_check = should_follow_up_comprehensive(
                 session=session,
@@ -17678,7 +18218,8 @@ def get_next_question(session_id):
                 prefetched["is_follow_up"] = False
                 prefetched["follow_up_reason"] = None
 
-        prefetched["decision_meta"] = {
+        prefetched_meta = dict(prefetched.get("decision_meta", {}) or {})
+        prefetched_meta.update({
             "mode": get_mode_identifier(session),
             "follow_up_round": get_follow_up_round_for_dimension_logs(all_dim_logs),
             "remaining_question_follow_up_budget": max(
@@ -17688,7 +18229,9 @@ def get_next_question(session_id):
             ),
             "hard_triggered": False,
             "missing_aspects": get_dimension_missing_aspects(session, dimension),
-        }
+        })
+
+        prefetched["decision_meta"] = prefetched_meta
 
         prefetched["prefetched"] = True
         _set_question_result_cache(question_cache_key, prefetched)
@@ -17829,9 +18372,16 @@ def get_next_question(session_id):
             }), 503
 
         if result:
+            selected_lane = tier_used.split(":", 1)[1] if ":" in tier_used else ""
+            decision_meta = dict(decision_meta or {})
+            decision_meta["tier_used"] = tier_used
+            decision_meta["selected_lane"] = selected_lane
             result["dimension"] = dimension
             result["ai_generated"] = True
             result["decision_meta"] = decision_meta
+            result["question_generation_tier"] = tier_used
+            result["question_selected_lane"] = selected_lane
+            result["question_runtime_profile"] = runtime_profile.get("profile_name", "")
             # 兜底：避免连续重复问题（最多自动重试一次）
             last_log = all_dim_logs[-1] if all_dim_logs else None
             if last_log and last_log.get("question") == result.get("question"):
@@ -17851,9 +18401,15 @@ def get_next_question(session_id):
                 if ENABLE_DEBUG_LOG:
                     print(f"⚙️ 重复问题重试通道: {retry_tier}")
                 if retry_result and retry_result.get("question") != last_log.get("question"):
+                    selected_lane = retry_tier.split(":", 1)[1] if ":" in retry_tier else ""
+                    decision_meta["tier_used"] = retry_tier
+                    decision_meta["selected_lane"] = selected_lane
                     retry_result["dimension"] = dimension
                     retry_result["ai_generated"] = True
                     retry_result["decision_meta"] = decision_meta
+                    retry_result["question_generation_tier"] = retry_tier
+                    retry_result["question_selected_lane"] = selected_lane
+                    retry_result["question_runtime_profile"] = runtime_profile.get("profile_name", "")
                     result = retry_result
                 else:
                     # 清除思考状态
@@ -17875,6 +18431,10 @@ def get_next_question(session_id):
                         dimension=dimension,
                         options=last_log.get("options", []),
                         is_follow_up=last_log.get("is_follow_up", False),
+                        multi_select=bool(last_log.get("multi_select", False)),
+                        answer_mode=last_log.get("answer_mode", ""),
+                        requires_rationale=bool(last_log.get("requires_rationale", False)),
+                        evidence_intent=last_log.get("evidence_intent", ""),
                     )
                     comprehensive_check = should_follow_up_comprehensive(
                         session=session,
@@ -18147,6 +18707,13 @@ def submit_answer(session_id):
     other_answer_text = data.get("other_answer_text", "")
     other_resolution_payload = data.get("other_resolution")
     is_follow_up = data.get("is_follow_up", False)
+    answer_mode = data.get("answer_mode", "")
+    requires_rationale = data.get("requires_rationale", False)
+    evidence_intent = data.get("evidence_intent", "")
+    rationale_text = data.get("rationale_text", "")
+    question_generation_tier = data.get("question_generation_tier", "")
+    question_selected_lane = data.get("question_selected_lane", "")
+    question_runtime_profile = data.get("question_runtime_profile", "")
 
     # 验证必需参数
     if not question or not isinstance(question, str):
@@ -18175,6 +18742,26 @@ def submit_answer(session_id):
         return jsonify({"error": "自定义答案长度不能超过2000字符"}), 400
     if not isinstance(is_follow_up, bool):
         return jsonify({"error": "is_follow_up必须是布尔值"}), 400
+    if rationale_text is None:
+        rationale_text = ""
+    if not isinstance(rationale_text, str):
+        return jsonify({"error": "rationale_text必须是字符串"}), 400
+    if len(rationale_text) > 3000:
+        return jsonify({"error": "原因说明长度不能超过3000字符"}), 400
+    if not isinstance(requires_rationale, bool):
+        return jsonify({"error": "requires_rationale必须是布尔值"}), 400
+    if not isinstance(question_generation_tier, str):
+        return jsonify({"error": "question_generation_tier必须是字符串"}), 400
+    if not isinstance(question_selected_lane, str):
+        return jsonify({"error": "question_selected_lane必须是字符串"}), 400
+    if not isinstance(question_runtime_profile, str):
+        return jsonify({"error": "question_runtime_profile必须是字符串"}), 400
+    answer_mode = normalize_question_answer_mode(answer_mode, fallback="pick_with_reason" if requires_rationale else "pick_only")
+    requires_rationale = bool(requires_rationale or answer_mode == "pick_with_reason")
+    evidence_intent = normalize_question_evidence_intent(
+        evidence_intent,
+        fallback="high" if requires_rationale else ("medium" if answer_mode == "pick_with_reason" else "low"),
+    )
 
     try:
         other_resolution = normalize_other_resolution_payload(
@@ -18193,6 +18780,10 @@ def submit_answer(session_id):
         dimension=dimension,
         options=options,
         is_follow_up=is_follow_up,
+        multi_select=multi_select,
+        answer_mode=answer_mode,
+        requires_rationale=requires_rationale,
+        evidence_intent=evidence_intent,
     )
     needs_follow_up = eval_result["needs_follow_up"]
     follow_up_signals = eval_result["signals"]
@@ -18228,6 +18819,13 @@ def submit_answer(session_id):
         "other_answer_text": other_answer_text,
         "other_resolution": other_resolution,
         "is_follow_up": is_follow_up,
+        "answer_mode": answer_mode,
+        "requires_rationale": requires_rationale,
+        "evidence_intent": evidence_intent,
+        "rationale_text": rationale_text.strip(),
+        "question_generation_tier": str(question_generation_tier or "").strip(),
+        "question_selected_lane": str(question_selected_lane or "").strip(),
+        "question_runtime_profile": str(question_runtime_profile or "").strip(),
         "needs_follow_up": needs_follow_up,
         "follow_up_signals": follow_up_signals,  # 记录检测到的信号
         "quality_score": quality_result["quality_score"],
@@ -18687,6 +19285,36 @@ V3_FAILOVER_FIXABLE_SINGLE_ISSUE_TYPES = {
     "quality_gate_acceptance",
 }
 
+V3_FAILOVER_DETERMINISTIC_ISSUE_TYPES = {
+    "blindspot",
+    "no_evidence",
+    "not_actionable",
+    "style_template_violation",
+    "quality_gate_evidence",
+    "quality_gate_weak_binding",
+    "quality_gate_expression",
+    "quality_gate_table",
+    "quality_gate_milestone",
+    "quality_gate_actionability",
+    "quality_gate_acceptance",
+}
+
+
+def _extract_v3_issue_types_for_failover(v3_result: Optional[dict]) -> list[str]:
+    if not isinstance(v3_result, dict):
+        return []
+    return summarize_issue_types_v3(v3_result.get("review_issues", []))
+
+
+def _is_v3_deterministic_issue_bucket(issue_types: list[str], final_issue_count: int) -> bool:
+    if not REPORT_V3_FAILOVER_ON_DETERMINISTIC_BUCKET:
+        return False
+    if final_issue_count <= 0 or final_issue_count > REPORT_V3_FAILOVER_DETERMINISTIC_MAX_ISSUES:
+        return False
+    if not issue_types:
+        return False
+    return all(str(issue_type or "").strip().lower() in V3_FAILOVER_DETERMINISTIC_ISSUE_TYPES for issue_type in issue_types)
+
 
 def should_retry_v3_with_failover(v3_result: Optional[dict]) -> bool:
     """判断 V3 失败后是否值得切备用网关再试一次。"""
@@ -18695,18 +19323,21 @@ def should_retry_v3_with_failover(v3_result: Optional[dict]) -> bool:
 
     reason = str(v3_result.get("reason", "") or "").strip().lower()
     error = str(v3_result.get("error", "") or "").strip().lower()
-    issue_types = summarize_issue_types_v3(v3_result.get("review_issues", []))
+    issue_types = _extract_v3_issue_types_for_failover(v3_result)
     try:
         final_issue_count = int(v3_result.get("final_issue_count", len(v3_result.get("review_issues", []) or [])) or 0)
     except Exception:
         final_issue_count = len(v3_result.get("review_issues", []) or [])
 
     if reason in {"review_gate_failed", "quality_gate_failed", "review_not_passed_or_quality_gate_failed"}:
-        if not REPORT_V3_FAILOVER_ON_SINGLE_ISSUE:
-            return False
-        if final_issue_count != 1 or len(issue_types) != 1:
-            return False
-        return issue_types[0] in V3_FAILOVER_FIXABLE_SINGLE_ISSUE_TYPES
+        if (
+            REPORT_V3_FAILOVER_ON_SINGLE_ISSUE
+            and final_issue_count == 1
+            and len(issue_types) == 1
+            and issue_types[0] in V3_FAILOVER_FIXABLE_SINGLE_ISSUE_TYPES
+        ):
+            return True
+        return _is_v3_deterministic_issue_bucket(issue_types, final_issue_count)
 
     # 质量门禁未通过属于内容质量问题，切网关通常无收益
     if reason in {"draft_generation_failed", "review_generation_failed", "exception", "v3_pipeline_returned_empty"}:

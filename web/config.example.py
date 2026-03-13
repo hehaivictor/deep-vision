@@ -160,6 +160,12 @@ QUESTION_HEDGED_ENABLED = True
 QUESTION_HEDGED_DELAY_SECONDS = 1.5
 # 作用：设置问题竞速时备用通道使用的 lane。
 QUESTION_HEDGED_SECONDARY_LANE = "summary"  # 用 glm-5 做问题链路备用，避免让 Opus 抢答高频问题
+# 作用：高取证强度问题的主通道，默认固定走 question lane。
+QUESTION_HIGH_EVIDENCE_PRIMARY_LANE = "question"
+# 作用：高取证强度问题的备用通道，默认走 report lane，禁用 summary 竞速。
+QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = "report"
+# 作用：高取证强度问题是否禁用基于历史时延/成功率的动态 lane 晋升。
+QUESTION_HIGH_EVIDENCE_DISABLE_DYNAMIC_LANE = True
 # 作用：控制只有主备客户端不同才启用问题竞速。
 QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT = True
 # 作用：按 lane 覆盖问题快档超时时间。
@@ -230,8 +236,14 @@ REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE = True
 REPORT_V3_FAILOVER_ENABLED = True
 # 作用：设置报告 V3 切换失败备用通道时使用的 lane。
 REPORT_V3_FAILOVER_LANE = "question"
+# 作用：控制 failover 时是否强制草案与审稿共用同一 lane。
+REPORT_V3_FAILOVER_FORCE_SINGLE_LANE = False
 # 作用：控制审稿仅剩单个可修复问题时是否允许切备用 lane 再试。
 REPORT_V3_FAILOVER_ON_SINGLE_ISSUE = True
+# 作用：允许 deterministic fix bucket 类型的问题在少量聚集时也触发 failover。
+REPORT_V3_FAILOVER_ON_DETERMINISTIC_BUCKET = True
+# 作用：deterministic failover 最多允许的问题数，避免内容性失败误触发切换。
+REPORT_V3_FAILOVER_DETERMINISTIC_MAX_ISSUES = 3
 # 作用：控制 balanced 档是否要求把盲区直接转换成行动项。
 REPORT_V3_BLINDSPOT_ACTION_REQUIRED_BALANCED = False
 # 作用：控制 quality 档是否要求把盲区直接转换成行动项。

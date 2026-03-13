@@ -444,6 +444,13 @@ function deepVision() {
             questionMultiSelect: false,
             isFollowUp: false,
             followUpReason: null,
+            answerMode: 'pick_only',
+            requiresRationale: false,
+            evidenceIntent: 'low',
+            questionGenerationTier: '',
+            questionSelectedLane: '',
+            questionRuntimeProfile: '',
+            decisionMeta: null,
             conflictDetected: false,
             conflictDescription: null,
             aiGenerated: false,
@@ -453,6 +460,7 @@ function deepVision() {
         aiRecommendationApplied: false,
         aiRecommendationPrevSelection: null,
         selectedAnswers: [],  // 改用数组支持多选
+        rationaleText: '',
         otherAnswerText: '',
         otherSelected: false,  // "其他"选项是否被选中
         singleSelectDisambiguationActive: false,
@@ -2103,6 +2111,13 @@ function deepVision() {
                 questionMultiSelect: (result.question_multi_select ?? result.multi_select) || false,
                 isFollowUp: result.is_follow_up || false,
                 followUpReason: result.follow_up_reason,
+                answerMode: result.answer_mode || 'pick_only',
+                requiresRationale: !!result.requires_rationale,
+                evidenceIntent: result.evidence_intent || 'low',
+                questionGenerationTier: result.question_generation_tier || '',
+                questionSelectedLane: result.question_selected_lane || '',
+                questionRuntimeProfile: result.question_runtime_profile || '',
+                decisionMeta: result.decision_meta || null,
                 conflictDetected: result.conflict_detected || false,
                 conflictDescription: result.conflict_description,
                 aiGenerated: result.ai_generated || false,
@@ -3145,6 +3160,7 @@ function deepVision() {
             this.startThinkingPolling();  // 方案B: 开始轮询思考进度
             this.startWebSearchPolling();  // 同时保留 Web Search 状态轮询
             this.selectedAnswers = [];
+            this.rationaleText = '';
             this.otherAnswerText = '';
             this.otherSelected = false;
             this.resetSingleSelectDisambiguation();
@@ -3351,6 +3367,13 @@ function deepVision() {
                 questionMultiSelect: false,
                 isFollowUp: false,
                 followUpReason: null,
+                answerMode: 'pick_only',
+                requiresRationale: false,
+                evidenceIntent: 'low',
+                questionGenerationTier: '',
+                questionSelectedLane: '',
+                questionRuntimeProfile: '',
+                decisionMeta: null,
                 conflictDetected: false,
                 conflictDescription: null,
                 aiGenerated: false,
@@ -3656,8 +3679,9 @@ function deepVision() {
             this.selectedAnswers = [];
             this.otherSelected = true;
             this.otherAnswerText = template;
+            this.rationaleText = '';
             this.resetSingleSelectDisambiguation();
-            this.showToast('已填入模板，请补充你的判断依据', 'info');
+            this.showToast('已切换为自由补充模式，可直接描述你的判断', 'info');
             this.$nextTick(() => {
                 const input = this.$refs.otherInput;
                 if (!input) return;
@@ -3721,6 +3745,7 @@ function deepVision() {
 
             this.aiRecommendationPrevSelection = {
                 selectedAnswers: [...this.selectedAnswers],
+                rationaleText: this.rationaleText,
                 otherSelected: this.otherSelected,
                 otherAnswerText: this.otherAnswerText
             };
@@ -3743,6 +3768,7 @@ function deepVision() {
             if (!this.aiRecommendationApplied || !this.aiRecommendationPrevSelection) return;
             const prev = this.aiRecommendationPrevSelection;
             this.selectedAnswers = [...(prev.selectedAnswers || [])];
+            this.rationaleText = prev.rationaleText || '';
             this.otherSelected = !!prev.otherSelected;
             this.otherAnswerText = prev.otherAnswerText || '';
             this.resetSingleSelectDisambiguation();
@@ -3834,6 +3860,7 @@ function deepVision() {
             const config = typeof SITE_CONFIG !== 'undefined' ? SITE_CONFIG.limits : null;
             const answerMaxLength = config?.answerMaxLength || 5000;
             const otherInputMaxLength = config?.otherInputMaxLength || 2000;
+            const rationaleText = this.rationaleText.trim();
 
             if (this.otherSelected && this.otherAnswerText.length > otherInputMaxLength) {
                 this.showToast(`自定义答案不能超过${otherInputMaxLength}个字符`, 'error');
@@ -3918,7 +3945,14 @@ function deepVision() {
                             other_selected: this.otherSelected,
                             other_answer_text: this.otherSelected ? this.otherAnswerText : '',
                             other_resolution: otherResolution || undefined,
-                            is_follow_up: this.currentQuestion.isFollowUp || false
+                            is_follow_up: this.currentQuestion.isFollowUp || false,
+                            answer_mode: this.currentQuestion.answerMode || 'pick_only',
+                            requires_rationale: !!this.currentQuestion.requiresRationale,
+                            evidence_intent: this.currentQuestion.evidenceIntent || 'low',
+                            rationale_text: rationaleText,
+                            question_generation_tier: this.currentQuestion.questionGenerationTier || '',
+                            question_selected_lane: this.currentQuestion.questionSelectedLane || '',
+                            question_runtime_profile: this.currentQuestion.questionRuntimeProfile || ''
                         })
                     }
                 );
@@ -3988,6 +4022,13 @@ function deepVision() {
                     options: lastLog.options || [],
                     multiSelect: (lastLog.question_multi_select ?? lastLog.multi_select) || false,
                     questionMultiSelect: (lastLog.question_multi_select ?? lastLog.multi_select) || false,
+                    isFollowUp: lastLog.is_follow_up || false,
+                    answerMode: lastLog.answer_mode || 'pick_only',
+                    requiresRationale: !!lastLog.requires_rationale,
+                    evidenceIntent: lastLog.evidence_intent || 'low',
+                    questionGenerationTier: lastLog.question_generation_tier || '',
+                    questionSelectedLane: lastLog.question_selected_lane || '',
+                    questionRuntimeProfile: lastLog.question_runtime_profile || '',
                     aiGenerated: true
                 });
 
@@ -4011,6 +4052,7 @@ function deepVision() {
                 this.aiRecommendationApplied = false;
                 this.aiRecommendationPrevSelection = null;
                 this.selectedAnswers = [];
+                this.rationaleText = '';
                 this.otherAnswerText = '';
                 this.otherSelected = false;
                 this.resetSingleSelectDisambiguation();

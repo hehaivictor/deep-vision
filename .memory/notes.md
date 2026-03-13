@@ -1,51 +1,58 @@
-# Notes: DeepVision 全面审查
+# Notes: V3 报告链路问题复盘
 
-## 基线
-- `web/server.py`：21208 行
-- `web/app.js`：8760 行
-- 现有测试：100 项，失败 1 项
-- 基线命令：`python3 -m unittest tests.test_security_regression tests.test_api_comprehensive tests.test_scripts_comprehensive tests.test_question_fast_strategy tests.test_solution_payload`
+## 复盘对象
 
-## 关键证据
+### 会话 1: dv-20260305004312-de77f5e0
+- 来源: `/Users/hehai/Documents/开目软件/Agents/project/DeepVision/data/sessions/dv-20260305004312-de77f5e0.json`
+- 关键信号:
+  - `reason=review_gate_failed`
+  - `final_issue_types=['no_evidence']`
+  - `salvage_issue_types=['quality_gate_evidence', 'quality_gate_weak_binding']`
+  - `evidence_pack_summary`: `facts_count=31`, `unknowns_count=30`, `average_quality_score=0.238`, `follow_up_ratio=0.613`, `hard_triggered_count=27`
+- 审稿问题实质:
+  - `solutions[0].evidence_binding_mode` 被判空
+  - `risks[0].evidence_binding_mode` 被判空
 
-### 1. 生效配置存在高危登录绕过组合
-- `web/config.py:146` `SMS_PROVIDER = "mock"`
-- `web/config.py:154` `SMS_TEST_CODE = "111111"`
-- `web/server.py:3288`-`web/server.py:3292` 固定验证码直接生效
-- `web/server.py:3345`-`web/server.py:3349` mock 短信直接返回成功，不走真实短信
-- `web/server.py:3410`-`web/server.py:3444` 发码后把固定验证码写入校验库
-- 脱敏验证：随机手机号 `send-code=200`，随后用 `111111` 登录 `200`
+## 核心发现
 
-### 2. 会话硬化与运行模式不安全
-- `web/config.py:137` `DEBUG_MODE = True`
-- `web/config.py:141` `SECRET_KEY = "replace-with-a-strong-random-secret"`
-- `web/server.py:1239`-`web/server.py:1252` 直接使用配置中的 `SECRET_KEY`，并在 `DEBUG_MODE=True` 时关闭 `SESSION_COOKIE_SECURE`
+### 1. 问题生成与报告取证目标冲突
+- 问题生成 prompt 鼓励“3-4 个简洁选项、便于快速选择”。
+- 质量评估和证据包构建此前会把“选项型回答”判成 `option_only`、`single_selection`、`too_short`。
+- 结果是系统鼓励用户用最短路径回答，再把这些回答认定为低质量证据。
 
-### 3. Mermaid 渲染链路存在潜在 DOM XSS 面
-- `web/index.html:236` `securityLevel: 'loose'`
-- `web/index.html:240` 附近 `htmlLabels: true`
-- `web/app.js:6753`-`web/app.js:6808` Markdown HTML 有白名单清洗
-- `web/app.js:6915`-`web/app.js:7035` Mermaid 定义经处理后直接 `element.innerHTML = svg`
+### 2. 竞速机制会把深挖问题推向 summary lane
+- 轻量档会把 `summary` 作为备用 lane。
+- 动态 lane 排序会按历史成功率和时延提升更优 lane。
+- 在跟进提问、盲区补问、正式题较多时，系统更容易使用 `summary` 生成问题。
+- 这会提升速度，但会降低问题的取证密度。
 
-### 4. 配置与测试存在漂移
-- `web/server.py:774` `REPORT_V3_QUALITY_FORCE_SINGLE_LANE` fallback 是 `True`
-- `tests/test_security_regression.py:647` 断言 quality 默认必须为 `True`
-- `web/.env:60`、`web/config.py:68`、`web/.env.example:81`、`web/config.example.py:75` 实际示例/生效值均为 `false`
+### 3. 覆盖率指标失真
+- 当前维度 coverage 基于正式问题数量，不基于关键方面是否真实覆盖。
+- 因此可能出现 `coverage=100%`，同时仍存在 `missing_aspects`。
 
-### 5. Gunicorn 配置面存在“死配置”
-- `web/config.example.py:162`-`web/config.example.py:168` 暴露 `GUNICORN_*`
-- `web/gunicorn.conf.py:42`-`web/gunicorn.conf.py:58` 仅从进程环境读取，不读取 `web/config.py`
+### 4. 平均质量指标存在乐观偏差
+- `average_quality_score` 只统计大于 0 的项。
+- 这会掩盖一批 0 分回答，使稀疏证据场景看起来比真实情况更健康。
 
-### 6. 配置优先级与双源混用
-- `web/server.py:75`-`web/server.py:109` 自动加载 `web/.env`
-- `web/server.py:174`-`web/server.py:188` 读取优先级：`DEEPVISION_*` > 同名环境变量 > `config.py` > 默认值
-- 实际运行为混合来源：`.env` 覆盖部分项，其余继续从 `web/config.py` 回填
+### 5. weak binding 门禁仍偏硬
+- `weak_inferred` 统一按固定权重扣分。
+- `open_questions` 与 `risks` 的天然弱绑定特征没有被充分区别对待。
 
-### 7. 上传转换链路无 timeout
-- `web/server.py:17125`-`web/server.py:17131` `subprocess.run([...])` 未设置 `timeout`
+## 已落地修复
+- failover 不再默认强制单 lane。
+- `option_only` 不再进入 hard trigger 和 unknown 识别主链。
+- 单选题不再被误判为 `single_selection`。
+- `evidence_binding_mode` 缺省时自动补 `strong_explicit`。
+- 忽略模型将 `*.evidence_binding_mode` 误报为 `no_evidence` 的幻觉问题。
+- `pending_follow_up` 的 `open_questions` 不再拉低硬性 evidence coverage。
+- 稀疏证据场景下适度放宽 evidence/weak binding 门禁。
+- 问题链路新增 `answer_mode / requires_rationale / evidence_intent`，前后端已完成透传。
+- 高取证问题固定走 `question -> report`，禁用 `summary` 竞速和动态晋升。
+- 证据包已切换为“方面覆盖 + 质量加权覆盖”，并输出 raw/positive-only 质量均值。
+- `weak_binding_ratio` 已拆成字段感知版，`open_questions` 不再混入弱绑定比率。
+- failover 已支持 deterministic bucket，不再只认单个可修复问题。
 
-## 已验证的保护项
-- `web/solution.js:4`-`web/solution.js:10` 存在 `solutionEscapeHtml`
-- `web/solution.js:42`-`web/solution.js:45` 方案页关键状态文案经过转义
-- `web/server.py:13950`-`web/server.py:13971` 静态文件路由做了路径穿越校验
-- `tests/test_security_regression.py` 覆盖匿名写接口、报告归属、状态最小暴露等回归
+## 仍待改造的重点
+- 基于真实失败会话做端到端重放，对比新旧 `unknown_ratio`、V3 通过率与时延。
+- 决定是否继续把 `question_selected_lane / runtime_profile` 接入管理页诊断面板。
+- 根据新指标结果再微调 `hedge delay / timeout / token`，不建议先盲调。
