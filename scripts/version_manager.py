@@ -63,6 +63,7 @@ CONVENTIONAL_TYPE_MAP = {
 }
 
 CHINESE_TYPE_MAP = {
+    "功能": "minor",
     "新增": "minor",
     "实现": "minor",
     "支持": "minor",
@@ -161,6 +162,19 @@ MAJOR_KEYWORDS = ("BREAKING CHANGE", "重大变更", "破坏性变更", "不兼�
 
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").replace("\u00a0", " ")).strip()
+
+
+def _normalize_multiline_text(text: str) -> str:
+    lines = [_normalize_text(line) for line in str(text or "").replace("\r", "").splitlines()]
+    normalized_lines = [line for line in lines if line]
+    return "\n".join(normalized_lines)
+
+
+def _clean_release_title(text: str) -> str:
+    title = _normalize_text(text)
+    title = re.sub(r"\s*\(#\d+\)$", "", title)
+    title = re.sub(r"\s*\[skip release-version\]$", "", title, flags=re.IGNORECASE)
+    return _normalize_text(title)
 
 
 def _dedupe_keep_order(items: Iterable[str]) -> List[str]:
@@ -295,7 +309,7 @@ def get_branch_commit_messages(base_ref: Optional[str] = None) -> List[str]:
         return [latest_message] if latest_message else []
 
     output = _run_git(["git", "log", "--format=%B%x1e", f"{resolved_base}..HEAD"])
-    messages = [_normalize_text(chunk) for chunk in output.split("\x1e")]
+    messages = [_normalize_multiline_text(chunk) for chunk in output.split("\x1e")]
     return [message for message in messages if message]
 
 
@@ -364,7 +378,7 @@ def _contains_chinese(text: str) -> bool:
 
 
 def _looks_like_clean_title(title: str) -> bool:
-    text = _normalize_text(title)
+    text = _clean_release_title(title)
     if not text or len(text) < 4:
         return False
     if not _contains_chinese(text):
@@ -387,14 +401,14 @@ def _extract_commit_type_and_title(first_line: str) -> Tuple[Optional[str], str]
     )
     if conventional_match:
         commit_type = conventional_match.group(1).lower()
-        return CONVENTIONAL_TYPE_MAP.get(commit_type), _normalize_text(conventional_match.group(3))
+        return CONVENTIONAL_TYPE_MAP.get(commit_type), _clean_release_title(conventional_match.group(3))
 
-    chinese_match = re.match(r"^(新增|实现|支持|修复|优化|调整|改进|完善|兼容|重构|重大变更|破坏性变更|文档|测试|工程)[：:]\s*(.+)$", text)
+    chinese_match = re.match(r"^(功能|新增|实现|支持|修复|优化|调整|改进|完善|兼容|重构|重大变更|破坏性变更|文档|测试|工程)[：:]\s*(.+)$", text)
     if chinese_match:
         prefix = chinese_match.group(1)
-        return CHINESE_TYPE_MAP.get(prefix), _normalize_text(chinese_match.group(2))
+        return CHINESE_TYPE_MAP.get(prefix), _clean_release_title(chinese_match.group(2))
 
-    return None, text
+    return None, _clean_release_title(text)
 
 
 def _normalize_change_line(line: str) -> Optional[str]:
@@ -485,7 +499,34 @@ def _changes_need_diff_fallback(title: str, changes: List[str], changed_files: L
     return False
 
 
-def _build_changes_from_files(changed_files: List[str]) -> List[str]:
+def _build_contextual_change_hint(category: str, title: str) -> str:
+    subject = _clean_release_title(title)
+    if not subject:
+        return CATEGORY_CHANGE_HINTS[category]
+
+    templates = {
+        "前端": "前端：围绕“{subject}”更新界面交互与展示逻辑。",
+        "后端": "后端：围绕“{subject}”更新接口与数据处理逻辑。",
+        "测试": "测试：围绕“{subject}”补充并校验相关回归用例。",
+        "工程": "工程：围绕“{subject}”更新脚本与自动化流程。",
+        "文档": "文档：围绕“{subject}”同步说明与使用文档。",
+        "资源": "资源：围绕“{subject}”同步内置资源与示例内容。",
+    }
+    return templates.get(category, CATEGORY_CHANGE_HINTS[category]).format(subject=subject)
+
+
+def _has_specific_structured_changes(changes: List[str], title: str = "") -> bool:
+    normalized_changes = _dedupe_keep_order(changes)
+    if not normalized_changes:
+        return False
+    generic_values = set(CATEGORY_CHANGE_HINTS.values())
+    clean_title = _clean_release_title(title)
+    if len(normalized_changes) == 1 and clean_title and _normalize_text(normalized_changes[0]) == clean_title:
+        return False
+    return any(_normalize_text(change) not in generic_values for change in normalized_changes)
+
+
+def _build_changes_from_files(changed_files: List[str], title: str = "") -> List[str]:
     normalized_files = _dedupe_keep_order(_normalize_repo_path(path) for path in changed_files)
     if not normalized_files:
         return []
@@ -501,9 +542,18 @@ def _build_changes_from_files(changed_files: List[str]) -> List[str]:
     categories = _dedupe_keep_order(_categorize_file(path) for path in normalized_files)
     for category in CATEGORY_ORDER:
         if category in categories and category not in covered_categories:
-            bullets.append(CATEGORY_CHANGE_HINTS[category])
+            bullets.append(_build_contextual_change_hint(category, title))
 
     return _dedupe_keep_order(bullets)
+
+
+def _should_prefer_parsed_title(parsed_title: str, parsed_changes: List[str], prefer_diff_title: bool) -> bool:
+    clean_title = _clean_release_title(parsed_title)
+    if not _looks_like_clean_title(clean_title):
+        return False
+    if not prefer_diff_title:
+        return True
+    return len(clean_title) >= 8 or _has_specific_structured_changes(parsed_changes, clean_title)
 
 
 def _build_title_from_files(changed_files: List[str]) -> str:
@@ -575,14 +625,18 @@ def build_release_notes_from_context(
     """基于提交信息与改动文件生成结构化版本日志。"""
     parsed_type, parsed_title, parsed_changes = parse_commit_message(message)
     explicit_type, _ = _extract_commit_type_and_title(_normalize_text(message.splitlines()[0]) if message.strip() else "")
+    parsed_title = _clean_release_title(parsed_title)
+    parsed_has_specific_changes = _has_specific_structured_changes(parsed_changes, parsed_title)
 
-    if prefer_diff_title:
-        title = _build_title_from_files(changed_files)
+    if _should_prefer_parsed_title(parsed_title, parsed_changes, prefer_diff_title):
+        title = parsed_title
     else:
-        title = parsed_title if _looks_like_clean_title(parsed_title) else _build_title_from_files(changed_files)
+        title = _build_title_from_files(changed_files)
 
-    if prefer_diff_changes or _changes_need_diff_fallback(parsed_title, parsed_changes, changed_files):
-        changes = _build_changes_from_files(changed_files)
+    if prefer_diff_changes:
+        changes = parsed_changes if parsed_has_specific_changes else _build_changes_from_files(changed_files, title=title)
+    elif _changes_need_diff_fallback(parsed_title, parsed_changes, changed_files):
+        changes = _build_changes_from_files(changed_files, title=title)
     else:
         changes = parsed_changes
 

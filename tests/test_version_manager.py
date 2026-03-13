@@ -1,6 +1,7 @@
 import importlib.util
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -62,9 +63,9 @@ class VersionManagerTests(unittest.TestCase):
 
         self.assertEqual(version_type, "patch")
         self.assertEqual(title, "更新日志展示异常")
-        self.assertIn("前端：更新界面交互与展示逻辑。", changes)
-        self.assertIn("后端：更新接口与数据处理逻辑。", changes)
-        self.assertIn("测试：补充并校验相关回归用例。", changes)
+        self.assertIn("前端：围绕“更新日志展示异常”更新界面交互与展示逻辑。", changes)
+        self.assertIn("后端：围绕“更新日志展示异常”更新接口与数据处理逻辑。", changes)
+        self.assertIn("测试：围绕“更新日志展示异常”补充并校验相关回归用例。", changes)
 
     def test_build_release_notes_respects_explicit_minor_type(self):
         version_type, title, changes = self.module.build_release_notes_from_context(
@@ -86,9 +87,8 @@ class VersionManagerTests(unittest.TestCase):
         )
 
         self.assertEqual(version_type, "minor")
-        self.assertEqual(title, "完善前后端功能链路")
-        self.assertIn("前端：更新界面交互与展示逻辑。", changes)
-        self.assertIn("后端：更新接口与数据处理逻辑。", changes)
+        self.assertEqual(title, "补齐边界条件")
+        self.assertEqual(changes, ["新增：支持并行发布碎片"])
 
     def test_build_release_notes_skips_workflow_only_changes(self):
         version_type, title, changes = self.module.build_release_notes_from_context(
@@ -98,7 +98,7 @@ class VersionManagerTests(unittest.TestCase):
 
         self.assertEqual(version_type, "skip")
         self.assertEqual(title, "调整 PR Smoke 工作流")
-        self.assertEqual(changes, ["工程：更新脚本与自动化流程。"])
+        self.assertEqual(changes, ["工程：围绕“调整 PR Smoke 工作流”更新脚本与自动化流程。"])
 
     def test_build_release_notes_does_not_skip_when_workflow_and_feature_change_coexist(self):
         version_type, title, changes = self.module.build_release_notes_from_context(
@@ -110,7 +110,42 @@ class VersionManagerTests(unittest.TestCase):
 
         self.assertEqual(version_type, "patch")
         self.assertEqual(title, "补齐交付链路并修复接口")
-        self.assertIn("后端：更新接口与数据处理逻辑。", changes)
+        self.assertIn("后端：围绕“补齐交付链路并修复接口”更新接口与数据处理逻辑。", changes)
+
+    def test_get_branch_commit_messages_preserves_multiline_commit_body(self):
+        git_output = (
+            "功能：收敛访谈证据预检并完善方案页能力\n"
+            "后端：新增 evidence ledger、中途预检节流与动态 shadow draft 映射\n"
+            "前端：透传预检元信息并支持会话补答闭环\n\x1e"
+        )
+
+        with mock.patch.object(self.module, "resolve_base_ref", return_value="origin/main"), mock.patch.object(
+            self.module, "_run_git", return_value=git_output
+        ):
+            messages = self.module.get_branch_commit_messages()
+
+        self.assertEqual(
+            messages,
+            [
+                "功能：收敛访谈证据预检并完善方案页能力\n"
+                "后端：新增 evidence ledger、中途预检节流与动态 shadow draft 映射\n"
+                "前端：透传预检元信息并支持会话补答闭环"
+            ],
+        )
+
+    def test_build_release_notes_uses_first_line_as_title_for_multiline_commit(self):
+        version_type, title, changes = self.module.build_release_notes_from_context(
+            "功能：收敛访谈证据预检并完善方案页能力\n"
+            "后端：新增 evidence ledger、中途预检节流与动态 shadow draft 映射\n"
+            "前端：透传预检元信息并支持会话补答闭环\n"
+            "脚本：新增预检回放诊断与历史证据迁移工具\n"
+            "测试：补齐访谈、脚本与方案页回归覆盖",
+            ["web/server.py", "web/app.js", "scripts/replay_preflight_diagnostics.py", "tests/test_security_regression.py"],
+        )
+
+        self.assertEqual(version_type, "minor")
+        self.assertEqual(title, "收敛访谈证据预检并完善方案页能力")
+        self.assertIn("后端：新增 evidence ledger、中途预检节流与动态 shadow draft 映射", changes)
 
     def test_get_fragment_path_sanitizes_branch_name(self):
         path = self.module.get_fragment_path("codex/question-logic")

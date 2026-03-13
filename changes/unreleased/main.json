@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "ee6cd11",
+  "committedAt": "2026-03-14T03:22:33+08:00",
+  "versionType": "patch",
+  "title": "优化版本日志生成与历史文案清洗",
+  "changes": [
+    "工程：修正版本日志多行提交解析与标题提取规则，按标题语义生成分类变更说明。",
+    "测试：补充版本日志生成回归用例，覆盖多行提交与语义化回退场景。",
+    "文档：清洗历史版本记录中的模板化变更文案，统一更新日志展示内容。"
+  ],
+  "changedFiles": [
+    "scripts/version_manager.py",
+    "tests/test_version_manager.py"
+  ]
+}
