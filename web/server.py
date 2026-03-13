@@ -1216,6 +1216,521 @@ def summarize_custom_report_schema_for_prompt(schema: dict) -> str:
     return "\n".join(lines) if lines else "- 未提供章节配置"
 
 
+SOLUTION_SCHEMA_VERSION = "v1"
+SOLUTION_SUPPORTED_LAYOUTS = {"cards", "table", "steps", "timeline", "checklist", "text"}
+SOLUTION_SUPPORTED_TRANSFORMS = {
+    "identity",
+    "summary_to_cards",
+    "needs_to_problem_cards",
+    "needs_to_priority_table",
+    "solutions_to_module_cards",
+    "solutions_to_compare_table",
+    "actions_to_timeline",
+    "actions_to_milestones",
+    "actions_to_checklist",
+    "risks_to_cards",
+    "analysis_to_text_blocks",
+    "mixed_items_to_checklist",
+    "open_questions_to_table",
+}
+SOLUTION_DSL_OUTLINE_DEFAULT = [
+    "核心判断",
+    "现状问题",
+    "实施计划",
+    "风险与边界",
+]
+
+
+def _build_default_solution_schema() -> dict:
+    return {
+        "version": SOLUTION_SCHEMA_VERSION,
+        "hero": {
+            "title_source": "context.subject",
+            "summary_source": "derived.executive_summary",
+            "highlight_sources": [
+                "derived.primary_decision",
+                "derived.primary_workstream",
+                "quality.evidence_binding_ratio",
+            ],
+        },
+        "sections": [
+            {
+                "section_id": "decision",
+                "nav_label": "推进判断",
+                "title": "推进判断",
+                "description": "先做什么、为什么做、边界是什么。",
+                "layout": "cards",
+                "source": "derived.decision_cards",
+                "transform": "identity",
+                "required": True,
+                "max_items": 3,
+                "empty_policy": "keep",
+                "priority": 10,
+            },
+            {
+                "section_id": "modules",
+                "nav_label": "落地模块",
+                "title": "落地模块",
+                "description": "围绕当前建议组织可协作、可执行的落地模块。",
+                "layout": "cards",
+                "source": "derived.workstream_cards",
+                "transform": "identity",
+                "required": False,
+                "max_items": 6,
+                "empty_policy": "omit",
+                "priority": 20,
+            },
+            {
+                "section_id": "roadmap",
+                "nav_label": "实施路径",
+                "title": "实施路径",
+                "description": "按时间节奏组织推进动作与阶段里程碑。",
+                "layout": "timeline",
+                "source": "derived.milestones",
+                "transform": "identity",
+                "required": False,
+                "max_items": 6,
+                "empty_policy": "omit",
+                "priority": 30,
+            },
+            {
+                "section_id": "risks",
+                "nav_label": "风险边界",
+                "title": "风险边界",
+                "description": "提前说明主要风险与边界约束。",
+                "layout": "cards",
+                "source": "derived.risk_cards",
+                "transform": "identity",
+                "required": False,
+                "max_items": 6,
+                "empty_policy": "omit",
+                "priority": 40,
+            },
+        ],
+    }
+
+
+def _is_supported_solution_source(source: str) -> bool:
+    normalized = str(source or "").strip()
+    if not normalized:
+        return False
+    direct_sources = {
+        "draft.overview",
+        "draft.needs",
+        "draft.solutions",
+        "draft.risks",
+        "draft.actions",
+        "draft.open_questions",
+        "draft.evidence_index",
+        "derived.executive_summary",
+        "derived.decision_cards",
+        "derived.current_state_cards",
+        "derived.target_blueprint_cards",
+        "derived.solution_compare_table",
+        "derived.workstream_cards",
+        "derived.milestones",
+        "derived.action_checklist",
+        "derived.risk_cards",
+        "derived.analysis_blocks",
+        "derived.open_questions_table",
+        "derived.needs_table",
+        "derived.solutions_table",
+        "derived.actions_table",
+        "derived.risks_table",
+        "derived.primary_decision",
+        "derived.primary_workstream",
+        "context.subject",
+        "context.summary",
+        "context.pain_point",
+        "context.entry_point",
+        "context.constraint",
+        "quality.evidence_binding_ratio",
+        "quality.fallback_ratio",
+        "quality.similarity_score",
+        "quality.unique_term_ratio",
+    }
+    if normalized in direct_sources:
+        return True
+    if normalized.startswith("draft.analysis."):
+        return True
+    if normalized.startswith("raw."):
+        return True
+    return False
+
+
+def _normalize_solution_hero_config(raw_hero) -> dict:
+    hero = raw_hero if isinstance(raw_hero, dict) else {}
+    highlight_sources = hero.get("highlight_sources", [])
+    if not isinstance(highlight_sources, list):
+        highlight_sources = []
+    normalized_sources = []
+    seen = set()
+    for item in highlight_sources[:4]:
+        source = str(item or "").strip()
+        if not source or source in seen or not _is_supported_solution_source(source):
+            continue
+        seen.add(source)
+        normalized_sources.append(source)
+    if not normalized_sources:
+        normalized_sources = list(_build_default_solution_schema()["hero"]["highlight_sources"])
+    return {
+        "title_source": str(hero.get("title_source") or "context.subject").strip() or "context.subject",
+        "summary_source": str(hero.get("summary_source") or "derived.executive_summary").strip() or "derived.executive_summary",
+        "highlight_sources": normalized_sources,
+    }
+
+
+def _infer_solution_section_from_token(raw_item, index: int) -> Optional[dict]:
+    if isinstance(raw_item, dict):
+        raw_source = str(raw_item.get("source") or "").strip()
+        sources_raw = raw_item.get("sources", [])
+        if not raw_source and isinstance(sources_raw, list):
+            raw_source = next((str(item or "").strip() for item in sources_raw if str(item or "").strip()), "")
+        return {
+            "section_id": str(raw_item.get("section_id") or raw_item.get("id") or f"section_{index}").strip() or f"section_{index}",
+            "nav_label": str(raw_item.get("nav_label") or raw_item.get("label") or raw_item.get("title") or f"章节{index}").strip() or f"章节{index}",
+            "title": str(raw_item.get("title") or raw_item.get("label") or f"章节{index}").strip() or f"章节{index}",
+            "description": str(raw_item.get("description") or "").strip(),
+            "layout": str(raw_item.get("layout") or "text").strip().lower() or "text",
+            "source": raw_source,
+            "transform": str(raw_item.get("transform") or "identity").strip().lower() or "identity",
+            "required": bool(raw_item.get("required", False)),
+            "max_items": int(raw_item.get("max_items", 6) or 6),
+            "empty_policy": str(raw_item.get("empty_policy") or "omit").strip().lower() or "omit",
+            "priority": int(raw_item.get("priority", index * 10) or index * 10),
+        }
+
+    token = str(raw_item or "").strip()
+    normalized = token.lower()
+    if not token:
+        return None
+
+    mapping = [
+        (("判断", "决策", "摘要", "overview", "decision"), {
+            "section_id": "decision",
+            "nav_label": "推进判断",
+            "title": "推进判断",
+            "description": "提炼当前最值得推进的判断与切入口。",
+            "layout": "cards",
+            "source": "derived.decision_cards",
+        }),
+        (("未决", "补问", "open_question", "open question", "question"), {
+            "section_id": "open-questions",
+            "nav_label": "未决问题",
+            "title": "未决问题",
+            "description": "列出需要继续确认的关键问题。",
+            "layout": "table",
+            "source": "derived.open_questions_table",
+        }),
+        (("现状", "问题", "痛点", "current", "problem", "pain"), {
+            "section_id": "current-state",
+            "nav_label": "现状问题",
+            "title": "现状问题",
+            "description": "明确现状问题与优先级。",
+            "layout": "cards",
+            "source": "derived.current_state_cards",
+        }),
+        (("目标", "蓝图", "架构", "target", "architecture"), {
+            "section_id": "target-blueprint",
+            "nav_label": "目标蓝图",
+            "title": "目标蓝图",
+            "description": "梳理目标状态与建议蓝图。",
+            "layout": "cards",
+            "source": "derived.target_blueprint_cards",
+        }),
+        (("对比", "选型", "comparison", "compare", "selection"), {
+            "section_id": "option-compare",
+            "nav_label": "方案对比",
+            "title": "方案对比",
+            "description": "对当前可选方案做对比呈现。",
+            "layout": "table",
+            "source": "derived.solution_compare_table",
+        }),
+        (("实施", "路线", "roadmap", "计划", "里程碑", "milestone"), {
+            "section_id": "roadmap",
+            "nav_label": "实施路径",
+            "title": "实施路径",
+            "description": "按阶段组织实施计划与里程碑。",
+            "layout": "timeline",
+            "source": "derived.milestones",
+        }),
+        (("建议", "模块", "recommend", "solution"), {
+            "section_id": "modules",
+            "nav_label": "落地模块",
+            "title": "落地模块",
+            "description": "围绕建议项组织落地模块。",
+            "layout": "cards",
+            "source": "derived.workstream_cards",
+        }),
+        (("下一步", "行动", "执行", "next", "action"), {
+            "section_id": "actions",
+            "nav_label": "下一步推进",
+            "title": "下一步推进",
+            "description": "按 owner 和验收标准组织执行动作。",
+            "layout": "checklist",
+            "source": "derived.action_checklist",
+        }),
+        (("风险", "边界", "risk"), {
+            "section_id": "risks",
+            "nav_label": "风险边界",
+            "title": "风险边界",
+            "description": "明确当前主要风险与边界。",
+            "layout": "cards",
+            "source": "derived.risk_cards",
+        }),
+        (("分析", "洞察", "analysis", "insight"), {
+            "section_id": "analysis",
+            "nav_label": "分析焦点",
+            "title": "分析焦点",
+            "description": "保留关键分析文字与约束焦点。",
+            "layout": "text",
+            "source": "derived.analysis_blocks",
+        }),
+    ]
+
+    for keywords, section in mapping:
+        if any(keyword in normalized for keyword in keywords):
+            return {
+                **section,
+                "transform": "identity",
+                "required": False,
+                "max_items": 6,
+                "empty_policy": "omit",
+                "priority": index * 10,
+            }
+
+    return {
+        "section_id": f"section_{index}",
+        "nav_label": token[:16] or f"章节{index}",
+        "title": token or f"章节{index}",
+        "description": "",
+        "layout": "text",
+        "source": "draft.overview",
+        "transform": "identity",
+        "required": False,
+        "max_items": 6,
+        "empty_policy": "omit",
+        "priority": index * 10,
+    }
+
+
+def normalize_solution_schema(raw_schema, fallback_sections=None) -> tuple[dict, list]:
+    schema = raw_schema if isinstance(raw_schema, dict) else {}
+    sections_raw = schema.get("sections")
+    if not isinstance(sections_raw, list) or not sections_raw:
+        sections_raw = fallback_sections if isinstance(fallback_sections, list) else []
+
+    issues = []
+    seen_ids = set()
+    normalized_sections = []
+    for idx, raw_item in enumerate(sections_raw[:24], 1):
+        section = _infer_solution_section_from_token(raw_item, idx)
+        if not section:
+            issues.append(f"第 {idx} 个方案章节配置无效")
+            continue
+        section_id = str(section.get("section_id", "")).strip() or f"section_{idx}"
+        if section_id in seen_ids:
+            issues.append(f"方案章节标识重复：{section_id}")
+            continue
+        seen_ids.add(section_id)
+
+        layout = str(section.get("layout", "text")).strip().lower() or "text"
+        if layout not in SOLUTION_SUPPORTED_LAYOUTS:
+            issues.append(f"方案章节 {section_id} 的 layout 不支持：{layout}")
+            continue
+
+        source = str(section.get("source", "")).strip()
+        if not _is_supported_solution_source(source):
+            issues.append(f"方案章节 {section_id} 的 source 不支持：{source}")
+            continue
+
+        transform = str(section.get("transform", "identity")).strip().lower() or "identity"
+        if transform not in SOLUTION_SUPPORTED_TRANSFORMS:
+            issues.append(f"方案章节 {section_id} 的 transform 不支持：{transform}")
+            continue
+
+        normalized_sections.append({
+            "section_id": section_id,
+            "nav_label": str(section.get("nav_label") or section.get("title") or section_id).strip() or section_id,
+            "title": str(section.get("title") or section_id).strip() or section_id,
+            "description": str(section.get("description") or "").strip(),
+            "layout": layout,
+            "source": source,
+            "transform": transform,
+            "required": bool(section.get("required", False)),
+            "max_items": max(1, min(int(section.get("max_items", 6) or 6), 12)),
+            "empty_policy": str(section.get("empty_policy") or "omit").strip().lower() or "omit",
+            "priority": int(section.get("priority", idx * 10) or idx * 10),
+        })
+
+    if not normalized_sections:
+        normalized_sections = list(_build_default_solution_schema()["sections"])
+
+    normalized_sections.sort(key=lambda item: (int(item.get("priority", 0) or 0), str(item.get("section_id", ""))))
+    return {
+        "version": str(schema.get("version") or SOLUTION_SCHEMA_VERSION),
+        "hero": _normalize_solution_hero_config(schema.get("hero", {})),
+        "sections": normalized_sections,
+    }, issues
+
+
+def _convert_report_schema_sections_to_solution_sections(report_schema: dict) -> list[dict]:
+    sections = []
+    for idx, item in enumerate((report_schema or {}).get("sections", []) if isinstance(report_schema, dict) else [], 1):
+        if not isinstance(item, dict):
+            continue
+        component = str(item.get("component", "paragraph") or "paragraph").strip().lower()
+        source = str(item.get("source", "overview") or "overview").strip()
+        title = str(item.get("title", "") or item.get("section_id", f"章节{idx}")).strip() or f"章节{idx}"
+        source_map = {
+            "overview": "draft.overview",
+            "needs": "derived.needs_table" if component == "table" else "derived.current_state_cards",
+            "solutions": "derived.solutions_table" if component == "table" else "derived.workstream_cards",
+            "risks": "derived.risks_table" if component == "table" else "derived.risk_cards",
+            "actions": "derived.actions_table" if component == "table" else "derived.action_checklist",
+            "open_questions": "derived.open_questions_table",
+            "analysis.customer_needs": "derived.analysis_blocks",
+            "analysis.business_flow": "derived.analysis_blocks",
+            "analysis.tech_constraints": "derived.analysis_blocks",
+            "analysis.project_constraints": "derived.analysis_blocks",
+        }
+        layout_map = {
+            "paragraph": "text",
+            "table": "table",
+            "list": "checklist",
+            "mermaid": "text",
+        }
+        target_source = source_map.get(source, "draft.overview")
+        target_layout = layout_map.get(component, "text")
+        sections.append({
+            "section_id": str(item.get("section_id") or f"report-{idx}").strip() or f"report-{idx}",
+            "nav_label": title[:16] or f"章节{idx}",
+            "title": title,
+            "description": "由报告章节蓝图映射而来。",
+            "layout": target_layout,
+            "source": target_source,
+            "transform": "identity",
+            "required": bool(item.get("required", False)),
+            "max_items": 6,
+            "empty_policy": "omit",
+            "priority": idx * 10,
+        })
+    return sections
+
+
+def infer_solution_schema_from_scenario(scenario: dict) -> dict:
+    scenario = scenario if isinstance(scenario, dict) else {}
+    report_cfg = scenario.get("report", {}) if isinstance(scenario.get("report", {}), dict) else {}
+    report_template = normalize_report_template_name(
+        report_cfg.get("template", ""),
+        report_type=str(report_cfg.get("type", "standard") or "standard").strip().lower(),
+    )
+
+    if report_template == REPORT_TEMPLATE_CUSTOM_V1 and isinstance(report_cfg.get("schema"), dict):
+        schema, _issues = normalize_solution_schema(
+            {"sections": _convert_report_schema_sections_to_solution_sections(report_cfg.get("schema", {}))}
+        )
+        return schema
+
+    report_sections = report_cfg.get("sections", [])
+    if isinstance(report_sections, list) and report_sections:
+        schema, _issues = normalize_solution_schema({"sections": report_sections})
+        return schema
+
+    dimensions = scenario.get("dimensions", []) if isinstance(scenario.get("dimensions", []), list) else []
+    dimension_tokens = []
+    for item in dimensions[:8]:
+        if not isinstance(item, dict):
+            continue
+        token = str(item.get("name") or item.get("id") or "").strip()
+        if token:
+            dimension_tokens.append(token)
+    if dimension_tokens:
+        schema, _issues = normalize_solution_schema({"sections": ["核心判断", *dimension_tokens, "实施计划", "风险与边界"]})
+        return schema
+
+    return _build_default_solution_schema()
+
+
+def compile_solution_dsl_to_schema(solution_dsl: dict, scenario: Optional[dict] = None) -> tuple[dict, list]:
+    dsl = solution_dsl if isinstance(solution_dsl, dict) else {}
+    outline = dsl.get("solution_outline") or dsl.get("outline") or dsl.get("sections") or []
+    if not isinstance(outline, list) or not outline:
+        outline = list(SOLUTION_DSL_OUTLINE_DEFAULT)
+    hero_focus = str(dsl.get("hero_focus") or "核心判断").strip()
+    emphasis = dsl.get("emphasis", [])
+    if not isinstance(emphasis, list):
+        emphasis = []
+
+    schema_payload = {
+        "version": SOLUTION_SCHEMA_VERSION,
+        "hero": {
+            "title_source": "context.subject",
+            "summary_source": "derived.executive_summary",
+            "highlight_sources": [
+                "derived.primary_decision",
+                "derived.primary_workstream",
+                "quality.evidence_binding_ratio",
+            ],
+        },
+        "sections": [hero_focus, *outline, *emphasis],
+    }
+    return normalize_solution_schema(schema_payload)
+
+
+def normalize_solution_config(raw_solution, scenario: Optional[dict] = None) -> tuple[dict, list]:
+    scenario = scenario if isinstance(scenario, dict) else {}
+    solution = raw_solution if isinstance(raw_solution, dict) else {}
+    version = str(solution.get("version") or SOLUTION_SCHEMA_VERSION)
+    mode = str(solution.get("mode") or "").strip().lower()
+
+    if not mode:
+        if isinstance(solution.get("schema"), dict):
+            mode = "schema"
+        elif isinstance(solution.get("dsl"), dict):
+            mode = "dsl"
+        else:
+            mode = "auto"
+
+    issues = []
+    compiled_schema = {}
+    if mode == "schema":
+        compiled_schema, schema_issues = normalize_solution_schema(
+            solution.get("schema", {}),
+            fallback_sections=solution.get("sections"),
+        )
+        issues.extend(schema_issues)
+    elif mode == "dsl":
+        compiled_schema, dsl_issues = compile_solution_dsl_to_schema(solution.get("dsl", {}), scenario=scenario)
+        issues.extend(dsl_issues)
+    else:
+        mode = "auto"
+        compiled_schema = infer_solution_schema_from_scenario(scenario)
+
+    normalized = {
+        "version": version,
+        "mode": mode,
+        "schema": copy.deepcopy(solution.get("schema", {})) if isinstance(solution.get("schema", {}), dict) else {},
+        "dsl": copy.deepcopy(solution.get("dsl", {})) if isinstance(solution.get("dsl", {}), dict) else {},
+        "compiled_schema": compiled_schema,
+    }
+    return normalized, issues
+
+
+def get_scenario_solution_compiled_schema(scenario: dict) -> dict:
+    scenario = scenario if isinstance(scenario, dict) else {}
+    solution_cfg = scenario.get("solution", {}) if isinstance(scenario.get("solution", {}), dict) else {}
+    compiled = solution_cfg.get("compiled_schema", {}) if isinstance(solution_cfg.get("compiled_schema", {}), dict) else {}
+    if compiled.get("sections"):
+        schema, _issues = normalize_solution_schema(compiled)
+        return schema
+    normalized_solution, _issues = normalize_solution_config(solution_cfg, scenario=scenario)
+    compiled = normalized_solution.get("compiled_schema", {}) if isinstance(normalized_solution.get("compiled_schema", {}), dict) else {}
+    if compiled.get("sections"):
+        return compiled
+    return infer_solution_schema_from_scenario(scenario)
+
+
 def resolve_report_template_for_session(session: dict, evidence_pack: Optional[dict] = None) -> str:
     report_cfg = (session or {}).get("scenario_config", {}).get("report", {})
     if not isinstance(report_cfg, dict):
@@ -15554,6 +16069,13 @@ def list_scenarios():
                 report_type=s.get("report", {}).get("type", "standard"),
             ),
             "has_custom_report_schema": isinstance(s.get("report", {}).get("schema"), dict),
+            "has_solution_schema": bool(get_scenario_solution_compiled_schema(s).get("sections")),
+            "solution_mode": (
+                str((s.get("solution", {}) if isinstance(s.get("solution", {}), dict) else {}).get("mode") or "auto").strip().lower()
+                or "auto"
+            ),
+            "solution_sections_count": len(get_scenario_solution_compiled_schema(s).get("sections", [])),
+            "scenario_source": "builtin" if s.get("builtin", True) else "user_defined",
         }
         for s in scenarios
     ])
@@ -15565,7 +16087,12 @@ def get_scenario(scenario_id):
     scenario = scenario_loader.get_scenario(scenario_id)
     if not scenario:
         return jsonify({"error": "场景不存在"}), 404
-    return jsonify(scenario)
+    payload = copy.deepcopy(scenario)
+    payload["compiled_solution_schema"] = get_scenario_solution_compiled_schema(payload)
+    meta = payload.get("meta", {}) if isinstance(payload.get("meta", {}), dict) else {}
+    meta.setdefault("source", "builtin" if payload.get("builtin", True) else "user_defined")
+    payload["meta"] = meta
+    return jsonify(payload)
 
 
 @app.route('/api/scenarios/generate', methods=['POST'])
@@ -15674,8 +16201,13 @@ def generate_scenario_with_ai():
             if not isinstance(dim.get("key_aspects"), list):
                 dim["key_aspects"] = []
 
-        # 添加默认的 report 配置
+        # 添加默认的 report / solution 配置
         generated["report"] = {"type": "standard", "template": "default"}
+        generated["solution"] = {
+            "version": SOLUTION_SCHEMA_VERSION,
+            "mode": "auto",
+        }
+        generated["compiled_solution_schema"] = get_scenario_solution_compiled_schema(generated)
 
         return jsonify({
             "success": True,
@@ -15748,20 +16280,39 @@ def create_custom_scenario():
             return jsonify({"error": "report.schema 校验失败", "details": schema_issues}), 400
         normalized_report["schema"] = normalized_schema
 
+    solution_payload = data.get("solution", {})
+    if solution_payload is None:
+        solution_payload = {}
+    if solution_payload and not isinstance(solution_payload, dict):
+        return jsonify({"error": "solution 配置格式无效"}), 400
+
     scenario = {
         "name": name,
         "description": data.get("description", "").strip(),
         "icon": data.get("icon", "clipboard-list"),
         "dimensions": dimensions,
         "report": normalized_report,
+        "meta": {
+            "source": "user_defined",
+        },
     }
+    normalized_solution, solution_issues = normalize_solution_config(solution_payload, scenario=scenario)
+    if solution_issues and str(normalized_solution.get("mode") or "") in {"schema", "dsl"}:
+        return jsonify({"error": "solution 配置校验失败", "details": solution_issues}), 400
+    scenario["solution"] = normalized_solution
 
     scenario_id = scenario_loader.save_custom_scenario(scenario)
+    saved_scenario = scenario_loader.get_scenario(scenario_id) or {}
+    response_scenario = copy.deepcopy(saved_scenario)
+    response_scenario["compiled_solution_schema"] = get_scenario_solution_compiled_schema(response_scenario)
+    meta = response_scenario.get("meta", {}) if isinstance(response_scenario.get("meta", {}), dict) else {}
+    meta.setdefault("source", "user_defined")
+    response_scenario["meta"] = meta
 
     return jsonify({
         "success": True,
         "scenario_id": scenario_id,
-        "scenario": scenario_loader.get_scenario(scenario_id)
+        "scenario": response_scenario,
     })
 
 
@@ -22626,6 +23177,9 @@ def _normalize_solution_snapshot(snapshot: dict) -> dict:
     quality_meta = snapshot.get("quality_meta", {}) if isinstance(snapshot.get("quality_meta", {}), dict) else {}
     quality_snapshot = snapshot.get("quality_snapshot", {}) if isinstance(snapshot.get("quality_snapshot", {}), dict) else {}
     report_schema = snapshot.get("report_schema", {}) if isinstance(snapshot.get("report_schema", {}), dict) else {}
+    solution_schema_raw = snapshot.get("solution_schema", {}) if isinstance(snapshot.get("solution_schema", {}), dict) else {}
+    solution_snapshot_raw = snapshot.get("solution_snapshot", {}) if isinstance(snapshot.get("solution_snapshot", {}), dict) else {}
+    normalized_solution_schema, _solution_schema_issues = normalize_solution_schema(solution_schema_raw)
 
     try:
         overall_coverage = float(snapshot.get("overall_coverage", 0) or 0)
@@ -22645,6 +23199,8 @@ def _normalize_solution_snapshot(snapshot: dict) -> dict:
         ),
         "report_type": str(snapshot.get("report_type", "standard") or "standard").strip().lower() or "standard",
         "report_schema": copy.deepcopy(report_schema),
+        "solution_schema": copy.deepcopy(normalized_solution_schema),
+        "solution_snapshot": copy.deepcopy(solution_snapshot_raw),
         "quality_meta": copy.deepcopy(quality_meta),
         "quality_snapshot": copy.deepcopy(quality_snapshot),
         "overall_coverage": max(0.0, min(overall_coverage, 1.0)),
@@ -22696,6 +23252,7 @@ def build_solution_sidecar_snapshot(
             fallback_sections=report_cfg.get("sections"),
         )
         report_schema = normalized_schema
+    solution_schema = get_scenario_solution_compiled_schema(scenario_config)
 
     snapshot = {
         "version": SOLUTION_SNAPSHOT_VERSION,
@@ -22707,6 +23264,7 @@ def build_solution_sidecar_snapshot(
         "report_template": report_template or evidence_pack.get("report_template", ""),
         "report_type": report_type or evidence_pack.get("report_type", "standard"),
         "report_schema": report_schema,
+        "solution_schema": solution_schema,
         "quality_meta": quality_meta if isinstance(quality_meta, dict) else {},
         "quality_snapshot": evidence_pack.get("quality_snapshot", {}) if isinstance(evidence_pack.get("quality_snapshot", {}), dict) else {},
         "overall_coverage": evidence_pack.get("overall_coverage", 0),
@@ -22714,7 +23272,9 @@ def build_solution_sidecar_snapshot(
         "has_structured_evidence": True,
         "draft": copy.deepcopy(draft_snapshot) if isinstance(draft_snapshot, dict) else {},
     }
-    return _normalize_solution_snapshot(snapshot)
+    normalized_snapshot = _normalize_solution_snapshot(snapshot)
+    normalized_snapshot["solution_snapshot"] = build_solution_runtime_snapshot(normalized_snapshot)
+    return _normalize_solution_snapshot(normalized_snapshot)
 
 
 def build_solution_snapshot_from_markdown_report(report_name: str, report_content: str) -> dict:
@@ -22785,6 +23345,7 @@ def build_solution_snapshot_from_markdown_report(report_name: str, report_conten
         "report_template": REPORT_TEMPLATE_STANDARD_V1,
         "report_type": "assessment" if "候选人概览" in main_report_text else "standard",
         "report_schema": {},
+        "solution_schema": _build_default_solution_schema(),
         "quality_meta": {},
         "quality_snapshot": {},
         "overall_coverage": 0.0,
@@ -22796,7 +23357,9 @@ def build_solution_snapshot_from_markdown_report(report_name: str, report_conten
         ),
         "draft": draft,
     }
-    return _normalize_solution_snapshot(snapshot)
+    normalized_snapshot = _normalize_solution_snapshot(snapshot)
+    normalized_snapshot["solution_snapshot"] = build_solution_runtime_snapshot(normalized_snapshot)
+    return _normalize_solution_snapshot(normalized_snapshot)
 
 
 def _solution_phrase_set(values: list[object]) -> list[str]:
@@ -23264,6 +23827,100 @@ def _solution_table_payload_from_items(kind: str, items: list[dict]) -> dict:
     return {"columns": [], "rows": []}
 
 
+def build_solution_runtime_snapshot(snapshot: dict) -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    context = _solution_context_from_snapshot(normalized)
+    draft = normalized["draft"]
+    needs = draft.get("needs", [])
+    solutions = draft.get("solutions", [])
+    risks = draft.get("risks", [])
+    actions = draft.get("actions", [])
+    analysis = draft.get("analysis", {})
+
+    decision_cards = [
+        {
+            "eyebrow": "判断",
+            "title": "为什么值得现在推进",
+            "summary": context.get("pain_point", "核心议题"),
+            "detail": context.get("summary", "当前报告已经沉淀出足够清晰的推进判断。"),
+        },
+        {
+            "eyebrow": "切口",
+            "title": "优先从哪里进入",
+            "summary": context.get("entry_point", "首轮动作"),
+            "detail": _solution_join_meta([
+                actions[0].get("timeline", "") if actions else "",
+                solutions[0].get("metric", "") if solutions else "",
+            ]) or "优先从最靠近业务闭环的动作进入。",
+        },
+        {
+            "eyebrow": "边界",
+            "title": "推进前必须锁定什么",
+            "summary": context.get("constraint", "交付边界"),
+            "detail": clean_solution_text(
+                analysis.get("project_constraints", "") or analysis.get("tech_constraints", ""),
+                max_len=140,
+            ) or "需要先锁定资源、合规与交付边界。",
+        },
+    ]
+    analysis_blocks = [
+        text
+        for text in [
+            analysis.get("customer_needs", ""),
+            analysis.get("business_flow", ""),
+            analysis.get("tech_constraints", ""),
+            analysis.get("project_constraints", ""),
+        ]
+        if clean_solution_text(text, max_len=200)
+    ]
+
+    return {
+        "version": "v2",
+        "context": {
+            "subject": context.get("subject", "访谈结论"),
+            "summary": context.get("summary", ""),
+            "pain_point": context.get("pain_point", ""),
+            "entry_point": context.get("entry_point", ""),
+            "constraint": context.get("constraint", ""),
+        },
+        "decision_frame": {
+            "why_now": context.get("summary", ""),
+            "why_this_path": context.get("entry_point", ""),
+            "must_lock": context.get("constraint", ""),
+        },
+        "derived": {
+            "executive_summary": context.get("summary", ""),
+            "primary_decision": context.get("pain_point", ""),
+            "primary_workstream": context.get("entry_point", ""),
+            "decision_cards": decision_cards,
+            "current_state_cards": _solution_need_cards(needs, limit=6),
+            "target_blueprint_cards": _solution_solution_cards(solutions, limit=6),
+            "solution_compare_table": _solution_table_payload_from_items("solutions", solutions),
+            "workstream_cards": _solution_solution_cards(solutions, limit=6),
+            "milestones": _solution_action_timeline(actions, limit=6),
+            "action_checklist": _solution_action_checklist(actions, limit=6),
+            "risk_cards": _solution_risk_cards(risks, limit=6),
+            "analysis_blocks": analysis_blocks[:4],
+            "open_questions_table": _solution_table_payload_from_items("open_questions", draft.get("open_questions", [])),
+            "needs_table": _solution_table_payload_from_items("needs", needs),
+            "solutions_table": _solution_table_payload_from_items("solutions", solutions),
+            "actions_table": _solution_table_payload_from_items("actions", actions),
+            "risks_table": _solution_table_payload_from_items("risks", risks),
+        },
+        "raw": {
+            "draft": copy.deepcopy(draft),
+            "quality": {
+                "quality_meta": copy.deepcopy(normalized.get("quality_meta", {})),
+                "quality_snapshot": copy.deepcopy(normalized.get("quality_snapshot", {})),
+            },
+            "evidence_summary": {
+                "overall_coverage": float(normalized.get("overall_coverage", 0.0) or 0.0),
+                "has_structured_evidence": bool(normalized.get("has_structured_evidence", False)),
+            },
+        },
+    }
+
+
 def _solution_section(section_id: str, label: str, title: str, description: str, layout: str, **kwargs) -> dict:
     payload = {
         "id": section_id,
@@ -23275,6 +23932,233 @@ def _solution_section(section_id: str, label: str, title: str, description: str,
     }
     payload.update(kwargs)
     return payload
+
+
+def _solution_build_source_root(snapshot: dict, quality_signals: dict) -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    runtime_snapshot = normalized.get("solution_snapshot", {}) if isinstance(normalized.get("solution_snapshot", {}), dict) else {}
+    if not runtime_snapshot:
+        runtime_snapshot = build_solution_runtime_snapshot(normalized)
+    return {
+        "context": runtime_snapshot.get("context", {}),
+        "decision_frame": runtime_snapshot.get("decision_frame", {}),
+        "derived": runtime_snapshot.get("derived", {}),
+        "raw": runtime_snapshot.get("raw", {}),
+        "draft": normalized.get("draft", {}),
+        "quality": quality_signals if isinstance(quality_signals, dict) else {},
+    }
+
+
+def _solution_resolve_path(root: dict, path: str):
+    current = root
+    for token in str(path or "").split("."):
+        if not token:
+            continue
+        if isinstance(current, dict):
+            current = current.get(token)
+        else:
+            return None
+    return current
+
+
+def resolve_solution_source(snapshot: dict, source: str, quality_signals: Optional[dict] = None):
+    root = _solution_build_source_root(snapshot, quality_signals or {})
+    return _solution_resolve_path(root, source)
+
+
+def apply_solution_transform(name: str, value, snapshot: dict, section: Optional[dict] = None):
+    transform = str(name or "identity").strip().lower() or "identity"
+    normalized = _normalize_solution_snapshot(snapshot)
+    draft = normalized.get("draft", {})
+
+    if transform == "identity":
+        return value
+    if transform == "summary_to_cards":
+        text = clean_solution_text(value, max_len=220)
+        if not text:
+            return []
+        title = str((section or {}).get("title") or "摘要").strip() or "摘要"
+        return [{"eyebrow": "摘要", "title": title, "summary": text, "detail": ""}]
+    if transform == "needs_to_problem_cards":
+        return _solution_need_cards(value if isinstance(value, list) else draft.get("needs", []), limit=6)
+    if transform == "needs_to_priority_table":
+        rows = value if isinstance(value, list) else draft.get("needs", [])
+        return _solution_table_payload_from_items("needs", rows)
+    if transform == "solutions_to_module_cards":
+        return _solution_solution_cards(value if isinstance(value, list) else draft.get("solutions", []), limit=6)
+    if transform == "solutions_to_compare_table":
+        rows = value if isinstance(value, list) else draft.get("solutions", [])
+        return _solution_table_payload_from_items("solutions", rows)
+    if transform in {"actions_to_timeline", "actions_to_milestones"}:
+        return _solution_action_timeline(value if isinstance(value, list) else draft.get("actions", []), limit=6)
+    if transform == "actions_to_checklist":
+        return _solution_action_checklist(value if isinstance(value, list) else draft.get("actions", []), limit=6)
+    if transform == "risks_to_cards":
+        return _solution_risk_cards(value if isinstance(value, list) else draft.get("risks", []), limit=6)
+    if transform == "analysis_to_text_blocks":
+        if isinstance(value, dict):
+            return [clean_solution_text(item, max_len=200) for item in value.values() if clean_solution_text(item, max_len=200)]
+        if isinstance(value, list):
+            return [clean_solution_text(item, max_len=200) for item in value if clean_solution_text(item, max_len=200)]
+        text = clean_solution_text(value, max_len=200)
+        return [text] if text else []
+    if transform == "open_questions_to_table":
+        rows = value if isinstance(value, list) else draft.get("open_questions", [])
+        return _solution_table_payload_from_items("open_questions", rows)
+    if transform == "mixed_items_to_checklist":
+        if not isinstance(value, list):
+            return []
+        items = []
+        for item in value[:6]:
+            if not isinstance(item, dict):
+                continue
+            title = clean_solution_text(
+                item.get("title") or item.get("name") or item.get("action") or item.get("question") or item.get("risk"),
+                max_len=56,
+            )
+            if not title:
+                continue
+            items.append({
+                "owner": clean_solution_text(item.get("owner", "待定"), max_len=20) or "待定",
+                "title": title,
+                "detail": _solution_join_meta([
+                    item.get("timeline", ""),
+                    item.get("metric", ""),
+                    item.get("description", ""),
+                    item.get("reason", ""),
+                ]),
+            })
+        return items
+    return value
+
+
+def _solution_is_empty_content(layout: str, content: dict) -> bool:
+    if layout in {"cards", "steps", "timeline", "checklist"}:
+        return not content.get("items")
+    if layout == "table":
+        return not content.get("rows")
+    return not content.get("paragraphs")
+
+
+def _solution_build_placeholder_content(layout: str, section: dict) -> dict:
+    if layout in {"cards", "steps", "timeline", "checklist"}:
+        return {
+            "items": [
+                {
+                    "owner": "待补充",
+                    "title": str(section.get("title") or "待补充章节").strip() or "待补充章节",
+                    "detail": "当前事实不足，待后续补充。",
+                }
+            ]
+        }
+    if layout == "table":
+        return {
+            "columns": [{"key": "content", "label": "内容"}],
+            "rows": [{"content": "当前事实不足，待后续补充。"}],
+        }
+    return {"paragraphs": ["当前事实不足，待后续补充。"]}
+
+
+def _solution_coerce_section_content(layout: str, value, section: dict) -> dict:
+    if layout in {"cards", "steps", "timeline", "checklist"}:
+        if isinstance(value, dict) and isinstance(value.get("items"), list):
+            return {"items": value.get("items", [])[: int(section.get("max_items", 6) or 6)]}
+        if isinstance(value, list):
+            return {"items": value[: int(section.get("max_items", 6) or 6)]}
+        return {"items": []}
+    if layout == "table":
+        if isinstance(value, dict):
+            columns = value.get("columns", []) if isinstance(value.get("columns", []), list) else []
+            rows = value.get("rows", []) if isinstance(value.get("rows", []), list) else []
+            return {"columns": columns, "rows": rows[: int(section.get("max_items", 6) or 6)] if rows else rows}
+        if isinstance(value, list):
+            return {
+                "columns": [{"key": "content", "label": "内容"}],
+                "rows": [{"content": clean_solution_text(item, max_len=160)} for item in value[: int(section.get("max_items", 6) or 6)] if clean_solution_text(item, max_len=160)],
+            }
+        text = clean_solution_text(value, max_len=200)
+        return {"columns": [{"key": "content", "label": "内容"}], "rows": [{"content": text}] if text else []}
+
+    if isinstance(value, list):
+        paragraphs = [clean_solution_text(item, max_len=240) for item in value if clean_solution_text(item, max_len=240)]
+    elif isinstance(value, dict):
+        paragraphs = [clean_solution_text(item, max_len=240) for item in value.values() if clean_solution_text(item, max_len=240)]
+    else:
+        text = clean_solution_text(value, max_len=240)
+        paragraphs = [text] if text else []
+    return {"paragraphs": paragraphs[: int(section.get("max_items", 6) or 6)]}
+
+
+def build_solution_sections_from_schema(snapshot: dict, quality_signals: dict) -> list[dict]:
+    normalized = _normalize_solution_snapshot(snapshot)
+    schema = normalized.get("solution_schema", {}) if isinstance(normalized.get("solution_schema", {}), dict) else {}
+    sections_config = schema.get("sections", []) if isinstance(schema.get("sections", []), list) else []
+    sections = []
+    for item in sections_config:
+        if not isinstance(item, dict):
+            continue
+        layout = str(item.get("layout") or "text").strip().lower() or "text"
+        raw_value = resolve_solution_source(normalized, item.get("source", ""), quality_signals=quality_signals)
+        transformed = apply_solution_transform(item.get("transform", "identity"), raw_value, normalized, item)
+        content = _solution_coerce_section_content(layout, transformed, item)
+        if _solution_is_empty_content(layout, content):
+            if bool(item.get("required", False)) or str(item.get("empty_policy") or "").strip().lower() == "keep":
+                content = _solution_build_placeholder_content(layout, item)
+            else:
+                continue
+        sections.append(_solution_section(
+            str(item.get("section_id") or "section").strip() or "section",
+            str(item.get("nav_label") or item.get("title") or "章节").strip() or "章节",
+            str(item.get("title") or item.get("nav_label") or "章节").strip() or "章节",
+            str(item.get("description") or "").strip(),
+            layout,
+            **content,
+        ))
+    return sections
+
+
+def build_solution_hero_from_schema(snapshot: dict, quality_signals: dict, default_hero: dict) -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    schema = normalized.get("solution_schema", {}) if isinstance(normalized.get("solution_schema", {}), dict) else {}
+    hero_cfg = schema.get("hero", {}) if isinstance(schema.get("hero", {}), dict) else {}
+    if not hero_cfg:
+        return default_hero
+
+    title_value = resolve_solution_source(normalized, hero_cfg.get("title_source", "context.subject"), quality_signals=quality_signals)
+    summary_value = resolve_solution_source(normalized, hero_cfg.get("summary_source", "derived.executive_summary"), quality_signals=quality_signals)
+    highlights = []
+    label_map = {
+        "derived.primary_decision": "核心判断",
+        "derived.primary_workstream": "推进抓手",
+        "quality.evidence_binding_ratio": "证据绑定率",
+        "quality.fallback_ratio": "模板回退率",
+        "quality.similarity_score": "相似度",
+        "context.constraint": "边界条件",
+    }
+    for source in hero_cfg.get("highlight_sources", [])[:4]:
+        value = resolve_solution_source(normalized, source, quality_signals=quality_signals)
+        if isinstance(value, (int, float)):
+            display_value = f"{int(round(float(value) * 100))}%"
+        else:
+            display_value = clean_solution_text(value, max_len=40)
+        if not display_value:
+            continue
+        highlights.append({
+            "label": label_map.get(source, str(source).split(".")[-1] or "重点"),
+            "value": display_value,
+            "detail": "",
+        })
+
+    updated = copy.deepcopy(default_hero)
+    title_text = clean_solution_text(title_value, max_len=48)
+    summary_text = clean_solution_text(summary_value, max_len=280)
+    if title_text:
+        updated["title"] = clean_solution_text(f"{title_text}落地方案", max_len=48) if "方案" not in title_text else title_text
+    if summary_text:
+        updated["summary"] = summary_text
+    if highlights:
+        updated["highlights"] = highlights
+    return updated
 
 
 def _build_solution_sections_from_custom_schema(snapshot: dict, context: dict) -> list[dict]:
@@ -23504,12 +24388,27 @@ def _build_solution_payload_from_snapshot(snapshot: dict, source_mode: str = "st
     context = _solution_context_from_snapshot(normalized)
     metrics = _solution_metric_cards_from_snapshot(normalized, quality_signals)
     highlights = _solution_highlight_cards(context, quality_signals)
-    sections = _build_solution_sections_from_snapshot(normalized, quality_signals)
     title = clean_solution_text(f"{context.get('subject', '访谈结论')}落地方案", max_len=40)
     subtitle = clean_solution_text(
         f"围绕「{context.get('pain_point', '核心议题')}」，优先通过「{context.get('entry_point', '首轮动作')}」形成首轮执行闭环。",
         max_len=88,
     )
+    default_hero = {
+        "eyebrow": "DeepVision 差异化方案",
+        "title": title,
+        "subtitle": subtitle,
+        "summary": context.get("summary", ""),
+        "highlights": highlights,
+        "actions": _solution_action_checklist(normalized["draft"].get("actions", []), limit=3),
+        "metrics": metrics,
+    }
+    solution_schema = normalized.get("solution_schema", {}) if isinstance(normalized.get("solution_schema", {}), dict) else {}
+    schema_sections = solution_schema.get("sections", []) if isinstance(solution_schema.get("sections", []), list) else []
+    use_schema_renderer = bool(schema_sections) and source_mode != "legacy_markdown"
+    sections = build_solution_sections_from_schema(normalized, quality_signals) if use_schema_renderer else []
+    if not sections:
+        sections = _build_solution_sections_from_snapshot(normalized, quality_signals)
+    hero = build_solution_hero_from_schema(normalized, quality_signals, default_hero) if use_schema_renderer else default_hero
     nav_items = [{"id": section.get("id"), "label": section.get("label")} for section in sections]
     return {
         "report_name": normalized.get("report_name", ""),
@@ -23521,18 +24420,16 @@ def _build_solution_payload_from_snapshot(snapshot: dict, source_mode: str = "st
         "report_type": normalized.get("report_type", "standard"),
         "fingerprint": quality_signals.get("fingerprint", {}),
         "quality_signals": quality_signals,
-        "hero": {
-            "eyebrow": "DeepVision 差异化方案",
-            "title": title,
-            "subtitle": subtitle,
-            "summary": context.get("summary", ""),
-            "highlights": highlights,
-            "actions": _solution_action_checklist(normalized["draft"].get("actions", []), limit=3),
-            "metrics": metrics,
+        "solution_schema_meta": {
+            "version": str(solution_schema.get("version") or SOLUTION_SCHEMA_VERSION),
+            "section_count": len(schema_sections),
+            "render_mode": "schema" if use_schema_renderer else "legacy_profile",
+            "snapshot_origin": normalized.get("snapshot_origin", ""),
         },
-        "headline_cards": highlights,
+        "hero": hero,
+        "headline_cards": hero.get("highlights", highlights),
         "metrics": metrics,
-        "decision_summary": context.get("summary", ""),
+        "decision_summary": hero.get("summary") or context.get("summary", ""),
         "nav_items": nav_items,
         "sections": sections,
     }

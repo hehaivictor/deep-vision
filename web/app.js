@@ -9301,7 +9301,16 @@ function deepVision() {
             description: '',
             dimensions: [
                 { id: 'dim_1', name: '', description: '', key_aspects: '' }
-            ]
+            ],
+            solution: {
+                mode: 'auto',
+                dsl: {
+                    hero_focus: '推进判断',
+                    solution_outline: '现状问题\n目标蓝图\n方案对比\n实施路径',
+                    emphasis: '风险边界\n下一步推进'
+                },
+                schemaText: '{\n  "version": "v1",\n  "sections": [\n    "推进判断",\n    "现状问题",\n    "目标蓝图",\n    "方案对比",\n    "实施路径",\n    "风险边界",\n    "下一步推进"\n  ]\n}'
+            }
         },
         savingCustomScenario: false,
 
@@ -9315,15 +9324,182 @@ function deepVision() {
         expandedDimensions: [],          // 展开的维度索引
         aiExplanationExpanded: true,     // AI 说明是否展开
 
-        // 打开自定义场景编辑器
-        openCustomScenarioEditor() {
-            this.customScenario = {
+        createDefaultScenarioSolution() {
+            return {
+                mode: 'auto',
+                dsl: {
+                    hero_focus: '推进判断',
+                    solution_outline: '现状问题\n目标蓝图\n方案对比\n实施路径',
+                    emphasis: '风险边界\n下一步推进'
+                },
+                schemaText: JSON.stringify({
+                    version: 'v1',
+                    sections: [
+                        '推进判断',
+                        '现状问题',
+                        '目标蓝图',
+                        '方案对比',
+                        '实施路径',
+                        '风险边界',
+                        '下一步推进'
+                    ]
+                }, null, 2)
+            };
+        },
+
+        createEmptyCustomScenario() {
+            return {
                 name: '',
                 description: '',
                 dimensions: [
                     { id: 'dim_1', name: '', description: '', key_aspects: '' }
-                ]
+                ],
+                solution: this.createDefaultScenarioSolution()
             };
+        },
+
+        ensureScenarioSolutionState(target) {
+            if (!target || typeof target !== 'object') return;
+            if (!target.solution || typeof target.solution !== 'object') {
+                target.solution = this.createDefaultScenarioSolution();
+            }
+            if (!target.solution.dsl || typeof target.solution.dsl !== 'object') {
+                target.solution.dsl = {};
+            }
+            target.solution.mode = String(target.solution.mode || 'auto').trim().toLowerCase() || 'auto';
+            target.solution.dsl.hero_focus = String(target.solution.dsl.hero_focus || '推进判断').trim() || '推进判断';
+
+            const outlineRaw = target.solution.dsl.solution_outline;
+            if (Array.isArray(outlineRaw)) {
+                target.solution.dsl.solution_outline = outlineRaw.filter(Boolean).join('\n');
+            } else {
+                target.solution.dsl.solution_outline = String(outlineRaw || '现状问题\n目标蓝图\n方案对比\n实施路径');
+            }
+
+            const emphasisRaw = target.solution.dsl.emphasis;
+            if (Array.isArray(emphasisRaw)) {
+                target.solution.dsl.emphasis = emphasisRaw.filter(Boolean).join('\n');
+            } else {
+                target.solution.dsl.emphasis = String(emphasisRaw || '风险边界\n下一步推进');
+            }
+
+            if (!target.solution.schemaText) {
+                if (target.solution.schema && typeof target.solution.schema === 'object' && Object.keys(target.solution.schema).length) {
+                    target.solution.schemaText = JSON.stringify(target.solution.schema, null, 2);
+                } else {
+                    target.solution.schemaText = this.createDefaultScenarioSolution().schemaText;
+                }
+            }
+        },
+
+        getScenarioSolutionModeLabel(mode) {
+            const normalized = String(mode || 'auto').trim().toLowerCase();
+            if (normalized === 'dsl') return '目录增强';
+            if (normalized === 'schema') return '专家模式';
+            return '自动推导';
+        },
+
+        normalizeScenarioSolutionLines(value) {
+            return String(value || '')
+                .split(/\n+/)
+                .map(item => item.trim())
+                .filter(Boolean);
+        },
+
+        normalizeScenarioPreviewLabel(item, fallback = '章节') {
+            if (typeof item === 'string') return item.trim() || fallback;
+            if (item && typeof item === 'object') {
+                return String(item.nav_label || item.title || item.label || item.section_id || fallback).trim() || fallback;
+            }
+            return fallback;
+        },
+
+        inferAutoScenarioSections(target) {
+            const dims = Array.isArray(target?.dimensions) ? target.dimensions : [];
+            const labels = ['推进判断'];
+            dims.forEach((dim) => {
+                const name = String(dim?.name || '').trim();
+                if (name) labels.push(name);
+            });
+            labels.push('实施计划', '风险与边界');
+            return labels.filter((item, index, list) => item && list.indexOf(item) === index).slice(0, 10);
+        },
+
+        getScenarioSolutionPreview(target) {
+            if (!target || typeof target !== 'object') {
+                return { mode: 'auto', modeLabel: '自动推导', sections: [], error: '' };
+            }
+            this.ensureScenarioSolutionState(target);
+            const mode = String(target.solution.mode || 'auto').trim().toLowerCase() || 'auto';
+            let sections = [];
+            let error = '';
+
+            if (mode === 'schema') {
+                try {
+                    const parsed = JSON.parse(String(target.solution.schemaText || '{}'));
+                    sections = Array.isArray(parsed.sections)
+                        ? parsed.sections.map((item) => this.normalizeScenarioPreviewLabel(item)).filter(Boolean)
+                        : [];
+                    if (!sections.length) {
+                        error = 'Schema 中至少需要一个 sections 条目。';
+                    }
+                } catch (parseError) {
+                    error = 'Schema JSON 格式无效，当前无法预览。';
+                }
+            } else if (mode === 'dsl') {
+                sections = [
+                    String(target.solution.dsl.hero_focus || '').trim(),
+                    ...this.normalizeScenarioSolutionLines(target.solution.dsl.solution_outline),
+                    ...this.normalizeScenarioSolutionLines(target.solution.dsl.emphasis)
+                ].filter((item, index, list) => item && list.indexOf(item) === index);
+            } else {
+                sections = this.inferAutoScenarioSections(target);
+            }
+
+            return {
+                mode,
+                modeLabel: this.getScenarioSolutionModeLabel(mode),
+                sections,
+                error
+            };
+        },
+
+        buildScenarioSolutionPayload(target) {
+            this.ensureScenarioSolutionState(target);
+            const mode = String(target.solution.mode || 'auto').trim().toLowerCase() || 'auto';
+            if (mode === 'schema') {
+                let parsed = {};
+                try {
+                    parsed = JSON.parse(String(target.solution.schemaText || '{}'));
+                } catch (parseError) {
+                    throw new Error('方案页 schema JSON 格式无效');
+                }
+                return {
+                    version: 'v1',
+                    mode: 'schema',
+                    schema: parsed
+                };
+            }
+            if (mode === 'dsl') {
+                return {
+                    version: 'v1',
+                    mode: 'dsl',
+                    dsl: {
+                        hero_focus: String(target.solution.dsl.hero_focus || '推进判断').trim() || '推进判断',
+                        solution_outline: this.normalizeScenarioSolutionLines(target.solution.dsl.solution_outline),
+                        emphasis: this.normalizeScenarioSolutionLines(target.solution.dsl.emphasis)
+                    }
+                };
+            }
+            return {
+                version: 'v1',
+                mode: 'auto'
+            };
+        },
+
+        // 打开自定义场景编辑器
+        openCustomScenarioEditor() {
+            this.customScenario = this.createEmptyCustomScenario();
             this.showCustomScenarioModal = true;
         },
 
@@ -9373,16 +9549,24 @@ function deepVision() {
                     max_questions: 4
                 }));
 
-                await this.apiCall('/scenarios/custom', {
+                const result = await this.apiCall('/scenarios/custom', {
                     method: 'POST',
                     body: JSON.stringify({
                         name,
                         description: this.customScenario.description.trim(),
-                        dimensions
+                        dimensions,
+                        solution: this.buildScenarioSolutionPayload(this.customScenario)
                     })
                 });
 
                 await this.loadScenarios();
+                if (result?.scenario_id) {
+                    const newScenario = this.scenarios.find(s => s.id === result.scenario_id);
+                    if (newScenario) {
+                        this.selectedScenario = newScenario;
+                        this.autoRecognizeEnabled = false;
+                    }
+                }
                 this.showCustomScenarioModal = false;
                 this.showToast(`场景「${name}」创建成功`, 'success');
             } catch (error) {
@@ -9451,6 +9635,7 @@ function deepVision() {
 
                 if (result.success && result.generated_scenario) {
                     this.aiGeneratedPreview = result.generated_scenario;
+                    this.ensureScenarioSolutionState(this.aiGeneratedPreview);
                     this.aiExplanation = result.ai_explanation || '';
                     this.expandedDimensions = [];
                     this.aiExplanationExpanded = true;
@@ -9557,7 +9742,8 @@ function deepVision() {
                     body: JSON.stringify({
                         name,
                         description: this.aiGeneratedPreview.description?.trim() || '',
-                        dimensions
+                        dimensions,
+                        solution: this.buildScenarioSolutionPayload(this.aiGeneratedPreview)
                     })
                 });
 
