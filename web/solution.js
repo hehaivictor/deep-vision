@@ -1,4 +1,4 @@
-const SOLUTION_ASSET_VERSION = '20260313-solution-v18';
+const SOLUTION_ASSET_VERSION = '20260314-solution-v19';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 const SOLUTION_SOURCE_MODE_LABELS = {
     structured_sidecar: '结构化快照',
@@ -30,6 +30,12 @@ function solutionPercent(value) {
     const numeric = Number(value || 0);
     if (!Number.isFinite(numeric)) return '0%';
     return `${Math.max(0, Math.round(numeric * 100))}%`;
+}
+
+function solutionCellText(value) {
+    if (Array.isArray(value)) return value.map((item) => solutionCellText(item)).filter(Boolean).join('、');
+    if (value === null || value === undefined) return '';
+    return String(value).trim();
 }
 
 function solutionGetReportName() {
@@ -67,7 +73,69 @@ async function solutionApiCall(endpoint) {
     return payload || {};
 }
 
+function solutionNormalizeChapter(chapter) {
+    if (!chapter || typeof chapter !== 'object') return null;
+    return {
+        id: String(chapter.id || '').trim(),
+        navLabel: String(chapter.navLabel || chapter.nav_label || chapter.label || chapter.title || '章节').trim(),
+        eyebrow: String(chapter.eyebrow || chapter.kicker || '').trim(),
+        title: String(chapter.title || chapter.label || '').trim(),
+        judgement: String(chapter.judgement || chapter.description || '').trim(),
+        summary: String(chapter.summary || '').trim(),
+        layout: String(chapter.layout || 'text').trim(),
+        metrics: solutionNormalizeList(chapter.metrics),
+        cards: solutionNormalizeList(chapter.cards),
+        diagram: chapter.diagram && typeof chapter.diagram === 'object' ? chapter.diagram : null,
+        cta: chapter.cta && typeof chapter.cta === 'object' ? chapter.cta : null,
+        evidenceRefs: solutionNormalizeList(chapter.evidenceRefs || chapter.evidence_refs),
+    };
+}
+
+function solutionGetProposalPage(payload) {
+    const proposal = payload?.proposal_page;
+    const chapters = solutionNormalizeList(proposal?.chapters).map(solutionNormalizeChapter).filter((chapter) => chapter?.id);
+    if (!chapters.length) return null;
+    return {
+        theme: String(proposal?.theme || 'executive_dark_editorial'),
+        navItems: solutionNormalizeList(proposal?.nav_items).filter((item) => item?.id),
+        chapters
+    };
+}
+
+function solutionGetHeroChapter(payload) {
+    const proposal = solutionGetProposalPage(payload);
+    if (!proposal) return null;
+    return proposal.chapters.find((chapter) => chapter.id === 'hero') || proposal.chapters[0] || null;
+}
+
+function solutionGetBodyChapters(payload) {
+    const proposal = solutionGetProposalPage(payload);
+    if (!proposal) return [];
+    return proposal.chapters.filter((chapter) => chapter.id !== 'hero');
+}
+
+function solutionGetHeroActionItems(payload) {
+    const proposal = solutionGetProposalPage(payload);
+    if (!proposal) return solutionNormalizeList(payload?.hero?.actions);
+    const roadmap = proposal.chapters.find((chapter) => chapter.id === 'roadmap');
+    const workstreams = proposal.chapters.find((chapter) => chapter.id === 'workstreams');
+    const sourceCards = solutionNormalizeList(roadmap?.cards).length ? roadmap.cards : solutionNormalizeList(workstreams?.cards);
+    return sourceCards.slice(0, 3).map((item, index) => ({
+        owner: item?.tag || `阶段 ${index + 1}`,
+        title: item?.title || '待补充',
+        detail: item?.meta || item?.desc || ''
+    }));
+}
+
 function solutionBuildNavItems(payload) {
+    const proposal = solutionGetProposalPage(payload);
+    if (proposal?.navItems?.length) return proposal.navItems;
+    if (proposal?.chapters?.length) {
+        return proposal.chapters.map((chapter) => ({
+            id: chapter.id,
+            label: chapter.navLabel || chapter.title || '章节'
+        }));
+    }
     const navItems = solutionNormalizeList(payload?.nav_items);
     if (navItems.length) return navItems;
     return solutionNormalizeList(payload?.sections).map((section) => ({
@@ -104,6 +172,7 @@ function solutionRenderQualityStrip(payload) {
     const quality = payload?.quality_signals || {};
     const fingerprint = payload?.fingerprint || {};
     const schemaMeta = payload?.solution_schema_meta || {};
+    const proposal = solutionGetProposalPage(payload);
     const rows = [
         {
             label: '数据来源',
@@ -112,8 +181,8 @@ function solutionRenderQualityStrip(payload) {
         },
         {
             label: '渲染模式',
-            value: schemaMeta?.render_mode === 'schema' ? '配置驱动' : '兼容旧模板',
-            detail: schemaMeta?.section_count ? `当前目录共 ${schemaMeta.section_count} 个章节。` : '当前未提供可识别的方案目录配置。'
+            value: proposal ? '提案编排' : (schemaMeta?.render_mode === 'schema' ? '配置驱动' : '兼容旧模板'),
+            detail: proposal?.chapters?.length ? `当前提案共 ${proposal.chapters.length} 个章节。` : (schemaMeta?.section_count ? `当前目录共 ${schemaMeta.section_count} 个章节。` : '当前未提供可识别的方案目录配置。')
         },
         {
             label: '模板回退率',
@@ -161,6 +230,7 @@ function solutionRenderQualityStrip(payload) {
 
 function solutionRenderHero(payload) {
     const hero = payload?.hero || {};
+    const heroChapter = solutionGetHeroChapter(payload);
     const eyebrow = document.getElementById('solution-hero-eyebrow');
     const title = document.getElementById('solution-title');
     const subtitle = document.getElementById('solution-subtitle');
@@ -171,29 +241,47 @@ function solutionRenderHero(payload) {
 
     if (eyebrow) {
         const metaBits = [
-            hero?.eyebrow || 'DeepVision 差异化方案',
+            heroChapter?.eyebrow || hero?.eyebrow || 'DeepVision 高级提案页',
             SOLUTION_SOURCE_MODE_LABELS[payload?.source_mode] || '',
             payload?.report_template || '',
             payload?.report_type || ''
         ].filter(Boolean);
         eyebrow.textContent = metaBits.join(' · ');
     }
-    if (title) title.textContent = payload?.title || hero?.title || '查看方案';
+
+    if (title) {
+        title.textContent = heroChapter?.title || payload?.title || hero?.title || '查看方案';
+    }
+
     if (subtitle) {
-        const text = payload?.subtitle || hero?.subtitle || payload?.overview || '';
+        const text = heroChapter?.summary || heroChapter?.judgement || payload?.subtitle || hero?.subtitle || payload?.overview || '';
         subtitle.textContent = text;
         subtitle.hidden = !text;
     }
 
     if (summary) {
-        const summaryText = hero?.summary || payload?.overview || '当前方案已按真实证据组织为可执行章节。';
+        const summaryText = heroChapter?.judgement || hero?.summary || payload?.overview || '当前方案已按真实证据组织为可执行章节。';
+        const evidenceButton = solutionNormalizeList(heroChapter?.evidenceRefs).length ? `
+            <button type="button" class="solution-inline-evidence" data-evidence-title="${solutionEscapeHtml(heroChapter.title || '方案判断')}" data-evidence-refs="${solutionEscapeHtml(heroChapter.evidenceRefs.join('||'))}">
+                查看证据
+            </button>
+        ` : '';
         summary.innerHTML = `
-            <div class="solution-hero-summary-kicker">方案摘要</div>
+            <div class="solution-hero-summary-top">
+                <div class="solution-hero-summary-kicker">章节判断</div>
+                ${evidenceButton}
+            </div>
             <div class="solution-hero-summary-text">${solutionEscapeHtml(summaryText)}</div>
         `;
     }
 
-    const highlightItems = solutionNormalizeList(hero?.highlights).length ? solutionNormalizeList(hero.highlights) : solutionNormalizeList(payload?.headline_cards);
+    const highlightItems = solutionNormalizeList(heroChapter?.cards).length
+        ? heroChapter.cards.map((item) => ({
+            label: item?.tag || '重点',
+            value: item?.title || '未命名模块',
+            detail: item?.desc || item?.meta || ''
+        }))
+        : (solutionNormalizeList(hero?.highlights).length ? solutionNormalizeList(hero.highlights) : solutionNormalizeList(payload?.headline_cards));
     if (highlights) {
         highlights.innerHTML = highlightItems.map((item) => `
             <article class="solution-hero-highlight-card">
@@ -204,7 +292,7 @@ function solutionRenderHero(payload) {
         `).join('');
     }
 
-    const actionItems = solutionNormalizeList(hero?.actions);
+    const actionItems = solutionGetHeroActionItems(payload);
     if (actions) {
         actions.innerHTML = actionItems.length ? actionItems.map((item, index) => `
             <article class="solution-panel-list-item" data-accent="${index % 4}">
@@ -217,22 +305,17 @@ function solutionRenderHero(payload) {
         `).join('') : '<div class="solution-empty">当前暂无首轮行动。</div>';
     }
 
-    const metricItems = solutionNormalizeList(hero?.metrics).length ? solutionNormalizeList(hero.metrics) : solutionNormalizeList(payload?.metrics);
+    const metricItems = solutionNormalizeList(heroChapter?.metrics).length ? solutionNormalizeList(heroChapter.metrics) : (solutionNormalizeList(hero?.metrics).length ? solutionNormalizeList(hero.metrics) : solutionNormalizeList(payload?.metrics));
     if (metrics) {
         metrics.innerHTML = metricItems.length ? metricItems.map((item) => `
             <article class="solution-metric-card-lite">
                 <div class="solution-metric-card-lite-label">${solutionEscapeHtml(item?.label || '指标')}</div>
                 <div class="solution-metric-card-lite-value">${solutionEscapeHtml(item?.value || '-')}</div>
+                ${item?.delta ? `<div class="solution-metric-card-lite-delta">${solutionEscapeHtml(solutionShortText(item.delta, 32))}</div>` : ''}
                 ${item?.note ? `<div class="solution-metric-card-lite-note">${solutionEscapeHtml(solutionShortText(item.note, 56))}</div>` : ''}
             </article>
         `).join('') : '<div class="solution-empty">当前暂无质量指标。</div>';
     }
-}
-
-function solutionCellText(value) {
-    if (Array.isArray(value)) return value.map((item) => solutionCellText(item)).filter(Boolean).join('、');
-    if (value === null || value === undefined) return '';
-    return String(value).trim();
 }
 
 function solutionRenderCards(section) {
@@ -359,7 +442,189 @@ function solutionRenderSectionBody(section) {
     return solutionRenderText(section);
 }
 
-function solutionRenderSections(payload) {
+function solutionRenderProposalEvidenceButton(chapter) {
+    const refs = solutionNormalizeList(chapter?.evidenceRefs);
+    if (!refs.length) return '';
+    return `
+        <button
+            type="button"
+            class="solution-inline-evidence"
+            data-evidence-title="${solutionEscapeHtml(chapter.title || chapter.navLabel || '当前章节')}"
+            data-evidence-refs="${solutionEscapeHtml(refs.join('||'))}"
+        >
+            查看证据
+        </button>
+    `;
+}
+
+function solutionRenderProposalDiagram(diagram) {
+    if (!diagram || typeof diagram !== 'object') return '';
+    const nodes = solutionNormalizeList(diagram.nodes);
+    const edges = solutionNormalizeList(diagram.edges);
+    const nodeLabelMap = new Map(nodes.map((node) => [String(node?.id || ''), String(node?.label || node?.id || '')]));
+    return `
+        <div class="solution-proposal-diagram" data-diagram-type="${solutionEscapeHtml(diagram.type || 'architecture')}">
+            <div class="solution-proposal-diagram-grid">
+                ${nodes.map((node, index) => `
+                    <article class="solution-proposal-node" data-accent="${index % 4}">
+                        ${node?.group ? `<div class="solution-card-badge">${solutionEscapeHtml(node.group)}</div>` : ''}
+                        <h3 class="solution-card-title">${solutionEscapeHtml(node?.label || '节点')}</h3>
+                    </article>
+                `).join('')}
+            </div>
+            ${edges.length ? `
+                <div class="solution-proposal-edge-list">
+                    ${edges.map((edge) => `
+                        <div class="solution-proposal-edge-item">
+                            <span>${solutionEscapeHtml(nodeLabelMap.get(String(edge?.from || '')) || edge?.from || '')}</span>
+                            <span class="solution-proposal-edge-arrow">→</span>
+                            <span>${solutionEscapeHtml(nodeLabelMap.get(String(edge?.to || '')) || edge?.to || '')}</span>
+                            ${edge?.label ? `<span class="solution-proposal-edge-label">${solutionEscapeHtml(edge.label)}</span>` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+            ` : ''}
+            ${diagram?.caption ? `<div class="solution-proposal-diagram-caption">${solutionEscapeHtml(diagram.caption)}</div>` : ''}
+        </div>
+    `;
+}
+
+function solutionRenderProposalCardsGrid(cards, columns = 2) {
+    const items = solutionNormalizeList(cards);
+    return items.length ? `
+        <div class="solution-generic-grid" style="--solution-grid-columns:${Math.max(1, columns)};">
+            ${items.map((item, index) => `
+                <article class="solution-generic-card solution-proposal-card" data-accent="${index % 4}">
+                    ${item?.tag ? `<div class="solution-card-badge">${solutionEscapeHtml(item.tag)}</div>` : ''}
+                    <h3 class="solution-card-title">${solutionEscapeHtml(item?.title || '未命名卡片')}</h3>
+                    ${item?.desc ? `<p class="solution-card-summary">${solutionEscapeHtml(item.desc)}</p>` : ''}
+                    ${item?.meta ? `<p class="solution-card-detail">${solutionEscapeHtml(item.meta)}</p>` : ''}
+                </article>
+            `).join('')}
+        </div>
+    ` : '<div class="solution-empty">当前章节暂无结构化卡片。</div>';
+}
+
+function solutionRenderProposalComparison(chapter) {
+    const cards = solutionNormalizeList(chapter?.cards);
+    if (!cards.length) return '<div class="solution-empty">当前章节暂无可比较路径。</div>';
+    return `
+        <div class="solution-compare-list">
+            ${cards.map((card, index) => `
+                <article class="solution-compare-card" data-accent="${index % 4}">
+                    <div class="solution-compare-head">
+                        <div class="solution-compare-kicker">${solutionEscapeHtml(card?.tag || '路径')}</div>
+                        ${card?.meta ? `<div class="solution-card-foot">${solutionEscapeHtml(solutionShortText(card.meta, 60))}</div>` : ''}
+                    </div>
+                    <h3 class="solution-compare-label">${solutionEscapeHtml(card?.title || '未命名路径')}</h3>
+                    <div class="solution-compare-body">
+                        <div class="solution-compare-column solution-compare-column-active">
+                            <div class="solution-compare-kicker">路径定位</div>
+                            <p>${solutionEscapeHtml(card?.desc || '待补充')}</p>
+                        </div>
+                        <div class="solution-compare-column solution-compare-column-muted">
+                            <div class="solution-compare-kicker">适用边界</div>
+                            <p>${solutionEscapeHtml(card?.meta || '当前暂无边界说明')}</p>
+                        </div>
+                    </div>
+                </article>
+            `).join('')}
+        </div>
+    `;
+}
+
+function solutionRenderProposalTabbedCards(chapter) {
+    const cards = solutionNormalizeList(chapter?.cards);
+    if (!cards.length) return '<div class="solution-empty">当前章节暂无工作流内容。</div>';
+    return `
+        <div class="solution-proposal-tabs" data-proposal-tabs="${solutionEscapeHtml(chapter.id)}">
+            <div class="solution-proposal-tab-list" role="tablist" aria-label="${solutionEscapeHtml(chapter.title || '工作流')}">
+                ${cards.map((card, index) => `
+                    <button
+                        type="button"
+                        class="solution-proposal-tab${index === 0 ? ' is-active' : ''}"
+                        data-tab-target="${solutionEscapeHtml(chapter.id)}-${index}"
+                        role="tab"
+                        aria-selected="${index === 0 ? 'true' : 'false'}"
+                    >
+                        ${solutionEscapeHtml(card?.title || `模块 ${index + 1}`)}
+                    </button>
+                `).join('')}
+            </div>
+            <div class="solution-proposal-tab-panels">
+                ${cards.map((card, index) => `
+                    <article
+                        class="solution-proposal-tab-panel${index === 0 ? ' is-active' : ''}"
+                        id="${solutionEscapeHtml(chapter.id)}-${index}"
+                        role="tabpanel"
+                        ${index === 0 ? '' : 'hidden'}
+                    >
+                        ${card?.tag ? `<div class="solution-card-badge">${solutionEscapeHtml(card.tag)}</div>` : ''}
+                        <h3 class="solution-card-title">${solutionEscapeHtml(card?.title || '未命名工作流')}</h3>
+                        ${card?.desc ? `<p class="solution-card-summary">${solutionEscapeHtml(card.desc)}</p>` : ''}
+                        ${card?.meta ? `<p class="solution-card-detail">${solutionEscapeHtml(card.meta)}</p>` : ''}
+                    </article>
+                `).join('')}
+            </div>
+        </div>
+    `;
+}
+
+function solutionRenderProposalValueGrid(chapter) {
+    const metrics = solutionNormalizeList(chapter?.metrics);
+    const cards = solutionNormalizeList(chapter?.cards);
+    return `
+        ${metrics.length ? `
+            <div class="solution-metric-grid solution-proposal-value-grid">
+                ${metrics.map((item) => `
+                    <article class="solution-metric-card-lite solution-proposal-value-card">
+                        <div class="solution-metric-card-lite-label">${solutionEscapeHtml(item?.label || '指标')}</div>
+                        <div class="solution-metric-card-lite-value">${solutionEscapeHtml(item?.value || '-')}</div>
+                        ${item?.delta ? `<div class="solution-metric-card-lite-delta">${solutionEscapeHtml(solutionShortText(item.delta, 32))}</div>` : ''}
+                        ${item?.note ? `<div class="solution-metric-card-lite-note">${solutionEscapeHtml(solutionShortText(item.note, 56))}</div>` : ''}
+                    </article>
+                `).join('')}
+            </div>
+        ` : ''}
+        ${solutionRenderProposalCardsGrid(cards, 2)}
+    `;
+}
+
+function solutionRenderProposalTimeline(chapter) {
+    const items = solutionNormalizeList(chapter?.cards).map((card, index) => ({
+        step: String(index + 1).padStart(2, '0'),
+        title: card?.title || `阶段 ${index + 1}`,
+        summary: card?.desc || '',
+        detail: card?.meta || '',
+        timeline: card?.tag || ''
+    }));
+    return solutionRenderTimeline({ items });
+}
+
+function solutionRenderProposalChapterBody(chapter) {
+    const layout = String(chapter?.layout || 'text').trim();
+    if (layout === 'conflict_cards') return solutionRenderProposalCardsGrid(chapter?.cards, 4);
+    if (layout === 'dual_comparison') return solutionRenderProposalComparison(chapter);
+    if (layout === 'blueprint_diagram') {
+        return `
+            ${solutionRenderProposalDiagram(chapter?.diagram)}
+            ${solutionRenderProposalCardsGrid(chapter?.cards, 4)}
+        `;
+    }
+    if (layout === 'tabbed_cards') return solutionRenderProposalTabbedCards(chapter);
+    if (layout === 'loop_diagram') {
+        return `
+            ${solutionRenderProposalDiagram(chapter?.diagram)}
+            ${solutionRenderProposalCardsGrid(chapter?.cards, 4)}
+        `;
+    }
+    if (layout === 'phased_timeline') return solutionRenderProposalTimeline(chapter);
+    if (layout === 'value_grid') return solutionRenderProposalValueGrid(chapter);
+    if (layout === 'hero_metrics') return solutionRenderProposalValueGrid(chapter);
+    return solutionRenderProposalCardsGrid(chapter?.cards, 2);
+}
+
+function solutionRenderLegacySections(payload) {
     const root = document.getElementById('solution-sections');
     if (!root) return [];
     const sections = solutionNormalizeList(payload?.sections).filter((section) => section?.id);
@@ -384,6 +649,114 @@ function solutionRenderSections(payload) {
     return sections;
 }
 
+function solutionRenderProposalSections(payload) {
+    const root = document.getElementById('solution-sections');
+    if (!root) return [];
+    const chapters = solutionGetBodyChapters(payload);
+    root.innerHTML = chapters.length ? chapters.map((chapter, index) => `
+        <section class="solution-section solution-reveal solution-section-proposal" id="${solutionEscapeHtml(chapter.id)}" data-solution-section data-layout="${solutionEscapeHtml(chapter.layout || 'text')}">
+            <div class="solution-section-head solution-section-head-proposal">
+                <div class="solution-section-head-top">
+                    <span class="solution-section-kicker">${solutionEscapeHtml(chapter.eyebrow || `章节 ${index + 2}`)}</span>
+                    ${solutionRenderProposalEvidenceButton(chapter)}
+                </div>
+                <h2>${solutionEscapeHtml(chapter.title || chapter.navLabel || '未命名章节')}</h2>
+                ${chapter.judgement ? `<p class="solution-section-judgement">${solutionEscapeHtml(chapter.judgement)}</p>` : ''}
+                ${chapter.summary ? `<p class="solution-section-summary">${solutionEscapeHtml(chapter.summary)}</p>` : ''}
+            </div>
+            <div class="solution-section-body">${solutionRenderProposalChapterBody(chapter)}</div>
+            ${chapter.cta?.target ? `
+                <div class="solution-section-cta-row">
+                    <button type="button" class="solution-section-cta" data-target="${solutionEscapeHtml(chapter.cta.target)}">
+                        ${solutionEscapeHtml(chapter.cta.label || '继续查看')}
+                    </button>
+                </div>
+            ` : ''}
+        </section>
+    `).join('') : '';
+    return chapters;
+}
+
+function solutionRenderSections(payload) {
+    const proposal = solutionGetProposalPage(payload);
+    if (proposal) {
+        return solutionRenderProposalSections(payload);
+    }
+    return solutionRenderLegacySections(payload);
+}
+
+function solutionBindProposalTabs() {
+    document.querySelectorAll('[data-proposal-tabs]').forEach((root) => {
+        const buttons = Array.from(root.querySelectorAll('.solution-proposal-tab[data-tab-target]'));
+        const panels = Array.from(root.querySelectorAll('.solution-proposal-tab-panel'));
+        if (!buttons.length || !panels.length) return;
+        buttons.forEach((button) => {
+            button.addEventListener('click', () => {
+                const target = button.getAttribute('data-tab-target');
+                buttons.forEach((item) => {
+                    const active = item === button;
+                    item.classList.toggle('is-active', active);
+                    item.setAttribute('aria-selected', active ? 'true' : 'false');
+                });
+                panels.forEach((panel) => {
+                    const active = panel.id === target;
+                    panel.classList.toggle('is-active', active);
+                    panel.hidden = !active;
+                });
+            });
+        });
+    });
+}
+
+function solutionOpenEvidenceDrawer(title, refs) {
+    const drawer = document.getElementById('solution-evidence-drawer');
+    const drawerTitle = document.getElementById('solution-evidence-title');
+    const drawerBody = document.getElementById('solution-evidence-body');
+    if (!drawer || !drawerTitle || !drawerBody) return;
+    const list = solutionNormalizeList(refs);
+    drawerTitle.textContent = title || '当前章节证据';
+    drawerBody.innerHTML = list.length ? `
+        <div class="solution-evidence-chip-list">
+            ${list.map((ref) => `<span class="solution-evidence-chip">${solutionEscapeHtml(ref)}</span>`).join('')}
+        </div>
+        <div class="solution-evidence-note">后续可在这里展开访谈摘录、章节编号与结构化证据明细。</div>
+    ` : '<div class="solution-empty">当前章节暂无明确证据锚点。</div>';
+    drawer.hidden = false;
+    document.body.classList.add('is-evidence-open');
+}
+
+function solutionCloseEvidenceDrawer() {
+    const drawer = document.getElementById('solution-evidence-drawer');
+    if (!drawer) return;
+    drawer.hidden = true;
+    document.body.classList.remove('is-evidence-open');
+}
+
+function solutionBindEvidenceDrawer() {
+    document.querySelectorAll('[data-evidence-title]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const title = button.getAttribute('data-evidence-title') || '当前章节证据';
+            const refsRaw = button.getAttribute('data-evidence-refs') || '';
+            const refs = refsRaw ? refsRaw.split('||').filter(Boolean) : [];
+            solutionOpenEvidenceDrawer(title, refs);
+        });
+    });
+    document.querySelectorAll('[data-evidence-close]').forEach((button) => {
+        button.addEventListener('click', solutionCloseEvidenceDrawer);
+    });
+}
+
+function solutionBindSectionCtas() {
+    document.querySelectorAll('[data-target].solution-section-cta').forEach((button) => {
+        button.addEventListener('click', () => {
+            const targetId = button.getAttribute('data-target') || '';
+            const target = document.getElementById(targetId);
+            if (!target) return;
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+    });
+}
+
 function solutionBindScrollSpy() {
     const buttons = Array.from(document.querySelectorAll('.solution-nav-button[data-target]'));
     const sections = Array.from(document.querySelectorAll('[data-solution-section]'));
@@ -394,6 +767,7 @@ function solutionBindScrollSpy() {
         entries.forEach((entry) => {
             if (!entry.isIntersecting) return;
             const id = entry.target.id;
+            if (!buttonMap.has(id)) return;
             buttonMap.forEach((button, key) => {
                 button.classList.toggle('is-active', key === id);
             });
@@ -442,6 +816,9 @@ function solutionRender(payload) {
 
     state.hidden = true;
     shell.hidden = false;
+    solutionBindProposalTabs();
+    solutionBindEvidenceDrawer();
+    solutionBindSectionCtas();
     solutionBindScrollSpy();
     solutionRegisterSectionReveal();
 }

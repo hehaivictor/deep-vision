@@ -2581,11 +2581,266 @@ button {
     background: rgba(255, 255, 255, 0.02);
 }
 
+.solution-hero-summary-top,
+.solution-section-head-top,
+.solution-section-cta-row,
+.solution-proposal-edge-item,
+.solution-proposal-tab-list,
+.solution-evidence-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.solution-inline-evidence,
+.solution-section-cta,
+.solution-evidence-close {
+    appearance: none;
+    border: 1px solid rgba(59, 130, 246, 0.16);
+    background: rgba(59, 130, 246, 0.08);
+    color: #dbeafe;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: background 180ms ease, border-color 180ms ease, transform 180ms ease;
+}
+
+.solution-inline-evidence,
+.solution-evidence-close {
+    min-height: 34px;
+    padding: 0 14px;
+    font-size: 12px;
+}
+
+.solution-section-cta {
+    min-height: 38px;
+    padding: 0 18px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.solution-inline-evidence:hover,
+.solution-section-cta:hover,
+.solution-evidence-close:hover {
+    transform: translateY(-1px);
+    border-color: rgba(59, 130, 246, 0.28);
+    background: rgba(59, 130, 246, 0.14);
+}
+
+.solution-section-head-proposal {
+    gap: 14px;
+}
+
+.solution-section-judgement {
+    margin: 0;
+    font-size: clamp(18px, 2vw, 24px);
+    line-height: 1.6;
+    font-weight: 600;
+    color: var(--solution-text-primary);
+}
+
+.solution-section-summary {
+    margin: 0;
+    max-width: 64ch;
+    font-size: 15px;
+    line-height: 1.85;
+    color: var(--solution-text-secondary);
+}
+
+.solution-proposal-card .solution-card-detail,
+.solution-proposal-card .solution-card-summary {
+    margin-top: 12px;
+}
+
+.solution-proposal-diagram {
+    display: grid;
+    gap: 16px;
+    margin-bottom: 18px;
+}
+
+.solution-proposal-diagram-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.solution-proposal-node {
+    min-height: 124px;
+}
+
+.solution-proposal-edge-list {
+    display: grid;
+    gap: 10px;
+}
+
+.solution-proposal-edge-item {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    padding: 14px 16px;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--solution-text-secondary);
+    font-size: 13px;
+}
+
+.solution-proposal-edge-arrow {
+    color: #7dd3fc;
+}
+
+.solution-proposal-edge-label {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: rgba(59, 130, 246, 0.08);
+    color: #dbeafe;
+    font-size: 11px;
+}
+
+.solution-proposal-diagram-caption {
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--solution-text-muted);
+}
+
+.solution-proposal-tabs {
+    display: grid;
+    gap: 16px;
+}
+
+.solution-proposal-tab-list {
+    flex-wrap: wrap;
+}
+
+.solution-proposal-tab {
+    appearance: none;
+    min-height: 38px;
+    padding: 0 16px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--solution-text-secondary);
+    cursor: pointer;
+    transition: background 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms ease;
+}
+
+.solution-proposal-tab.is-active,
+.solution-proposal-tab:hover {
+    color: var(--solution-text-primary);
+    background: rgba(59, 130, 246, 0.14);
+    border-color: rgba(59, 130, 246, 0.24);
+    transform: translateY(-1px);
+}
+
+.solution-proposal-tab-panels {
+    display: grid;
+}
+
+.solution-proposal-tab-panel {
+    padding: 22px;
+    border-radius: 22px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: linear-gradient(180deg, rgba(9, 17, 31, 0.94) 0%, rgba(8, 16, 28, 0.82) 100%);
+    box-shadow: var(--solution-shadow-soft);
+}
+
+.solution-proposal-tab-panel.is-active {
+    display: block;
+}
+
+.solution-proposal-value-grid {
+    margin-bottom: 18px;
+}
+
+.solution-metric-card-lite-delta {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #93c5fd;
+}
+
+.solution-evidence-drawer {
+    position: fixed;
+    inset: 0;
+    z-index: 120;
+}
+
+.solution-evidence-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(2, 8, 20, 0.72);
+    backdrop-filter: blur(8px);
+}
+
+.solution-evidence-panel {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: min(460px, 100vw);
+    height: 100%;
+    padding: 22px;
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    background: linear-gradient(180deg, rgba(7, 12, 24, 0.98) 0%, rgba(8, 16, 30, 0.96) 100%);
+    box-shadow: -30px 0 70px rgba(2, 8, 20, 0.45);
+}
+
+.solution-evidence-kicker {
+    font-family: 'SFMono-Regular', 'Roboto Mono', 'Consolas', 'Liberation Mono', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #7dd3fc;
+}
+
+.solution-evidence-title {
+    margin-top: 10px;
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.25;
+    color: var(--solution-text-primary);
+}
+
+.solution-evidence-body {
+    margin-top: 22px;
+    display: grid;
+    gap: 14px;
+}
+
+.solution-evidence-chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.solution-evidence-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 0 14px;
+    border-radius: 999px;
+    background: rgba(59, 130, 246, 0.12);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    color: #dbeafe;
+}
+
+.solution-evidence-note {
+    font-size: 14px;
+    line-height: 1.8;
+    color: var(--solution-text-secondary);
+}
+
+body.is-evidence-open {
+    overflow: hidden;
+}
+
 @media (max-width: 1280px) {
     .solution-quality-grid,
     .solution-panel-metrics,
     .solution-hero-highlight-grid,
-    .solution-generic-grid {
+    .solution-generic-grid,
+    .solution-proposal-diagram-grid {
         grid-template-columns: 1fr 1fr;
     }
 }
@@ -2600,6 +2855,7 @@ button {
     .solution-panel-metrics,
     .solution-hero-highlight-grid,
     .solution-generic-grid,
+    .solution-proposal-diagram-grid,
     .solution-step-item,
     .solution-checklist-item {
         grid-template-columns: 1fr;
@@ -2617,5 +2873,16 @@ button {
     .solution-step-title-row,
     .solution-checklist-title-row {
         flex-direction: column;
+    }
+
+    .solution-section-head-top,
+    .solution-hero-summary-top,
+    .solution-evidence-head {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .solution-evidence-panel {
+        width: 100vw;
     }
 }

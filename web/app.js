@@ -2117,6 +2117,12 @@ function deepVision() {
                 questionGenerationTier: result.question_generation_tier || '',
                 questionSelectedLane: result.question_selected_lane || '',
                 questionRuntimeProfile: result.question_runtime_profile || '',
+                preflightIntervened: !!(result.decision_meta && result.decision_meta.mid_interview_preflight && result.decision_meta.mid_interview_preflight.should_intervene),
+                preflightFingerprint: (result.decision_meta && result.decision_meta.mid_interview_preflight && result.decision_meta.mid_interview_preflight.fingerprint) || '',
+                preflightPlannerMode: (result.decision_meta && result.decision_meta.mid_interview_preflight && result.decision_meta.mid_interview_preflight.planner_mode) || '',
+                preflightProbeSlots: Array.isArray(result.decision_meta && result.decision_meta.mid_interview_preflight && result.decision_meta.mid_interview_preflight.probe_slots)
+                    ? result.decision_meta.mid_interview_preflight.probe_slots
+                    : [],
                 decisionMeta: result.decision_meta || null,
                 conflictDetected: result.conflict_detected || false,
                 conflictDescription: result.conflict_description,
@@ -3373,6 +3379,10 @@ function deepVision() {
                 questionGenerationTier: '',
                 questionSelectedLane: '',
                 questionRuntimeProfile: '',
+                preflightIntervened: false,
+                preflightFingerprint: '',
+                preflightPlannerMode: '',
+                preflightProbeSlots: [],
                 decisionMeta: null,
                 conflictDetected: false,
                 conflictDescription: null,
@@ -3952,7 +3962,13 @@ function deepVision() {
                             rationale_text: rationaleText,
                             question_generation_tier: this.currentQuestion.questionGenerationTier || '',
                             question_selected_lane: this.currentQuestion.questionSelectedLane || '',
-                            question_runtime_profile: this.currentQuestion.questionRuntimeProfile || ''
+                            question_runtime_profile: this.currentQuestion.questionRuntimeProfile || '',
+                            preflight_intervened: !!this.currentQuestion.preflightIntervened,
+                            preflight_fingerprint: this.currentQuestion.preflightFingerprint || '',
+                            preflight_planner_mode: this.currentQuestion.preflightPlannerMode || '',
+                            preflight_probe_slots: Array.isArray(this.currentQuestion.preflightProbeSlots)
+                                ? this.currentQuestion.preflightProbeSlots
+                                : []
                         })
                     }
                 );
@@ -4029,6 +4045,10 @@ function deepVision() {
                     questionGenerationTier: lastLog.question_generation_tier || '',
                     questionSelectedLane: lastLog.question_selected_lane || '',
                     questionRuntimeProfile: lastLog.question_runtime_profile || '',
+                    preflightIntervened: !!lastLog.preflight_intervened,
+                    preflightFingerprint: lastLog.preflight_fingerprint || '',
+                    preflightPlannerMode: lastLog.preflight_planner_mode || '',
+                    preflightProbeSlots: Array.isArray(lastLog.preflight_probe_slots) ? lastLog.preflight_probe_slots : [],
                     aiGenerated: true
                 });
 

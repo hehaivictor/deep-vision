@@ -7,7 +7,7 @@
     <link rel="shortcut icon" href="favicon.svg">
     <title>DeepVision 查看方案</title>
     <link rel="stylesheet" href="vendor/css/fonts.css">
-    <link rel="stylesheet" href="solution.css?v=20260311-solution-v17">
+    <link rel="stylesheet" href="solution.css?v=20260314-solution-v19">
 </head>
 <body>
     <div class="solution-page">
@@ -27,7 +27,7 @@
 
                 <section class="solution-quality-strip solution-glass-card solution-reveal" id="solution-quality-strip" hidden></section>
 
-                <section class="solution-hero solution-reveal" id="solution-hero">
+                <section class="solution-hero solution-reveal" id="hero" data-solution-section>
                     <div class="solution-hero-copy">
                         <div class="solution-hero-copy-top">
                             <div class="solution-eyebrow" id="solution-hero-eyebrow">DeepVision 差异化方案</div>
@@ -60,6 +60,20 @@
         </main>
     </div>
 
-    <script src="solution.js?v=20260311-solution-v17"></script>
+    <aside class="solution-evidence-drawer" id="solution-evidence-drawer" hidden>
+        <div class="solution-evidence-backdrop" data-evidence-close></div>
+        <div class="solution-evidence-panel">
+            <div class="solution-evidence-head">
+                <div>
+                    <div class="solution-evidence-kicker">证据锚点</div>
+                    <div class="solution-evidence-title" id="solution-evidence-title">当前章节证据</div>
+                </div>
+                <button type="button" class="solution-evidence-close" data-evidence-close>关闭</button>
+            </div>
+            <div class="solution-evidence-body" id="solution-evidence-body"></div>
+        </div>
+    </aside>
+
+    <script src="solution.js?v=20260314-solution-v19"></script>
 </body>
 </html>

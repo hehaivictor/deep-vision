@@ -1,9 +1,11 @@
 import importlib.util
+import json
 import sys
 import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -66,6 +68,14 @@ class SolutionPayloadTests(unittest.TestCase):
         cls.server.DATA_DIR = cls.sandbox_root / "data"
         cls.server.REPORTS_DIR = cls.server.DATA_DIR / "reports"
         cls.server.REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        cls.server.ENABLE_AI = False
+        cls.server.question_ai_client = None
+        cls.server.report_ai_client = None
+        cls.server.report_draft_ai_client = None
+        cls.server.report_review_ai_client = None
+        cls.server.summary_ai_client = None
+        cls.server.search_decision_ai_client = None
+        cls.server.assessment_ai_client = None
 
     @classmethod
     def tearDownClass(cls):
@@ -300,6 +310,29 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertGreaterEqual(len(payload.get('sections', [])), 6)
         self.assertEqual(payload.get('headline_cards', [])[0].get('value'), '用户反馈')
 
+    def test_historical_interview_markdown_extracts_overview_and_structured_fields(self):
+        report_path = ROOT_DIR / "data" / "reports" / "deep-vision-20260310-e2a4fd23-交互式访谈产品需求调研.md"
+        report_content = report_path.read_text(encoding="utf-8")
+
+        snapshot = self.server.build_solution_snapshot_from_markdown_report(report_path.name, report_content)
+        draft = snapshot.get("draft", {})
+
+        self.assertTrue(draft.get("overview"))
+        self.assertIn("交易支付环节风控体验", draft.get("overview", ""))
+        self.assertGreaterEqual(len(draft.get("needs", [])), 6)
+        self.assertGreaterEqual(len(draft.get("solutions", [])), 5)
+        self.assertGreaterEqual(len(draft.get("risks", [])), 5)
+        self.assertGreaterEqual(len(draft.get("actions", [])), 8)
+        self.assertEqual(draft.get("needs", [])[0].get("name"), "交易支付环节风控体验研究")
+        self.assertTrue(draft.get("needs", [])[0].get("description"))
+        self.assertEqual(draft.get("solutions", [])[0].get("title"), "智能触发引擎")
+        self.assertTrue(draft.get("solutions", [])[0].get("description"))
+        self.assertTrue(draft.get("solutions", [])[0].get("metric"))
+        self.assertEqual(draft.get("risks", [])[0].get("risk"), "真实被拦截用户招募困难，样本偏差")
+        self.assertTrue(draft.get("risks", [])[0].get("impact"))
+        self.assertEqual(draft.get("actions", [])[0].get("owner"), "项目经理")
+        self.assertEqual(draft.get("actions", [])[0].get("timeline"), "T+3天")
+
     def test_structured_sidecar_profiles_are_differentiated(self):
         feedback_schema = {
             "version": "v1",
@@ -410,6 +443,347 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertTrue(payload.get('quality_signals', {}).get('degraded_reasons'))
         self.assertGreaterEqual(len(payload.get('sections', [])), 1)
         self.assertIn('真实信息摘要', payload.get('title', ''))
+
+    def test_structured_sidecar_builds_proposal_brief_and_chapter_copy(self):
+        payload = self._write_structured_sidecar(
+            'proposal-sidecar.md',
+            self._build_snapshot(
+                'proposal-sidecar.md',
+                topic='交易支付风控体验优化',
+                scenario_name='交互式访谈',
+                overview='当前需要先锁定高价值样本、真实触发时机和混合复现路径，才能解释用户为什么放弃支付而非申诉。',
+                needs=[
+                    {'priority': 'P0', 'name': '高价值样本招募更精准', 'description': '先锁定真实被拦截用户。', 'evidence_refs': ['Q1']},
+                    {'priority': 'P0', 'name': '触发时机更贴近真实决策瞬间', 'description': '不能过早也不能过晚。', 'evidence_refs': ['Q2']},
+                    {'priority': 'P1', 'name': '复现方式兼顾深度与成本', 'description': '高保真和低保真需要组合。', 'evidence_refs': ['Q3']},
+                ],
+                solutions=[
+                    {'title': '建立高价值样本招募通道', 'description': '围绕支付失败页和拦截页组织样本入口。', 'owner': '运营', 'timeline': '第1周', 'metric': '形成首批样本池', 'evidence_refs': ['Q4']},
+                    {'title': '设计延时触发策略', 'description': '在高信号时刻触发访谈，减少体验干扰。', 'owner': '研究', 'timeline': '第2周', 'metric': '触发命中率提升', 'evidence_refs': ['Q5']},
+                    {'title': '搭建混合复现机制', 'description': '结合低保真原型和录屏回放提取真实变量。', 'owner': '设计+研究', 'timeline': '第3周', 'metric': '形成首轮归因洞察', 'evidence_refs': ['Q6']},
+                ],
+                risks=[
+                    {'risk': '真实样本不足', 'impact': '结论失真', 'mitigation': '先锁定高价值入口', 'evidence_refs': ['Q7']},
+                    {'risk': '合规评审拖慢试点', 'impact': '周期拉长', 'mitigation': '提前完成脱敏与评审', 'evidence_refs': ['Q8']},
+                ],
+                actions=[
+                    {'action': '确认支付失败页样本入口', 'owner': '运营', 'timeline': 'T+3天', 'metric': '入口评审通过', 'evidence_refs': ['Q9']},
+                    {'action': '制定延时触发规则', 'owner': '研究', 'timeline': 'T+5天', 'metric': '形成触发规则', 'evidence_refs': ['Q10']},
+                    {'action': '完成混合复现原型', 'owner': '设计', 'timeline': 'T+7天', 'metric': '可点击原型就绪', 'evidence_refs': ['Q11']},
+                    {'action': '启动首轮试点访谈', 'owner': '研究+运营', 'timeline': 'T+14天', 'metric': '回收首批有效样本', 'evidence_refs': ['Q12']},
+                ],
+            ),
+        )
+
+        proposal_brief = payload.get('proposal_brief', {}) or {}
+        chapter_copy = payload.get('chapter_copy', {}) or {}
+        proposal_page = payload.get('proposal_page', {}) or {}
+        chapters = chapter_copy.get('chapters', []) or []
+        chapter_ids = [item.get('id') for item in chapters]
+
+        self.assertTrue(proposal_brief.get('thesis', {}).get('headline'))
+        self.assertGreaterEqual(len(proposal_brief.get('options', [])), 2)
+        self.assertGreaterEqual(len(proposal_brief.get('workstreams', [])), 3)
+        self.assertGreaterEqual(len(proposal_brief.get('value_model', [])), 3)
+        self.assertEqual(len(chapters), 8)
+        self.assertEqual(chapter_ids, ['hero', 'why_now', 'comparison', 'blueprint', 'workstreams', 'integration', 'roadmap', 'value_fit'])
+        self.assertEqual(proposal_page.get('theme'), 'executive_dark_editorial')
+        self.assertEqual([item.get('id') for item in proposal_page.get('nav_items', [])], chapter_ids)
+        self.assertGreaterEqual(len((chapters[0] or {}).get('metrics', [])), 3)
+        self.assertGreaterEqual(len((chapters[4] or {}).get('cards', [])), 3)
+
+    def test_structured_sidecar_prefers_ai_generated_proposal_and_chapter_copy(self):
+        snapshot = self._build_snapshot(
+            'proposal-ai.md',
+            topic='交易支付风控体验优化',
+            scenario_name='交互式访谈',
+            overview='当前需要围绕真实拦截场景建立高信号试点，再决定是否扩大范围。',
+            needs=[
+                {'priority': 'P0', 'name': '高价值样本入口稳定', 'description': '先锁定真实被拦截用户。', 'evidence_refs': ['Q1']},
+                {'priority': 'P0', 'name': '触发时机贴近决策瞬间', 'description': '避免过早或过晚触达。', 'evidence_refs': ['Q2']},
+                {'priority': 'P1', 'name': '复现方式兼顾成本和深度', 'description': '低保真与高保真结合。', 'evidence_refs': ['Q3']},
+            ],
+            solutions=[
+                {'title': '建立失败页高信号入口', 'description': '从最接近决策瞬间的页面切入。', 'owner': '运营', 'timeline': '第1周', 'metric': '入口评审通过', 'evidence_refs': ['Q4']},
+                {'title': '设计延迟触发规则', 'description': '让访谈触达更贴近真实体验。', 'owner': '研究', 'timeline': '第2周', 'metric': '触发命中率提升', 'evidence_refs': ['Q5']},
+                {'title': '搭建混合复现机制', 'description': '原型、录屏和回访脚本共同工作。', 'owner': '设计', 'timeline': '第3周', 'metric': '形成首轮洞察', 'evidence_refs': ['Q6']},
+            ],
+            risks=[
+                {'risk': '真实样本不足', 'impact': '结论偏差', 'mitigation': '先锁定高价值入口', 'evidence_refs': ['Q7']},
+                {'risk': '合规评审拖慢试点', 'impact': '排期拉长', 'mitigation': '前置脱敏和法务评审', 'evidence_refs': ['Q8']},
+            ],
+            actions=[
+                {'action': '确认支付失败页样本入口', 'owner': '运营', 'timeline': 'T+3天', 'metric': '入口评审通过', 'evidence_refs': ['Q9']},
+                {'action': '冻结延迟触发规则', 'owner': '研究', 'timeline': 'T+5天', 'metric': '规则确认', 'evidence_refs': ['Q10']},
+                {'action': '完成混合复现原型', 'owner': '设计', 'timeline': 'T+7天', 'metric': '原型可试跑', 'evidence_refs': ['Q11']},
+                {'action': '启动首轮试点访谈', 'owner': '研究+运营', 'timeline': 'T+14天', 'metric': '回收首批有效样本', 'evidence_refs': ['Q12']},
+            ],
+        )
+        brief_response = {
+            "meta": {
+                "topic": "交易支付风控体验优化",
+                "audience": "decision_maker",
+                "proposal_goal": "内部共识",
+                "confidence": 0.91,
+            },
+            "thesis": {
+                "headline": "先围绕支付失败页完成高信号试点，再决定是否扩大风控体验改造",
+                "subheadline": "当前最需要的不是继续收集泛样本，而是把最接近用户放弃瞬间的场景真正跑通。",
+                "why_now": "关键入口、样本信号和约束边界已经足够清楚，适合进入提案和试点设计。",
+                "core_decision": "建议以支付失败页为首轮试点切口，优先验证真实拦截场景下的放弃与申诉分流逻辑。",
+            },
+            "context": {
+                "business_scene": "交易支付风控体验",
+                "current_state": ["高价值样本仍然稀缺", "触发时机影响用户配合度", "复现成本高于预期"],
+                "core_conflicts": ["要贴近真实决策瞬间，但又不能打扰用户", "要保证深度，还要控制试点投入"],
+                "constraints": ["首轮试点只覆盖单一入口", "所有数据必须完成脱敏和审计"],
+                "evidence_refs": ["Q1", "Q2", "Q7"],
+            },
+            "options": [
+                {"name": "保守路径", "positioning": "先做泛样本收集", "pros": ["启动快"], "cons": ["难以解释真实放弃原因"], "fit_for": "只需要方向判断", "not_fit_for": "需要进入试点评审", "decision": "alternative", "evidence_refs": ["Q1"]},
+                {"name": "失败页闭环试点", "positioning": "围绕支付失败页建立高信号试点闭环", "pros": ["最接近真实决策", "能同时沉淀规则和样本"], "cons": ["需要跨团队协调"], "fit_for": "希望尽快进入试点评审的团队", "not_fit_for": "无法获得真实入口的项目", "decision": "recommended", "evidence_refs": ["Q4", "Q9"]},
+                {"name": "激进全量改造", "positioning": "直接重构全链路体验", "pros": ["覆盖面最大"], "cons": ["投入过高", "返工风险高"], "fit_for": "长期专项", "not_fit_for": "当前试点阶段", "decision": "rejected", "evidence_refs": ["Q7", "Q8"]},
+            ],
+            "recommended_solution": {
+                "north_star": "把风控体验从一次性调研升级为可复用的试点能力。",
+                "architecture_statement": "以支付失败页为入口，把样本获取、触发、复现和价值复盘连成闭环。",
+                "modules": [
+                    {"name": "样本入口治理", "objective": "锁定真实高价值样本入口", "acceptance_signals": ["入口评审通过"]},
+                    {"name": "触发策略治理", "objective": "让触达更贴近真实决策瞬间", "acceptance_signals": ["触发命中率提升"]},
+                    {"name": "混合复现机制", "objective": "在成本可控前提下还原真实路径", "acceptance_signals": ["首轮洞察产出"]},
+                ],
+                "integration_points": ["支付失败页入口", "延迟触发规则", "混合复现原型", "试点复盘机制"],
+                "dataflow": ["入口触发", "样本筛选", "访谈执行", "复盘沉淀"],
+                "governance": ["先完成脱敏评审", "先锁定试点范围"],
+                "evidence_refs": ["Q4", "Q5", "Q6"],
+            },
+            "workstreams": [
+                {"name": "样本入口治理", "objective": "锁定真实高价值样本入口", "key_actions": ["确认支付失败页入口", "建立样本筛选规则"], "deliverables": ["样本入口清单"], "owner_role": "运营", "timeline": "第1周", "dependencies": ["法务确认"], "acceptance_signals": ["入口评审通过"], "evidence_refs": ["Q4", "Q9"]},
+                {"name": "触发策略治理", "objective": "让触达更贴近真实决策瞬间", "key_actions": ["冻结延迟触发规则", "验证不同时机触达"], "deliverables": ["触发规则说明"], "owner_role": "研究", "timeline": "第2周", "dependencies": ["样本入口稳定"], "acceptance_signals": ["触发命中率提升"], "evidence_refs": ["Q5", "Q10"]},
+                {"name": "混合复现机制", "objective": "兼顾成本和深度还原真实路径", "key_actions": ["完成混合复现原型", "启动首轮试点"], "deliverables": ["可试跑原型"], "owner_role": "设计+研究", "timeline": "第3周", "dependencies": ["触发规则冻结"], "acceptance_signals": ["形成首轮洞察"], "evidence_refs": ["Q6", "Q11"]},
+            ],
+            "value_model": [
+                {"metric": "试点推进速度", "baseline": "仍需多轮会议对齐", "target": "8周内形成闭环试点", "range": "3阶段推进", "assumptions": ["入口可用"], "evidence_refs": ["Q9"]},
+                {"metric": "高价值洞察密度", "baseline": "泛样本噪声高", "target": "围绕真实失败场景形成结构化结论", "range": "3个核心工作流", "assumptions": ["样本质量稳定"], "evidence_refs": ["Q1", "Q4"]},
+                {"metric": "证据绑定率", "baseline": "关键判断依赖人工翻阅", "target": "核心章节持续绑定 Q 编号", "range": "保持高证据密度", "assumptions": ["结构化条目持续完善"], "evidence_refs": ["Q4", "Q7"]},
+            ],
+            "fit_reasons": [
+                {"title": "关键切口已经收敛", "detail": "支付失败页已经成为最清晰的试点入口。", "evidence_refs": ["Q4", "Q9"]},
+                {"title": "约束边界已经显性化", "detail": "脱敏和单入口试点边界都可以提前锁定。", "evidence_refs": ["Q7", "Q8"]},
+                {"title": "结构化素材足以支撑提案", "detail": "当前已有需求、方案、动作和风险四套结构化条目。", "evidence_refs": ["Q1", "Q4", "Q9"]},
+            ],
+            "risks_and_boundaries": [
+                {"title": "真实样本不足", "detail": "如果入口无法锁定，结论会快速失真。", "type": "risk", "evidence_refs": ["Q7"]},
+                {"title": "试点边界", "detail": "首轮只覆盖支付失败页，不做全链路改造。", "type": "boundary", "evidence_refs": ["Q8"]},
+            ],
+            "next_steps": [
+                {"phase": "Phase 1｜范围冻结", "goal": "锁定入口、样本和规则边界", "actions": ["确认入口", "完成法务评审"], "milestone": "范围冻结完成", "evidence_refs": ["Q9"]},
+                {"phase": "Phase 2｜试点执行", "goal": "完成触发策略与混合复现试跑", "actions": ["冻结触发规则", "完成原型"], "milestone": "首轮试点启动", "evidence_refs": ["Q10", "Q11"]},
+                {"phase": "Phase 3｜价值复盘", "goal": "复盘高价值洞察与扩展条件", "actions": ["回收洞察", "评估是否扩展"], "milestone": "二期建议形成", "evidence_refs": ["Q12"]},
+            ],
+        }
+        chapter_ids = ['hero', 'why_now', 'comparison', 'blueprint', 'workstreams', 'integration', 'roadmap', 'value_fit']
+        chapter_layouts = ['hero_metrics', 'conflict_cards', 'dual_comparison', 'blueprint_diagram', 'tabbed_cards', 'loop_diagram', 'phased_timeline', 'value_grid']
+        chapter_response = {
+            "meta": {"theme": "executive_dark_editorial", "tone": "judgemental_clear_premium", "nav_style": "sticky"},
+            "chapters": [
+                {
+                    "id": chapter_id,
+                    "nav_label": f"章节{index + 1}",
+                    "eyebrow": "AI 提案页",
+                    "title": "AI 生成的判断标题" if chapter_id == 'hero' else f"{chapter_id} 章节标题",
+                    "judgement": f"{chapter_id} 的 AI 判断句",
+                    "summary": f"{chapter_id} 的 AI 概述",
+                    "layout": chapter_layouts[index],
+                    "metrics": [
+                        {"label": "指标A", "value": "80%", "delta": "", "note": "说明A"},
+                        {"label": "指标B", "value": "3阶段", "delta": "", "note": "说明B"},
+                        {"label": "指标C", "value": "高", "delta": "", "note": "说明C"},
+                    ] if chapter_id == 'hero' else [],
+                    "cards": [
+                        {"title": f"{chapter_id} 卡片1", "desc": "AI 卡片描述 1", "tag": "AI", "meta": "meta1"},
+                        {"title": f"{chapter_id} 卡片2", "desc": "AI 卡片描述 2", "tag": "AI", "meta": "meta2"},
+                        {"title": f"{chapter_id} 卡片3", "desc": "AI 卡片描述 3", "tag": "AI", "meta": "meta3"},
+                    ] if chapter_id in {'comparison', 'workstreams', 'value_fit'} else [
+                        {"title": f"{chapter_id} 卡片1", "desc": "AI 卡片描述 1", "tag": "AI", "meta": "meta1"},
+                        {"title": f"{chapter_id} 卡片2", "desc": "AI 卡片描述 2", "tag": "AI", "meta": "meta2"},
+                    ],
+                    "diagram": {
+                        "type": "architecture" if chapter_id == 'blueprint' else ("loop" if chapter_id == 'integration' else ("timeline" if chapter_id == 'roadmap' else "flow")),
+                        "nodes": [{"id": "n1", "label": "节点1"}, {"id": "n2", "label": "节点2"}],
+                        "edges": [{"from": "n1", "to": "n2", "label": "推进"}],
+                        "caption": "AI 图解说明",
+                    } if chapter_id in {'blueprint', 'integration', 'roadmap'} else None,
+                    "cta": {"label": "继续查看", "target": chapter_ids[(index + 1) % len(chapter_ids)]},
+                    "evidence_refs": ["Q1", "Q4"],
+                }
+                for index, chapter_id in enumerate(chapter_ids)
+            ],
+        }
+
+        def _fake_call_claude(_prompt, *args, **kwargs):
+            call_type = kwargs.get('call_type', '')
+            if call_type == 'report_solution_proposal_brief':
+                return json.dumps(brief_response, ensure_ascii=False)
+            if call_type == 'report_solution_chapter_copy':
+                return json.dumps(chapter_response, ensure_ascii=False)
+            return ''
+
+        with patch.object(self.server, 'ENABLE_AI', True), \
+             patch.object(self.server, 'HAS_ANTHROPIC', True), \
+             patch.object(self.server, 'call_claude', new=_fake_call_claude):
+            payload = self._write_structured_sidecar('proposal-ai.md', snapshot)
+
+        proposal_brief = payload.get('proposal_brief', {}) or {}
+        chapter_copy = payload.get('chapter_copy', {}) or {}
+        self.assertEqual(proposal_brief.get('meta', {}).get('generation_mode'), 'ai')
+        self.assertEqual(chapter_copy.get('meta', {}).get('generation_mode'), 'ai')
+        self.assertEqual(proposal_brief.get('thesis', {}).get('headline'), brief_response['thesis']['headline'])
+        self.assertEqual((chapter_copy.get('chapters', [])[0] or {}).get('title'), 'AI 生成的判断标题')
+        self.assertEqual(payload.get('proposal_page', {}).get('theme'), 'executive_dark_editorial')
+        self.assertEqual([item.get('id') for item in payload.get('proposal_page', {}).get('nav_items', [])], chapter_ids)
+
+    def test_structured_sidecar_falls_back_to_rules_when_ai_returns_bad_json(self):
+        snapshot = self._build_snapshot(
+            'proposal-ai-bad-json.md',
+            topic='交易支付风控体验优化',
+            scenario_name='交互式访谈',
+            overview='当前需要先锁定试点切口，再决定是否扩大投入。',
+            needs=[
+                {'priority': 'P0', 'name': '高价值样本入口稳定', 'description': '先锁定真实被拦截用户。', 'evidence_refs': ['Q1']},
+                {'priority': 'P0', 'name': '触发时机贴近真实决策瞬间', 'description': '避免过早或过晚触达。', 'evidence_refs': ['Q2']},
+                {'priority': 'P1', 'name': '复现方式兼顾成本和深度', 'description': '低保真与高保真结合。', 'evidence_refs': ['Q3']},
+            ],
+            solutions=[
+                {'title': '建立失败页高信号入口', 'description': '从最接近决策瞬间的页面切入。', 'owner': '运营', 'timeline': '第1周', 'metric': '入口评审通过', 'evidence_refs': ['Q4']},
+                {'title': '设计延迟触发规则', 'description': '让访谈触达更贴近真实体验。', 'owner': '研究', 'timeline': '第2周', 'metric': '触发命中率提升', 'evidence_refs': ['Q5']},
+                {'title': '搭建混合复现机制', 'description': '原型、录屏和回访脚本共同工作。', 'owner': '设计', 'timeline': '第3周', 'metric': '形成首轮洞察', 'evidence_refs': ['Q6']},
+            ],
+            actions=[
+                {'action': '确认支付失败页样本入口', 'owner': '运营', 'timeline': 'T+3天', 'metric': '入口评审通过', 'evidence_refs': ['Q9']},
+                {'action': '冻结延迟触发规则', 'owner': '研究', 'timeline': 'T+5天', 'metric': '规则确认', 'evidence_refs': ['Q10']},
+                {'action': '完成混合复现原型', 'owner': '设计', 'timeline': 'T+7天', 'metric': '原型可试跑', 'evidence_refs': ['Q11']},
+            ],
+            risks=[
+                {'risk': '真实样本不足', 'impact': '结论偏差', 'mitigation': '先锁定高价值入口', 'evidence_refs': ['Q7']},
+            ],
+        )
+
+        def _fake_call_claude(_prompt, *args, **kwargs):
+            return '{"bad_json": '
+
+        with patch.object(self.server, 'ENABLE_AI', True), \
+             patch.object(self.server, 'HAS_ANTHROPIC', True), \
+             patch.object(self.server, 'call_claude', new=_fake_call_claude):
+            payload = self._write_structured_sidecar('proposal-ai-bad-json.md', snapshot)
+
+        proposal_brief = payload.get('proposal_brief', {}) or {}
+        chapter_copy = payload.get('chapter_copy', {}) or {}
+        self.assertEqual(proposal_brief.get('meta', {}).get('generation_mode'), 'rule')
+        self.assertEqual(chapter_copy.get('meta', {}).get('generation_mode'), 'rule')
+        self.assertTrue(proposal_brief.get('thesis', {}).get('headline'))
+        self.assertEqual(len(chapter_copy.get('chapters', []) or []), 8)
+
+    def test_structured_sidecar_falls_back_to_rule_chapters_when_ai_chapters_incomplete(self):
+        snapshot = self._build_snapshot(
+            'proposal-ai-chapters.md',
+            topic='交易支付风控体验优化',
+            scenario_name='交互式访谈',
+            overview='当前需要先锁定高价值样本、试点入口和排期边界。',
+            needs=[
+                {'priority': 'P0', 'name': '高价值样本入口稳定', 'description': '先锁定真实被拦截用户。', 'evidence_refs': ['Q1']},
+                {'priority': 'P0', 'name': '触发时机贴近真实决策瞬间', 'description': '避免过早或过晚触达。', 'evidence_refs': ['Q2']},
+                {'priority': 'P1', 'name': '复现方式兼顾成本和深度', 'description': '低保真与高保真结合。', 'evidence_refs': ['Q3']},
+            ],
+            solutions=[
+                {'title': '建立失败页高信号入口', 'description': '从最接近决策瞬间的页面切入。', 'owner': '运营', 'timeline': '第1周', 'metric': '入口评审通过', 'evidence_refs': ['Q4']},
+                {'title': '设计延迟触发规则', 'description': '让访谈触达更贴近真实体验。', 'owner': '研究', 'timeline': '第2周', 'metric': '触发命中率提升', 'evidence_refs': ['Q5']},
+                {'title': '搭建混合复现机制', 'description': '原型、录屏和回访脚本共同工作。', 'owner': '设计', 'timeline': '第3周', 'metric': '形成首轮洞察', 'evidence_refs': ['Q6']},
+            ],
+            risks=[
+                {'risk': '真实样本不足', 'impact': '结论偏差', 'mitigation': '先锁定高价值入口', 'evidence_refs': ['Q7']},
+                {'risk': '合规评审拖慢试点', 'impact': '排期拉长', 'mitigation': '前置脱敏和法务评审', 'evidence_refs': ['Q8']},
+            ],
+            actions=[
+                {'action': '确认支付失败页样本入口', 'owner': '运营', 'timeline': 'T+3天', 'metric': '入口评审通过', 'evidence_refs': ['Q9']},
+                {'action': '冻结延迟触发规则', 'owner': '研究', 'timeline': 'T+5天', 'metric': '规则确认', 'evidence_refs': ['Q10']},
+                {'action': '完成混合复现原型', 'owner': '设计', 'timeline': 'T+7天', 'metric': '原型可试跑', 'evidence_refs': ['Q11']},
+                {'action': '启动首轮试点访谈', 'owner': '研究+运营', 'timeline': 'T+14天', 'metric': '回收首批有效样本', 'evidence_refs': ['Q12']},
+            ],
+        )
+        brief_response = {
+            "meta": {"topic": "交易支付风控体验优化", "audience": "decision_maker", "proposal_goal": "内部共识", "confidence": 0.9},
+            "thesis": {"headline": "AI 版提案标题", "subheadline": "AI 版提案副标题", "why_now": "AI 版 why now", "core_decision": "AI 版核心判断"},
+            "context": {"business_scene": "交易支付风控体验", "current_state": ["入口已收敛"], "core_conflicts": ["触达与打扰并存"], "constraints": ["单入口试点"], "evidence_refs": ["Q1"]},
+            "options": [
+                {"name": "保守路径", "positioning": "先收集样本", "pros": ["快"], "cons": ["浅"], "fit_for": "早期探索", "not_fit_for": "试点评审", "decision": "alternative", "evidence_refs": ["Q1"]},
+                {"name": "失败页闭环试点", "positioning": "围绕失败页形成试点闭环", "pros": ["深"], "cons": ["需要协同"], "fit_for": "当前项目", "not_fit_for": "无真实入口场景", "decision": "recommended", "evidence_refs": ["Q4"]},
+            ],
+            "recommended_solution": {"north_star": "AI 北极星", "architecture_statement": "AI 架构主张", "modules": [], "integration_points": ["入口"], "dataflow": ["触发", "复盘"], "governance": ["法务"], "evidence_refs": ["Q4"]},
+            "workstreams": [
+                {"name": "样本入口治理", "objective": "锁定高价值样本", "key_actions": ["确认入口"], "deliverables": ["入口清单"], "owner_role": "运营", "timeline": "第1周", "dependencies": ["法务"], "acceptance_signals": ["入口评审通过"], "evidence_refs": ["Q4"]},
+                {"name": "触发策略治理", "objective": "冻结触发规则", "key_actions": ["制定规则"], "deliverables": ["规则说明"], "owner_role": "研究", "timeline": "第2周", "dependencies": ["入口稳定"], "acceptance_signals": ["规则确认"], "evidence_refs": ["Q5"]},
+                {"name": "混合复现机制", "objective": "完成首轮试跑", "key_actions": ["完成原型"], "deliverables": ["原型"], "owner_role": "设计", "timeline": "第3周", "dependencies": ["规则冻结"], "acceptance_signals": ["原型可试跑"], "evidence_refs": ["Q6"]},
+            ],
+            "value_model": [
+                {"metric": "试点推进速度", "baseline": "慢", "target": "快", "range": "3阶段", "assumptions": ["入口可用"], "evidence_refs": ["Q9"]},
+                {"metric": "高价值洞察密度", "baseline": "低", "target": "高", "range": "3个工作流", "assumptions": ["样本稳定"], "evidence_refs": ["Q1"]},
+                {"metric": "证据绑定率", "baseline": "人工翻阅", "target": "高证据密度", "range": "持续绑定", "assumptions": ["结构化条目可用"], "evidence_refs": ["Q4"]},
+            ],
+            "fit_reasons": [
+                {"title": "切口清晰", "detail": "失败页入口已经足够清晰。", "evidence_refs": ["Q4"]},
+                {"title": "边界清晰", "detail": "单入口试点边界明确。", "evidence_refs": ["Q8"]},
+                {"title": "素材充分", "detail": "已有完整结构化素材。", "evidence_refs": ["Q1", "Q4"]},
+            ],
+            "risks_and_boundaries": [
+                {"title": "真实样本不足", "detail": "若入口不稳，结论会失真。", "type": "risk", "evidence_refs": ["Q7"]},
+                {"title": "试点边界", "detail": "只做单入口试点。", "type": "boundary", "evidence_refs": ["Q8"]},
+            ],
+            "next_steps": [
+                {"phase": "Phase 1", "goal": "锁定入口", "actions": ["确认入口"], "milestone": "入口确认", "evidence_refs": ["Q9"]},
+                {"phase": "Phase 2", "goal": "冻结规则", "actions": ["冻结规则"], "milestone": "规则确认", "evidence_refs": ["Q10"]},
+                {"phase": "Phase 3", "goal": "完成试点", "actions": ["启动访谈"], "milestone": "试点启动", "evidence_refs": ["Q12"]},
+            ],
+        }
+        incomplete_chapter_response = {
+            "meta": {"theme": "executive_dark_editorial", "tone": "judgemental_clear_premium", "nav_style": "sticky"},
+            "chapters": [
+                {
+                    "id": chapter_id,
+                    "nav_label": chapter_id,
+                    "eyebrow": "AI 提案页",
+                    "title": f"{chapter_id} 标题",
+                    "judgement": f"{chapter_id} 判断",
+                    "summary": f"{chapter_id} 摘要",
+                    "layout": "hero_metrics" if chapter_id == 'hero' else "conflict_cards",
+                    "metrics": [{"label": "指标", "value": "80%", "delta": "", "note": "说明"}] * 3 if chapter_id == 'hero' else [],
+                    "cards": [{"title": f"{chapter_id} 卡片", "desc": "描述", "tag": "AI", "meta": "meta"}],
+                    "diagram": None,
+                    "cta": {"label": "继续", "target": "roadmap"},
+                    "evidence_refs": ["Q1"],
+                }
+                for chapter_id in ['hero', 'why_now', 'comparison', 'blueprint', 'workstreams', 'integration', 'roadmap']
+            ],
+        }
+
+        def _fake_call_claude(_prompt, *args, **kwargs):
+            call_type = kwargs.get('call_type', '')
+            if call_type == 'report_solution_proposal_brief':
+                return json.dumps(brief_response, ensure_ascii=False)
+            if call_type == 'report_solution_chapter_copy':
+                return json.dumps(incomplete_chapter_response, ensure_ascii=False)
+            return ''
+
+        with patch.object(self.server, 'ENABLE_AI', True), \
+             patch.object(self.server, 'HAS_ANTHROPIC', True), \
+             patch.object(self.server, 'call_claude', new=_fake_call_claude):
+            payload = self._write_structured_sidecar('proposal-ai-chapters.md', snapshot)
+
+        proposal_brief = payload.get('proposal_brief', {}) or {}
+        chapter_copy = payload.get('chapter_copy', {}) or {}
+        self.assertEqual(proposal_brief.get('meta', {}).get('generation_mode'), 'ai')
+        self.assertEqual(chapter_copy.get('meta', {}).get('generation_mode'), 'rule')
+        self.assertEqual([item.get('id') for item in chapter_copy.get('chapters', [])], ['hero', 'why_now', 'comparison', 'blueprint', 'workstreams', 'integration', 'roadmap', 'value_fit'])
 
 
 if __name__ == '__main__':

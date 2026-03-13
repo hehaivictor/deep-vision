@@ -1096,6 +1096,207 @@ class SecurityRegressionTests(unittest.TestCase):
         filtered = self.server.filter_model_review_issues_v3(model_issues, draft, runtime_profile="balanced")
         self.assertEqual(filtered, [])
 
+    def test_filter_model_review_issues_v3_soft_passes_blindspot_when_open_questions_cover_all_aspects(self):
+        draft = {
+            "overview": "ok",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [],
+            "open_questions": [
+                {"question": "请补充决策因素的判断依据", "reason": "决策因素未覆盖"},
+                {"question": "请补充信息渠道的获取方式", "reason": "信息渠道未覆盖"},
+                {"question": "请补充行为模式的差异", "reason": "行为模式未覆盖"},
+            ],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "blindspots": [
+                {"dimension": "客户需求", "aspect": "决策因素"},
+                {"dimension": "客户需求", "aspect": "信息渠道"},
+                {"dimension": "客户需求", "aspect": "行为模式"},
+            ]
+        }
+        model_issues = [
+            {
+                "type": "blindspot",
+                "severity": "high",
+                "message": "部分关键盲区未转化为待确认问题",
+                "target": "open_questions",
+            }
+        ]
+
+        filtered = self.server.filter_model_review_issues_v3(
+            model_issues,
+            draft,
+            evidence_pack=evidence_pack,
+            runtime_profile="balanced",
+        )
+        self.assertEqual(filtered, [])
+
+    def test_filter_model_review_issues_v3_ignores_visualization_no_evidence(self):
+        draft = {
+            "overview": "ok",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {
+                "priority_quadrant_mermaid": "",
+                "business_flow_mermaid": "",
+                "demand_pie_mermaid": "",
+                "architecture_mermaid": "",
+            },
+            "solutions": [],
+            "risks": [],
+            "actions": [],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        model_issues = [
+            {
+                "type": "no_evidence",
+                "severity": "low",
+                "message": "visualizations 中的 demand_pie_mermaid 为空字符串",
+                "target": "visualizations.demand_pie_mermaid",
+            }
+        ]
+
+        filtered = self.server.filter_model_review_issues_v3(model_issues, draft, runtime_profile="balanced")
+        self.assertEqual(filtered, [])
+
+    def test_filter_model_review_issues_v3_soft_passes_not_actionable_when_fields_complete(self):
+        draft = {
+            "overview": "ok",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [
+                {
+                    "title": "方案A",
+                    "description": "描述",
+                    "owner": "产品经理",
+                    "timeline": "2-4周内",
+                    "metric": "形成方案评审纪要并确认验收口径",
+                    "evidence_refs": ["Q1"],
+                }
+            ],
+            "risks": [],
+            "actions": [],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        model_issues = [
+            {
+                "type": "not_actionable",
+                "severity": "medium",
+                "message": "solutions[0] 缺少明确的 timeline 时间节点。",
+                "target": "solutions[0].timeline",
+            }
+        ]
+        filtered = self.server.filter_model_review_issues_v3(model_issues, draft, runtime_profile="balanced")
+        self.assertEqual(filtered, [])
+
+    def test_filter_model_review_issues_v3_soft_passes_not_actionable_when_long_horizon_action_exists(self):
+        draft = {
+            "overview": "ok",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [
+                {
+                    "action": "围绕角色分工建立长期运营闭环并组织月度复盘",
+                    "owner": "业务负责人",
+                    "timeline": "季度内",
+                    "metric": "发布闭环机制并完成至少1次跨角色复盘，输出长期优化清单",
+                    "evidence_refs": ["Q1"],
+                }
+            ],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        model_issues = [
+            {
+                "type": "not_actionable",
+                "severity": "medium",
+                "message": "actions 部分原有的长期里程碑缺乏具体的落地执行动作，需补充全周期动作。",
+                "target": "actions",
+            }
+        ]
+        filtered = self.server.filter_model_review_issues_v3(model_issues, draft, runtime_profile="balanced")
+        self.assertEqual(filtered, [])
+
+    def test_filter_model_review_issues_v3_soft_passes_blindspot_when_open_questions_cover_all_aspects(self):
+        draft = {
+            "overview": "ok",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [],
+            "open_questions": [
+                {"question": "请补充决策因素的判断依据", "reason": "决策因素未覆盖", "impact": "影响优先级", "suggested_follow_up": "补充决策依据", "evidence_refs": ["Q1"]},
+                {"question": "请补充信息渠道的获取方式", "reason": "信息渠道未覆盖", "impact": "影响触达判断", "suggested_follow_up": "补充触达路径", "evidence_refs": ["Q2"]},
+                {"question": "请补充行为模式的差异", "reason": "行为模式未覆盖", "impact": "影响场景判断", "suggested_follow_up": "补充行为差异", "evidence_refs": ["Q3"]},
+            ],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "blindspots": [
+                {"dimension": "客户需求", "aspect": "决策因素"},
+                {"dimension": "客户需求", "aspect": "信息渠道"},
+                {"dimension": "客户需求", "aspect": "行为模式"},
+            ]
+        }
+        model_issues = [
+            {
+                "type": "blindspot",
+                "severity": "high",
+                "message": "部分关键盲区未转化为待确认问题",
+                "target": "open_questions",
+            }
+        ]
+
+        filtered = self.server.filter_model_review_issues_v3(
+            model_issues,
+            draft,
+            evidence_pack=evidence_pack,
+            runtime_profile="balanced",
+        )
+        self.assertEqual(filtered, [])
+
+    def test_filter_model_review_issues_v3_ignores_visualization_no_evidence(self):
+        draft = {
+            "overview": "ok",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {
+                "priority_quadrant_mermaid": "",
+                "business_flow_mermaid": "",
+                "demand_pie_mermaid": "",
+                "architecture_mermaid": "",
+            },
+            "solutions": [],
+            "risks": [],
+            "actions": [],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        model_issues = [
+            {
+                "type": "no_evidence",
+                "severity": "low",
+                "message": "visualizations 中 demand_pie_mermaid 为空字符串",
+                "target": "visualizations.demand_pie_mermaid",
+            }
+        ]
+
+        filtered = self.server.filter_model_review_issues_v3(model_issues, draft, runtime_profile="balanced")
+        self.assertEqual(filtered, [])
+
     def test_filter_model_review_issues_v3_ignores_binding_mode_no_evidence_hallucination(self):
         draft = {
             "overview": "ok",
@@ -1175,6 +1376,69 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertTrue(risk_refs or action_refs or open_questions)
         self.assertEqual(len(repaired_draft.get("evidence_index", [])), 0)
 
+    def test_apply_deterministic_report_repairs_v3_prunes_orphan_evidence_index(self):
+        draft = {
+            "overview": "概述",
+            "needs": [
+                {"name": "需求A", "priority": "P1", "description": "描述", "evidence_refs": ["Q1"]}
+            ],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [],
+            "open_questions": [],
+            "evidence_index": [
+                {"claim": "核心痛点为人工收集效率低", "confidence": "high", "evidence_refs": ["Q10"]}
+            ],
+        }
+        evidence_pack = {
+            "facts": [
+                {"q_id": "Q1", "dimension": "customer_needs", "dimension_name": "客户需求", "question": "问题A", "answer": "回答A", "quality_score": 0.72},
+                {"q_id": "Q10", "dimension": "customer_needs", "dimension_name": "客户需求", "question": "问题B", "answer": "回答B", "quality_score": 0.68},
+            ],
+            "quality_snapshot": {"average_quality_score": 0.45},
+        }
+        issues = [
+            {"type": "no_evidence", "target": "evidence_index[0]"},
+        ]
+        repaired = self.server.apply_deterministic_report_repairs_v3(draft, evidence_pack, issues, runtime_profile="balanced")
+        self.assertTrue(repaired.get("changed"))
+        self.assertEqual([], repaired.get("draft", {}).get("evidence_index", []))
+
+    def test_apply_deterministic_report_repairs_v3_demotes_need_without_evidence_to_open_question(self):
+        draft = {
+            "overview": "概述",
+            "needs": [
+                {
+                    "name": "跨部门协作流程明确",
+                    "priority": "P1",
+                    "description": "当前只是待确认方向",
+                    "evidence_refs": [],
+                    "evidence_binding_mode": "pending_follow_up",
+                }
+            ],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "facts": [{"q_id": "Q1", "dimension": "business_process", "dimension_name": "业务流程", "question": "流程是否明确", "answer": "当前仍待确认", "quality_score": 0.52}],
+            "quality_snapshot": {"average_quality_score": 0.52},
+            "dimension_coverage": {"business_process": {"name": "业务流程", "missing_aspects": ["角色分工"]}},
+        }
+        issues = [{"type": "no_evidence", "target": "needs[0]"}]
+        repaired = self.server.apply_deterministic_report_repairs_v3(draft, evidence_pack, issues, runtime_profile="balanced")
+        self.assertTrue(repaired.get("changed"))
+        repaired_draft = repaired.get("draft", {})
+        self.assertEqual([], repaired_draft.get("needs", []))
+        self.assertTrue(repaired_draft.get("open_questions", []))
+        self.assertIn("跨部门协作流程明确", repaired_draft["open_questions"][0].get("question", ""))
+
     def test_apply_deterministic_report_repairs_v3_adds_blindspot_pending_action(self):
         draft = {
             "overview": "概述",
@@ -1225,6 +1489,304 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertTrue(actions)
         self.assertIn("角色分工", actions[0].get("action", ""))
         self.assertTrue(actions[0].get("evidence_refs"))
+        self.assertTrue(actions[0].get("owner"))
+        self.assertTrue(actions[0].get("timeline"))
+        self.assertTrue(actions[0].get("metric"))
+
+    def test_apply_deterministic_report_repairs_v3_fills_not_actionable_action_fields(self):
+        draft = {
+            "overview": "概述",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [
+                {
+                    "action": "补采并确认角色分工边界",
+                    "owner": "",
+                    "timeline": "",
+                    "metric": "",
+                    "evidence_refs": [],
+                }
+            ],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "facts": [
+                {
+                    "q_id": "Q1",
+                    "dimension": "business_process",
+                    "dimension_name": "业务流程",
+                    "question": "角色分工是否明确",
+                    "answer": "目前分工边界不清晰，需要补充澄清",
+                    "quality_score": 0.71,
+                }
+            ],
+            "quality_snapshot": {"average_quality_score": 0.51},
+            "dimension_coverage": {
+                "business_process": {"name": "业务流程", "missing_aspects": ["角色分工"]},
+            },
+        }
+        issues = [
+            {
+                "type": "not_actionable",
+                "severity": "medium",
+                "target": "actions[0]",
+                "message": "actions 缺少 owner/timeline/metric",
+            }
+        ]
+        repaired = self.server.apply_deterministic_report_repairs_v3(draft, evidence_pack, issues, runtime_profile="quality")
+        self.assertTrue(repaired.get("changed"))
+        action = repaired.get("draft", {}).get("actions", [{}])[0]
+        self.assertTrue(action.get("owner"))
+        self.assertTrue(action.get("timeline"))
+        self.assertTrue(action.get("metric"))
+        self.assertTrue(action.get("evidence_refs"))
+        self.assertEqual(action.get("evidence_binding_mode"), "weak_inferred")
+
+    def test_apply_deterministic_report_repairs_v3_upgrades_blindspot_to_actionable_action(self):
+        draft = {
+            "overview": "概述",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [],
+            "open_questions": [
+                {
+                    "question": "业务流程中的角色分工仍不清晰，是否需要补采访谈？",
+                    "reason": "角色分工未澄清",
+                    "impact": "影响执行边界",
+                    "suggested_follow_up": "补采角色职责口径",
+                    "evidence_refs": ["Q1"],
+                }
+            ],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "facts": [
+                {
+                    "q_id": "Q1",
+                    "dimension": "business_process",
+                    "dimension_name": "业务流程",
+                    "question": "角色分工是否明确",
+                    "answer": "目前还不明确，需要后续明确责任边界",
+                    "quality_score": 0.67,
+                },
+                {
+                    "q_id": "Q2",
+                    "dimension": "business_process",
+                    "dimension_name": "业务流程",
+                    "question": "责任边界是否已沉淀文档",
+                    "answer": "还没有文档，需要补采并明确责任边界",
+                    "quality_score": 0.7,
+                },
+            ],
+            "blindspots": [{"dimension": "业务流程", "aspect": "角色分工"}],
+            "quality_snapshot": {"average_quality_score": 0.48},
+        }
+        issues = [
+            {
+                "type": "blindspot",
+                "severity": "high",
+                "target": "actions",
+                "message": "盲区证据'业务流程: 角色分工'已在open_questions中记录，但未纳入actions行动计划",
+            }
+        ]
+        repaired = self.server.apply_deterministic_report_repairs_v3(draft, evidence_pack, issues, runtime_profile="balanced")
+        self.assertTrue(repaired.get("changed"))
+        action = repaired.get("draft", {}).get("actions", [{}])[0]
+        self.assertIn("角色分工", action.get("action", ""))
+        self.assertTrue(action.get("owner"))
+        self.assertTrue(action.get("timeline"))
+        self.assertTrue(action.get("metric"))
+        self.assertTrue(action.get("evidence_refs"))
+
+    def test_apply_deterministic_report_repairs_v3_marks_overview_blindspot_status(self):
+        draft = {
+            "overview": "当前结论已形成，但部分信息仍需补充。",
+            "needs": [],
+            "analysis": {"business_flow": "当前流程分析已形成，但角色边界仍需补充。"},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "facts": [{"q_id": "Q1", "dimension": "business_process", "dimension_name": "业务流程"}],
+            "blindspots": [{"dimension": "业务流程", "aspect": "角色分工"}],
+            "quality_snapshot": {"average_quality_score": 0.52},
+        }
+        issues = [
+            {
+                "type": "blindspot",
+                "severity": "high",
+                "target": "overview",
+                "message": "overview 未明确标注业务流程-角色分工为盲区状态",
+            }
+        ]
+        repaired = self.server.apply_deterministic_report_repairs_v3(draft, evidence_pack, issues, runtime_profile="balanced")
+        self.assertTrue(repaired.get("changed"))
+        self.assertIn("待补采盲区", repaired.get("draft", {}).get("overview", ""))
+        self.assertIn("角色分工", repaired.get("draft", {}).get("overview", ""))
+
+    def test_apply_deterministic_report_repairs_v3_marks_analysis_blindspot_status(self):
+        draft = {
+            "overview": "概述",
+            "needs": [],
+            "analysis": {"business_flow": "当前流程梳理基本完成，但仍有缺口。"},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "facts": [{"q_id": "Q1", "dimension": "business_process", "dimension_name": "业务流程"}],
+            "blindspots": [{"dimension": "业务流程", "aspect": "角色分工"}],
+            "quality_snapshot": {"average_quality_score": 0.52},
+        }
+        issues = [
+            {
+                "type": "blindspot",
+                "severity": "medium",
+                "target": "analysis.business_flow",
+                "message": "建议同步更新analysis.business_flow以保持上下文一致。",
+            }
+        ]
+        repaired = self.server.apply_deterministic_report_repairs_v3(draft, evidence_pack, issues, runtime_profile="balanced")
+        self.assertTrue(repaired.get("changed"))
+        self.assertIn("待补采盲区", repaired.get("draft", {}).get("analysis", {}).get("business_flow", ""))
+        self.assertIn("角色分工", repaired.get("draft", {}).get("analysis", {}).get("business_flow", ""))
+
+    def test_apply_deterministic_report_repairs_v3_normalizes_action_timeline_for_milestone(self):
+        draft = {
+            "overview": "概述",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [
+                {
+                    "action": "补采并确认角色分工边界",
+                    "owner": "产品经理",
+                    "timeline": "近期推进",
+                    "metric": "完成至少3条可追溯证据并更新结论",
+                    "evidence_refs": ["Q1"],
+                }
+            ],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "facts": [
+                {
+                    "q_id": "Q1",
+                    "dimension": "business_process",
+                    "dimension_name": "业务流程",
+                    "question": "角色分工是否明确",
+                    "answer": "当前责任边界不清晰，需要补采并确认",
+                    "quality_score": 0.7,
+                }
+            ],
+            "quality_snapshot": {"average_quality_score": 0.54},
+        }
+        repaired = self.server.apply_deterministic_report_repairs_v3(draft, evidence_pack, [], runtime_profile="balanced")
+        self.assertTrue(repaired.get("changed"))
+        action = repaired.get("draft", {}).get("actions", [{}])[0]
+        self.assertEqual("1-2周内", action.get("timeline"))
+
+    def test_apply_deterministic_report_repairs_v3_normalizes_action_metric_for_acceptance(self):
+        draft = {
+            "overview": "概述",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [
+                {
+                    "action": "补采并确认角色分工边界",
+                    "owner": "产品经理",
+                    "timeline": "1-2周内",
+                    "metric": "持续优化",
+                    "evidence_refs": ["Q1"],
+                }
+            ],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "facts": [
+                {
+                    "q_id": "Q1",
+                    "dimension": "business_process",
+                    "dimension_name": "业务流程",
+                    "question": "角色分工是否明确",
+                    "answer": "当前责任边界不清晰，需要补采并确认",
+                    "quality_score": 0.7,
+                }
+            ],
+            "quality_snapshot": {"average_quality_score": 0.54},
+        }
+        repaired = self.server.apply_deterministic_report_repairs_v3(draft, evidence_pack, [], runtime_profile="balanced")
+        self.assertTrue(repaired.get("changed"))
+        action = repaired.get("draft", {}).get("actions", [{}])[0]
+        self.assertIn("至少3", action.get("metric", ""))
+
+    def test_apply_deterministic_report_repairs_v3_reinforces_long_horizon_actions(self):
+        draft = {
+            "overview": "概述",
+            "needs": [],
+            "analysis": {},
+            "visualizations": {},
+            "solutions": [],
+            "risks": [],
+            "actions": [
+                {
+                    "action": "持续优化角色分工协同",
+                    "owner": "业务负责人",
+                    "timeline": "季度内",
+                    "metric": "持续优化",
+                    "evidence_refs": ["Q1"],
+                }
+            ],
+            "open_questions": [],
+            "evidence_index": [],
+        }
+        evidence_pack = {
+            "facts": [
+                {
+                    "q_id": "Q1",
+                    "dimension": "business_process",
+                    "dimension_name": "业务流程",
+                    "question": "角色分工是否明确",
+                    "answer": "当前需要长期跟踪角色分工协同效果",
+                    "quality_score": 0.7,
+                }
+            ],
+            "quality_snapshot": {"average_quality_score": 0.58},
+        }
+        issues = [
+            {
+                "type": "not_actionable",
+                "severity": "medium",
+                "target": "actions",
+                "message": "actions 部分原有的长期里程碑虽然存在但缺乏具体的落地执行动作，需补充长期运营执行动作以覆盖全周期。",
+            }
+        ]
+        repaired = self.server.apply_deterministic_report_repairs_v3(draft, evidence_pack, issues, runtime_profile="balanced")
+        self.assertTrue(repaired.get("changed"))
+        action = repaired.get("draft", {}).get("actions", [{}])[0]
+        self.assertIn("复盘", action.get("action", ""))
+        self.assertIn("闭环", action.get("metric", ""))
 
     def test_compute_report_quality_meta_v3_counts_weak_binding_ratio(self):
         draft = {
@@ -1476,6 +2038,44 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual([], evidence_pack.get("unknowns", []))
         self.assertEqual("rich_option", evidence_pack["facts"][0].get("answer_evidence_class"))
 
+    def test_backfill_session_interview_log_evidence_annotations_enriches_legacy_logs(self):
+        session = {
+            "topic": "历史会话",
+            "scenario_config": {"report": {"type": "standard"}},
+            "interview_log": [
+                {
+                    "question": "当前最优先的阻塞是什么？",
+                    "answer": "审批链条长导致整体处理慢",
+                    "dimension": "customer_needs",
+                    "options": ["审批链条长导致整体处理慢", "成本高", "资源不足"],
+                    "multi_select": False,
+                    "is_follow_up": False,
+                    "follow_up_round": 0,
+                },
+                {
+                    "question": "您提到审批慢，主要卡在哪个角色？",
+                    "answer": "风控复核环节",
+                    "dimension": "customer_needs",
+                    "options": ["风控复核环节", "客服回访环节", "商家补料环节"],
+                    "multi_select": False,
+                    "is_follow_up": True,
+                    "follow_up_round": 1,
+                },
+            ],
+        }
+
+        result = self.server.backfill_session_interview_log_evidence_annotations(session)
+
+        self.assertTrue(result.get("changed"))
+        self.assertEqual(2, result.get("logs_updated"))
+        first_log, second_log = session["interview_log"]
+        self.assertEqual("pick_with_reason", first_log.get("answer_mode"))
+        self.assertEqual("medium", first_log.get("evidence_intent"))
+        self.assertEqual("rich_option", first_log.get("answer_evidence_class"))
+        self.assertEqual("pick_with_reason", second_log.get("answer_mode"))
+        self.assertEqual("high", second_log.get("evidence_intent"))
+        self.assertIn("answer_evidence_class", result.get("field_updates", {}))
+
     def test_build_report_evidence_pack_uses_quality_adjusted_coverage_and_raw_quality_average(self):
         session = {
             "topic": "测试",
@@ -1531,9 +2131,9 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertLess(evidence_pack["overall_coverage"], 1.0)
         self.assertEqual(100, evidence_pack["dimension_coverage"]["customer_needs"]["coverage_percent"])
         self.assertEqual(50, evidence_pack["dimension_coverage"]["business_flow"]["coverage_percent"])
-        self.assertAlmostEqual(0.5, evidence_pack["quality_snapshot"]["average_quality_score"], places=3)
-        self.assertAlmostEqual(0.5, evidence_pack["quality_snapshot"]["raw_average_quality_score"], places=3)
-        self.assertAlmostEqual(1.0, evidence_pack["quality_snapshot"]["positive_only_average_quality_score"], places=3)
+        self.assertAlmostEqual(0.4, evidence_pack["quality_snapshot"]["average_quality_score"], places=3)
+        self.assertAlmostEqual(0.4, evidence_pack["quality_snapshot"]["raw_average_quality_score"], places=3)
+        self.assertAlmostEqual(0.4, evidence_pack["quality_snapshot"]["positive_only_average_quality_score"], places=3)
         self.assertEqual(1, evidence_pack["quality_snapshot"]["answer_mode_distribution"]["pick_only"])
         self.assertEqual(1, evidence_pack["quality_snapshot"]["answer_mode_distribution"]["pick_with_reason"])
 
@@ -1622,6 +2222,90 @@ class SecurityRegressionTests(unittest.TestCase):
                 "unknown_count": 29,
                 "unknown_ratio": 29 / 34,
                 "average_quality_score": 0.287,
+            },
+        }
+        issues = self.server.build_quality_gate_issues_v3(quality_meta)
+        issue_types = {item.get("type") for item in issues if isinstance(item, dict)}
+        self.assertNotIn("quality_gate_evidence", issue_types)
+
+    def test_build_quality_gate_issues_v3_relaxes_evidence_threshold_for_high_rich_option_ratio(self):
+        quality_meta = {
+            "runtime_profile": "balanced",
+            "evidence_coverage": 0.78,
+            "consistency": 0.92,
+            "actionability": 0.86,
+            "expression_structure": 0.82,
+            "table_readiness": 0.80,
+            "action_acceptance": 0.76,
+            "milestone_coverage": 0.50,
+            "weak_binding_ratio": 0.08,
+            "claim_total": 20,
+            "rich_option_count": 12,
+            "rich_option_ratio": 0.60,
+            "template_minimums": {"needs": 1, "solutions": 1, "risks": 1, "actions": 2, "open_questions": 1},
+            "list_counts": {"needs": 2, "solutions": 2, "risks": 1, "actions": 3, "open_questions": 1},
+            "evidence_context": {
+                "facts_count": 31,
+                "unknown_count": 2,
+                "unknown_ratio": 2 / 31,
+                "average_quality_score": 0.56,
+            },
+        }
+        issues = self.server.build_quality_gate_issues_v3(quality_meta)
+        issue_types = {item.get("type") for item in issues if isinstance(item, dict)}
+        self.assertNotIn("quality_gate_evidence", issue_types)
+
+    def test_build_quality_gate_issues_v3_relaxes_evidence_threshold_further_for_extreme_rich_option_ratio(self):
+        quality_meta = {
+            "runtime_profile": "balanced",
+            "evidence_coverage": 0.73,
+            "consistency": 0.92,
+            "actionability": 0.86,
+            "expression_structure": 0.82,
+            "table_readiness": 0.80,
+            "action_acceptance": 0.76,
+            "milestone_coverage": 0.50,
+            "weak_binding_ratio": 0.06,
+            "claim_total": 20,
+            "rich_option_count": 16,
+            "rich_option_ratio": 0.80,
+            "template_minimums": {"needs": 1, "solutions": 1, "risks": 1, "actions": 2, "open_questions": 1},
+            "list_counts": {"needs": 2, "solutions": 2, "risks": 1, "actions": 3, "open_questions": 1},
+            "evidence_context": {
+                "facts_count": 31,
+                "unknown_count": 2,
+                "unknown_ratio": 0.06,
+                "average_quality_score": 0.57,
+            },
+        }
+        issues = self.server.build_quality_gate_issues_v3(quality_meta)
+        issue_types = {item.get("type") for item in issues if isinstance(item, dict)}
+        self.assertNotIn("quality_gate_evidence", issue_types)
+
+    def test_build_quality_gate_issues_v3_relaxes_evidence_threshold_for_pending_follow_up_heavy_session(self):
+        quality_meta = {
+            "runtime_profile": "balanced",
+            "evidence_coverage": 0.524,
+            "consistency": 0.92,
+            "actionability": 0.86,
+            "expression_structure": 0.82,
+            "table_readiness": 0.80,
+            "action_acceptance": 0.76,
+            "milestone_coverage": 0.50,
+            "weak_binding_ratio": 0.05,
+            "claim_total": 21,
+            "rich_option_count": 8,
+            "rich_option_ratio": 8 / 21,
+            "pending_follow_up_count": 8,
+            "pending_follow_up_ratio": 8 / 21,
+            "template_minimums": {"needs": 1, "solutions": 1, "risks": 1, "actions": 2, "open_questions": 1},
+            "list_counts": {"needs": 2, "solutions": 2, "risks": 1, "actions": 3, "open_questions": 4},
+            "evidence_context": {
+                "facts_count": 34,
+                "unknown_count": 12,
+                "blindspots_count": 13,
+                "unknown_ratio": 12 / 34,
+                "average_quality_score": 0.46,
             },
         }
         issues = self.server.build_quality_gate_issues_v3(quality_meta)
@@ -2470,6 +3154,476 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertIn("<div>☑ B</div>", appendix)
         self.assertIn("<div>☐ C</div>", appendix)
         self.assertIn("<div>☑ 其他（自由输入）：以上都要</div>", appendix)
+
+    def test_build_session_evidence_ledger_tracks_priority_gaps_and_shadow_draft(self):
+        session = {
+            "topic": "证据账本测试",
+            "dimensions": {
+                "customer_needs": {"coverage": 75, "items": []},
+                "business_process": {"coverage": 50, "items": []},
+                "tech_constraints": {"coverage": 25, "items": []},
+                "project_constraints": {"coverage": 25, "items": []},
+            },
+            "interview_log": [
+                {
+                    "dimension": "customer_needs",
+                    "question": "最核心痛点更像哪种情况？",
+                    "answer": "审批链条长导致整体处理慢",
+                    "options": ["审批链条长导致整体处理慢", "接口偶发失败影响成交", "误拦截导致客户频繁投诉"],
+                    "is_follow_up": False,
+                    "needs_follow_up": False,
+                    "follow_up_signals": ["rich_option_answer"],
+                    "quality_score": 0.86,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "rich_option",
+                },
+                {
+                    "dimension": "business_process",
+                    "question": "当前流程最容易卡在哪个环节？",
+                    "answer": "审批节点",
+                    "options": ["审批节点", "分配节点", "回访节点"],
+                    "is_follow_up": False,
+                    "needs_follow_up": True,
+                    "follow_up_signals": ["option_only"],
+                    "quality_score": 0.31,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "pending_follow_up",
+                },
+                {
+                    "dimension": "tech_constraints",
+                    "question": "最核心的技术边界是什么？",
+                    "answer": "接口稳定性",
+                    "options": ["接口稳定性", "权限安全", "上线窗口"],
+                    "is_follow_up": False,
+                    "needs_follow_up": False,
+                    "follow_up_signals": ["too_short"],
+                    "quality_score": 0.28,
+                    "evidence_intent": "medium",
+                    "answer_evidence_class": "weak_inferred",
+                },
+                {
+                    "dimension": "project_constraints",
+                    "question": "项目最紧的约束是什么？",
+                    "answer": "时间节点",
+                    "options": ["时间节点", "预算范围", "资源限制"],
+                    "is_follow_up": False,
+                    "needs_follow_up": True,
+                    "follow_up_signals": ["option_only", "no_quantification"],
+                    "quality_score": 0.22,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "pending_follow_up",
+                },
+            ],
+        }
+
+        ledger = self.server.build_session_evidence_ledger(session)
+
+        self.assertEqual(ledger["formal_questions_total"], 4)
+        self.assertIn("project_constraints", ledger["priority_dimensions"][:2])
+        self.assertFalse(ledger["shadow_draft"]["actions"]["ready"])
+        self.assertIn("project_constraints", ledger["shadow_draft"]["actions"]["blocking_dimensions"])
+        self.assertGreater(
+            ledger["dimensions"]["project_constraints"]["gap_score"],
+            ledger["dimensions"]["customer_needs"]["gap_score"],
+        )
+
+    def test_plan_mid_interview_preflight_forces_follow_up_on_critical_gap(self):
+        session = {
+            "topic": "预检追问测试",
+            "dimensions": {
+                "customer_needs": {"coverage": 80, "items": []},
+                "business_process": {"coverage": 60, "items": []},
+                "tech_constraints": {"coverage": 20, "items": []},
+                "project_constraints": {"coverage": 40, "items": []},
+            },
+            "interview_log": [
+                {
+                    "dimension": "customer_needs",
+                    "question": "当前最困扰的是哪种情况？",
+                    "answer": "审批链条长导致整体处理慢",
+                    "options": ["审批链条长导致整体处理慢", "接口偶发失败影响成交", "误拦截导致客户频繁投诉"],
+                    "is_follow_up": False,
+                    "needs_follow_up": False,
+                    "follow_up_signals": ["rich_option_answer"],
+                    "quality_score": 0.84,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "rich_option",
+                },
+                {
+                    "dimension": "business_process",
+                    "question": "当前流程主要卡在哪里？",
+                    "answer": "审批节点",
+                    "options": ["审批节点", "分配节点", "回访节点"],
+                    "is_follow_up": False,
+                    "needs_follow_up": True,
+                    "follow_up_signals": ["option_only"],
+                    "quality_score": 0.28,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "pending_follow_up",
+                },
+                {
+                    "dimension": "tech_constraints",
+                    "question": "上线时最担心什么？",
+                    "answer": "接口稳定性",
+                    "options": ["接口稳定性", "权限安全", "上线窗口"],
+                    "is_follow_up": False,
+                    "needs_follow_up": False,
+                    "follow_up_signals": ["too_short"],
+                    "quality_score": 0.26,
+                    "evidence_intent": "medium",
+                    "answer_evidence_class": "weak_inferred",
+                },
+                {
+                    "dimension": "project_constraints",
+                    "question": "当前最紧的项目约束是什么？",
+                    "answer": "时间节点",
+                    "options": ["时间节点", "预算范围", "资源限制"],
+                    "is_follow_up": False,
+                    "needs_follow_up": True,
+                    "follow_up_signals": ["option_only", "no_quantification"],
+                    "quality_score": 0.18,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "pending_follow_up",
+                    "hard_triggered": True,
+                },
+            ],
+        }
+
+        ledger = self.server.build_session_evidence_ledger(session)
+        plan = self.server.plan_mid_interview_preflight(session, "project_constraints", ledger=ledger)
+        decision = self.server.should_follow_up_comprehensive(
+            session,
+            "project_constraints",
+            {
+                "needs_follow_up": False,
+                "signals": [],
+                "hard_triggered": False,
+                "reason": None,
+            },
+            preflight_plan=plan,
+        )
+
+        self.assertTrue(plan["preflight_due"])
+        self.assertTrue(plan["should_intervene"])
+        self.assertTrue(plan["force_follow_up"])
+        self.assertEqual(plan["planner_mode"], "follow_up")
+        self.assertTrue(plan["probe_slots"])
+        self.assertTrue(decision["should_follow_up"])
+        self.assertIn("mid_interview_preflight", decision["decision_factors"])
+
+    def test_build_interview_prompt_exposes_preflight_meta_and_boosts_evidence_intent(self):
+        session = {
+            "topic": "预检元信息测试",
+            "description": "验证问题生成前移补证据",
+            "reference_materials": [],
+            "dimensions": {
+                "customer_needs": {"coverage": 80, "items": []},
+                "business_process": {"coverage": 60, "items": []},
+                "tech_constraints": {"coverage": 20, "items": []},
+                "project_constraints": {"coverage": 40, "items": []},
+            },
+            "interview_log": [
+                {
+                    "dimension": "customer_needs",
+                    "question": "最核心痛点更像哪种情况？",
+                    "answer": "审批链条长导致整体处理慢",
+                    "options": ["审批链条长导致整体处理慢", "接口偶发失败影响成交", "误拦截导致客户频繁投诉"],
+                    "is_follow_up": False,
+                    "needs_follow_up": False,
+                    "follow_up_signals": ["rich_option_answer"],
+                    "quality_score": 0.86,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "rich_option",
+                },
+                {
+                    "dimension": "business_process",
+                    "question": "当前流程主要卡在哪里？",
+                    "answer": "审批节点",
+                    "options": ["审批节点", "分配节点", "回访节点"],
+                    "is_follow_up": False,
+                    "needs_follow_up": True,
+                    "follow_up_signals": ["option_only"],
+                    "quality_score": 0.28,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "pending_follow_up",
+                },
+                {
+                    "dimension": "tech_constraints",
+                    "question": "上线时最担心什么？",
+                    "answer": "接口稳定性",
+                    "options": ["接口稳定性", "权限安全", "上线窗口"],
+                    "is_follow_up": False,
+                    "needs_follow_up": False,
+                    "follow_up_signals": ["too_short"],
+                    "quality_score": 0.26,
+                    "evidence_intent": "medium",
+                    "answer_evidence_class": "weak_inferred",
+                },
+                {
+                    "dimension": "project_constraints",
+                    "question": "当前最紧的项目约束是什么？",
+                    "answer": "时间节点",
+                    "options": ["时间节点", "预算范围", "资源限制"],
+                    "is_follow_up": False,
+                    "needs_follow_up": True,
+                    "follow_up_signals": ["option_only", "no_quantification"],
+                    "quality_score": 0.18,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "pending_follow_up",
+                    "hard_triggered": True,
+                },
+            ],
+        }
+        all_dim_logs = [log for log in session["interview_log"] if log.get("dimension") == "project_constraints"]
+
+        prompt, _, meta = self.server.build_interview_prompt(session, "project_constraints", all_dim_logs)
+
+        self.assertIn("证据预检优先级", prompt)
+        self.assertEqual(meta["answer_mode"], "pick_with_reason")
+        self.assertTrue(meta["requires_rationale"])
+        self.assertEqual(meta["evidence_intent"], "high")
+        self.assertTrue(meta["mid_interview_preflight"]["should_intervene"])
+        self.assertIn("project_constraints", meta["evidence_ledger"]["priority_dimensions"])
+
+    def test_plan_mid_interview_preflight_throttles_recent_same_focus(self):
+        session = {
+            "topic": "预检冷却测试",
+            "dimensions": {
+                "customer_needs": {"coverage": 80, "items": []},
+                "business_process": {"coverage": 40, "items": []},
+                "tech_constraints": {"coverage": 30, "items": []},
+                "project_constraints": {"coverage": 50, "items": []},
+            },
+            "interview_log": [
+                {
+                    "dimension": "customer_needs",
+                    "question": "主要痛点是什么？",
+                    "answer": "审批链条长导致整体处理慢",
+                    "options": ["审批链条长导致整体处理慢", "接口偶发失败影响成交", "误拦截导致客户频繁投诉"],
+                    "is_follow_up": False,
+                    "needs_follow_up": False,
+                    "follow_up_signals": ["rich_option_answer"],
+                    "quality_score": 0.82,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "rich_option",
+                },
+                {
+                    "dimension": "business_process",
+                    "question": "角色分工里最容易卡在哪一段？",
+                    "answer": "审批节点",
+                    "options": ["审批节点", "分配节点", "回访节点"],
+                    "is_follow_up": False,
+                    "needs_follow_up": True,
+                    "follow_up_signals": ["option_only"],
+                    "quality_score": 0.24,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "pending_follow_up",
+                    "preflight_intervened": True,
+                    "preflight_fingerprint": self.server._build_preflight_focus_fingerprint(
+                        "business_process",
+                        target_aspect="角色分工",
+                        probe_slots=["角色分工", "异常处理"],
+                        blocked_sections=["solutions", "actions"],
+                    ),
+                    "preflight_planner_mode": "gap_probe",
+                    "preflight_probe_slots": ["角色分工", "异常处理"],
+                },
+                {
+                    "dimension": "business_process",
+                    "question": "异常处理通常由谁兜底？",
+                    "answer": "还没有固定角色",
+                    "options": ["由业务负责人兜底", "由运营同学兜底", "还没有固定角色"],
+                    "is_follow_up": False,
+                    "needs_follow_up": True,
+                    "follow_up_signals": ["option_only"],
+                    "quality_score": 0.28,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "pending_follow_up",
+                },
+            ],
+        }
+
+        initial_ledger = self.server.build_session_evidence_ledger(session)
+        initial_plan = self.server.plan_mid_interview_preflight(session, "business_process", ledger=initial_ledger)
+        session["interview_log"][1]["preflight_fingerprint"] = initial_plan["fingerprint"]
+
+        ledger = self.server.build_session_evidence_ledger(session)
+        plan = self.server.plan_mid_interview_preflight(session, "business_process", ledger=ledger)
+
+        self.assertTrue(plan["cooldown_suppressed"])
+        self.assertFalse(plan["should_intervene"])
+        self.assertEqual(plan["planner_mode"], "observe")
+
+    def test_plan_mid_interview_preflight_skips_low_value_gap_outside_priority_window(self):
+        session = {
+            "topic": "预检收益阈值测试",
+            "scenario_config": {
+                "dimensions": [
+                    {"id": "insight_a", "name": "洞察A", "description": "", "key_aspects": ["场景", "角色", "目标"]},
+                    {"id": "insight_b", "name": "洞察B", "description": "", "key_aspects": ["流程", "触发", "结果"]},
+                    {"id": "insight_c", "name": "洞察C", "description": "", "key_aspects": ["边界", "频次", "影响"]},
+                    {"id": "misc_notes", "name": "补充记录", "description": "", "key_aspects": ["补充信息"]},
+                ]
+            },
+            "dimensions": {
+                "insight_a": {"coverage": 80, "items": []},
+                "insight_b": {"coverage": 75, "items": []},
+                "insight_c": {"coverage": 70, "items": []},
+                "misc_notes": {"coverage": 65, "items": []},
+            },
+            "interview_log": [
+                {
+                    "dimension": "insight_a",
+                    "question": "主要痛点是什么？",
+                    "answer": "审批链条长导致整体处理慢",
+                    "options": ["审批链条长导致整体处理慢", "接口偶发失败影响成交", "误拦截导致客户频繁投诉"],
+                    "is_follow_up": False,
+                    "needs_follow_up": False,
+                    "follow_up_signals": ["rich_option_answer"],
+                    "quality_score": 0.84,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "rich_option",
+                },
+                {
+                    "dimension": "insight_b",
+                    "question": "哪段流程更值得优先优化？",
+                    "answer": "审批节点",
+                    "options": ["审批节点", "分配节点", "回访节点"],
+                    "is_follow_up": False,
+                    "needs_follow_up": False,
+                    "follow_up_signals": ["rich_option_answer"],
+                    "quality_score": 0.76,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "rich_option",
+                },
+                {
+                    "dimension": "insight_c",
+                    "question": "当前技术边界里最敏感的是哪一项？",
+                    "answer": "权限安全",
+                    "options": ["权限安全", "接口稳定性", "上线窗口"],
+                    "is_follow_up": False,
+                    "needs_follow_up": False,
+                    "follow_up_signals": ["rich_option_answer"],
+                    "quality_score": 0.73,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "rich_option",
+                },
+                {
+                    "dimension": "misc_notes",
+                    "question": "还有什么需要额外记录的补充信息？",
+                    "answer": "补充信息暂时没有",
+                    "options": ["暂时没有", "需要后续确认", "有少量补充说明"],
+                    "is_follow_up": False,
+                    "needs_follow_up": False,
+                    "follow_up_signals": ["option_only"],
+                    "quality_score": 0.48,
+                    "evidence_intent": "medium",
+                    "answer_evidence_class": "weak_inferred",
+                },
+            ],
+        }
+
+        ledger = self.server.build_session_evidence_ledger(session)
+        plan = self.server.plan_mid_interview_preflight(session, "misc_notes", ledger=ledger)
+
+        self.assertTrue(plan["preflight_due"])
+        self.assertFalse(plan["high_value_gap"])
+        self.assertFalse(plan["should_intervene"])
+        self.assertEqual(plan["planner_mode"], "observe")
+
+    def test_build_session_evidence_ledger_maps_dynamic_shadow_draft_sections(self):
+        session = {
+            "topic": "技术方案评审",
+            "scenario_config": {
+                "dimensions": [
+                    {
+                        "id": "current_state",
+                        "name": "现状评估",
+                        "description": "现有系统架构、技术债务、性能瓶颈、团队能力",
+                        "key_aspects": ["系统架构", "技术债务", "性能瓶颈", "团队能力"],
+                    },
+                    {
+                        "id": "target_architecture",
+                        "name": "目标架构",
+                        "description": "期望架构形态、扩展性要求、可用性目标",
+                        "key_aspects": ["架构形态", "扩展性", "可用性", "可维护性"],
+                    },
+                    {
+                        "id": "tech_selection",
+                        "name": "技术选型",
+                        "description": "候选技术栈对比、社区成熟度、学习成本、迁移风险",
+                        "key_aspects": ["候选方案", "成熟度评估", "学习成本", "迁移风险"],
+                    },
+                    {
+                        "id": "implementation_path",
+                        "name": "实施路径",
+                        "description": "阶段划分、里程碑定义、回滚策略、验证方案",
+                        "key_aspects": ["阶段划分", "里程碑", "回滚策略", "验证方案"],
+                    },
+                ],
+                "report": {
+                    "sections": [
+                        "overview",
+                        "current_state_analysis",
+                        "target_architecture",
+                        "tech_comparison",
+                        "implementation_roadmap",
+                        "risks",
+                        "recommendations",
+                        "appendix",
+                    ]
+                },
+            },
+            "dimensions": {
+                "current_state": {"coverage": 100, "items": []},
+                "target_architecture": {"coverage": 100, "items": []},
+                "tech_selection": {"coverage": 50, "items": []},
+                "implementation_path": {"coverage": 0, "items": []},
+            },
+            "interview_log": [
+                {
+                    "dimension": "current_state",
+                    "question": "当前系统最大的性能瓶颈是什么？",
+                    "answer": "高峰期推理延迟明显升高",
+                    "is_follow_up": False,
+                    "follow_up_signals": ["rich_option_answer"],
+                    "quality_score": 0.82,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "rich_option",
+                },
+                {
+                    "dimension": "target_architecture",
+                    "question": "目标架构更关注哪一项？",
+                    "answer": "可维护性与扩展性",
+                    "is_follow_up": False,
+                    "follow_up_signals": ["rich_option_answer"],
+                    "quality_score": 0.8,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "rich_option",
+                },
+                {
+                    "dimension": "tech_selection",
+                    "question": "目前的候选方案有哪些？",
+                    "answer": "TensorFlow 与 PyTorch 都在评估",
+                    "is_follow_up": False,
+                    "follow_up_signals": ["rich_option_answer"],
+                    "quality_score": 0.68,
+                    "evidence_intent": "high",
+                    "answer_evidence_class": "rich_option",
+                },
+            ],
+        }
+
+        ledger = self.server.build_session_evidence_ledger(session)
+        shadow = ledger["shadow_draft"]
+
+        self.assertIn("current_state_analysis", shadow)
+        self.assertIn("tech_comparison", shadow)
+        self.assertIn("implementation_roadmap", shadow)
+        self.assertIn("current_state", shadow["current_state_analysis"]["blocking_dimensions"] or [])
+        self.assertIn("implementation_path", shadow["implementation_roadmap"]["blocking_dimensions"])
+        self.assertIn("tech_selection", shadow["tech_comparison"]["blocking_dimensions"])
+        self.assertIn("implementation_path", shadow["actions"]["blocking_dimensions"])
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts import convert_doc
+from scripts import migrate_session_evidence_annotations
+from scripts import replay_preflight_diagnostics
 from scripts import report_generator
 from scripts import session_manager
 
@@ -164,11 +166,203 @@ class ComprehensiveScriptTests(unittest.TestCase):
             convert_doc.cleanup()
             self.assertFalse(temp_dir.exists())
 
+    def test_migrate_session_evidence_annotations_dry_run_and_apply(self):
+        base = self._session_base_dirs()
+        session_file = base / "sessions" / "dv-legacy-001.json"
+        session_payload = {
+            "session_id": "dv-legacy-001",
+            "topic": "历史证据迁移",
+            "updated_at": "2026-03-13T00:00:00Z",
+            "interview_log": [
+                {
+                    "question": "当前最优先的阻塞是什么？",
+                    "answer": "审批链条长导致整体处理慢",
+                    "dimension": "customer_needs",
+                    "options": ["审批链条长导致整体处理慢", "成本高", "资源不足"],
+                    "is_follow_up": False,
+                    "follow_up_round": 0,
+                }
+            ],
+        }
+        session_file.write_text(json.dumps(session_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        class FakeServer:
+            @staticmethod
+            def get_utc_now():
+                return "2026-03-13T08:00:00Z"
+
+            @staticmethod
+            def backfill_session_interview_log_evidence_annotations(session, refresh_quality=True, overwrite_contract=False):
+                log = session["interview_log"][0]
+                log["answer_mode"] = "pick_with_reason"
+                log["evidence_intent"] = "medium"
+                log["answer_evidence_class"] = "rich_option"
+                return {
+                    "changed": True,
+                    "logs_total": 1,
+                    "logs_updated": 1,
+                    "field_updates": {
+                        "answer_mode": 1,
+                        "evidence_intent": 1,
+                        "answer_evidence_class": 1,
+                    },
+                }
+
+        with patch.object(migrate_session_evidence_annotations, "get_script_dir", return_value=self.temp_scripts_dir):
+            dry_run_summary = migrate_session_evidence_annotations.backfill_session_files(
+                [session_file],
+                apply_changes=False,
+                server_module=FakeServer(),
+            )
+            self.assertEqual(1, dry_run_summary["sessions_changed"])
+            dry_run_after = json.loads(session_file.read_text(encoding="utf-8"))
+            self.assertNotIn("answer_mode", dry_run_after["interview_log"][0])
+
+            backup_dir = self.sandbox_root / "backup"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            apply_summary = migrate_session_evidence_annotations.backfill_session_files(
+                [session_file],
+                apply_changes=True,
+                backup_dir=backup_dir,
+                server_module=FakeServer(),
+            )
+            self.assertEqual(1, apply_summary["sessions_changed"])
+            applied = json.loads(session_file.read_text(encoding="utf-8"))
+            self.assertEqual("pick_with_reason", applied["interview_log"][0]["answer_mode"])
+            self.assertEqual("medium", applied["interview_log"][0]["evidence_intent"])
+            self.assertEqual("rich_option", applied["interview_log"][0]["answer_evidence_class"])
+            self.assertTrue((backup_dir / "dv-legacy-001.json").exists())
+
+    def test_replay_preflight_diagnostics_simulates_trigger_and_throttle(self):
+        base = self._session_base_dirs()
+        session_file = base / "sessions" / "dv-preflight-001.json"
+        session_payload = {
+            "session_id": "dv-preflight-001",
+            "topic": "预检回放测试",
+            "dimensions": {
+                "customer_needs": {"coverage": 80, "items": []},
+                "business_process": {"coverage": 40, "items": []},
+            },
+            "interview_log": [
+                {
+                    "dimension": "customer_needs",
+                    "question": "最核心痛点是什么？",
+                    "answer": "审批链条长导致整体处理慢",
+                    "is_follow_up": False,
+                },
+                {
+                    "dimension": "business_process",
+                    "question": "角色分工里最容易卡在哪一段？",
+                    "answer": "审批节点",
+                    "is_follow_up": False,
+                },
+                {
+                    "dimension": "business_process",
+                    "question": "异常处理通常由谁兜底？",
+                    "answer": "还没有固定角色",
+                    "is_follow_up": False,
+                },
+            ],
+        }
+        session_file.write_text(json.dumps(session_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        class FakeServer:
+            @staticmethod
+            def build_session_evidence_ledger(session):
+                logs = session.get("interview_log", [])
+                if len(logs) <= 1:
+                    return {"priority_dimensions": [], "dimensions": {"customer_needs": {"latest_probe_slots": []}}}
+                if len(logs) == 2:
+                    return {
+                        "priority_dimensions": ["business_process"],
+                        "dimensions": {
+                            "business_process": {
+                                "gap_score": 0.66,
+                                "missing_aspects": ["角色分工"],
+                                "latest_probe_slots": ["角色分工", "异常处理"],
+                                "pending_follow_up_ratio": 0.5,
+                                "evidence_density": 0.35,
+                                "latest_needs_follow_up": True,
+                                "latest_user_skip_follow_up": False,
+                                "latest_signals": ["option_only"],
+                            }
+                        },
+                        "shadow_draft": {"actions": {"ready": False, "blocking_dimensions": ["business_process"]}},
+                        "formal_questions_total": len(logs),
+                    }
+                return {
+                    "priority_dimensions": ["business_process"],
+                    "dimensions": {
+                        "business_process": {
+                            "gap_score": 0.58,
+                            "missing_aspects": ["角色分工"],
+                            "latest_probe_slots": ["角色分工", "异常处理"],
+                            "pending_follow_up_ratio": 0.45,
+                            "evidence_density": 0.42,
+                            "latest_needs_follow_up": True,
+                            "latest_user_skip_follow_up": False,
+                            "latest_signals": ["option_only"],
+                        }
+                    },
+                    "shadow_draft": {"actions": {"ready": False, "blocking_dimensions": ["business_process"]}},
+                    "formal_questions_total": len(logs),
+                }
+
+            @staticmethod
+            def plan_mid_interview_preflight(session, dimension, ledger=None):
+                logs = session.get("interview_log", [])
+                if len(logs) == 2:
+                    return {
+                        "should_intervene": True,
+                        "planner_mode": "gap_probe",
+                        "reason": "角色分工证据不足",
+                        "probe_slots": ["角色分工", "异常处理"],
+                        "force_follow_up": False,
+                        "fingerprint": "business_process::角色分工::角色分工|异常处理::actions",
+                        "cooldown_suppressed": False,
+                    }
+                if len(logs) >= 3:
+                    return {
+                        "should_intervene": False,
+                        "planner_mode": "observe",
+                        "reason": "同类缺口刚刚追问过，先等待补答",
+                        "probe_slots": ["角色分工", "异常处理"],
+                        "force_follow_up": False,
+                        "fingerprint": "business_process::角色分工::角色分工|异常处理::actions",
+                        "cooldown_suppressed": True,
+                        "cooldown_reason": "同类缺口刚刚追问过，先等待补答",
+                    }
+                return {
+                    "should_intervene": False,
+                    "planner_mode": "observe",
+                    "reason": "",
+                    "probe_slots": [],
+                    "force_follow_up": False,
+                    "fingerprint": "",
+                    "cooldown_suppressed": False,
+                }
+
+        with patch.object(replay_preflight_diagnostics, "get_script_dir", return_value=self.temp_scripts_dir):
+            summary = replay_preflight_diagnostics.simulate_session_files(
+                [session_file],
+                server_module=FakeServer(),
+                max_events=5,
+            )
+
+        self.assertEqual(1, summary["sessions_total"])
+        result = summary["results"][0]
+        self.assertEqual("dv-preflight-001", result["session_id"])
+        self.assertEqual(1, result["trigger_total"])
+        self.assertEqual(1, result["throttled_total"])
+        self.assertEqual("business_process", result["first_trigger"]["dimension"])
+
     def test_cli_help_commands(self):
         commands = [
             ["python3", "scripts/session_manager.py", "--help"],
             ["python3", "scripts/convert_doc.py", "--help"],
             ["python3", "scripts/report_generator.py", "--help"],
+            ["python3", "scripts/migrate_session_evidence_annotations.py", "--help"],
+            ["python3", "scripts/replay_preflight_diagnostics.py", "--help"],
         ]
         for cmd in commands:
             completed = subprocess.run(

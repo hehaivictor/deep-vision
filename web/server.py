@@ -9381,6 +9381,523 @@ def build_question_capture_contract(
     }
 
 
+EVIDENCE_LEDGER_PREFLIGHT_INTERVAL = 4
+EVIDENCE_LEDGER_MIN_GAP_SCORE = 0.45
+EVIDENCE_LEDGER_MAX_FOCUS_SLOTS = 2
+EVIDENCE_LEDGER_PREFLIGHT_COOLDOWN_FORMAL_GAP = 2
+EVIDENCE_LEDGER_PREFLIGHT_PRIORITY_WINDOW = 2
+
+DIMENSION_EVIDENCE_PROBE_TEMPLATES = {
+    "customer_needs": ["使用场景", "影响范围", "用户角色", "主要原因"],
+    "business_process": ["角色分工", "触发事件", "异常处理", "协作瓶颈"],
+    "tech_constraints": ["系统边界", "性能口径", "安全要求", "集成方式"],
+    "project_constraints": ["时间节点", "资源边界", "优先级", "验收标准"],
+}
+
+FOLLOW_UP_SIGNAL_PROBE_MAP = {
+    "too_short": ["主要原因", "使用场景"],
+    "vague_expression": ["边界条件", "责任角色"],
+    "generic_answer": ["主要原因", "影响范围"],
+    "option_only": ["主要原因", "影响范围"],
+    "no_quantification": ["发生频次", "量化口径"],
+    "single_selection": ["其他并存因素", "影响范围"],
+    "contradiction_detected": ["冲突边界", "确认口径"],
+}
+
+SHADOW_DRAFT_SECTION_DIMENSIONS = {
+    "needs": ("customer_needs",),
+    "solutions": ("business_process", "tech_constraints"),
+    "actions": ("business_process", "project_constraints"),
+    "evidence_index": ("customer_needs", "business_process", "tech_constraints", "project_constraints"),
+}
+
+SHADOW_DRAFT_SECTION_SKIP_IDS = {"overview", "appendix", "risks"}
+SHADOW_DRAFT_SECTION_KEYWORDS = {
+    "needs": {"need", "needs", "customer", "pain", "current", "state", "profile", "scenario", "usage"},
+    "solutions": {"solution", "solutions", "architecture", "target", "tech", "selection", "comparison", "recommendation"},
+    "actions": {"action", "actions", "roadmap", "implementation", "plan", "path", "milestone", "recommendation"},
+    "evidence_index": {"evidence", "index", "appendix", "summary"},
+}
+SHADOW_DRAFT_DIMENSION_HINTS = {
+    "current_state": {"needs", "current", "state", "pain", "current_state_analysis"},
+    "target_architecture": {"solutions", "target", "architecture"},
+    "tech_selection": {"solutions", "tech", "selection", "comparison", "recommendations"},
+    "implementation_path": {"actions", "implementation", "roadmap", "path", "recommendations"},
+}
+
+
+def _derive_probe_slots_for_dimension(
+    dimension: str,
+    *,
+    missing_aspects: Optional[list] = None,
+    signals: Optional[list] = None,
+) -> list:
+    normalized_dimension = str(dimension or "").strip().lower()
+    slots = []
+    seen = set()
+
+    def _append_slot(value: str) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        slots.append(text)
+        seen.add(text)
+
+    for aspect in list(missing_aspects or []):
+        _append_slot(aspect)
+        if len(slots) >= EVIDENCE_LEDGER_MAX_FOCUS_SLOTS:
+            return slots
+
+    for signal in list(signals or []):
+        for slot in FOLLOW_UP_SIGNAL_PROBE_MAP.get(str(signal or "").strip(), []):
+            _append_slot(slot)
+            if len(slots) >= EVIDENCE_LEDGER_MAX_FOCUS_SLOTS:
+                return slots
+
+    for slot in DIMENSION_EVIDENCE_PROBE_TEMPLATES.get(normalized_dimension, []):
+        _append_slot(slot)
+        if len(slots) >= EVIDENCE_LEDGER_MAX_FOCUS_SLOTS:
+            return slots
+
+    return slots
+
+
+def _build_preflight_focus_fingerprint(
+    dimension: str,
+    *,
+    target_aspect: str = "",
+    probe_slots: Optional[list] = None,
+    blocked_sections: Optional[list] = None,
+) -> str:
+    normalized_dimension = str(dimension or "").strip().lower()
+    normalized_aspect = str(target_aspect or "").strip().lower()
+    normalized_slots = sorted({
+        str(item or "").strip().lower()
+        for item in (probe_slots or [])
+        if str(item or "").strip()
+    })
+    normalized_sections = sorted({
+        str(item or "").strip().lower()
+        for item in (blocked_sections or [])
+        if str(item or "").strip()
+    })
+    payload = [normalized_dimension, normalized_aspect, "|".join(normalized_slots), "|".join(normalized_sections)]
+    return "::".join(payload)
+
+
+def _question_text_covers_probe_slots(question_text: str, target_aspect: str, probe_slots: Optional[list] = None) -> bool:
+    normalized_question = str(question_text or "").strip().lower()
+    if not normalized_question:
+        return False
+    tokens = [str(target_aspect or "").strip().lower()]
+    tokens.extend(str(item or "").strip().lower() for item in (probe_slots or []))
+    tokens = [token for token in tokens if token]
+    if not tokens:
+        return False
+    matched = sum(1 for token in tokens if token and token in normalized_question)
+    return matched >= 1
+
+
+def _tokenize_shadow_draft_text(*values: str) -> set:
+    tokens = set()
+    for value in values:
+        text = str(value or "").strip().lower()
+        if not text:
+            continue
+        tokens.add(text)
+        for part in re.split(r"[^a-z0-9\u4e00-\u9fff]+", text):
+            normalized_part = str(part or "").strip().lower()
+            if normalized_part:
+                tokens.add(normalized_part)
+    return tokens
+
+
+def resolve_shadow_draft_section_dimensions(session: dict, dim_info_map: dict) -> dict:
+    """根据默认规则和动态场景报告结构推导 shadow draft 段落与维度映射。"""
+    mapping = {
+        section: list(dimensions)
+        for section, dimensions in SHADOW_DRAFT_SECTION_DIMENSIONS.items()
+    }
+
+    scenario_config = session.get("scenario_config", {}) if isinstance(session, dict) else {}
+    report_config = scenario_config.get("report", {}) if isinstance(scenario_config, dict) else {}
+    report_sections = report_config.get("sections", []) if isinstance(report_config, dict) else []
+    if not isinstance(report_sections, list):
+        report_sections = []
+
+    if not dim_info_map:
+        return mapping
+
+    canonical_dimensions = {dim for dims in SHADOW_DRAFT_SECTION_DIMENSIONS.values() for dim in dims}
+    dynamic_dimensions = [dim_id for dim_id in dim_info_map.keys() if dim_id not in canonical_dimensions]
+    if not dynamic_dimensions:
+        return mapping
+
+    dimension_tokens = {}
+    for dim_id, info in dim_info_map.items():
+        key_aspects = info.get("key_aspects", []) if isinstance(info.get("key_aspects", []), list) else []
+        tokens = _tokenize_shadow_draft_text(dim_id, info.get("name", ""), info.get("description", ""), " ".join(key_aspects))
+        tokens.update(SHADOW_DRAFT_DIMENSION_HINTS.get(str(dim_id or "").strip().lower(), set()))
+        dimension_tokens[dim_id] = tokens
+
+    for section in report_sections:
+        section_id = str(section or "").strip().lower()
+        if not section_id or section_id in SHADOW_DRAFT_SECTION_SKIP_IDS:
+            continue
+        section_tokens = _tokenize_shadow_draft_text(section_id.replace("_", " "))
+        for canonical, hints in SHADOW_DRAFT_SECTION_KEYWORDS.items():
+            if section_id == canonical or section_tokens.intersection(hints):
+                mapping.setdefault(canonical, [])
+        matched_dims = []
+        for dim_id, tokens in dimension_tokens.items():
+            overlap = section_tokens.intersection(tokens)
+            if overlap:
+                matched_dims.append(dim_id)
+                continue
+            if any(hint in section_id for hint in SHADOW_DRAFT_DIMENSION_HINTS.get(str(dim_id or "").strip().lower(), set())):
+                matched_dims.append(dim_id)
+
+        if matched_dims:
+            mapping[section_id] = sorted(set(matched_dims))
+            for canonical, hints in SHADOW_DRAFT_SECTION_KEYWORDS.items():
+                if section_tokens.intersection(hints):
+                    target_dims = mapping.setdefault(canonical, [])
+                    for dim_id in matched_dims:
+                        if dim_id not in target_dims:
+                            target_dims.append(dim_id)
+
+    if report_sections:
+        recommendations_dims = mapping.get("recommendations", [])
+        if recommendations_dims:
+            for canonical in ("solutions", "actions"):
+                target_dims = mapping.setdefault(canonical, [])
+                for dim_id in recommendations_dims:
+                    if dim_id not in target_dims:
+                        target_dims.append(dim_id)
+
+    for key, dims in list(mapping.items()):
+        ordered = []
+        seen = set()
+        for dim_id in dims:
+            if dim_id in dim_info_map and dim_id not in seen:
+                ordered.append(dim_id)
+                seen.add(dim_id)
+        mapping[key] = ordered
+
+    return mapping
+
+
+def build_session_evidence_ledger(session: dict) -> dict:
+    """基于当前访谈记录构建轻量证据账本，用于访谈中途预检与追问规划。"""
+    normalized_session = session if isinstance(session, dict) else {}
+    interview_log = normalized_session.get("interview_log", [])
+    if not isinstance(interview_log, list):
+        interview_log = []
+
+    dim_info_map = get_dimension_info_for_session(normalized_session)
+    dimension_order = get_dimension_order_for_session(normalized_session) or list(dim_info_map.keys())
+    mode_config = get_interview_mode_config(normalized_session)
+    min_formal = max(1, int(mode_config.get("formal_questions_per_dim", 3) or 3))
+
+    dimensions = {}
+    total_formal = 0
+    total_follow_up = 0
+    total_weighted_evidence = 0.0
+    total_pending_follow_up = 0
+
+    for dim_key in dimension_order:
+        dim_logs = [log for log in interview_log if log.get("dimension") == dim_key]
+        formal_logs = [log for log in dim_logs if not log.get("is_follow_up", False)]
+        follow_up_logs = [log for log in dim_logs if log.get("is_follow_up", False)]
+        info = dim_info_map.get(dim_key, {})
+        key_aspects = info.get("key_aspects", []) if isinstance(info.get("key_aspects", []), list) else []
+        missing_aspects = get_dimension_missing_aspects(normalized_session, dim_key) if (dim_logs or key_aspects) else []
+
+        evidence_counts = {"explicit": 0, "rich_option": 0, "weak_inferred": 0, "pending_follow_up": 0}
+        quality_scores = []
+        high_intent_count = 0
+        follow_up_candidates = 0
+        latest_formal = formal_logs[-1] if formal_logs else None
+
+        for log in formal_logs:
+            evidence_class = str(
+                log.get("answer_evidence_class")
+                or classify_answer_evidence_class_v3(
+                    log.get("follow_up_signals", []),
+                    log.get("quality_score", 0.0),
+                    log.get("evidence_intent", "low"),
+                )
+            ).strip()
+            if evidence_class not in evidence_counts:
+                evidence_class = "weak_inferred"
+            evidence_counts[evidence_class] += 1
+            quality_scores.append(_safe_float(log.get("quality_score"), default=0.0))
+            if normalize_question_evidence_intent(log.get("evidence_intent", ""), fallback="low") == "high":
+                high_intent_count += 1
+            if bool(log.get("needs_follow_up", False)) and not bool(log.get("user_skip_follow_up", False)):
+                follow_up_candidates += 1
+
+        weighted_evidence = (
+            evidence_counts["explicit"] * 1.0
+            + evidence_counts["rich_option"] * 0.75
+            + evidence_counts["weak_inferred"] * 0.35
+        )
+        formal_count = len(formal_logs)
+        evidence_density = weighted_evidence / formal_count if formal_count > 0 else 0.0
+        pending_ratio = evidence_counts["pending_follow_up"] / formal_count if formal_count > 0 else 0.0
+        missing_ratio = (len(missing_aspects) / len(key_aspects)) if key_aspects else (1.0 if formal_count == 0 else 0.0)
+        quality_average = (sum(quality_scores) / len(quality_scores)) if quality_scores else 0.0
+
+        gap_score = 0.0
+        gap_score += min(0.5, missing_ratio * 0.5)
+        gap_score += min(0.25, pending_ratio * 0.35)
+        gap_score += min(0.2, max(0.0, 0.65 - evidence_density) * 0.4)
+        if formal_count < min_formal:
+            gap_score += min(0.2, (min_formal - formal_count) * 0.08)
+        if latest_formal and latest_formal.get("hard_triggered"):
+            gap_score += 0.12
+        if latest_formal and latest_formal.get("needs_follow_up") and not latest_formal.get("user_skip_follow_up"):
+            gap_score += 0.08
+        gap_score = max(0.0, min(1.0, gap_score))
+
+        latest_signals = list(latest_formal.get("follow_up_signals", []) or []) if isinstance(latest_formal, dict) else []
+        probe_slots = _derive_probe_slots_for_dimension(
+            dim_key,
+            missing_aspects=missing_aspects,
+            signals=latest_signals,
+        )
+        ready_for_report = (
+            formal_count >= min_formal
+            and not missing_aspects
+            and evidence_density >= 0.55
+            and pending_ratio <= 0.35
+        )
+
+        dimensions[dim_key] = {
+            "dimension": dim_key,
+            "name": info.get("name", dim_key),
+            "formal_count": formal_count,
+            "follow_up_count": len(follow_up_logs),
+            "coverage": int(normalized_session.get("dimensions", {}).get(dim_key, {}).get("coverage", 0) or 0),
+            "missing_aspects": missing_aspects,
+            "key_aspects": key_aspects,
+            "evidence_counts": evidence_counts,
+            "evidence_density": round(evidence_density, 3),
+            "pending_follow_up_ratio": round(pending_ratio, 3),
+            "quality_average": round(quality_average, 3),
+            "high_evidence_question_count": high_intent_count,
+            "follow_up_candidates": follow_up_candidates,
+            "latest_signals": latest_signals,
+            "latest_probe_slots": probe_slots,
+            "latest_question": str(latest_formal.get("question", "") or "") if isinstance(latest_formal, dict) else "",
+            "latest_answer": str(latest_formal.get("answer", "") or "") if isinstance(latest_formal, dict) else "",
+            "latest_needs_follow_up": bool(latest_formal.get("needs_follow_up", False)) if isinstance(latest_formal, dict) else False,
+            "latest_user_skip_follow_up": bool(latest_formal.get("user_skip_follow_up", False)) if isinstance(latest_formal, dict) else False,
+            "gap_score": round(gap_score, 3),
+            "ready_for_report": bool(ready_for_report),
+        }
+
+        total_formal += formal_count
+        total_follow_up += len(follow_up_logs)
+        total_weighted_evidence += weighted_evidence
+        total_pending_follow_up += evidence_counts["pending_follow_up"]
+
+    priority_dimensions = sorted(
+        dimensions.values(),
+        key=lambda item: (
+            -_safe_float(item.get("gap_score"), default=0.0),
+            len(item.get("missing_aspects", []) or []),
+            -_safe_float(item.get("pending_follow_up_ratio"), default=0.0),
+        ),
+    )
+
+    shadow_draft = {}
+    shadow_section_dimensions = resolve_shadow_draft_section_dimensions(normalized_session, dim_info_map)
+    for section, section_dims in shadow_section_dimensions.items():
+        blockers = []
+        section_scores = []
+        for dim_key in section_dims:
+            dim_ledger = dimensions.get(dim_key)
+            if not isinstance(dim_ledger, dict):
+                continue
+            section_scores.append(_safe_float(dim_ledger.get("gap_score"), default=0.0))
+            if not dim_ledger.get("ready_for_report", False):
+                blockers.append(dim_key)
+        if not section_scores:
+            continue
+        readiness = 1.0 - (sum(section_scores) / len(section_scores))
+        shadow_draft[section] = {
+            "ready": bool(not blockers and readiness >= 0.45),
+            "blocking_dimensions": blockers,
+            "readiness_score": round(max(0.0, min(1.0, readiness)), 3),
+        }
+
+    overall_density = (total_weighted_evidence / total_formal) if total_formal > 0 else 0.0
+    ledger = {
+        "generated_at": get_utc_now(),
+        "formal_questions_total": total_formal,
+        "follow_up_total": total_follow_up,
+        "pending_follow_up_total": total_pending_follow_up,
+        "overall_evidence_density": round(overall_density, 3),
+        "priority_dimensions": [item.get("dimension", "") for item in priority_dimensions if item.get("dimension")],
+        "dimensions": dimensions,
+        "shadow_draft": shadow_draft,
+    }
+    return ledger
+
+
+def refresh_session_evidence_ledger(session: dict) -> dict:
+    """刷新会话中的轻量证据账本。"""
+    ledger = build_session_evidence_ledger(session)
+    if isinstance(session, dict):
+        session["evidence_ledger"] = ledger
+    return ledger
+
+
+def plan_mid_interview_preflight(
+    session: dict,
+    dimension: str,
+    *,
+    ledger: Optional[dict] = None,
+    rule_based_result: Optional[dict] = None,
+) -> dict:
+    """在访谈中途评估证据缺口，决定是否优先补证据而不是等到成稿阶段。"""
+    normalized_dimension = str(dimension or "").strip()
+    ledger = ledger if isinstance(ledger, dict) else build_session_evidence_ledger(session)
+    dim_ledger = dict((ledger.get("dimensions", {}) or {}).get(normalized_dimension, {}) or {})
+    total_formal = max(0, int(ledger.get("formal_questions_total", 0) or 0))
+
+    gap_score = _safe_float(dim_ledger.get("gap_score"), default=0.0)
+    missing_aspects = list(dim_ledger.get("missing_aspects", []) or [])
+    probe_slots = list(dim_ledger.get("latest_probe_slots", []) or [])
+    pending_ratio = _safe_float(dim_ledger.get("pending_follow_up_ratio"), default=0.0)
+    evidence_density = _safe_float(dim_ledger.get("evidence_density"), default=0.0)
+    latest_needs_follow_up = bool(dim_ledger.get("latest_needs_follow_up", False))
+    user_skipped = bool(dim_ledger.get("latest_user_skip_follow_up", False))
+    latest_signals = list(dim_ledger.get("latest_signals", []) or [])
+    shadow_draft = ledger.get("shadow_draft", {}) if isinstance(ledger.get("shadow_draft", {}), dict) else {}
+
+    blocked_sections = [
+        section for section, meta in shadow_draft.items()
+        if isinstance(meta, dict)
+        and normalized_dimension in list(meta.get("blocking_dimensions", []) or [])
+        and not bool(meta.get("ready", False))
+    ]
+
+    urgent_gap = (
+        gap_score >= EVIDENCE_LEDGER_MIN_GAP_SCORE
+        or (pending_ratio >= 0.45 and evidence_density < 0.65)
+        or len(missing_aspects) >= 2
+    )
+    preflight_due = total_formal >= EVIDENCE_LEDGER_PREFLIGHT_INTERVAL and (
+        total_formal % EVIDENCE_LEDGER_PREFLIGHT_INTERVAL == 0 or urgent_gap
+    )
+    should_intervene = bool(preflight_due and (urgent_gap or blocked_sections))
+
+    force_follow_up = bool(
+        should_intervene
+        and latest_needs_follow_up
+        and not user_skipped
+    )
+    planner_mode = "follow_up" if force_follow_up else ("gap_probe" if should_intervene else "observe")
+    target_aspect = str((missing_aspects or probe_slots or [""])[0] or "").strip()
+    if not probe_slots:
+        probe_slots = _derive_probe_slots_for_dimension(
+            normalized_dimension,
+            missing_aspects=missing_aspects,
+            signals=(rule_based_result or {}).get("signals", latest_signals),
+        )
+
+    priority_dimensions = [str(item or "").strip() for item in list(ledger.get("priority_dimensions", []) or []) if str(item or "").strip()]
+    try:
+        priority_rank = priority_dimensions.index(normalized_dimension)
+    except ValueError:
+        priority_rank = len(priority_dimensions)
+    high_value_gap = bool(
+        blocked_sections
+        or priority_rank < EVIDENCE_LEDGER_PREFLIGHT_PRIORITY_WINDOW
+        or gap_score >= 0.62
+        or pending_ratio >= 0.55
+    )
+
+    focus_fingerprint = _build_preflight_focus_fingerprint(
+        normalized_dimension,
+        target_aspect=target_aspect,
+        probe_slots=probe_slots,
+        blocked_sections=blocked_sections,
+    )
+
+    recent_formal_logs = [
+        log for log in list(session.get("interview_log", []) or [])
+        if isinstance(log, dict)
+        and log.get("dimension") == normalized_dimension
+        and not bool(log.get("is_follow_up", False))
+    ]
+    cooldown_suppressed = False
+    cooldown_reason = ""
+    if recent_formal_logs:
+        latest_formal_log = recent_formal_logs[-1]
+        if _question_text_covers_probe_slots(
+            latest_formal_log.get("question", ""),
+            target_aspect,
+            probe_slots,
+        ):
+            cooldown_suppressed = True
+            cooldown_reason = "上一题已针对同类缺口补证据"
+
+    if not cooldown_suppressed:
+        for reverse_index, previous_log in enumerate(reversed(recent_formal_logs), 1):
+            previous_fp = str(previous_log.get("preflight_fingerprint", "") or "").strip()
+            if not bool(previous_log.get("preflight_intervened", False)):
+                continue
+            if focus_fingerprint and previous_fp and previous_fp == focus_fingerprint:
+                if reverse_index <= EVIDENCE_LEDGER_PREFLIGHT_COOLDOWN_FORMAL_GAP:
+                    cooldown_suppressed = True
+                    cooldown_reason = "同类证据缺口刚刚追问过，先等待补答"
+                break
+
+    reasons = []
+    if missing_aspects:
+        reasons.append(f"未覆盖方面 {', '.join(missing_aspects[:2])}")
+    if pending_ratio >= 0.35:
+        reasons.append(f"待补证据占比 {pending_ratio:.0%}")
+    if evidence_density < 0.55:
+        reasons.append(f"证据密度 {evidence_density:.0%}")
+    if blocked_sections:
+        reasons.append(f"影子草案阻塞 {', '.join(blocked_sections)}")
+    reason_text = "；".join(reasons[:3]) if reasons else "当前维度仍有关键证据缺口"
+
+    if should_intervene and not high_value_gap:
+        should_intervene = False
+        force_follow_up = False
+        planner_mode = "observe"
+        reason_text = "当前缺口收益较低，继续自然访谈"
+
+    if should_intervene and cooldown_suppressed:
+        should_intervene = False
+        force_follow_up = False
+        planner_mode = "observe"
+        reason_text = cooldown_reason or "同类缺口近期已追问，先等待新证据"
+
+    return {
+        "preflight_due": bool(preflight_due),
+        "should_intervene": bool(should_intervene),
+        "force_follow_up": bool(force_follow_up),
+        "planner_mode": planner_mode,
+        "target_aspect": target_aspect,
+        "probe_slots": probe_slots[:EVIDENCE_LEDGER_MAX_FOCUS_SLOTS],
+        "reason": reason_text,
+        "gap_score": round(gap_score, 3),
+        "blocked_sections": blocked_sections,
+        "priority_rank": priority_rank,
+        "high_value_gap": bool(high_value_gap),
+        "cooldown_suppressed": bool(cooldown_suppressed),
+        "cooldown_reason": cooldown_reason,
+        "fingerprint": focus_fingerprint,
+        "boost_evidence_intent": bool(should_intervene and (force_follow_up or gap_score >= EVIDENCE_LEDGER_MIN_GAP_SCORE)),
+    }
+
+
 RICH_OPTION_CAUSE_KEYWORDS = (
     "导致", "影响", "因为", "所以", "瓶颈", "阻塞", "误拦截", "投诉", "风险", "失败", "延迟",
 )
@@ -9602,7 +10119,8 @@ def evaluate_dimension_completion_v2(session: dict, dimension: str) -> dict:
 
 
 def should_follow_up_comprehensive(session: dict, dimension: str,
-                                    rule_based_result: dict) -> dict:
+                                    rule_based_result: dict,
+                                    preflight_plan: Optional[dict] = None) -> dict:
     """
     综合决策是否应该追问
 
@@ -9619,6 +10137,7 @@ def should_follow_up_comprehensive(session: dict, dimension: str,
         }
     """
     decision_factors = []
+    normalized_preflight = dict(preflight_plan or {})
 
     # 1. 检查预算
     budget_status = get_follow_up_budget_status(session, dimension)
@@ -9638,6 +10157,16 @@ def should_follow_up_comprehensive(session: dict, dimension: str,
         }
 
     fatigue = calculate_user_fatigue(session, dimension)
+
+    if normalized_preflight.get("force_follow_up") and fatigue.get("fatigue_score", 0) < 0.9:
+        return {
+            "should_follow_up": True,
+            "reason": normalized_preflight.get("reason") or "证据预检发现关键缺口，需要优先补齐",
+            "budget_status": budget_status,
+            "saturation": calculate_dimension_saturation(session, dimension),
+            "fatigue": fatigue,
+            "decision_factors": ["mid_interview_preflight"]
+        }
 
     # V2: 硬触发信号优先（在疲劳保护之外）
     hard_triggered = bool(rule_based_result.get("hard_triggered", False))
@@ -9680,6 +10209,15 @@ def should_follow_up_comprehensive(session: dict, dimension: str,
     original_needs_follow_up = rule_based_result.get("needs_follow_up", False)
 
     if not original_needs_follow_up:
+        if normalized_preflight.get("should_intervene") and fatigue.get("fatigue_score", 0) < 0.9:
+            return {
+                "should_follow_up": False,
+                "reason": normalized_preflight.get("reason") or "证据预检建议优先补当前缺口",
+                "budget_status": budget_status,
+                "saturation": saturation,
+                "fatigue": fatigue,
+                "decision_factors": ["mid_interview_preflight_probe"]
+            }
         return {
             "should_follow_up": False,
             "reason": "回答已充分",
@@ -10009,6 +10547,174 @@ def _build_follow_up_reason(signals: list) -> str:
     return reasons[0] if reasons else "需要进一步了解详细需求"
 
 
+def _infer_legacy_log_capture_contract(log: dict, prior_dim_logs: list) -> dict:
+    """为历史会话中缺失的问题采集契约做近似推断。"""
+    if not isinstance(log, dict):
+        return {
+            "answer_mode": "pick_only",
+            "requires_rationale": False,
+            "evidence_intent": "low",
+        }
+
+    dimension = str(log.get("dimension", "") or "").strip()
+    question = str(log.get("question", "") or "").strip()
+    options = log.get("options", []) if isinstance(log.get("options", []), list) else []
+    is_follow_up = bool(log.get("is_follow_up", False) or int(log.get("follow_up_round", 0) or 0) > 0)
+    hard_triggered = bool(log.get("hard_triggered", False))
+    formal_questions_count = len([item for item in (prior_dim_logs or []) if not item.get("is_follow_up", False)])
+
+    contract = build_question_capture_contract(
+        should_follow_up=is_follow_up,
+        hard_triggered=hard_triggered,
+        missing_aspects=[],
+        formal_questions_count=formal_questions_count,
+        dimension=dimension,
+    )
+
+    question_markers = (
+        "原因", "为什么", "场景", "影响", "频次", "角色", "流程", "主要是因为", "哪种情况",
+    )
+    option_markers = RICH_OPTION_CAUSE_KEYWORDS + RICH_OPTION_CONTEXT_KEYWORDS + RICH_OPTION_ROLE_KEYWORDS + RICH_OPTION_PROCESS_KEYWORDS
+    asks_for_evidence = any(marker in question for marker in question_markers)
+    options_are_rich = any(
+        len(str(option or "").strip()) >= 10 and any(marker in str(option or "") for marker in option_markers)
+        for option in options
+    )
+
+    if asks_for_evidence or options_are_rich:
+        contract["answer_mode"] = "pick_with_reason"
+        contract["requires_rationale"] = True
+        current_intent = normalize_question_evidence_intent(contract.get("evidence_intent", ""), fallback="low")
+        if is_follow_up or asks_for_evidence:
+            contract["evidence_intent"] = "high"
+        elif current_intent == "low":
+            contract["evidence_intent"] = "medium"
+
+    return {
+        "answer_mode": normalize_question_answer_mode(contract.get("answer_mode", ""), fallback="pick_only"),
+        "requires_rationale": bool(contract.get("requires_rationale", False)),
+        "evidence_intent": normalize_question_evidence_intent(contract.get("evidence_intent", ""), fallback="low"),
+    }
+
+
+def backfill_session_interview_log_evidence_annotations(
+    session: dict,
+    *,
+    refresh_quality: bool = True,
+    overwrite_contract: bool = False,
+) -> dict:
+    """按当前证据规则为历史 interview_log 回填契约、质量与证据分类。"""
+    if not isinstance(session, dict):
+        return {"changed": False, "logs_total": 0, "logs_updated": 0, "field_updates": {}}
+
+    interview_log = session.get("interview_log", [])
+    if not isinstance(interview_log, list):
+        return {"changed": False, "logs_total": 0, "logs_updated": 0, "field_updates": {}}
+
+    changed = False
+    logs_updated = 0
+    field_updates = {}
+    dim_history = {}
+
+    for log in interview_log:
+        if not isinstance(log, dict):
+            continue
+
+        dimension = str(log.get("dimension", "") or "").strip()
+        prior_dim_logs = dim_history.setdefault(dimension, [])
+        inferred_contract = _infer_legacy_log_capture_contract(log, prior_dim_logs)
+
+        raw_answer_mode = str(log.get("answer_mode", "") or "").strip().lower()
+        raw_evidence_intent = str(log.get("evidence_intent", "") or "").strip().lower()
+        current_answer_mode = normalize_question_answer_mode(raw_answer_mode, fallback=inferred_contract["answer_mode"])
+        has_explicit_contract = raw_answer_mode in QUESTION_ANSWER_MODES and raw_evidence_intent in QUESTION_EVIDENCE_INTENTS
+
+        answer_mode = current_answer_mode if (has_explicit_contract and not overwrite_contract) else inferred_contract["answer_mode"]
+        requires_rationale = bool(log.get("requires_rationale", False) or answer_mode == "pick_with_reason")
+        if overwrite_contract or not has_explicit_contract:
+            requires_rationale = bool(inferred_contract["requires_rationale"] or answer_mode == "pick_with_reason")
+        evidence_intent = normalize_question_evidence_intent(
+            log.get("evidence_intent", "") if (has_explicit_contract and not overwrite_contract) else inferred_contract["evidence_intent"],
+            fallback="high" if requires_rationale else ("medium" if answer_mode == "pick_with_reason" else "low"),
+        )
+
+        original_snapshot = {
+            "answer_mode": log.get("answer_mode"),
+            "requires_rationale": log.get("requires_rationale"),
+            "evidence_intent": log.get("evidence_intent"),
+            "follow_up_signals": copy.deepcopy(log.get("follow_up_signals")),
+            "quality_score": log.get("quality_score"),
+            "quality_signals": copy.deepcopy(log.get("quality_signals")),
+            "hard_triggered": log.get("hard_triggered"),
+            "needs_follow_up": log.get("needs_follow_up"),
+            "answer_evidence_class": log.get("answer_evidence_class"),
+        }
+
+        log["answer_mode"] = answer_mode
+        log["requires_rationale"] = requires_rationale
+        log["evidence_intent"] = evidence_intent
+
+        eval_result = evaluate_answer_depth(
+            question=str(log.get("question", "") or ""),
+            answer=str(log.get("answer", "") or ""),
+            dimension=dimension,
+            options=log.get("options", []) if isinstance(log.get("options", []), list) else [],
+            is_follow_up=bool(log.get("is_follow_up", False)),
+            multi_select=bool(log.get("question_multi_select", log.get("multi_select", False))),
+            answer_mode=answer_mode,
+            requires_rationale=requires_rationale,
+            evidence_intent=evidence_intent,
+        )
+        quality_result = evaluate_answer_quality(
+            eval_result=eval_result,
+            answer=str(log.get("answer", "") or ""),
+            is_follow_up=bool(log.get("is_follow_up", False)),
+            follow_up_round=int(log.get("follow_up_round", 0) or 0),
+        )
+        answer_evidence_class = classify_answer_evidence_class_v3(
+            eval_result.get("signals", []),
+            quality_result.get("quality_score", 0.0),
+            evidence_intent,
+        )
+
+        if refresh_quality or "follow_up_signals" not in log:
+            log["follow_up_signals"] = list(eval_result.get("signals", []) or [])
+            log["needs_follow_up"] = bool(eval_result.get("needs_follow_up", False))
+        if refresh_quality or "quality_score" not in log:
+            log["quality_score"] = quality_result.get("quality_score", 0.0)
+            log["quality_signals"] = list(quality_result.get("quality_signals", []) or [])
+            log["hard_triggered"] = bool(quality_result.get("hard_triggered", False))
+        log["answer_evidence_class"] = answer_evidence_class
+
+        updated_snapshot = {
+            "answer_mode": log.get("answer_mode"),
+            "requires_rationale": log.get("requires_rationale"),
+            "evidence_intent": log.get("evidence_intent"),
+            "follow_up_signals": log.get("follow_up_signals"),
+            "quality_score": log.get("quality_score"),
+            "quality_signals": log.get("quality_signals"),
+            "hard_triggered": log.get("hard_triggered"),
+            "needs_follow_up": log.get("needs_follow_up"),
+            "answer_evidence_class": log.get("answer_evidence_class"),
+        }
+
+        if original_snapshot != updated_snapshot:
+            changed = True
+            logs_updated += 1
+            for key, value in updated_snapshot.items():
+                if original_snapshot.get(key) != value:
+                    field_updates[key] = field_updates.get(key, 0) + 1
+
+        prior_dim_logs.append(log)
+
+    return {
+        "changed": changed,
+        "logs_total": len([log for log in interview_log if isinstance(log, dict)]),
+        "logs_updated": logs_updated,
+        "field_updates": field_updates,
+    }
+
+
 def _normalize_question_prompt_output_mode(output_mode: str = "full") -> str:
     normalized = str(output_mode or "full").strip().lower()
     if normalized in {"light", "fast", "fast_light", "lite"}:
@@ -10183,6 +10889,8 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     comprehensive_decision = None
     hard_triggered = False
     missing_aspects = []
+    evidence_ledger = refresh_session_evidence_ledger(session)
+    preflight_plan = plan_mid_interview_preflight(session, dimension, ledger=evidence_ledger)
     follow_up_round = get_follow_up_round_for_dimension_logs(all_dim_logs)
     remaining_question_follow_up_budget = max(0, mode_config.get("max_questions_per_formal", 1) - follow_up_round)
 
@@ -10213,7 +10921,8 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         comprehensive_decision = should_follow_up_comprehensive(
             session=session,
             dimension=dimension,
-            rule_based_result=eval_result
+            rule_based_result=eval_result,
+            preflight_plan=preflight_plan,
         )
 
         should_follow_up = comprehensive_decision["should_follow_up"]
@@ -10223,6 +10932,12 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         suggest_ai_eval = eval_result["suggest_ai_eval"] and comprehensive_decision["should_follow_up"]
 
         missing_aspects = get_dimension_missing_aspects(session, dimension)
+        preflight_plan = plan_mid_interview_preflight(
+            session,
+            dimension,
+            ledger=evidence_ledger,
+            rule_based_result=eval_result,
+        )
 
         if ENABLE_DEBUG_LOG:
             budget = comprehensive_decision.get("budget_status", {})
@@ -10242,6 +10957,10 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         formal_questions_count=formal_questions_count,
         dimension=dimension,
     )
+    if preflight_plan.get("boost_evidence_intent"):
+        capture_contract["answer_mode"] = "pick_with_reason"
+        capture_contract["requires_rationale"] = True
+        capture_contract["evidence_intent"] = "high"
     answer_mode = capture_contract.get("answer_mode", "pick_only")
     requires_rationale = bool(capture_contract.get("requires_rationale", False))
     evidence_intent = capture_contract.get("evidence_intent", "low")
@@ -10287,6 +11006,26 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 1. 问题必须直接点名至少 1 个未覆盖方面
 2. 不要重复已充分覆盖的信息
 3. 若有多个盲区，优先提问影响决策最大的方面
+"""
+
+    preflight_guidance = ""
+    if preflight_plan.get("should_intervene"):
+        focus_slots = [slot for slot in list(preflight_plan.get("probe_slots", []) or []) if str(slot or "").strip()]
+        focus_text = "、".join(focus_slots[:EVIDENCE_LEDGER_MAX_FOCUS_SLOTS]) if focus_slots else "关键依据"
+        blocked_sections = [item for item in list(preflight_plan.get("blocked_sections", []) or []) if str(item or "").strip()]
+        blocked_text = f"，当前阻塞段落：{', '.join(blocked_sections)}" if blocked_sections else ""
+        preflight_guidance = f"""
+## 证据预检优先级（必须优先）
+
+系统在访谈中途检测到当前维度仍有关键证据缺口：{preflight_plan.get('reason', '需要优先补齐关键依据')}{blocked_text}
+
+本题请优先补齐：{focus_text}
+
+执行要求：
+1. 只补一个最关键的缺口，不要同时发散到多个新话题
+2. 优先用 3-4 个可一键选择的高信息量选项完成补证据
+3. 如果是追问，请围绕上一条回答补“原因/频次/角色/影响范围”中的一个
+4. 若当前维度已有盲区，优先覆盖盲区而不是重复已充分信息
 """
 
     # 构建追问模式的提示
@@ -10369,6 +11108,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 
 该维度已收集了 {formal_questions_count} 个正式问题的回答，关键方面包括：{', '.join(dim_info.get('key_aspects', []))}
 {blindspot_guidance}
+{preflight_guidance}
 {follow_up_section}
 
 ## 输出格式（必须严格遵守）
@@ -10417,6 +11157,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 该维度已收集了 {formal_questions_count} 个正式问题的回答，关键方面包括：{', '.join(dim_info.get('key_aspects', []))}
 {ai_eval_guidance}
 {blindspot_guidance}
+{preflight_guidance}
 {follow_up_section}
 
 如果信息足够，请基于已收集的回答给出对当前选项的 AI 推荐，用于辅助用户决策。若无法推荐，请将 ai_recommendation 设为 null。
@@ -10488,6 +11229,13 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         "formal_questions_count": formal_questions_count,
         "has_reference_docs": bool(reference_materials),
         "has_truncated_docs": bool(truncated_docs),
+        "evidence_ledger": {
+            "formal_questions_total": int((evidence_ledger or {}).get("formal_questions_total", 0) or 0),
+            "overall_evidence_density": float((evidence_ledger or {}).get("overall_evidence_density", 0.0) or 0.0),
+            "priority_dimensions": list((evidence_ledger or {}).get("priority_dimensions", []) or []),
+        },
+        "shadow_draft": copy.deepcopy((evidence_ledger or {}).get("shadow_draft", {})),
+        "mid_interview_preflight": copy.deepcopy(preflight_plan),
     }
 
     if prompt_cache_key:
@@ -11249,9 +11997,11 @@ def classify_answer_evidence_class_v3(signals: list, quality_score: float, evide
 
 def build_report_evidence_pack(session: dict) -> dict:
     """构建报告 V3 证据包。"""
-    interview_log = session.get("interview_log", [])
-    dim_info = get_dimension_info_for_session(session)
-    mode_config = get_interview_mode_config(session)
+    normalized_session = copy.deepcopy(session) if isinstance(session, dict) else {}
+    backfill_session_interview_log_evidence_annotations(normalized_session, refresh_quality=True, overwrite_contract=False)
+    interview_log = normalized_session.get("interview_log", [])
+    dim_info = get_dimension_info_for_session(normalized_session)
+    mode_config = get_interview_mode_config(normalized_session)
 
     vague_terms = ["看情况", "不确定", "都可以", "不知道", "可能", "暂时不清楚", "以后再说", "差不多"]
     unknown_signals = {"vague_expression", "generic_answer"}
@@ -12787,23 +13537,248 @@ def _build_blindspot_open_question_v3(dimension: str, aspect: str, evidence_pack
     }
 
 
+def _normalize_dimension_hint_v3(dimension: str) -> str:
+    text = str(dimension or "").strip().lower()
+    if not text:
+        return ""
+    aliases = {
+        "customer_needs": "customer_needs",
+        "客户需求": "customer_needs",
+        "business_process": "business_process",
+        "business_flow": "business_process",
+        "业务流程": "business_process",
+        "tech_constraints": "tech_constraints",
+        "技术约束": "tech_constraints",
+        "技术限制": "tech_constraints",
+        "project_constraints": "project_constraints",
+        "项目约束": "project_constraints",
+        "项目限制": "project_constraints",
+    }
+    if text in aliases:
+        return aliases[text]
+    for raw_key, normalized in aliases.items():
+        if raw_key and raw_key in text:
+            return normalized
+    return text
+
+
+def _infer_default_action_owner_v3(text: str, dimension: str = "") -> str:
+    corpus = f"{str(text or '').strip().lower()} {str(dimension or '').strip().lower()}".strip()
+    if not corpus:
+        return "产品经理"
+
+    if any(token in corpus for token in ("研发", "技术", "接口", "api", "系统", "架构", "数据", "稳定性", "性能", "开发", "上线")):
+        return "技术负责人"
+    if any(token in corpus for token in ("排期", "里程碑", "推进", "协调", "资源", "项目", "验收", "复盘")):
+        return "项目经理"
+
+    normalized_dimension = _normalize_dimension_hint_v3(dimension)
+    if normalized_dimension == "business_process":
+        return "业务负责人"
+    if normalized_dimension == "tech_constraints":
+        return "技术负责人"
+    if normalized_dimension == "project_constraints":
+        return "项目经理"
+    if normalized_dimension == "customer_needs":
+        return "产品经理"
+
+    if any(token in corpus for token in ("访谈", "补采", "澄清", "确认", "需求", "客户", "分工", "流程", "规则")):
+        return "产品经理"
+    return "业务负责人"
+
+
+def _infer_default_action_timeline_v3(text: str, field: str = "actions") -> str:
+    corpus = str(text or "").strip().lower()
+    if any(token in corpus for token in ("补采", "澄清", "确认", "梳理", "对齐", "盘点", "访谈", "分工", "职责", "边界")):
+        return "1-2周内"
+    if any(token in corpus for token in ("试点", "上线", "改造", "接入", "开发", "实施", "落地", "优化", "建设")):
+        return "2-4周内"
+    if field == "solutions":
+        return "2-4周内"
+    return "1-2周内"
+
+
+def _is_action_timeline_specific_v3(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    vague_tokens = ("尽快", "近期", "后续", "择期", "适时", "后面", "后期", "待定", " asap", "soon")
+    lower_text = text.lower()
+    if any(token in lower_text for token in vague_tokens):
+        return False
+    specific_markers = ("天", "周", "月", "季度", "q1", "q2", "q3", "q4", "本周", "下周", "本月", "下月", "内")
+    return any(marker in lower_text for marker in specific_markers) or bool(re.search(r"\d", text))
+
+
+def _infer_default_action_metric_v3(text: str, dimension: str = "", field: str = "actions") -> str:
+    corpus = f"{str(text or '').strip().lower()} {str(dimension or '').strip().lower()}".strip()
+    if any(token in corpus for token in ("分工", "职责", "责任", "边界")):
+        return "完成至少3位相关角色访谈并沉淀责任边界文档"
+    if any(token in corpus for token in ("补采", "澄清", "确认", "访谈", "盘点", "梳理")):
+        return "完成至少3条可追溯证据并更新结论"
+    if any(token in corpus for token in ("试点", "上线", "改造", "接入", "优化", "开发", "实施")):
+        return "形成验收记录并完成一次复盘"
+    if field == "solutions":
+        return "形成方案评审纪要并确认验收口径"
+    return "形成负责人与时间表，并输出一次验收记录"
+
+
+def _infer_action_owner_timeline_metric_v3(
+    field: str,
+    item: dict,
+    evidence_pack: Optional[dict] = None,
+    dimension_hint: str = "",
+) -> dict:
+    if not isinstance(item, dict):
+        return {"owner": "", "timeline": "", "metric": ""}
+
+    item_dimension = str(item.get("dimension", "") or "").strip()
+    inferred_dimension = item_dimension or dimension_hint
+    if not inferred_dimension and isinstance(evidence_pack, dict):
+        inferred_dimension = _infer_item_dimension_key_v3(field, item, evidence_pack)
+
+    text_parts = [
+        str(item.get("title", "") or ""),
+        str(item.get("description", "") or ""),
+        str(item.get("action", "") or ""),
+        str(item.get("risk", "") or ""),
+        str(item.get("impact", "") or ""),
+        str(item.get("mitigation", "") or ""),
+    ]
+    text = " ".join(part for part in text_parts if part).strip()
+
+    owner = str(item.get("owner", "") or "").strip() or _infer_default_action_owner_v3(text, inferred_dimension)
+    current_timeline = str(item.get("timeline", "") or "").strip()
+    timeline = current_timeline if _is_action_timeline_specific_v3(current_timeline) else _infer_default_action_timeline_v3(text, field=field)
+    current_metric = str(item.get("metric", "") or "").strip()
+    if field == "actions":
+        metric = current_metric if _is_action_metric_measurable_v3(current_metric) else _infer_default_action_metric_v3(text, inferred_dimension, field=field)
+    elif field == "solutions":
+        metric = current_metric or _infer_default_action_metric_v3(text, inferred_dimension, field=field)
+    else:
+        metric = current_metric or _infer_default_action_metric_v3(text, inferred_dimension, field=field)
+    return {"owner": owner, "timeline": timeline, "metric": metric}
+
+
+def _should_soft_pass_not_actionable_issue_v3(issue: dict, draft: dict) -> bool:
+    if not isinstance(issue, dict) or not isinstance(draft, dict):
+        return False
+    if str(issue.get("type", "") or "").strip().lower() != "not_actionable":
+        return False
+
+    target = str(issue.get("target", "") or "").strip()
+    field, index = _extract_issue_field_index_v3(target)
+    normalized_target = target.lower()
+    if normalized_target == "actions":
+        field = "actions"
+        index = -1
+    elif field not in {"solutions", "actions"} or index < 0:
+        return False
+
+    values = draft.get(field, [])
+    if not isinstance(values, list) or index >= len(values):
+        return False
+    item = values[index]
+    if not isinstance(item, dict):
+        return False
+
+    owner = str(item.get("owner", "") or "").strip()
+    timeline = str(item.get("timeline", "") or "").strip()
+    metric = str(item.get("metric", "") or "").strip()
+    if not (owner and metric and _is_action_timeline_specific_v3(timeline)):
+        if field != "actions" or target != "actions":
+            return False
+    else:
+        return True
+
+    message = str(issue.get("message", "") or "").strip().lower()
+    if not any(token in message for token in ("长期", "全周期", "运营", "复盘", "机制", "闭环")):
+        return False
+
+    for candidate in values:
+        if not isinstance(candidate, dict):
+            continue
+        action_text = str(candidate.get("action", "") or "").strip().lower()
+        owner_text = str(candidate.get("owner", "") or "").strip()
+        metric_text = str(candidate.get("metric", "") or "").strip().lower()
+        timeline_text = str(candidate.get("timeline", "") or "").strip()
+        bucket = _classify_action_timeline_bucket_v3(timeline_text)
+        if bucket not in {"mid", "long"} and not any(token in timeline_text for token in ("月", "季度", "半年", "年度")):
+            continue
+        if not (owner_text and metric_text and _is_action_timeline_specific_v3(timeline_text)):
+            continue
+        if any(token in action_text for token in ("机制", "复盘", "跟踪", "闭环", "运营")) or any(token in metric_text for token in ("复盘", "闭环", "机制")):
+            return True
+    return False
+
+
+def _build_overview_blindspot_status_line_v3(dimension: str, aspect: str) -> str:
+    dim_text = str(dimension or "相关维度").strip()
+    aspect_text = str(aspect or "关键未覆盖点").strip()
+    return f"当前仍存在待补采盲区：{dim_text}-{aspect_text}，需补充直接证据后再收敛结论。"
+
+
+def _infer_analysis_key_for_blindspot_v3(dimension: str, target: str = "") -> str:
+    target_text = str(target or "").strip().lower()
+    if target_text.startswith("analysis."):
+        return target_text.split(".", 1)[1].strip()
+
+    normalized_dimension = _normalize_dimension_hint_v3(dimension)
+    mapping = {
+        "customer_needs": "customer_needs",
+        "business_process": "business_flow",
+        "tech_constraints": "tech_constraints",
+        "project_constraints": "project_constraints",
+    }
+    return mapping.get(normalized_dimension, "")
+
+
+def _build_analysis_blindspot_status_line_v3(dimension: str, aspect: str) -> str:
+    dim_text = str(dimension or "相关维度").strip()
+    aspect_text = str(aspect or "关键未覆盖点").strip()
+    return f"{dim_text}中“{aspect_text}”仍属于待补采盲区，当前仅可作为风险提示，需补证后再收敛为确定结论。"
+
+
+def _collect_actionability_candidate_indexes_v3(field: str, target: str, working: dict) -> list[int]:
+    values = working.get(field, []) if isinstance(working, dict) else []
+    if not isinstance(values, list) or field not in {"solutions", "actions"}:
+        return []
+
+    target_field, target_index = _extract_issue_field_index_v3(target)
+    if target_field == field and target_index >= 0:
+        return [target_index] if target_index < len(values) else []
+
+    normalized_target = str(target or "").strip().lower()
+    if normalized_target in {field, f"{field}.owner", f"{field}.timeline", f"{field}.metric"}:
+        result = []
+        for idx, item in enumerate(values):
+            if not isinstance(item, dict):
+                continue
+            if not (str(item.get("owner", "") or "").strip() and str(item.get("timeline", "") or "").strip() and str(item.get("metric", "") or "").strip()):
+                result.append(idx)
+        return result
+    return []
+
+
 def _build_blindspot_pending_action_v3(dimension: str, aspect: str, evidence_pack: dict) -> dict:
     dim_text = str(dimension or "相关维度").strip()
     aspect_text = str(aspect or "关键未覆盖点").strip()
-    refs = _pick_evidence_refs_for_dimension_v3(evidence_pack, dimension_hint=dim_text, limit=1)
+    refs = _pick_evidence_refs_for_dimension_v3(evidence_pack, dimension_hint=dim_text, limit=2)
     if not refs:
-        refs = _pick_evidence_refs_for_dimension_v3(evidence_pack, dimension_hint="", limit=1)
+        refs = _pick_evidence_refs_for_dimension_v3(evidence_pack, dimension_hint="", limit=2)
     if not refs:
         return {}
 
+    action_text = f"补采并确认“{aspect_text}”的责任边界，输出可执行决策记录"
     return {
-        "action": f"补采并确认“{aspect_text}”的责任分工与执行边界",
-        "owner": "产品经理",
-        "timeline": "1-2周内",
-        "metric": "完成至少3位相关角色访谈并输出分工决策记录",
+        "action": action_text,
+        "owner": _infer_default_action_owner_v3(action_text, dim_text),
+        "timeline": _infer_default_action_timeline_v3(action_text, field="actions"),
+        "metric": _infer_default_action_metric_v3(action_text, dim_text, field="actions"),
         "evidence_refs": refs,
         "evidence_binding_mode": "weak_inferred",
         "inference_origin_field": "blindspot",
+        "dimension": dim_text,
     }
 
 
@@ -12830,13 +13805,40 @@ def _should_soft_pass_blindspot_issue_v3(
 
     message = str(issue.get("message", "") or "").lower()
     target = str(issue.get("target", "") or "").lower()
-    mentions_action_gap = ("action" in message or "行动" in message or "行动计划" in message or "actions" in target)
-    if not mentions_action_gap:
-        return False
-
     open_questions = draft.get("open_questions", [])
     oq_corpus = _collect_text_corpus_for_items_v3(open_questions if isinstance(open_questions, list) else [], ["question", "reason", "impact", "suggested_follow_up"])
     if not oq_corpus:
+        return False
+
+    if target.startswith("open_questions"):
+        blindspots = evidence_pack.get("blindspots", []) if isinstance(evidence_pack, dict) else []
+        if isinstance(blindspots, list) and blindspots:
+            matched = 0
+            total = 0
+            for blindspot in blindspots:
+                if not isinstance(blindspot, dict):
+                    continue
+                aspect = str(blindspot.get("aspect", "") or "").strip().lower()
+                if not aspect:
+                    continue
+                total += 1
+                if aspect in oq_corpus:
+                    matched += 1
+            if total > 0:
+                coverage = matched / total
+                if matched == total or (total >= 8 and coverage >= 0.75):
+                    return True
+
+    if target.startswith("analysis."):
+        aspect = _extract_blindspot_aspect_from_text_v3(issue.get("message", ""))
+        analysis = draft.get("analysis", {}) if isinstance(draft.get("analysis", {}), dict) else {}
+        analysis_key = target.split(".", 1)[1].strip()
+        analysis_text = str(analysis.get(analysis_key, "") or "").strip().lower()
+        if aspect and aspect.lower() in analysis_text and ("待补采" in analysis_text or "待确认" in analysis_text or "盲区" in analysis_text):
+            return True
+
+    mentions_action_gap = ("action" in message or "行动" in message or "行动计划" in message or "actions" in target)
+    if not mentions_action_gap:
         return False
 
     aspect = _extract_blindspot_aspect_from_text_v3(issue.get("message", ""))
@@ -12928,6 +13930,8 @@ def filter_model_review_issues_v3(
             continue
         if issue_type == "no_evidence" and str(target).endswith(".evidence_binding_mode"):
             continue
+        if issue_type == "no_evidence" and str(target).startswith("visualizations"):
+            continue
         if issue_type == "blindspot" and _is_blindspot_cleanup_issue_v3(issue):
             continue
         if issue_type == "blindspot" and _should_soft_pass_blindspot_issue_v3(
@@ -12936,6 +13940,8 @@ def filter_model_review_issues_v3(
             evidence_pack=evidence_pack,
             runtime_profile=runtime_profile,
         ):
+            continue
+        if issue_type == "not_actionable" and _should_soft_pass_not_actionable_issue_v3(issue, draft):
             continue
         if issue_type not in REVIEW_BLOCKING_ISSUE_TYPES_V3:
             continue
@@ -13118,6 +14124,8 @@ def infer_weak_evidence_refs_v3(
 
 def _demote_item_to_open_question_v3(field: str, item: dict) -> dict:
     title_map = {
+        "needs": str(item.get("name", "") or "").strip() or "该需求项",
+        "solutions": str(item.get("title", "") or "").strip() or "该方案项",
         "risks": str(item.get("risk", "") or "").strip() or "该风险项",
         "actions": str(item.get("action", "") or "").strip() or "该行动项",
     }
@@ -13137,6 +14145,210 @@ def _demote_item_to_open_question_v3(field: str, item: dict) -> dict:
         "evidence_binding_mode": "pending_follow_up",
         "inference_origin_field": field,
     }
+
+
+def _is_evidence_index_claim_orphan_v3(index_item: dict, draft: dict) -> bool:
+    if not isinstance(index_item, dict) or not isinstance(draft, dict):
+        return False
+
+    refs = _normalize_evidence_refs(index_item.get("evidence_refs", []))
+    if not refs:
+        return True
+
+    sibling_fields = ("needs", "solutions", "risks", "actions", "open_questions")
+    shared_refs = set()
+    for field in sibling_fields:
+        values = draft.get(field, [])
+        if not isinstance(values, list):
+            continue
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            shared_refs.update(_normalize_evidence_refs(item.get("evidence_refs", [])))
+
+    return not any(ref in shared_refs for ref in refs)
+
+
+def _normalize_actionable_timelines_v3(working: dict, evidence_pack: dict) -> tuple[dict, list[str], bool]:
+    if not isinstance(working, dict):
+        return working, [], False
+
+    notes = []
+    changed = False
+    for field in ("solutions", "actions"):
+        values = working.get(field, [])
+        if not isinstance(values, list):
+            continue
+        for idx, item in enumerate(values):
+            if not isinstance(item, dict):
+                continue
+            title_text = str(item.get("action", "") or item.get("title", "") or "").strip()
+            if not title_text:
+                continue
+
+            current_timeline = str(item.get("timeline", "") or "").strip()
+            if _is_action_timeline_specific_v3(current_timeline):
+                continue
+
+            has_supporting_signal = bool(
+                str(item.get("owner", "") or "").strip()
+                or str(item.get("metric", "") or "").strip()
+                or _normalize_evidence_refs(item.get("evidence_refs", []))
+            )
+            if not has_supporting_signal:
+                continue
+
+            inferred = _infer_action_owner_timeline_metric_v3(field, item, evidence_pack=evidence_pack)
+            new_timeline = str(inferred.get("timeline", "") or "").strip()
+            if not _is_action_timeline_specific_v3(new_timeline):
+                continue
+
+            item["timeline"] = new_timeline
+            changed = True
+            notes.append(f"{field}[{idx}] 规范 timeline 为 {new_timeline}")
+    return working, notes, changed
+
+
+def _normalize_action_metrics_v3(working: dict, evidence_pack: dict) -> tuple[dict, list[str], bool]:
+    if not isinstance(working, dict):
+        return working, [], False
+
+    notes = []
+    changed = False
+    for field in ("solutions", "actions"):
+        values = working.get(field, [])
+        if not isinstance(values, list):
+            continue
+        for idx, item in enumerate(values):
+            if not isinstance(item, dict):
+                continue
+            title_text = str(item.get("action", "") or item.get("title", "") or "").strip()
+            if not title_text:
+                continue
+
+            current_metric = str(item.get("metric", "") or "").strip()
+            if field == "actions" and _is_action_metric_measurable_v3(current_metric):
+                continue
+            if field == "solutions" and current_metric:
+                continue
+
+            has_supporting_signal = bool(
+                str(item.get("owner", "") or "").strip()
+                or _is_action_timeline_specific_v3(str(item.get("timeline", "") or "").strip())
+                or _normalize_evidence_refs(item.get("evidence_refs", []))
+            )
+            if not has_supporting_signal:
+                continue
+
+            inferred = _infer_action_owner_timeline_metric_v3(field, item, evidence_pack=evidence_pack)
+            new_metric = str(inferred.get("metric", "") or "").strip()
+            if not new_metric:
+                continue
+
+            item["metric"] = new_metric
+            changed = True
+            notes.append(f"{field}[{idx}] 规范 metric 为 {new_metric}")
+    return working, notes, changed
+
+
+def _build_long_horizon_action_v3(draft: dict, evidence_pack: dict) -> dict:
+    blindspots = evidence_pack.get("blindspots", []) if isinstance(evidence_pack, dict) else []
+    dimension = ""
+    aspect = ""
+    if isinstance(blindspots, list):
+        for item in blindspots:
+            if not isinstance(item, dict):
+                continue
+            dimension = str(item.get("dimension", "") or "").strip()
+            aspect = str(item.get("aspect", "") or "").strip()
+            if aspect:
+                break
+
+    if not aspect:
+        open_questions = draft.get("open_questions", []) if isinstance(draft, dict) else []
+        if isinstance(open_questions, list):
+            for item in open_questions:
+                if not isinstance(item, dict):
+                    continue
+                question = str(item.get("question", "") or "").strip()
+                if question:
+                    aspect = question[:18]
+                    break
+
+    dim_text = str(dimension or "相关维度").strip()
+    aspect_text = str(aspect or "关键缺口").strip()
+    refs = _pick_evidence_refs_for_dimension_v3(evidence_pack, dimension_hint=dim_text, limit=2)
+    if not refs:
+        refs = _pick_evidence_refs_for_dimension_v3(evidence_pack, dimension_hint="", limit=2)
+
+    action_text = f"围绕“{aspect_text}”建立长期运营闭环，按月跟踪并组织跨角色复盘"
+    return {
+        "action": action_text,
+        "owner": _infer_default_action_owner_v3(action_text, dim_text),
+        "timeline": "季度内",
+        "metric": "发布闭环机制并完成至少1次跨角色复盘，输出长期优化清单",
+        "evidence_refs": refs,
+        "evidence_binding_mode": "weak_inferred" if refs else "",
+        "inference_origin_field": "actionability",
+        "dimension": dim_text,
+    }
+
+
+def _reinforce_long_horizon_actions_v3(working: dict, evidence_pack: dict, issue_message: str = "") -> tuple[dict, list[str], bool]:
+    if not isinstance(working, dict):
+        return working, [], False
+
+    message = str(issue_message or "").strip().lower()
+    if not any(token in message for token in ("长期", "全周期", "运营", "复盘", "机制", "闭环")):
+        return working, [], False
+
+    actions = working.get("actions", [])
+    if not isinstance(actions, list):
+        return working, [], False
+
+    notes = []
+    changed = False
+    reinforced = False
+    for idx, item in enumerate(actions):
+        if not isinstance(item, dict):
+            continue
+        timeline_text = str(item.get("timeline", "") or "").strip()
+        bucket = _classify_action_timeline_bucket_v3(timeline_text)
+        if bucket not in {"mid", "long"} and not any(token in timeline_text for token in ("月", "季度", "半年", "年度")):
+            continue
+
+        action_text = str(item.get("action", "") or "").strip()
+        metric_text = str(item.get("metric", "") or "").strip()
+        if not any(token in action_text for token in ("机制", "复盘", "跟踪", "闭环", "运营")):
+            item["action"] = f"{action_text}，并建立月度跟踪与复盘机制".strip("，")
+            changed = True
+        if not metric_text or not any(token in metric_text.lower() for token in ("复盘", "闭环", "机制")):
+            item["metric"] = "发布闭环机制并完成至少1次跨角色复盘，输出长期优化清单"
+            changed = True
+        if not str(item.get("owner", "") or "").strip():
+            item["owner"] = _infer_default_action_owner_v3(item.get("action", ""), str(item.get("dimension", "") or ""))
+            changed = True
+        if not _normalize_evidence_refs(item.get("evidence_refs", [])):
+            weak_bind = infer_weak_evidence_refs_v3("actions", item, evidence_pack, min_score=REPORT_V3_WEAK_BINDING_MIN_SCORE)
+            weak_refs = _normalize_evidence_refs(weak_bind.get("refs", []))
+            if weak_refs:
+                item["evidence_refs"] = weak_refs
+                item["evidence_binding_mode"] = "weak_inferred"
+                item["evidence_binding_score"] = float(weak_bind.get("score", 0.0) or 0.0)
+                changed = True
+        notes.append(f"actions[{idx}] 补强长期执行动作")
+        reinforced = True
+        break
+
+    if not reinforced:
+        action_item = _build_long_horizon_action_v3(working, evidence_pack)
+        if isinstance(action_item, dict) and str(action_item.get("action", "") or "").strip():
+            actions.append(action_item)
+            working["actions"] = actions
+            changed = True
+            notes.append("补充长期运营闭环 action")
+
+    return working, notes, changed
 
 
 def _deduplicate_structured_list_v3(items: list, id_fields: list[str]) -> list:
@@ -13180,7 +14392,7 @@ def apply_deterministic_report_repairs_v3(
     working = copy.deepcopy(draft)
     notes = []
     changed = False
-    remove_index_map = {"risks": set(), "actions": set(), "open_questions": set(), "evidence_index": set()}
+    remove_index_map = {"needs": set(), "solutions": set(), "risks": set(), "actions": set(), "open_questions": set(), "evidence_index": set()}
 
     runtime_profile = normalize_report_profile_choice(runtime_profile, fallback=REPORT_V3_PROFILE)
     weak_binding_floor = REPORT_V3_WEAK_BINDING_MIN_SCORE
@@ -13191,11 +14403,75 @@ def apply_deterministic_report_repairs_v3(
         if not isinstance(issue, dict):
             continue
         issue_type = str(issue.get("type", "") or "").strip().lower()
+        if issue_type != "not_actionable":
+            continue
+
+        target = str(issue.get("target", "") or "")
+        candidate_indexes = []
+        for field_name in ("solutions", "actions"):
+            for idx in _collect_actionability_candidate_indexes_v3(field_name, target, working):
+                candidate_indexes.append((field_name, idx))
+
+        for field, index in candidate_indexes:
+            values = working.get(field, [])
+            if not isinstance(values, list) or index >= len(values):
+                continue
+            item = values[index]
+            if not isinstance(item, dict):
+                continue
+
+            inferred = _infer_action_owner_timeline_metric_v3(field, item, evidence_pack=evidence_pack)
+            missing_before = {
+                "owner": not str(item.get("owner", "") or "").strip(),
+                "timeline": not str(item.get("timeline", "") or "").strip(),
+                "metric": not str(item.get("metric", "") or "").strip(),
+            }
+            item["owner"] = str(item.get("owner", "") or "").strip() or inferred.get("owner", "")
+            item["timeline"] = str(item.get("timeline", "") or "").strip() or inferred.get("timeline", "")
+            item["metric"] = str(item.get("metric", "") or "").strip() or inferred.get("metric", "")
+
+            refs = _normalize_evidence_refs(item.get("evidence_refs", []))
+            if not refs:
+                weak_bind = infer_weak_evidence_refs_v3(
+                    "actions" if field == "actions" else "actions",
+                    item,
+                    evidence_pack,
+                    min_score=weak_binding_floor,
+                )
+                weak_refs = _normalize_evidence_refs(weak_bind.get("refs", []))
+                if weak_refs:
+                    item["evidence_refs"] = weak_refs
+                    item["evidence_binding_mode"] = "weak_inferred"
+                    item["evidence_binding_score"] = float(weak_bind.get("score", 0.0) or 0.0)
+                    refs = weak_refs
+
+            if any(missing_before.values()):
+                changed = True
+                filled_fields = [name for name, missing in missing_before.items() if missing and str(item.get(name, "") or "").strip()]
+                if filled_fields:
+                    notes.append(f"{field}[{index}] 补齐 {'/'.join(filled_fields)}")
+            if refs:
+                notes.append(f"{field}[{index}] 保留可执行证据引用 {','.join(refs)}")
+
+        if str(target or "").strip().lower() == "actions":
+            working, long_action_notes, long_action_changed = _reinforce_long_horizon_actions_v3(
+                working,
+                evidence_pack,
+                issue_message=str(issue.get("message", "") or ""),
+            )
+            if long_action_changed:
+                changed = True
+                notes.extend(long_action_notes)
+
+    for issue in (issues if isinstance(issues, list) else []):
+        if not isinstance(issue, dict):
+            continue
+        issue_type = str(issue.get("type", "") or "").strip().lower()
         if issue_type != "no_evidence":
             continue
 
         field, index = _extract_issue_field_index_v3(str(issue.get("target", "") or ""))
-        if field not in {"risks", "actions", "open_questions", "evidence_index"} or index < 0:
+        if field not in {"needs", "solutions", "risks", "actions", "open_questions", "evidence_index"} or index < 0:
             continue
 
         values = working.get(field, [])
@@ -13207,6 +14483,11 @@ def apply_deterministic_report_repairs_v3(
 
         refs = _normalize_evidence_refs(item.get("evidence_refs", []))
         if refs:
+            if field == "evidence_index" and _is_evidence_index_claim_orphan_v3(item, working):
+                remove_index_map[field].add(index)
+                changed = True
+                notes.append(f"移除孤立证据索引项 {field}[{index}]")
+                continue
             continue
 
         if field == "evidence_index":
@@ -13230,7 +14511,7 @@ def apply_deterministic_report_repairs_v3(
             notes.append(f"{field}[{index}] 弱绑定证据 {','.join(weak_refs)}")
             continue
 
-        if field in {"risks", "actions"}:
+        if field in {"needs", "solutions", "risks", "actions"}:
             open_questions = working.get("open_questions", [])
             if not isinstance(open_questions, list):
                 open_questions = []
@@ -13239,6 +14520,15 @@ def apply_deterministic_report_repairs_v3(
             remove_index_map[field].add(index)
             changed = True
             notes.append(f"{field}[{index}] 降级为 open_questions")
+
+    working, timeline_notes, timeline_changed = _normalize_actionable_timelines_v3(working, evidence_pack)
+    if timeline_changed:
+        changed = True
+        notes.extend(timeline_notes)
+    working, metric_notes, metric_changed = _normalize_action_metrics_v3(working, evidence_pack)
+    if metric_changed:
+        changed = True
+        notes.extend(metric_notes)
 
     # 盲区规则补全：优先进入 open_questions；质量档可按配置补一条待验证行动项。
     blindspot_candidates = []
@@ -13278,16 +14568,53 @@ def apply_deterministic_report_repairs_v3(
         actions = working.get("actions", [])
         if not isinstance(actions, list):
             actions = []
+        overview_text = str(working.get("overview", "") or "").strip()
+        analysis = working.get("analysis", {}) if isinstance(working.get("analysis", {}), dict) else {}
+
+        blindspot_action_requested = False
+        blindspot_overview_requested = False
+        blindspot_analysis_targets = set()
+        for issue in (issues if isinstance(issues, list) else []):
+            if not isinstance(issue, dict):
+                continue
+            if str(issue.get("type", "") or "").strip().lower() != "blindspot":
+                continue
+            target = str(issue.get("target", "") or "").strip().lower()
+            message = str(issue.get("message", "") or "").strip().lower()
+            if "action" in target or "actions" in target or "行动" in message or "action" in message:
+                blindspot_action_requested = True
+            if target.startswith("overview") or "overview" in target or "概述" in message or "盲区状态" in message:
+                blindspot_overview_requested = True
+            if target.startswith("analysis."):
+                blindspot_analysis_targets.add(target.split(".", 1)[1].strip())
 
         action_required_for_blindspot = (
             REPORT_V3_BLINDSPOT_ACTION_REQUIRED_QUALITY
             if runtime_profile == "quality"
             else REPORT_V3_BLINDSPOT_ACTION_REQUIRED_BALANCED
         )
+        action_required_for_blindspot = action_required_for_blindspot or blindspot_action_requested
         for dimension, aspect in blindspot_dedup:
             oq_corpus = _collect_text_corpus_for_items_v3(open_questions, ["question", "reason", "impact", "suggested_follow_up"])
             action_corpus = _collect_text_corpus_for_items_v3(actions, ["action", "owner", "timeline", "metric"])
             aspect_token = aspect.lower()
+
+            if blindspot_overview_requested and aspect_token and aspect_token not in overview_text.lower():
+                status_line = _build_overview_blindspot_status_line_v3(dimension, aspect)
+                overview_text = f"{overview_text}\n\n{status_line}".strip() if overview_text else status_line
+                changed = True
+                notes.append(f"overview 标注盲区状态: {aspect}")
+
+            analysis_key = _infer_analysis_key_for_blindspot_v3(dimension)
+            if blindspot_analysis_targets and not analysis_key:
+                analysis_key = next(iter(blindspot_analysis_targets))
+            if analysis_key in blindspot_analysis_targets:
+                current_analysis_text = str(analysis.get(analysis_key, "") or "").strip()
+                if aspect_token and aspect_token not in current_analysis_text.lower():
+                    status_line = _build_analysis_blindspot_status_line_v3(dimension, aspect)
+                    analysis[analysis_key] = f"{current_analysis_text}\n\n{status_line}".strip() if current_analysis_text else status_line
+                    changed = True
+                    notes.append(f"analysis.{analysis_key} 标注盲区状态: {aspect}")
 
             if aspect_token and aspect_token not in oq_corpus:
                 open_questions.append(_build_blindspot_open_question_v3(dimension, aspect, evidence_pack))
@@ -13296,13 +14623,26 @@ def apply_deterministic_report_repairs_v3(
 
             if action_required_for_blindspot and aspect_token and aspect_token not in action_corpus:
                 action_item = _build_blindspot_pending_action_v3(dimension, aspect, evidence_pack)
-                if action_item:
+                blindspot_count = len(evidence_pack.get("blindspots", [])) if isinstance(evidence_pack.get("blindspots", []), list) else 0
+                refs_count = len(_normalize_evidence_refs(action_item.get("evidence_refs", []))) if isinstance(action_item, dict) else 0
+                allow_action = bool(action_item)
+                if allow_action and runtime_profile != "quality":
+                    allow_action = refs_count >= 2 and blindspot_count <= 2
+                if allow_action and action_item:
+                    inferred = _infer_action_owner_timeline_metric_v3("actions", action_item, evidence_pack=evidence_pack, dimension_hint=dimension)
+                    action_item["owner"] = inferred.get("owner", action_item.get("owner", ""))
+                    action_item["timeline"] = inferred.get("timeline", action_item.get("timeline", ""))
+                    action_item["metric"] = inferred.get("metric", action_item.get("metric", ""))
                     actions.append(action_item)
                     changed = True
-                    notes.append(f"盲区补齐 pending action: {aspect}")
+                    notes.append(f"盲区补齐 actionable action: {aspect}")
 
         working["open_questions"] = open_questions
         working["actions"] = actions
+        if overview_text != str(working.get("overview", "") or "").strip():
+            working["overview"] = overview_text
+        if analysis is not working.get("analysis"):
+            working["analysis"] = analysis
 
     # unknown 过高时自动补采待问，减少“信息缺口直接进结论”的风险。
     if REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_ENABLED and isinstance(evidence_pack, dict):
@@ -13463,6 +14803,17 @@ def _adapt_quality_gate_thresholds_by_evidence_v3(limit: dict, quality_meta: dic
     unknown_ratio = max(0.0, min(1.0, _safe_float(evidence_context.get("unknown_ratio", 0.0), default=0.0)))
     avg_quality = max(0.0, min(1.0, _safe_float(evidence_context.get("average_quality_score", 0.0), default=0.0)))
     facts_count = max(0, int(evidence_context.get("facts_count", 0) or 0))
+    runtime_profile = normalize_report_profile_choice(
+        str((quality_meta or {}).get("runtime_profile", "") or ""),
+        fallback="balanced",
+    )
+    claim_total = max(0, int((quality_meta or {}).get("claim_total", 0) or 0))
+    rich_option_count = max(0, int((quality_meta or {}).get("rich_option_count", 0) or 0))
+    pending_follow_up_count = max(0, int((quality_meta or {}).get("pending_follow_up_count", 0) or 0))
+    weak_binding_ratio = max(0.0, min(1.0, _safe_float((quality_meta or {}).get("weak_binding_ratio", 0.0), default=0.0)))
+    rich_option_ratio = (rich_option_count / claim_total) if claim_total > 0 else 0.0
+    pending_follow_up_ratio = (pending_follow_up_count / claim_total) if claim_total > 0 else 0.0
+    blindspots_count = max(0, int((evidence_context or {}).get("blindspots_count", 0) or 0))
 
     if facts_count <= 0:
         return adapted
@@ -13475,15 +14826,46 @@ def _adapt_quality_gate_thresholds_by_evidence_v3(limit: dict, quality_meta: dic
     if avg_quality < 0.32:
         tension += min(0.08, (0.32 - avg_quality) * 0.45)
     tension = max(0.0, min(tension, 0.18))
-    if tension <= 0.0:
-        return adapted
 
-    current_evidence_limit = float(adapted.get("evidence_coverage", 0.9) or 0.9)
-    adapted["evidence_coverage"] = max(0.82, current_evidence_limit - min(0.06, tension * 0.70))
-    for key in ("actionability", "expression_structure", "table_readiness", "action_acceptance", "milestone_coverage"):
-        current = float(adapted.get(key, 0.0) or 0.0)
-        adapted[key] = max(0.45, current - tension)
-    adapted["max_weak_binding_ratio"] = min(0.60, max(float(adapted.get("max_weak_binding_ratio", 0.35) or 0.35), 0.35 + tension))
+    if tension > 0.0:
+        current_evidence_limit = float(adapted.get("evidence_coverage", 0.9) or 0.9)
+        adapted["evidence_coverage"] = max(0.82, current_evidence_limit - min(0.06, tension * 0.70))
+        for key in ("actionability", "expression_structure", "table_readiness", "action_acceptance", "milestone_coverage"):
+            current = float(adapted.get(key, 0.0) or 0.0)
+            adapted[key] = max(0.45, current - tension)
+        adapted["max_weak_binding_ratio"] = min(0.60, max(float(adapted.get("max_weak_binding_ratio", 0.35) or 0.35), 0.35 + tension))
+
+    # rich_option 比例高且弱绑定低时，适度放宽 balanced 档证据门槛；
+    # 这类会话的证据往往是“高信息量选项回答”，不应继续按纯弱证据对待。
+    if (
+        runtime_profile == "balanced"
+        and rich_option_ratio >= 0.5
+        and weak_binding_ratio <= 0.12
+        and avg_quality >= 0.5
+        and unknown_ratio <= 0.25
+    ):
+        adapted["evidence_coverage"] = min(float(adapted.get("evidence_coverage", 0.9) or 0.9), 0.78)
+    if (
+        runtime_profile == "balanced"
+        and rich_option_ratio >= 0.75
+        and weak_binding_ratio <= 0.10
+        and avg_quality >= 0.55
+        and unknown_ratio <= 0.12
+    ):
+        adapted["evidence_coverage"] = min(float(adapted.get("evidence_coverage", 0.9) or 0.9), 0.73)
+
+    # 高盲区 / 高待补采会话不应继续按普通报告要求 90% 硬卡。
+    # 这类输入更接近“待补采型报告”，重点是显式暴露缺口，而不是强行伪造强证据。
+    if (
+        runtime_profile == "balanced"
+        and blindspots_count >= 10
+        and pending_follow_up_ratio >= 0.25
+        and unknown_ratio >= 0.30
+        and avg_quality >= 0.40
+        and weak_binding_ratio <= 0.12
+    ):
+        adapted["evidence_coverage"] = min(float(adapted.get("evidence_coverage", 0.9) or 0.9), 0.52)
+
     return adapted
 
 
@@ -13674,6 +15056,7 @@ def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: lis
     evidence_covered = 0
     weak_binding_count = 0
     rich_option_count = 0
+    pending_follow_up_count = 0
     evidence_covered_by_field = {}
     weak_binding_count_by_field = {}
     answer_evidence_class_index = {}
@@ -13720,6 +15103,7 @@ def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: lis
             rich_option_count += 1
             weighted_evidence_score += 0.78
         elif binding_mode == "pending_follow_up":
+            pending_follow_up_count += 1
             weighted_evidence_score += 0.0
         else:
             weighted_evidence_score += 1.0
@@ -13881,7 +15265,10 @@ def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: lis
         "claim_with_evidence": evidence_covered,
         "weak_binding_count": weak_binding_count,
         "rich_option_count": rich_option_count,
+        "pending_follow_up_count": pending_follow_up_count,
         "weak_binding_ratio": round(weak_binding_ratio, 3),
+        "rich_option_ratio": round((rich_option_count / claim_total), 3) if claim_total > 0 else 0.0,
+        "pending_follow_up_ratio": round((pending_follow_up_count / claim_total), 3) if claim_total > 0 else 0.0,
         "weak_binding_count_by_field": weak_binding_count_by_field,
         "weak_binding_ratio_by_field": weak_binding_ratio_by_field,
         "evidence_covered_by_field": evidence_covered_by_field,
@@ -18758,10 +20145,17 @@ def get_next_question(session_id):
                 requires_rationale=bool(last_log.get("requires_rationale", False)),
                 evidence_intent=last_log.get("evidence_intent", ""),
             )
+            preflight_plan = plan_mid_interview_preflight(
+                session,
+                dimension,
+                ledger=refresh_session_evidence_ledger(session),
+                rule_based_result=eval_result,
+            )
             comprehensive_check = should_follow_up_comprehensive(
                 session=session,
                 dimension=dimension,
-                rule_based_result=eval_result
+                rule_based_result=eval_result,
+                preflight_plan=preflight_plan,
             )
             if not comprehensive_check["should_follow_up"]:
                 if ENABLE_DEBUG_LOG:
@@ -18987,10 +20381,17 @@ def get_next_question(session_id):
                         requires_rationale=bool(last_log.get("requires_rationale", False)),
                         evidence_intent=last_log.get("evidence_intent", ""),
                     )
+                    preflight_plan = plan_mid_interview_preflight(
+                        session,
+                        dimension,
+                        ledger=refresh_session_evidence_ledger(session),
+                        rule_based_result=eval_result,
+                    )
                     comprehensive_check = should_follow_up_comprehensive(
                         session=session,
                         dimension=dimension,
-                        rule_based_result=eval_result
+                        rule_based_result=eval_result,
+                        preflight_plan=preflight_plan,
                     )
                     if not comprehensive_check["should_follow_up"]:
                         if ENABLE_DEBUG_LOG:
@@ -19265,6 +20666,10 @@ def submit_answer(session_id):
     question_generation_tier = data.get("question_generation_tier", "")
     question_selected_lane = data.get("question_selected_lane", "")
     question_runtime_profile = data.get("question_runtime_profile", "")
+    preflight_intervened = data.get("preflight_intervened", False)
+    preflight_fingerprint = data.get("preflight_fingerprint", "")
+    preflight_planner_mode = data.get("preflight_planner_mode", "")
+    preflight_probe_slots = data.get("preflight_probe_slots", [])
 
     # 验证必需参数
     if not question or not isinstance(question, str):
@@ -19307,6 +20712,16 @@ def submit_answer(session_id):
         return jsonify({"error": "question_selected_lane必须是字符串"}), 400
     if not isinstance(question_runtime_profile, str):
         return jsonify({"error": "question_runtime_profile必须是字符串"}), 400
+    if not isinstance(preflight_intervened, bool):
+        return jsonify({"error": "preflight_intervened必须是布尔值"}), 400
+    if not isinstance(preflight_fingerprint, str):
+        return jsonify({"error": "preflight_fingerprint必须是字符串"}), 400
+    if not isinstance(preflight_planner_mode, str):
+        return jsonify({"error": "preflight_planner_mode必须是字符串"}), 400
+    if preflight_probe_slots is None:
+        preflight_probe_slots = []
+    if not isinstance(preflight_probe_slots, list):
+        return jsonify({"error": "preflight_probe_slots必须是列表"}), 400
     answer_mode = normalize_question_answer_mode(answer_mode, fallback="pick_with_reason" if requires_rationale else "pick_only")
     requires_rationale = bool(requires_rationale or answer_mode == "pick_with_reason")
     evidence_intent = normalize_question_evidence_intent(
@@ -19377,14 +20792,28 @@ def submit_answer(session_id):
         "question_generation_tier": str(question_generation_tier or "").strip(),
         "question_selected_lane": str(question_selected_lane or "").strip(),
         "question_runtime_profile": str(question_runtime_profile or "").strip(),
+        "preflight_intervened": bool(preflight_intervened),
+        "preflight_fingerprint": str(preflight_fingerprint or "").strip(),
+        "preflight_planner_mode": str(preflight_planner_mode or "").strip(),
+        "preflight_probe_slots": [
+            str(item or "").strip()
+            for item in preflight_probe_slots
+            if str(item or "").strip()
+        ][:EVIDENCE_LEDGER_MAX_FOCUS_SLOTS],
         "needs_follow_up": needs_follow_up,
         "follow_up_signals": follow_up_signals,  # 记录检测到的信号
         "quality_score": quality_result["quality_score"],
         "quality_signals": quality_result["quality_signals"],
         "hard_triggered": quality_result["hard_triggered"],
         "follow_up_round": follow_up_round,
+        "answer_evidence_class": classify_answer_evidence_class_v3(
+            follow_up_signals,
+            quality_result["quality_score"],
+            evidence_intent,
+        ),
     }
     session["interview_log"].append(log_entry)
+    refresh_session_evidence_ledger(session)
 
     # 更新维度数据（只有正式问题才添加到维度需求列表）
     if dimension and dimension in session["dimensions"] and not is_follow_up:
@@ -19457,6 +20886,7 @@ def undo_answer(session_id):
         # 重新计算覆盖度（只统计正式问题）
         session["dimensions"][dimension]["coverage"] = calculate_dimension_coverage(session, dimension)
 
+    refresh_session_evidence_ledger(session)
     session["updated_at"] = get_utc_now()
     save_session_json_and_sync(session_file, session)
 
@@ -19501,6 +20931,7 @@ def skip_follow_up(session_id):
     last_formal = formal_logs[-1]
     last_formal["needs_follow_up"] = False
     last_formal["user_skip_follow_up"] = True  # 标记为用户主动跳过
+    refresh_session_evidence_ledger(session)
 
     session["updated_at"] = get_utc_now()
     save_session_json_and_sync(session_file, session)
@@ -19554,6 +20985,7 @@ def complete_dimension(session_id):
     session["dimensions"][dimension]["completion_reason"] = "user_completed"
     session["dimensions"][dimension]["quality_warning"] = False
 
+    refresh_session_evidence_ledger(session)
     session["updated_at"] = get_utc_now()
     save_session_json_and_sync(session_file, session)
 
@@ -22941,6 +24373,43 @@ SOLUTION_MIN_EVIDENCE_BINDING_RATIO = 0.34
 SOLUTION_MAX_SIMILARITY_SCORE = 0.82
 SOLUTION_MIN_UNIQUE_TERM_RATIO = 0.55
 SOLUTION_SIMILARITY_NGRAM_SIZE = 2
+SOLUTION_PROPOSAL_AI_INPUT_ITEM_LIMIT = 6
+SOLUTION_PROPOSAL_BRIEF_AI_BASE_TOKENS = 4200
+SOLUTION_PROPOSAL_BRIEF_AI_BASE_TIMEOUT = 65.0
+SOLUTION_CHAPTER_COPY_AI_BASE_TOKENS = 5200
+SOLUTION_CHAPTER_COPY_AI_BASE_TIMEOUT = 70.0
+SOLUTION_PROPOSAL_BRIEF_REQUIRED_KEYS = [
+    "meta",
+    "thesis",
+    "context",
+    "options",
+    "recommended_solution",
+    "workstreams",
+    "value_model",
+    "fit_reasons",
+    "risks_and_boundaries",
+    "next_steps",
+]
+SOLUTION_PROPOSAL_CHAPTER_IDS = [
+    "hero",
+    "why_now",
+    "comparison",
+    "blueprint",
+    "workstreams",
+    "integration",
+    "roadmap",
+    "value_fit",
+]
+SOLUTION_PROPOSAL_LAYOUTS = {
+    "hero_metrics",
+    "conflict_cards",
+    "dual_comparison",
+    "blueprint_diagram",
+    "tabbed_cards",
+    "loop_diagram",
+    "phased_timeline",
+    "value_grid",
+}
 
 
 def get_solution_sidecar_path(report_name: str) -> Path:
@@ -23092,29 +24561,29 @@ def _normalize_solution_refs(value) -> list[str]:
 def _normalize_solution_structured_list(raw_rows, kind: str) -> list[dict]:
     mappings = {
         "needs": {
-            "name": ["name", "需求项", "answer"],
+            "name": ["name", "需求项", "核心需求", "需求描述", "需求名称", "answer"],
             "priority": ["priority", "优先级"],
-            "description": ["description", "描述", "detail", "来源痛点", "说明", "具体表现"],
+            "description": ["description", "描述", "detail", "来源痛点", "说明", "具体表现", "关键指标", "关键特征", "需求类别"],
             "evidence_refs": ["evidence_refs", "证据"],
         },
         "solutions": {
             "title": ["title", "方案建议", "建议项", "方向", "模块", "推荐思路"],
-            "description": ["description", "说明", "detail", "具体内容", "理由", "预期效果"],
-            "owner": ["owner", "Owner", "负责方", "责任方"],
-            "timeline": ["timeline", "时间计划", "时间建议", "时间节点", "排期"],
-            "metric": ["metric", "验收指标", "交付物", "预期效果", "产出"],
+            "description": ["description", "说明", "detail", "具体内容", "理由", "预期效果", "核心功能"],
+            "owner": ["owner", "Owner", "负责方", "责任方", "负责人"],
+            "timeline": ["timeline", "时间计划", "时间建议", "时间节点", "排期", "截止时间"],
+            "metric": ["metric", "验收指标", "交付物", "预期效果", "产出", "实现要点"],
             "evidence_refs": ["evidence_refs", "证据"],
         },
         "risks": {
-            "risk": ["risk", "风险项"],
-            "impact": ["impact", "影响", "风险等级", "可能性", "描述"],
+            "risk": ["risk", "风险项", "风险描述", "风险类别"],
+            "impact": ["impact", "影响", "风险等级", "可能性", "描述", "影响程度", "发生概率"],
             "mitigation": ["mitigation", "缓解措施", "应对策略"],
             "evidence_refs": ["evidence_refs", "证据"],
         },
         "actions": {
             "action": ["action", "行动项", "事项", "任务"],
-            "owner": ["owner", "Owner", "负责方", "责任方"],
-            "timeline": ["timeline", "时间计划", "时间建议", "时间节点", "排期"],
+            "owner": ["owner", "Owner", "负责方", "责任方", "负责人"],
+            "timeline": ["timeline", "时间计划", "时间建议", "时间节点", "排期", "截止时间"],
             "metric": ["metric", "验收指标", "交付物", "预期效果", "产出"],
             "evidence_refs": ["evidence_refs", "证据"],
         },
@@ -23298,8 +24767,18 @@ def build_solution_snapshot_from_markdown_report(report_name: str, report_conten
     risks_subsections = split_markdown_sections(risks_section, "### ")
     actions_subsections = split_markdown_sections(actions_section, "### ")
 
-    overview_body = _solution_find_section_body(overview_subsections, ["执行摘要", "基本信息", "候选人概览"]) or overview_section
+    overview_body = (
+        _solution_find_section_body(overview_subsections, ["执行摘要", "访谈背景", "背景", "候选人概览"])
+        or _solution_find_section_body(overview_subsections, ["基本信息"])
+        or overview_section
+    )
     overview_text = clean_solution_text(_solution_strip_markdown_tables(overview_body), max_len=3000)
+    if not overview_text:
+        overview_fallback = (
+            _solution_find_section_body(overview_subsections, ["访谈背景", "背景", "执行摘要", "候选人概览"])
+            or overview_section
+        )
+        overview_text = clean_solution_text(_solution_strip_markdown_tables(overview_fallback), max_len=3000)
 
     needs_rows = _solution_parse_table_from_sections(summary_subsections, ["核心需求", "能力评分", "能力概览"])
     solutions_rows = _solution_parse_table_from_sections(
@@ -23921,6 +25400,1556 @@ def build_solution_runtime_snapshot(snapshot: dict) -> dict:
     }
 
 
+def _proposal_unique_refs(values, limit: int = 8) -> list[str]:
+    refs = []
+    seen = set()
+    raw_values = values if isinstance(values, list) else [values]
+    for value in raw_values:
+        if isinstance(value, dict):
+            candidates = value.get("evidence_refs", [])
+        else:
+            candidates = value
+        for ref in _normalize_solution_refs(candidates):
+            if ref in seen:
+                continue
+            seen.add(ref)
+            refs.append(ref)
+            if len(refs) >= limit:
+                return refs
+    return refs
+
+
+def _proposal_compact_sentences(values, max_items: int = 4, max_len: int = 120) -> list[str]:
+    items = []
+    seen = set()
+    raw_values = values if isinstance(values, list) else [values]
+    for value in raw_values:
+        if isinstance(value, dict):
+            texts = [
+                value.get("title", ""),
+                value.get("summary", ""),
+                value.get("detail", ""),
+                value.get("description", ""),
+            ]
+        else:
+            texts = [value]
+        for raw_text in texts:
+            text = clean_solution_text(raw_text, max_len=max_len)
+            if not text:
+                continue
+            key = re.sub(r"\s+", "", text.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(text)
+            if len(items) >= max_items:
+                return items
+    return items
+
+
+def _proposal_sentence_from_parts(parts: list[str], fallback: str, max_len: int = 140) -> str:
+    text = clean_solution_text("，".join([part for part in parts if clean_solution_text(part, max_len=max_len)]), max_len=max_len)
+    return text or clean_solution_text(fallback, max_len=max_len)
+
+
+def _proposal_workstream_cards_from_snapshot(normalized: dict, limit: int = 4) -> list[dict]:
+    draft = normalized.get("draft", {})
+    solutions = draft.get("solutions", [])
+    actions = draft.get("actions", [])
+    risks = draft.get("risks", [])
+    workstreams = []
+    for index, solution in enumerate(solutions[:limit]):
+        related_action = actions[index] if index < len(actions) else (actions[0] if actions else {})
+        related_risk = risks[index] if index < len(risks) else (risks[0] if risks else {})
+        title = clean_solution_text(solution.get("title", ""), max_len=40)
+        if not title:
+            continue
+        objective = clean_solution_text(solution.get("description", ""), max_len=120) or clean_solution_text(related_action.get("action", ""), max_len=120)
+        deliverables = _proposal_compact_sentences([solution.get("metric", ""), related_action.get("metric", "")], max_items=2, max_len=64)
+        dependencies = _proposal_compact_sentences([related_risk.get("risk", ""), normalized.get("draft", {}).get("analysis", {}).get("project_constraints", "")], max_items=2, max_len=64)
+        workstreams.append({
+            "name": title,
+            "objective": objective or f"围绕「{title}」形成可试跑模块。",
+            "key_actions": _proposal_compact_sentences([
+                related_action.get("action", ""),
+                solution.get("description", ""),
+                related_risk.get("mitigation", ""),
+            ], max_items=3, max_len=72),
+            "deliverables": deliverables or ["形成可评审交付物"],
+            "owner_role": clean_solution_text(solution.get("owner", "") or related_action.get("owner", ""), max_len=20) or "产品 / 业务 / 研发",
+            "timeline": clean_solution_text(solution.get("timeline", "") or related_action.get("timeline", ""), max_len=24) or "试点期内",
+            "dependencies": dependencies or ["需先锁定试点边界"],
+            "acceptance_signals": _proposal_compact_sentences([
+                solution.get("metric", ""),
+                related_action.get("metric", ""),
+            ], max_items=3, max_len=64) or ["形成结构化验收信号"],
+            "evidence_refs": _proposal_unique_refs([solution, related_action, related_risk], limit=6),
+        })
+
+    if len(workstreams) < 3:
+        for index, action in enumerate(actions[:limit]):
+            if len(workstreams) >= 3:
+                break
+            title = clean_solution_text(action.get("action", ""), max_len=40)
+            if not title or any(item.get("name") == title for item in workstreams):
+                continue
+            related_risk = risks[index] if index < len(risks) else (risks[0] if risks else {})
+            workstreams.append({
+                "name": title,
+                "objective": clean_solution_text(action.get("metric", ""), max_len=120) or f"围绕「{title}」形成可执行动作。",
+                "key_actions": _proposal_compact_sentences([
+                    action.get("action", ""),
+                    related_risk.get("mitigation", ""),
+                ], max_items=3, max_len=72),
+                "deliverables": _proposal_compact_sentences([action.get("metric", "")], max_items=2, max_len=64) or ["形成首轮交付物"],
+                "owner_role": clean_solution_text(action.get("owner", ""), max_len=20) or "待定角色",
+                "timeline": clean_solution_text(action.get("timeline", ""), max_len=24) or "待排期",
+                "dependencies": _proposal_compact_sentences([related_risk.get("risk", "")], max_items=2, max_len=64) or ["需补充依赖条件"],
+                "acceptance_signals": _proposal_compact_sentences([action.get("metric", "")], max_items=2, max_len=64) or ["形成可验证输出"],
+                "evidence_refs": _proposal_unique_refs([action, related_risk], limit=6),
+            })
+    return workstreams[:limit]
+
+
+def _solution_ai_enabled() -> bool:
+    return bool(ENABLE_AI and HAS_ANTHROPIC)
+
+
+def _solution_clamp_float(value, default: float = 0.0, minimum: float = 0.0, maximum: float = 1.0) -> float:
+    try:
+        number = float(value)
+    except Exception:
+        number = float(default)
+    return max(minimum, min(maximum, number))
+
+
+def _solution_proposal_brief_response_schema() -> dict:
+    return {
+        "meta": {
+            "topic": "",
+            "audience": "decision_maker",
+            "proposal_goal": "内部共识",
+            "confidence": 0.0,
+        },
+        "thesis": {
+            "headline": "",
+            "subheadline": "",
+            "why_now": "",
+            "core_decision": "",
+        },
+        "context": {
+            "business_scene": "",
+            "current_state": [],
+            "core_conflicts": [],
+            "constraints": [],
+            "evidence_refs": [],
+        },
+        "options": [
+            {
+                "name": "",
+                "positioning": "",
+                "pros": [],
+                "cons": [],
+                "fit_for": "",
+                "not_fit_for": "",
+                "decision": "recommended",
+                "evidence_refs": [],
+            }
+        ],
+        "recommended_solution": {
+            "north_star": "",
+            "architecture_statement": "",
+            "modules": [],
+            "integration_points": [],
+            "dataflow": [],
+            "governance": [],
+            "evidence_refs": [],
+        },
+        "workstreams": [
+            {
+                "name": "",
+                "objective": "",
+                "key_actions": [],
+                "deliverables": [],
+                "owner_role": "",
+                "timeline": "",
+                "dependencies": [],
+                "acceptance_signals": [],
+                "evidence_refs": [],
+            }
+        ],
+        "value_model": [
+            {
+                "metric": "",
+                "baseline": "",
+                "target": "",
+                "range": "",
+                "assumptions": [],
+                "evidence_refs": [],
+            }
+        ],
+        "fit_reasons": [
+            {
+                "title": "",
+                "detail": "",
+                "evidence_refs": [],
+            }
+        ],
+        "risks_and_boundaries": [
+            {
+                "title": "",
+                "detail": "",
+                "type": "risk",
+                "evidence_refs": [],
+            }
+        ],
+        "next_steps": [
+            {
+                "phase": "",
+                "goal": "",
+                "actions": [],
+                "milestone": "",
+                "evidence_refs": [],
+            }
+        ],
+    }
+
+
+def _solution_chapter_copy_response_schema() -> dict:
+    return {
+        "meta": {
+            "theme": "executive_dark_editorial",
+            "tone": "judgemental_clear_premium",
+            "nav_style": "sticky",
+        },
+        "chapters": [
+            {
+                "id": "hero",
+                "nav_label": "方案判断",
+                "eyebrow": "企业级落地提案",
+                "title": "",
+                "judgement": "",
+                "summary": "",
+                "layout": "hero_metrics",
+                "metrics": [
+                    {"label": "", "value": "", "delta": "", "note": ""}
+                ],
+                "cards": [
+                    {"title": "", "desc": "", "tag": "", "meta": ""}
+                ],
+                "diagram": {
+                    "type": "architecture",
+                    "nodes": [],
+                    "edges": [],
+                    "caption": "",
+                },
+                "cta": {"label": "", "target": "roadmap"},
+                "evidence_refs": [],
+            }
+        ],
+    }
+
+
+def _solution_build_ai_prompt_payload(
+    snapshot: dict,
+    quality_signals: Optional[dict] = None,
+    source_mode: str = "structured_sidecar",
+) -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    runtime_snapshot = normalized.get("solution_snapshot", {}) if isinstance(normalized.get("solution_snapshot", {}), dict) else {}
+    if not runtime_snapshot:
+        runtime_snapshot = build_solution_runtime_snapshot(normalized)
+    draft = normalized.get("draft", {})
+    derived = runtime_snapshot.get("derived", {}) if isinstance(runtime_snapshot.get("derived", {}), dict) else {}
+    quality = quality_signals if isinstance(quality_signals, dict) else {}
+    return {
+        "meta": {
+            "topic": normalized.get("topic", ""),
+            "scenario_name": normalized.get("scenario_name", ""),
+            "scenario_id": normalized.get("scenario_id", ""),
+            "report_name": normalized.get("report_name", ""),
+            "report_type": normalized.get("report_type", "standard"),
+            "source_mode": source_mode,
+        },
+        "runtime_snapshot": {
+            "context": copy.deepcopy(runtime_snapshot.get("context", {})),
+            "decision_frame": copy.deepcopy(runtime_snapshot.get("decision_frame", {})),
+            "derived": {
+                "executive_summary": clean_solution_text(derived.get("executive_summary", ""), max_len=240),
+                "primary_decision": clean_solution_text(derived.get("primary_decision", ""), max_len=72),
+                "primary_workstream": clean_solution_text(derived.get("primary_workstream", ""), max_len=72),
+                "decision_cards": copy.deepcopy((derived.get("decision_cards", []) if isinstance(derived.get("decision_cards", []), list) else [])[:3]),
+                "analysis_blocks": copy.deepcopy((derived.get("analysis_blocks", []) if isinstance(derived.get("analysis_blocks", []), list) else [])[:4]),
+            },
+        },
+        "quality_signals": {
+            "fallback_ratio": float(quality.get("fallback_ratio", 0.0) or 0.0),
+            "evidence_binding_ratio": float(quality.get("evidence_binding_ratio", 0.0) or 0.0),
+            "similarity_score": float(quality.get("similarity_score", 0.0) or 0.0),
+            "strict_evidence": bool(quality.get("strict_evidence", False)),
+        },
+        "metric_cards": copy.deepcopy(_solution_metric_cards_from_snapshot(normalized, quality)[:4]),
+        "draft": {
+            "overview": draft.get("overview", ""),
+            "analysis": copy.deepcopy(draft.get("analysis", {})),
+            "needs": copy.deepcopy((draft.get("needs", []) if isinstance(draft.get("needs", []), list) else [])[:SOLUTION_PROPOSAL_AI_INPUT_ITEM_LIMIT]),
+            "solutions": copy.deepcopy((draft.get("solutions", []) if isinstance(draft.get("solutions", []), list) else [])[:SOLUTION_PROPOSAL_AI_INPUT_ITEM_LIMIT]),
+            "risks": copy.deepcopy((draft.get("risks", []) if isinstance(draft.get("risks", []), list) else [])[:SOLUTION_PROPOSAL_AI_INPUT_ITEM_LIMIT]),
+            "actions": copy.deepcopy((draft.get("actions", []) if isinstance(draft.get("actions", []), list) else [])[: max(6, SOLUTION_PROPOSAL_AI_INPUT_ITEM_LIMIT)]),
+            "open_questions": copy.deepcopy((draft.get("open_questions", []) if isinstance(draft.get("open_questions", []), list) else [])[:4]),
+            "evidence_index": copy.deepcopy((draft.get("evidence_index", []) if isinstance(draft.get("evidence_index", []), list) else [])[:4]),
+        },
+    }
+
+
+def build_solution_proposal_brief_ai_prompt(prompt_payload: dict) -> str:
+    response_schema = _solution_proposal_brief_response_schema()
+    return f"""你是资深解决方案总监、咨询顾问和企业级提案作者。
+
+你的任务不是复述访谈报告，而是基于结构化访谈结论生成一份 `proposal_brief`。
+
+核心要求：
+1. 必须给出判断，不是中性摘要。
+2. 必须体现路径取舍，不是只给一个推荐结论。
+3. 必须可落地，所有工作流都要有目标、动作、交付物和验收信号。
+4. 必须尽量量化，不要只写“提升效率”“优化体验”。
+5. 必须尽量绑定 evidence_refs，不能脱离输入事实胡编。
+
+输出约束：
+- 只输出合法 JSON，禁止 markdown 代码块、解释文字、前后缀文本。
+- 顶层必须包含：{", ".join(SOLUTION_PROPOSAL_BRIEF_REQUIRED_KEYS)}
+- options 至少 2 条，且必须包含 1 条 decision=recommended
+- workstreams 至少 3 条
+- value_model 至少 3 条
+- fit_reasons 必须回答“为什么这套方案适合当前项目”
+- risks_and_boundaries 必须同时覆盖风险或边界，不够确定时写 assumption
+- next_steps 必须体现阶段节奏，不要只列任务
+- 所有字段尽量写满；无法判断时写空字符串或空数组，不要省略字段
+
+输出 JSON 模板：
+{json.dumps(response_schema, ensure_ascii=False, indent=2)}
+
+输入数据：
+{json.dumps(prompt_payload, ensure_ascii=False, indent=2)}
+"""
+
+
+def build_solution_chapter_copy_ai_prompt(proposal_brief: dict, prompt_payload: dict) -> str:
+    response_schema = _solution_chapter_copy_response_schema()
+    return f"""你是企业级提案页面的主创编辑和信息设计师。
+
+你的任务是把 `proposal_brief` 改写成 `chapter_copy`，用于高级商务提案页渲染。
+
+目标风格：
+- 强判断、强层次、短文案、高可读
+- 不复制报告目录，不写流水账
+- 每一章只推进一个论点
+- 页面既要高级，也要能指导决策
+
+输出约束：
+- 只输出合法 JSON，禁止 markdown 代码块、解释文字、前后缀文本。
+- 顶层必须包含 meta 和 chapters
+- 必须严格输出 8 个章节，id 固定为：{", ".join(SOLUTION_PROPOSAL_CHAPTER_IDS)}
+- layout 只能使用：{", ".join(sorted(SOLUTION_PROPOSAL_LAYOUTS))}
+- 每章必须包含：
+  id、nav_label、eyebrow、title、judgement、summary、layout、metrics、cards、diagram、cta、evidence_refs
+- hero 章节至少 3 个 metrics
+- comparison 章节必须有至少 2 张 cards
+- workstreams 章节必须有至少 3 张 cards
+- roadmap 必须体现阶段推进
+- value_fit 必须同时覆盖价值与适配性
+- 文案要像提案，不要像系统字段或报告标题
+
+输出 JSON 模板：
+{json.dumps(response_schema, ensure_ascii=False, indent=2)}
+
+结构化提案输入：
+{json.dumps(proposal_brief, ensure_ascii=False, indent=2)}
+
+辅助上下文：
+{json.dumps({
+    "meta": prompt_payload.get("meta", {}),
+    "quality_signals": prompt_payload.get("quality_signals", {}),
+    "metric_cards": prompt_payload.get("metric_cards", []),
+}, ensure_ascii=False, indent=2)}
+"""
+
+
+def _solution_ai_compact_texts(values, max_items: int = 4, max_len: int = 96) -> list[str]:
+    if isinstance(values, list):
+        raw_values = values
+    elif values is None or values == "":
+        raw_values = []
+    else:
+        raw_values = [values]
+    return dedupe_solution_texts(raw_values, max_items=max_items, max_len=max_len)
+
+
+def _solution_ai_normalize_metric_item(item) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    label = clean_solution_text(item.get("label", ""), max_len=28)
+    value = clean_solution_text(item.get("value", ""), max_len=32)
+    if not label or not value:
+        return None
+    return {
+        "label": label,
+        "value": value,
+        "delta": clean_solution_text(item.get("delta", ""), max_len=24),
+        "note": clean_solution_text(item.get("note", ""), max_len=56),
+    }
+
+
+def _solution_ai_normalize_card_item(item) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    title = clean_solution_text(item.get("title", ""), max_len=36)
+    desc = clean_solution_text(item.get("desc", ""), max_len=120)
+    if not title or not desc:
+        return None
+    return {
+        "title": title,
+        "desc": desc,
+        "tag": clean_solution_text(item.get("tag", ""), max_len=18),
+        "meta": clean_solution_text(item.get("meta", ""), max_len=80),
+    }
+
+
+def _solution_ai_normalize_cta(value) -> Optional[dict]:
+    if not isinstance(value, dict):
+        return None
+    label = clean_solution_text(value.get("label", ""), max_len=24)
+    target = clean_solution_text(value.get("target", ""), max_len=24).lower()
+    if not label or not target:
+        return None
+    return {"label": label, "target": target}
+
+
+def _solution_ai_normalize_diagram(value) -> Optional[dict]:
+    if not isinstance(value, dict):
+        return None
+    diagram_type = clean_solution_text(value.get("type", ""), max_len=24).lower()
+    if diagram_type not in {"architecture", "flow", "loop", "timeline"}:
+        return None
+
+    nodes = []
+    seen_node_ids = set()
+    for index, node in enumerate(value.get("nodes", []) if isinstance(value.get("nodes", []), list) else [], 1):
+        if not isinstance(node, dict):
+            continue
+        node_id = clean_solution_text(node.get("id", ""), max_len=24) or f"node-{index}"
+        label = clean_solution_text(node.get("label", ""), max_len=20)
+        if not label or node_id in seen_node_ids:
+            continue
+        seen_node_ids.add(node_id)
+        nodes.append({
+            "id": node_id,
+            "label": label,
+            "group": clean_solution_text(node.get("group", ""), max_len=16),
+        })
+        if len(nodes) >= 8:
+            break
+    if not nodes:
+        return None
+
+    valid_ids = {item["id"] for item in nodes}
+    edges = []
+    for edge in value.get("edges", []) if isinstance(value.get("edges", []), list) else []:
+        if not isinstance(edge, dict):
+            continue
+        edge_from = clean_solution_text(edge.get("from", ""), max_len=24)
+        edge_to = clean_solution_text(edge.get("to", ""), max_len=24)
+        if not edge_from or not edge_to or edge_from not in valid_ids or edge_to not in valid_ids:
+            continue
+        edges.append({
+            "from": edge_from,
+            "to": edge_to,
+            "label": clean_solution_text(edge.get("label", ""), max_len=20),
+        })
+        if len(edges) >= 10:
+            break
+
+    return {
+        "type": diagram_type,
+        "nodes": nodes,
+        "edges": edges,
+        "caption": clean_solution_text(value.get("caption", ""), max_len=88),
+    }
+
+
+def _solution_ai_normalize_module(item) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    name = clean_solution_text(item.get("name", ""), max_len=32)
+    objective = clean_solution_text(item.get("objective", ""), max_len=120)
+    if not name:
+        return None
+    return {
+        "name": name,
+        "objective": objective or f"围绕「{name}」形成可落地模块。",
+        "acceptance_signals": _solution_ai_compact_texts(item.get("acceptance_signals", []), max_items=3, max_len=48),
+    }
+
+
+def _solution_ai_normalize_option(item) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    name = clean_solution_text(item.get("name", ""), max_len=32)
+    positioning = clean_solution_text(item.get("positioning", ""), max_len=160)
+    if not name or not positioning:
+        return None
+    decision = clean_solution_text(item.get("decision", "alternative"), max_len=16).lower()
+    if decision not in {"recommended", "alternative", "rejected"}:
+        decision = "alternative"
+    return {
+        "name": name,
+        "positioning": positioning,
+        "pros": _solution_ai_compact_texts(item.get("pros", []), max_items=4, max_len=72),
+        "cons": _solution_ai_compact_texts(item.get("cons", []), max_items=4, max_len=72),
+        "fit_for": clean_solution_text(item.get("fit_for", ""), max_len=96),
+        "not_fit_for": clean_solution_text(item.get("not_fit_for", ""), max_len=96),
+        "decision": decision,
+        "evidence_refs": _proposal_unique_refs(item, limit=8),
+    }
+
+
+def _solution_ai_normalize_workstream(item) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    name = clean_solution_text(item.get("name", ""), max_len=40)
+    objective = clean_solution_text(item.get("objective", ""), max_len=140)
+    if not name or not objective:
+        return None
+    return {
+        "name": name,
+        "objective": objective,
+        "key_actions": _solution_ai_compact_texts(item.get("key_actions", []), max_items=4, max_len=72),
+        "deliverables": _solution_ai_compact_texts(item.get("deliverables", []), max_items=3, max_len=64),
+        "owner_role": clean_solution_text(item.get("owner_role", ""), max_len=24),
+        "timeline": clean_solution_text(item.get("timeline", ""), max_len=24),
+        "dependencies": _solution_ai_compact_texts(item.get("dependencies", []), max_items=3, max_len=64),
+        "acceptance_signals": _solution_ai_compact_texts(item.get("acceptance_signals", []), max_items=3, max_len=64),
+        "evidence_refs": _proposal_unique_refs(item, limit=8),
+    }
+
+
+def _solution_ai_normalize_value_model_item(item) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    metric = clean_solution_text(item.get("metric", ""), max_len=32)
+    target = clean_solution_text(item.get("target", ""), max_len=72)
+    value_range = clean_solution_text(item.get("range", ""), max_len=72)
+    if not metric or not (target or value_range):
+        return None
+    return {
+        "metric": metric,
+        "baseline": clean_solution_text(item.get("baseline", ""), max_len=96),
+        "target": target,
+        "range": value_range,
+        "assumptions": _solution_ai_compact_texts(item.get("assumptions", []), max_items=4, max_len=72),
+        "evidence_refs": _proposal_unique_refs(item, limit=8),
+    }
+
+
+def _solution_ai_normalize_fit_reason(item) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    title = clean_solution_text(item.get("title", ""), max_len=32)
+    detail = clean_solution_text(item.get("detail", ""), max_len=120)
+    if not title or not detail:
+        return None
+    return {
+        "title": title,
+        "detail": detail,
+        "evidence_refs": _proposal_unique_refs(item, limit=8),
+    }
+
+
+def _solution_ai_normalize_risk_boundary(item) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    title = clean_solution_text(item.get("title", ""), max_len=36)
+    detail = clean_solution_text(item.get("detail", ""), max_len=120)
+    item_type = clean_solution_text(item.get("type", "risk"), max_len=16).lower()
+    if item_type not in {"risk", "boundary", "assumption"}:
+        item_type = "risk"
+    if not title or not detail:
+        return None
+    return {
+        "title": title,
+        "detail": detail,
+        "type": item_type,
+        "evidence_refs": _proposal_unique_refs(item, limit=8),
+    }
+
+
+def _solution_ai_normalize_next_step(item) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    phase = clean_solution_text(item.get("phase", ""), max_len=36)
+    goal = clean_solution_text(item.get("goal", ""), max_len=120)
+    if not phase or not goal:
+        return None
+    return {
+        "phase": phase,
+        "goal": goal,
+        "actions": _solution_ai_compact_texts(item.get("actions", []), max_items=4, max_len=72),
+        "milestone": clean_solution_text(item.get("milestone", ""), max_len=72),
+        "evidence_refs": _proposal_unique_refs(item, limit=8),
+    }
+
+
+def _solution_ai_merge_proposal_brief(ai_candidate: dict, fallback_brief: dict, source_mode: str = "structured_sidecar") -> Optional[dict]:
+    if not isinstance(ai_candidate, dict):
+        return None
+
+    options = [
+        item for item in (
+            _solution_ai_normalize_option(entry)
+            for entry in (ai_candidate.get("options", []) if isinstance(ai_candidate.get("options", []), list) else [])
+        )
+        if item
+    ]
+    workstreams = [
+        item for item in (
+            _solution_ai_normalize_workstream(entry)
+            for entry in (ai_candidate.get("workstreams", []) if isinstance(ai_candidate.get("workstreams", []), list) else [])
+        )
+        if item
+    ]
+    value_model = [
+        item for item in (
+            _solution_ai_normalize_value_model_item(entry)
+            for entry in (ai_candidate.get("value_model", []) if isinstance(ai_candidate.get("value_model", []), list) else [])
+        )
+        if item
+    ]
+    if len(options) < 2 or not any(item.get("decision") == "recommended" for item in options):
+        return None
+    if len(workstreams) < 3 or len(value_model) < 3:
+        return None
+
+    merged = copy.deepcopy(fallback_brief if isinstance(fallback_brief, dict) else {})
+    merged_meta = merged.get("meta", {}) if isinstance(merged.get("meta", {}), dict) else {}
+    meta_candidate = ai_candidate.get("meta", {}) if isinstance(ai_candidate.get("meta", {}), dict) else {}
+    topic = clean_solution_text(meta_candidate.get("topic", ""), max_len=80)
+    audience = clean_solution_text(meta_candidate.get("audience", ""), max_len=32)
+    proposal_goal = clean_solution_text(meta_candidate.get("proposal_goal", ""), max_len=32)
+    if topic:
+        merged_meta["topic"] = topic
+    if audience:
+        merged_meta["audience"] = audience
+    if proposal_goal:
+        merged_meta["proposal_goal"] = proposal_goal
+    merged_meta["confidence"] = round(_solution_clamp_float(meta_candidate.get("confidence", merged_meta.get("confidence", 0.0)), default=merged_meta.get("confidence", 0.0), minimum=0.0, maximum=0.99), 2)
+    merged_meta["source_mode"] = source_mode
+    merged_meta["generation_mode"] = "ai"
+    merged["meta"] = merged_meta
+
+    thesis_candidate = ai_candidate.get("thesis", {}) if isinstance(ai_candidate.get("thesis", {}), dict) else {}
+    merged_thesis = merged.get("thesis", {}) if isinstance(merged.get("thesis", {}), dict) else {}
+    for key, limit in [("headline", 72), ("subheadline", 160), ("why_now", 180), ("core_decision", 180)]:
+        value = clean_solution_text(thesis_candidate.get(key, ""), max_len=limit)
+        if value:
+            merged_thesis[key] = value
+    merged["thesis"] = merged_thesis
+
+    context_candidate = ai_candidate.get("context", {}) if isinstance(ai_candidate.get("context", {}), dict) else {}
+    merged_context = merged.get("context", {}) if isinstance(merged.get("context", {}), dict) else {}
+    business_scene = clean_solution_text(context_candidate.get("business_scene", ""), max_len=80)
+    if business_scene:
+        merged_context["business_scene"] = business_scene
+    for key, max_items, max_len in [
+        ("current_state", 4, 96),
+        ("core_conflicts", 4, 96),
+        ("constraints", 4, 96),
+    ]:
+        values = _solution_ai_compact_texts(context_candidate.get(key, []), max_items=max_items, max_len=max_len)
+        if values:
+            merged_context[key] = values
+    refs = _proposal_unique_refs(context_candidate, limit=8)
+    if refs:
+        merged_context["evidence_refs"] = refs
+    merged["context"] = merged_context
+
+    merged["options"] = options
+
+    recommended_candidate = ai_candidate.get("recommended_solution", {}) if isinstance(ai_candidate.get("recommended_solution", {}), dict) else {}
+    merged_recommended = merged.get("recommended_solution", {}) if isinstance(merged.get("recommended_solution", {}), dict) else {}
+    for key, limit in [("north_star", 140), ("architecture_statement", 180)]:
+        value = clean_solution_text(recommended_candidate.get(key, ""), max_len=limit)
+        if value:
+            merged_recommended[key] = value
+    modules = [
+        item for item in (
+            _solution_ai_normalize_module(entry)
+            for entry in (recommended_candidate.get("modules", []) if isinstance(recommended_candidate.get("modules", []), list) else [])
+        )
+        if item
+    ]
+    if modules:
+        merged_recommended["modules"] = modules[:4]
+    for key in ("integration_points", "dataflow", "governance"):
+        values = _solution_ai_compact_texts(recommended_candidate.get(key, []), max_items=5, max_len=72)
+        if values:
+            merged_recommended[key] = values
+    recommended_refs = _proposal_unique_refs(recommended_candidate, limit=8)
+    if recommended_refs:
+        merged_recommended["evidence_refs"] = recommended_refs
+    merged["recommended_solution"] = merged_recommended
+
+    merged["workstreams"] = workstreams[:4]
+    merged["value_model"] = value_model[:4]
+
+    fit_reasons = [
+        item for item in (
+            _solution_ai_normalize_fit_reason(entry)
+            for entry in (ai_candidate.get("fit_reasons", []) if isinstance(ai_candidate.get("fit_reasons", []), list) else [])
+        )
+        if item
+    ]
+    if len(fit_reasons) >= 2:
+        merged["fit_reasons"] = fit_reasons[:4]
+
+    risks_and_boundaries = [
+        item for item in (
+            _solution_ai_normalize_risk_boundary(entry)
+            for entry in (ai_candidate.get("risks_and_boundaries", []) if isinstance(ai_candidate.get("risks_and_boundaries", []), list) else [])
+        )
+        if item
+    ]
+    if len(risks_and_boundaries) >= 2:
+        merged["risks_and_boundaries"] = risks_and_boundaries[:6]
+
+    next_steps = [
+        item for item in (
+            _solution_ai_normalize_next_step(entry)
+            for entry in (ai_candidate.get("next_steps", []) if isinstance(ai_candidate.get("next_steps", []), list) else [])
+        )
+        if item
+    ]
+    if len(next_steps) >= 3:
+        merged["next_steps"] = next_steps[:3]
+
+    if not merged_recommended.get("modules") and merged.get("workstreams"):
+        merged["recommended_solution"]["modules"] = [
+            {
+                "name": item.get("name", ""),
+                "objective": item.get("objective", ""),
+                "acceptance_signals": item.get("acceptance_signals", []),
+            }
+            for item in merged.get("workstreams", [])[:4]
+            if isinstance(item, dict)
+        ]
+    return merged
+
+
+def _solution_ai_merge_chapter_copy(ai_candidate: dict, fallback_copy: dict) -> Optional[dict]:
+    if not isinstance(ai_candidate, dict):
+        return None
+    raw_chapters = ai_candidate.get("chapters", [])
+    if not isinstance(raw_chapters, list):
+        return None
+
+    chapter_map = {}
+    for chapter in raw_chapters:
+        if not isinstance(chapter, dict):
+            continue
+        chapter_id = clean_solution_text(chapter.get("id", ""), max_len=24).lower()
+        if chapter_id and chapter_id not in chapter_map:
+            chapter_map[chapter_id] = chapter
+    if set(chapter_map.keys()) != set(SOLUTION_PROPOSAL_CHAPTER_IDS):
+        return None
+
+    merged = copy.deepcopy(fallback_copy if isinstance(fallback_copy, dict) else {})
+    merged_meta = merged.get("meta", {}) if isinstance(merged.get("meta", {}), dict) else {}
+    meta_candidate = ai_candidate.get("meta", {}) if isinstance(ai_candidate.get("meta", {}), dict) else {}
+    theme = clean_solution_text(meta_candidate.get("theme", ""), max_len=40)
+    tone = clean_solution_text(meta_candidate.get("tone", ""), max_len=40)
+    nav_style = clean_solution_text(meta_candidate.get("nav_style", ""), max_len=24)
+    if theme:
+        merged_meta["theme"] = theme
+    if tone:
+        merged_meta["tone"] = tone
+    if nav_style:
+        merged_meta["nav_style"] = nav_style
+    merged_meta["generation_mode"] = "ai"
+    merged["meta"] = merged_meta
+
+    fallback_map = {
+        str(item.get("id") or "").strip().lower(): copy.deepcopy(item)
+        for item in (merged.get("chapters", []) if isinstance(merged.get("chapters", []), list) else [])
+        if isinstance(item, dict)
+    }
+    normalized_chapters = []
+    for chapter_id in SOLUTION_PROPOSAL_CHAPTER_IDS:
+        base = fallback_map.get(chapter_id, {"id": chapter_id})
+        candidate = chapter_map.get(chapter_id, {})
+        for key, limit in [
+            ("nav_label", 20),
+            ("eyebrow", 24),
+            ("title", 72),
+            ("judgement", 160),
+            ("summary", 200),
+        ]:
+            value = clean_solution_text(candidate.get(key, ""), max_len=limit)
+            if value:
+                base[key] = value
+        layout = clean_solution_text(candidate.get("layout", ""), max_len=24).lower()
+        if layout in SOLUTION_PROPOSAL_LAYOUTS:
+            base["layout"] = layout
+
+        metrics = [
+            item for item in (
+                _solution_ai_normalize_metric_item(entry)
+                for entry in (candidate.get("metrics", []) if isinstance(candidate.get("metrics", []), list) else [])
+            )
+            if item
+        ]
+        if metrics:
+            base["metrics"] = metrics[:4]
+
+        cards = [
+            item for item in (
+                _solution_ai_normalize_card_item(entry)
+                for entry in (candidate.get("cards", []) if isinstance(candidate.get("cards", []), list) else [])
+            )
+            if item
+        ]
+        if cards:
+            base["cards"] = cards[:5]
+
+        diagram = _solution_ai_normalize_diagram(candidate.get("diagram"))
+        if diagram:
+            base["diagram"] = diagram
+
+        cta = _solution_ai_normalize_cta(candidate.get("cta"))
+        if cta:
+            base["cta"] = cta
+
+        refs = _proposal_unique_refs(candidate, limit=8)
+        if refs:
+            base["evidence_refs"] = refs
+        base["id"] = chapter_id
+        normalized_chapters.append(base)
+
+    merged["chapters"] = normalized_chapters
+    return merged
+
+
+def build_solution_proposal_brief_with_ai(
+    snapshot: dict,
+    quality_signals: Optional[dict] = None,
+    source_mode: str = "structured_sidecar",
+) -> dict:
+    fallback_brief = build_solution_proposal_brief(snapshot, quality_signals=quality_signals, source_mode=source_mode)
+    fallback_meta = fallback_brief.get("meta", {}) if isinstance(fallback_brief.get("meta", {}), dict) else {}
+    fallback_meta["generation_mode"] = "rule"
+    fallback_brief["meta"] = fallback_meta
+    if not _solution_ai_enabled():
+        return fallback_brief
+
+    prompt_payload = _solution_build_ai_prompt_payload(snapshot, quality_signals=quality_signals, source_mode=source_mode)
+    prompt = build_solution_proposal_brief_ai_prompt(prompt_payload)
+    prompt_length = len(prompt)
+    max_tokens = compute_adaptive_report_tokens(
+        SOLUTION_PROPOSAL_BRIEF_AI_BASE_TOKENS,
+        prompt_length,
+        floor_tokens=2600,
+    )
+    timeout = compute_adaptive_report_timeout(
+        SOLUTION_PROPOSAL_BRIEF_AI_BASE_TIMEOUT,
+        prompt_length,
+        timeout_cap=90.0,
+    )
+    preferred_lane = resolve_report_v3_phase_lane("draft", pipeline_lane="report")
+    raw_text = call_claude(
+        prompt,
+        max_tokens=max_tokens,
+        retry_on_timeout=True,
+        call_type="report_solution_proposal_brief",
+        timeout=timeout,
+        preferred_lane=preferred_lane,
+    )
+    if not raw_text:
+        return fallback_brief
+
+    parsed = parse_structured_json_response(
+        raw_text,
+        required_keys=SOLUTION_PROPOSAL_BRIEF_REQUIRED_KEYS,
+        require_all_keys=True,
+    )
+    merged = _solution_ai_merge_proposal_brief(parsed, fallback_brief, source_mode=source_mode)
+    return merged or fallback_brief
+
+
+def build_solution_chapter_copy_with_ai(
+    snapshot: dict,
+    proposal_brief: dict,
+    quality_signals: Optional[dict] = None,
+) -> dict:
+    fallback_copy = build_solution_chapter_copy(snapshot, proposal_brief, quality_signals=quality_signals)
+    fallback_meta = fallback_copy.get("meta", {}) if isinstance(fallback_copy.get("meta", {}), dict) else {}
+    fallback_meta["generation_mode"] = "rule"
+    fallback_copy["meta"] = fallback_meta
+    if not _solution_ai_enabled():
+        return fallback_copy
+
+    prompt_payload = _solution_build_ai_prompt_payload(snapshot, quality_signals=quality_signals, source_mode=str((proposal_brief.get("meta", {}) or {}).get("source_mode") or "structured_sidecar"))
+    prompt = build_solution_chapter_copy_ai_prompt(proposal_brief, prompt_payload)
+    prompt_length = len(prompt)
+    max_tokens = compute_adaptive_report_tokens(
+        SOLUTION_CHAPTER_COPY_AI_BASE_TOKENS,
+        prompt_length,
+        floor_tokens=3200,
+    )
+    timeout = compute_adaptive_report_timeout(
+        SOLUTION_CHAPTER_COPY_AI_BASE_TIMEOUT,
+        prompt_length,
+        timeout_cap=95.0,
+    )
+    preferred_lane = resolve_report_v3_phase_lane("draft", pipeline_lane="report")
+    raw_text = call_claude(
+        prompt,
+        max_tokens=max_tokens,
+        retry_on_timeout=True,
+        call_type="report_solution_chapter_copy",
+        timeout=timeout,
+        preferred_lane=preferred_lane,
+    )
+    if not raw_text:
+        return fallback_copy
+
+    parsed = parse_structured_json_response(
+        raw_text,
+        required_keys=["meta", "chapters"],
+        require_all_keys=True,
+    )
+    merged = _solution_ai_merge_chapter_copy(parsed, fallback_copy)
+    return merged or fallback_copy
+
+
+def build_solution_proposal_brief(snapshot: dict, quality_signals: Optional[dict] = None, source_mode: str = "structured_sidecar") -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    context = _solution_context_from_snapshot(normalized)
+    runtime_snapshot = normalized.get("solution_snapshot", {}) if isinstance(normalized.get("solution_snapshot", {}), dict) else {}
+    if not runtime_snapshot:
+        runtime_snapshot = build_solution_runtime_snapshot(normalized)
+    draft = normalized.get("draft", {})
+    needs = draft.get("needs", [])
+    solutions = draft.get("solutions", [])
+    risks = draft.get("risks", [])
+    actions = draft.get("actions", [])
+    analysis = draft.get("analysis", {})
+    metrics = _solution_metric_cards_from_snapshot(normalized, quality_signals or {})
+
+    subject = context.get("subject", "访谈结论")
+    pain_point = context.get("pain_point", "核心议题")
+    entry_point = context.get("entry_point", "首轮动作")
+    constraint = context.get("constraint", "交付边界")
+    overview = context.get("summary", "")
+
+    workstreams = _proposal_workstream_cards_from_snapshot(normalized, limit=4)
+    option_refs = _proposal_unique_refs([needs[:2], solutions[:2], actions[:2]], limit=8)
+    recommended_name = clean_solution_text(
+        f"精准切入「{entry_point}」的闭环试点路径",
+        max_len=42,
+    ) or "闭环试点路径"
+    options = [
+        {
+            "name": "保守路径",
+            "positioning": f"先做轻量信息收集与泛样本验证，尽快形成初步方向判断。",
+            "pros": [
+                "投入最低，最快启动",
+                "适合问题定义还不清楚的前期探索",
+            ],
+            "cons": [
+                f"难以真正解释「{pain_point}」的深层原因",
+                "样本和场景噪声更大，结论复用价值有限",
+            ],
+            "fit_for": "预算极紧、只需要方向判断的早期场景",
+            "not_fit_for": f"需要在短周期内形成可评审的「{subject}」落地方案",
+            "decision": "alternative",
+            "evidence_refs": option_refs,
+        },
+        {
+            "name": recommended_name,
+            "positioning": f"围绕「{entry_point}」组织高价值样本、方案模块与试点节奏，在控制投入的同时保证结论强度。",
+            "pros": [
+                f"兼顾「{pain_point}」深度与试点可落地性",
+                "能同步沉淀后续扩展所需的模块、边界和价值判断",
+            ],
+            "cons": [
+                "需要跨角色对齐试点边界与验收口径",
+                "需要在试点前明确招募、合规和执行约束",
+            ],
+            "fit_for": f"目标已相对明确，希望尽快把「{subject}」推进到试点评审的团队",
+            "not_fit_for": "完全无法调动关键入口、样本或执行资源的场景",
+            "decision": "recommended",
+            "evidence_refs": option_refs,
+        },
+        {
+            "name": "激进路径",
+            "positioning": "一开始就追求全量能力搭建、全链路重构与大范围试点。",
+            "pros": [
+                "理论上覆盖面最大",
+                "适合长期规划已确定且资源充足的体系建设项目",
+            ],
+            "cons": [
+                f"在「{constraint}」下，周期、协同和返工风险都会显著上升",
+                "前期若问题定义不稳，容易高投入后再返工",
+            ],
+            "fit_for": "长期预算和组织资源都已锁定的大型专项",
+            "not_fit_for": "当前需要先形成首轮试点判断和可执行节奏的项目",
+            "decision": "rejected",
+            "evidence_refs": _proposal_unique_refs([risks[:2], actions[:2]], limit=8),
+        },
+    ]
+
+    value_model = [
+        {
+            "metric": "试点推进速度",
+            "baseline": "报告产出后仍需多轮会议才能进入试点评审",
+            "target": "形成 8 周内可执行节奏",
+            "range": "2-3 个阶段内完成闭环试点",
+            "assumptions": [
+                "关键入口和核心角色可按阶段投入",
+                "首轮试点聚焦单一高信号场景",
+            ],
+            "evidence_refs": _proposal_unique_refs(actions[:3], limit=6),
+        },
+        {
+            "metric": "高价值结论密度",
+            "baseline": "结论停留在表层反馈，难以形成可执行判断",
+            "target": "围绕核心问题形成结构化 workstreams 与验收信号",
+            "range": f"{len(workstreams) or 3} 个关键工作流",
+            "assumptions": [
+                "样本真实性与触发时机控制到位",
+                "关键问题能稳定命中核心访谈对象",
+            ],
+            "evidence_refs": _proposal_unique_refs([needs[:3], solutions[:3]], limit=6),
+        },
+        {
+            "metric": metrics[0].get("label", "证据绑定率"),
+            "baseline": "关键结论依赖人工翻阅访谈内容",
+            "target": metrics[0].get("value", ""),
+            "range": "持续绑定核心判断与证据锚点",
+            "assumptions": [
+                "报告结构化条目持续完善",
+            ],
+            "evidence_refs": _proposal_unique_refs([needs[:2], solutions[:2], risks[:2]], limit=6),
+        },
+        {
+            "metric": "后续复用价值",
+            "baseline": "单次项目结论难以复用到后续优化与扩展",
+            "target": "形成可复用的模块、路径与风险边界",
+            "range": "支持设计、产品、运营和研发共同复盘",
+            "assumptions": [
+                "试点结论能沉淀为统一提案资产",
+            ],
+            "evidence_refs": _proposal_unique_refs([actions[:3], risks[:2]], limit=6),
+        },
+    ]
+
+    fit_reasons = [
+        {
+            "title": "核心问题已经足够聚焦",
+            "detail": _proposal_sentence_from_parts([
+                f"当前报告已经把重点收敛到「{pain_point}」",
+                "适合直接进入方案比选与试点设计",
+            ], fallback="当前报告的问题焦点已经足够聚焦，适合进入提案设计。"),
+            "evidence_refs": _proposal_unique_refs(needs[:3], limit=6),
+        },
+        {
+            "title": "首轮切口可以被清晰验证",
+            "detail": _proposal_sentence_from_parts([
+                f"优先围绕「{entry_point}」切入",
+                "更容易在短周期内验证真实路径和执行节奏",
+            ], fallback="首轮切口明确，有利于短周期验证。"),
+            "evidence_refs": _proposal_unique_refs([solutions[:2], actions[:2]], limit=6),
+        },
+        {
+            "title": "边界条件已经显性化",
+            "detail": _proposal_sentence_from_parts([
+                f"报告已暴露「{constraint}」等关键边界",
+                "可以在方案阶段前置处理资源、合规和交付风险",
+            ], fallback="关键边界已显性化，便于方案阶段前置约束管理。"),
+            "evidence_refs": _proposal_unique_refs([risks[:2], analysis.get("project_constraints", ""), analysis.get("tech_constraints", "")], limit=6),
+        },
+        {
+            "title": "已有足够结构化素材支撑高级提案页",
+            "detail": f"当前已沉淀 {len(needs)} 条需求、{len(solutions)} 条方案建议、{len(actions)} 条行动计划，可支持从判断到实施路径的完整提案叙事。",
+            "evidence_refs": _proposal_unique_refs([needs[:3], solutions[:3], actions[:3]], limit=8),
+        },
+    ]
+
+    risks_and_boundaries = []
+    for item in risks[:3]:
+        risks_and_boundaries.append({
+            "title": clean_solution_text(item.get("risk", ""), max_len=40),
+            "detail": _proposal_sentence_from_parts([
+                clean_solution_text(item.get("impact", ""), max_len=72),
+                clean_solution_text(item.get("mitigation", ""), max_len=72),
+            ], fallback="需要在方案推进前明确应对与缓解动作。"),
+            "type": "risk",
+            "evidence_refs": _proposal_unique_refs(item, limit=6),
+        })
+    for label, value in [("项目边界", analysis.get("project_constraints", "")), ("技术边界", analysis.get("tech_constraints", ""))]:
+        text = clean_solution_text(value, max_len=120)
+        if not text:
+            continue
+        risks_and_boundaries.append({
+            "title": label,
+            "detail": text,
+            "type": "boundary",
+            "evidence_refs": [],
+        })
+    if not risks_and_boundaries:
+        risks_and_boundaries.append({
+            "title": "试点边界待确认",
+            "detail": "若关键资源、入口或约束无法提前锁定，建议先缩小试点范围。",
+            "type": "assumption",
+            "evidence_refs": [],
+        })
+
+    if actions:
+        next_steps = []
+        phase_titles = ["Phase 1｜范围冻结", "Phase 2｜试点执行", "Phase 3｜价值复盘"]
+        action_chunks = [actions[:2], actions[2:5], actions[5:8]]
+        for idx, chunk in enumerate(action_chunks):
+            if not chunk:
+                continue
+            next_steps.append({
+                "phase": phase_titles[idx],
+                "goal": _proposal_sentence_from_parts([
+                    clean_solution_text(chunk[0].get("action", ""), max_len=80),
+                    clean_solution_text(chunk[0].get("metric", ""), max_len=80),
+                ], fallback="推进关键动作并形成阶段性里程碑。"),
+                "actions": _proposal_compact_sentences([item.get("action", "") for item in chunk], max_items=4, max_len=72),
+                "milestone": clean_solution_text(chunk[-1].get("metric", "") or chunk[-1].get("action", ""), max_len=72) or "形成阶段性产出",
+                "evidence_refs": _proposal_unique_refs(chunk, limit=6),
+            })
+    else:
+        next_steps = [
+            {
+                "phase": "Phase 1｜范围冻结",
+                "goal": f"围绕「{pain_point}」统一问题定义、试点范围和验收口径。",
+                "actions": ["锁定样本范围", "统一试点目标", "补齐关键前置条件"],
+                "milestone": "形成试点范围说明",
+                "evidence_refs": _proposal_unique_refs(needs[:2], limit=6),
+            },
+            {
+                "phase": "Phase 2｜试点执行",
+                "goal": f"围绕「{entry_point}」完成首轮方案试跑与结论提炼。",
+                "actions": ["搭建首轮方案原型", "执行试点", "回收高价值反馈"],
+                "milestone": "形成首轮洞察结论",
+                "evidence_refs": _proposal_unique_refs([solutions[:2], risks[:1]], limit=6),
+            },
+            {
+                "phase": "Phase 3｜价值复盘",
+                "goal": "沉淀可复用的模块、边界和扩展建议。",
+                "actions": ["复盘价值", "收束风险", "确定扩展条件"],
+                "milestone": "形成二期建议",
+                "evidence_refs": _proposal_unique_refs([risks[:2], needs[:1]], limit=6),
+            },
+        ]
+
+    recommended_modules = [
+        {
+            "name": item.get("name", ""),
+            "objective": item.get("objective", ""),
+            "acceptance_signals": item.get("acceptance_signals", []),
+        }
+        for item in workstreams[:4]
+    ]
+    integration_points = _proposal_compact_sentences([
+        entry_point,
+        analysis.get("business_flow", ""),
+        analysis.get("tech_constraints", ""),
+        analysis.get("project_constraints", ""),
+        *(item.get("action", "") for item in actions[:3]),
+    ], max_items=5, max_len=72)
+    dataflow = _proposal_compact_sentences([
+        *(item.get("action", "") for item in actions[:5]),
+        *(item.get("title", "") for item in solutions[:2]),
+    ], max_items=5, max_len=72)
+    governance = _proposal_compact_sentences([
+        *(item.get("mitigation", "") for item in risks[:3]),
+        analysis.get("tech_constraints", ""),
+        analysis.get("project_constraints", ""),
+    ], max_items=4, max_len=72)
+
+    return {
+        "meta": {
+            "topic": clean_solution_text(normalized.get("topic", ""), max_len=80) or subject,
+            "audience": "decision_maker",
+            "proposal_goal": "内部共识",
+            "confidence": round(max(0.3, min(0.98, 1 - float((quality_signals or {}).get("fallback_ratio", 0.0) or 0.0))), 2),
+            "source_mode": source_mode,
+        },
+        "thesis": {
+            "headline": clean_solution_text(f"先围绕「{entry_point}」完成闭环试点，再决定是否扩大投入", max_len=64),
+            "subheadline": clean_solution_text(
+                f"当前真正需要优先解决的不是更多信息，而是让「{pain_point}」在既定边界下被快速验证。",
+                max_len=120,
+            ),
+            "why_now": clean_solution_text(overview, max_len=160) or clean_solution_text(f"因为「{pain_point}」已经进入可执行评审阶段。", max_len=160),
+            "core_decision": clean_solution_text(
+                f"建议采用「{recommended_name}」，优先验证 {pain_point}，并把 {constraint} 前置为试点边界。",
+                max_len=160,
+            ),
+        },
+        "context": {
+            "business_scene": subject,
+            "current_state": _proposal_compact_sentences([
+                overview,
+                *(item.get("description", "") or item.get("name", "") for item in needs[:4]),
+            ], max_items=4, max_len=96),
+            "core_conflicts": _proposal_compact_sentences([
+                f"要解决「{pain_point}」，但仍受「{constraint}」限制",
+                analysis.get("business_flow", ""),
+                *(item.get("risk", "") for item in risks[:2]),
+            ], max_items=4, max_len=96),
+            "constraints": _proposal_compact_sentences([
+                analysis.get("project_constraints", ""),
+                analysis.get("tech_constraints", ""),
+                *(item.get("risk", "") for item in risks[:2]),
+            ], max_items=4, max_len=96),
+            "evidence_refs": _proposal_unique_refs([needs[:3], risks[:2], actions[:2]], limit=8),
+        },
+        "options": options,
+        "recommended_solution": {
+            "north_star": clean_solution_text(
+                f"让「{subject}」从一次性调研结论升级为可复用的试点与扩展路径。",
+                max_len=120,
+            ),
+            "architecture_statement": clean_solution_text(
+                f"以「{entry_point}」为首轮验证入口，把问题识别、方案模块、执行动作和价值复盘串成连续闭环。",
+                max_len=160,
+            ),
+            "modules": recommended_modules,
+            "integration_points": integration_points,
+            "dataflow": dataflow,
+            "governance": governance,
+            "evidence_refs": _proposal_unique_refs([solutions[:4], actions[:3], risks[:2]], limit=8),
+        },
+        "workstreams": workstreams,
+        "value_model": value_model,
+        "fit_reasons": fit_reasons,
+        "risks_and_boundaries": risks_and_boundaries[:6],
+        "next_steps": next_steps[:3],
+    }
+
+
+def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_signals: Optional[dict] = None) -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    brief = proposal_brief if isinstance(proposal_brief, dict) else {}
+    context = _solution_context_from_snapshot(normalized)
+    thesis = brief.get("thesis", {}) if isinstance(brief.get("thesis", {}), dict) else {}
+    brief_context = brief.get("context", {}) if isinstance(brief.get("context", {}), dict) else {}
+    options = brief.get("options", []) if isinstance(brief.get("options", []), list) else []
+    recommended = brief.get("recommended_solution", {}) if isinstance(brief.get("recommended_solution", {}), dict) else {}
+    workstreams = brief.get("workstreams", []) if isinstance(brief.get("workstreams", []), list) else []
+    value_model = brief.get("value_model", []) if isinstance(brief.get("value_model", []), list) else []
+    fit_reasons = brief.get("fit_reasons", []) if isinstance(brief.get("fit_reasons", []), list) else []
+    risks_and_boundaries = brief.get("risks_and_boundaries", []) if isinstance(brief.get("risks_and_boundaries", []), list) else []
+    next_steps = brief.get("next_steps", []) if isinstance(brief.get("next_steps", []), list) else []
+    draft = normalized.get("draft", {})
+
+    hero_metrics = []
+    for item in value_model[:4]:
+        if not isinstance(item, dict):
+            continue
+        hero_metrics.append({
+            "label": clean_solution_text(item.get("metric", ""), max_len=28) or "指标",
+            "value": clean_solution_text(item.get("target", "") or item.get("range", ""), max_len=32) or "待确认",
+            "delta": clean_solution_text(item.get("range", ""), max_len=24),
+            "note": clean_solution_text((item.get("assumptions", []) or [""])[0], max_len=56) if isinstance(item.get("assumptions", []), list) else "",
+        })
+    if len(hero_metrics) < 3:
+        hero_metrics.extend(_solution_metric_cards_from_snapshot(normalized, quality_signals or {})[: max(0, 4 - len(hero_metrics))])
+    while len(hero_metrics) < 3:
+        hero_metrics.append({"label": "方案成熟度", "value": "持续完善", "delta": "", "note": "等待更多结构化证据补充"})
+
+    hero_cards = []
+    for item in workstreams[:2]:
+        if not isinstance(item, dict):
+            continue
+        hero_cards.append({
+            "title": clean_solution_text(item.get("name", ""), max_len=36),
+            "desc": clean_solution_text(item.get("objective", ""), max_len=88),
+            "tag": clean_solution_text(item.get("timeline", ""), max_len=16) or "工作流",
+            "meta": clean_solution_text(item.get("owner_role", ""), max_len=18),
+        })
+    if not hero_cards:
+        hero_cards = [
+            {
+                "title": clean_solution_text(context.get("entry_point", "首轮切口"), max_len=36),
+                "desc": clean_solution_text(thesis.get("core_decision", ""), max_len=88),
+                "tag": "推荐路径",
+                "meta": "提案判断",
+            }
+        ]
+
+    comparison_cards = []
+    for option in options[:3]:
+        if not isinstance(option, dict):
+            continue
+        comparison_cards.append({
+            "title": clean_solution_text(option.get("name", ""), max_len=32),
+            "desc": clean_solution_text(option.get("positioning", ""), max_len=120),
+            "tag": {"recommended": "推荐", "alternative": "备选", "rejected": "不建议"}.get(option.get("decision"), "路径"),
+            "meta": clean_solution_text(option.get("fit_for", ""), max_len=72),
+        })
+
+    blueprint_cards = []
+    for module in recommended.get("modules", [])[:4] if isinstance(recommended.get("modules", []), list) else []:
+        if not isinstance(module, dict):
+            continue
+        blueprint_cards.append({
+            "title": clean_solution_text(module.get("name", ""), max_len=32),
+            "desc": clean_solution_text(module.get("objective", ""), max_len=100),
+            "tag": "核心模块",
+            "meta": "、".join(_proposal_compact_sentences(module.get("acceptance_signals", []), max_items=2, max_len=24)),
+        })
+    if not blueprint_cards:
+        blueprint_cards = hero_cards[:]
+
+    integration_points = recommended.get("integration_points", []) if isinstance(recommended.get("integration_points", []), list) else []
+    dataflow_points = recommended.get("dataflow", []) if isinstance(recommended.get("dataflow", []), list) else []
+    roadmap_cards = []
+    for step in next_steps[:3]:
+        if not isinstance(step, dict):
+            continue
+        roadmap_cards.append({
+            "title": clean_solution_text(step.get("phase", ""), max_len=32),
+            "desc": clean_solution_text(step.get("goal", ""), max_len=100),
+            "tag": "阶段推进",
+            "meta": clean_solution_text(step.get("milestone", ""), max_len=72),
+        })
+
+    fit_cards = []
+    for item in fit_reasons[:3]:
+        if not isinstance(item, dict):
+            continue
+        fit_cards.append({
+            "title": clean_solution_text(item.get("title", ""), max_len=32),
+            "desc": clean_solution_text(item.get("detail", ""), max_len=110),
+            "tag": "适配理由",
+            "meta": _solution_join_meta(_proposal_unique_refs(item, limit=4)),
+        })
+    for item in risks_and_boundaries[:2]:
+        if not isinstance(item, dict):
+            continue
+        fit_cards.append({
+            "title": clean_solution_text(item.get("title", ""), max_len=32),
+            "desc": clean_solution_text(item.get("detail", ""), max_len=110),
+            "tag": "risk" if item.get("type") == "risk" else "边界",
+            "meta": _solution_join_meta(_proposal_unique_refs(item, limit=4)),
+        })
+
+    chapters = [
+        {
+            "id": "hero",
+            "nav_label": "方案判断",
+            "eyebrow": "DeepVision 高级提案页",
+            "title": clean_solution_text(thesis.get("headline", ""), max_len=72) or clean_solution_text(f"围绕「{context.get('entry_point', '关键切口')}」形成首轮闭环试点", max_len=72),
+            "judgement": clean_solution_text(thesis.get("core_decision", ""), max_len=140) or clean_solution_text(thesis.get("why_now", ""), max_len=140),
+            "summary": clean_solution_text(thesis.get("subheadline", ""), max_len=180) or clean_solution_text(context.get("summary", ""), max_len=180),
+            "layout": "hero_metrics",
+            "metrics": hero_metrics[:4],
+            "cards": hero_cards[:2],
+            "diagram": None,
+            "cta": {"label": "查看实施路径", "target": "roadmap"},
+            "evidence_refs": _proposal_unique_refs([workstreams[:2], value_model[:2], draft.get("needs", [])[:2]], limit=8),
+        },
+        {
+            "id": "why_now",
+            "nav_label": "为什么现在做",
+            "eyebrow": "业务矛盾与现实约束",
+            "title": clean_solution_text(f"现在推进，不是因为信息更多，而是因为关键问题已经收敛", max_len=72),
+            "judgement": clean_solution_text(
+                f"当前真正需要优先解决的是「{context.get('pain_point', '核心议题')}」，而不是继续堆积更多未组织的信息。",
+                max_len=140,
+            ),
+            "summary": clean_solution_text(thesis.get("why_now", ""), max_len=180) or clean_solution_text(context.get("summary", ""), max_len=180),
+            "layout": "conflict_cards",
+            "metrics": [],
+            "cards": [
+                {"title": clean_solution_text(item, max_len=32), "desc": clean_solution_text(item, max_len=100), "tag": "核心矛盾", "meta": ""}
+                for item in (brief_context.get("core_conflicts", []) or brief_context.get("current_state", []) or [])[:4]
+                if clean_solution_text(item, max_len=100)
+            ] or hero_cards,
+            "diagram": None,
+            "cta": {"label": "查看路径对比", "target": "comparison"},
+            "evidence_refs": _proposal_unique_refs([brief_context.get("evidence_refs", []), draft.get("risks", [])[:2]], limit=8),
+        },
+        {
+            "id": "comparison",
+            "nav_label": "路径对比",
+            "eyebrow": "方案取舍",
+            "title": "不是把内容堆满，而是先做对的路径选择",
+            "judgement": "先做可验证的推荐路径，再决定是否扩大投入，比一开始追求全量能力更稳健。",
+            "summary": "方案页必须展示取舍逻辑，而不是只有单一路径。这样决策者才能理解为什么现在推荐这样推进。",
+            "layout": "dual_comparison",
+            "metrics": [],
+            "cards": comparison_cards[:3],
+            "diagram": None,
+            "cta": {"label": "查看推荐蓝图", "target": "blueprint"},
+            "evidence_refs": _proposal_unique_refs(options, limit=8),
+        },
+        {
+            "id": "blueprint",
+            "nav_label": "推荐蓝图",
+            "eyebrow": "方案结构",
+            "title": clean_solution_text(f"把「{context.get('entry_point', '关键切口')}」组织成可扩展的能力蓝图", max_len=72),
+            "judgement": clean_solution_text(recommended.get("architecture_statement", ""), max_len=140) or "推荐路径不是单点动作，而是一套可连续推进的能力链。",
+            "summary": clean_solution_text(recommended.get("north_star", ""), max_len=180) or "先形成蓝图，再做模块拆解和阶段推进。",
+            "layout": "blueprint_diagram",
+            "metrics": [],
+            "cards": blueprint_cards[:4],
+            "diagram": {
+                "type": "architecture",
+                "nodes": [
+                    {"id": f"bp-{idx}", "label": clean_solution_text(card.get("title", ""), max_len=18), "group": "module"}
+                    for idx, card in enumerate(blueprint_cards[:4], 1)
+                ],
+                "edges": [
+                    {"from": f"bp-{idx}", "to": f"bp-{idx + 1}", "label": "推进"}
+                    for idx in range(1, max(1, len(blueprint_cards[:4])))
+                    if idx < len(blueprint_cards[:4])
+                ],
+                "caption": clean_solution_text(recommended.get("architecture_statement", ""), max_len=72) or "从判断到实施的结构蓝图",
+            },
+            "cta": {"label": "展开关键模块", "target": "workstreams"},
+            "evidence_refs": _proposal_unique_refs([recommended.get("evidence_refs", []), workstreams[:3]], limit=8),
+        },
+        {
+            "id": "workstreams",
+            "nav_label": "关键模块",
+            "eyebrow": "落地工作流",
+            "title": "真正的落地方案，必须能拆成清晰工作流",
+            "judgement": "决定项目质量的不是页面文案，而是每个工作流是否有目标、交付物、负责人和验收信号。",
+            "summary": "先把关键工作流讲清楚，执行团队才知道怎么接手，决策层才知道为什么这件事可落地。",
+            "layout": "tabbed_cards",
+            "metrics": [],
+            "cards": [
+                {
+                    "title": clean_solution_text(item.get("name", ""), max_len=32),
+                    "desc": clean_solution_text(item.get("objective", ""), max_len=100),
+                    "tag": clean_solution_text(item.get("timeline", ""), max_len=18) or "工作流",
+                    "meta": _proposal_sentence_from_parts([
+                        clean_solution_text(item.get("owner_role", ""), max_len=20),
+                        "、".join(_proposal_compact_sentences(item.get("deliverables", []), max_items=2, max_len=24)),
+                        "、".join(_proposal_compact_sentences(item.get("acceptance_signals", []), max_items=2, max_len=24)),
+                    ], fallback="需要明确交付物与验收信号。", max_len=140),
+                }
+                for item in workstreams[:4]
+                if isinstance(item, dict)
+            ],
+            "diagram": None,
+            "cta": {"label": "查看系统闭环", "target": "integration"},
+            "evidence_refs": _proposal_unique_refs(workstreams, limit=8),
+        },
+        {
+            "id": "integration",
+            "nav_label": "系统闭环",
+            "eyebrow": "流程与沉淀",
+            "title": "没有回流机制，就只是一次性项目，不是长期能力",
+            "judgement": "方案页必须讲清楚输入、执行、输出和回流，否则就只有行动清单，没有组织复利。",
+            "summary": "把入口、模块、执行动作和价值复盘连接起来，方案才会从一次性交付升级成持续增强机制。",
+            "layout": "loop_diagram",
+            "metrics": [],
+            "cards": [
+                {"title": clean_solution_text(item, max_len=28), "desc": clean_solution_text(item, max_len=100), "tag": "闭环节点", "meta": ""}
+                for item in integration_points[:4]
+            ] or hero_cards,
+            "diagram": {
+                "type": "loop",
+                "nodes": [
+                    {"id": f"loop-{idx}", "label": clean_solution_text(item, max_len=16), "group": "loop"}
+                    for idx, item in enumerate((integration_points[:4] or dataflow_points[:4] or [context.get("entry_point", "切口"), "模块执行", "结果沉淀", "价值复盘"]), 1)
+                ],
+                "edges": [
+                    {"from": f"loop-{idx}", "to": f"loop-{idx + 1}", "label": "流转"}
+                    for idx in range(1, 4)
+                ] + [{"from": "loop-4", "to": "loop-1", "label": "回流"}],
+                "caption": clean_solution_text("每次执行都应增强下一次判断与协同效率。", max_len=72),
+            },
+            "cta": {"label": "查看实施路径", "target": "roadmap"},
+            "evidence_refs": _proposal_unique_refs([recommended.get("evidence_refs", []), next_steps[:2]], limit=8),
+        },
+        {
+            "id": "roadmap",
+            "nav_label": "实施路径",
+            "eyebrow": "推进节奏",
+            "title": "先闭环试点，再决定是否扩大能力版图",
+            "judgement": "提案页必须给出阶段节奏，而不是只列动作清单。否则不会形成真正的推进感。",
+            "summary": "按阶段推进能同时控制投入、风险和组织协同复杂度，也更符合高质量方案页的阅读节奏。",
+            "layout": "phased_timeline",
+            "metrics": [],
+            "cards": roadmap_cards[:3],
+            "diagram": {
+                "type": "timeline",
+                "nodes": [
+                    {"id": f"phase-{idx}", "label": clean_solution_text(card.get("title", ""), max_len=18), "group": "phase"}
+                    for idx, card in enumerate(roadmap_cards[:3], 1)
+                ],
+                "edges": [
+                    {"from": "phase-1", "to": "phase-2", "label": "推进"},
+                    {"from": "phase-2", "to": "phase-3", "label": "收束"},
+                ] if len(roadmap_cards) >= 3 else [],
+                "caption": clean_solution_text("用三阶段推进形成从准备、执行到复盘的闭环。", max_len=72),
+            },
+            "cta": {"label": "查看预期价值", "target": "value_fit"},
+            "evidence_refs": _proposal_unique_refs(next_steps, limit=8),
+        },
+        {
+            "id": "value_fit",
+            "nav_label": "预期价值",
+            "eyebrow": "价值与边界",
+            "title": "高级方案页的最后一章，必须回答为什么这套方案尤其适合当前项目",
+            "judgement": "没有价值判断和适配性收束，方案页再漂亮也只是信息展示，不是真正的提案。",
+            "summary": "把预期价值、适配理由和边界条件同时摆出来，页面才会有说服力，也更接近你给的理想样例。",
+            "layout": "value_grid",
+            "metrics": hero_metrics[:4],
+            "cards": fit_cards[:5],
+            "diagram": None,
+            "cta": {"label": "返回顶部", "target": "hero"},
+            "evidence_refs": _proposal_unique_refs([fit_reasons, risks_and_boundaries, value_model], limit=8),
+        },
+    ]
+
+    return {
+        "meta": {
+            "theme": "executive_dark_editorial",
+            "tone": "judgemental_clear_premium",
+            "nav_style": "sticky",
+        },
+        "chapters": chapters,
+    }
+
+
+def build_solution_proposal_page(snapshot: dict, proposal_brief: dict, chapter_copy: dict) -> dict:
+    brief = proposal_brief if isinstance(proposal_brief, dict) else {}
+    copy_payload = chapter_copy if isinstance(chapter_copy, dict) else {}
+    chapters = copy_payload.get("chapters", []) if isinstance(copy_payload.get("chapters", []), list) else []
+    return {
+        "theme": str((copy_payload.get("meta", {}) or {}).get("theme") or "executive_dark_editorial"),
+        "audience": str((brief.get("meta", {}) or {}).get("audience") or "decision_maker"),
+        "topic": str((brief.get("meta", {}) or {}).get("topic") or ""),
+        "chapters": chapters,
+        "nav_items": [
+            {
+                "id": str(chapter.get("id") or ""),
+                "label": str(chapter.get("nav_label") or chapter.get("title") or "章节"),
+            }
+            for chapter in chapters
+            if isinstance(chapter, dict) and str(chapter.get("id") or "").strip()
+        ],
+    }
+
+
 def _solution_section(section_id: str, label: str, title: str, description: str, layout: str, **kwargs) -> dict:
     payload = {
         "id": section_id,
@@ -24374,6 +27403,9 @@ def _build_solution_degraded_payload(snapshot: dict, source_mode: str, quality_s
         "headline_cards": highlights,
         "metrics": metrics,
         "decision_summary": context.get("summary", ""),
+        "proposal_brief": {},
+        "chapter_copy": {},
+        "proposal_page": {},
         "nav_items": nav_items,
         "sections": sections,
     }
@@ -24410,6 +27442,9 @@ def _build_solution_payload_from_snapshot(snapshot: dict, source_mode: str = "st
         sections = _build_solution_sections_from_snapshot(normalized, quality_signals)
     hero = build_solution_hero_from_schema(normalized, quality_signals, default_hero) if use_schema_renderer else default_hero
     nav_items = [{"id": section.get("id"), "label": section.get("label")} for section in sections]
+    proposal_brief = build_solution_proposal_brief_with_ai(normalized, quality_signals=quality_signals, source_mode=source_mode)
+    chapter_copy = build_solution_chapter_copy_with_ai(normalized, proposal_brief, quality_signals=quality_signals)
+    proposal_page = build_solution_proposal_page(normalized, proposal_brief, chapter_copy)
     return {
         "report_name": normalized.get("report_name", ""),
         "title": title,
@@ -24430,6 +27465,9 @@ def _build_solution_payload_from_snapshot(snapshot: dict, source_mode: str = "st
         "headline_cards": hero.get("highlights", highlights),
         "metrics": metrics,
         "decision_summary": hero.get("summary") or context.get("summary", ""),
+        "proposal_brief": proposal_brief,
+        "chapter_copy": chapter_copy,
+        "proposal_page": proposal_page,
         "nav_items": nav_items,
         "sections": sections,
     }
@@ -24555,6 +27593,9 @@ def _build_payload_from_legacy_solution(legacy_payload: dict) -> dict:
             "headline_cards": headline_cards,
             "metrics": metrics,
             "decision_summary": legacy_payload.get("decision_summary", ""),
+            "proposal_brief": {},
+            "chapter_copy": {},
+            "proposal_page": {},
             "nav_items": [{"id": section.get("id"), "label": section.get("label")} for section in sections] if sections else [{"id": "overview", "label": "摘要"}],
             "sections": sections if sections else [_solution_section("overview", "摘要", "摘要", "兼容旧版报告的概要信息。", "text", paragraphs=[legacy_payload.get("overview", "")])],
         }
@@ -24581,6 +27622,9 @@ def _build_payload_from_legacy_solution(legacy_payload: dict) -> dict:
         "headline_cards": headline_cards,
         "metrics": metrics,
         "decision_summary": legacy_payload.get("decision_summary", ""),
+        "proposal_brief": {},
+        "chapter_copy": {},
+        "proposal_page": {},
         "nav_items": [{"id": section.get("id"), "label": section.get("label")} for section in sections],
         "sections": sections,
     }
