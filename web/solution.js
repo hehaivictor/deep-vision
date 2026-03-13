@@ -1,4 +1,4 @@
-const SOLUTION_ASSET_VERSION = '20260311-solution-v17';
+const SOLUTION_ASSET_VERSION = '20260313-solution-v18';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 const SOLUTION_SOURCE_MODE_LABELS = {
     structured_sidecar: '结构化快照',
@@ -103,11 +103,17 @@ function solutionRenderQualityStrip(payload) {
     if (!root) return;
     const quality = payload?.quality_signals || {};
     const fingerprint = payload?.fingerprint || {};
+    const schemaMeta = payload?.solution_schema_meta || {};
     const rows = [
         {
             label: '数据来源',
             value: SOLUTION_SOURCE_MODE_LABELS[payload?.source_mode] || payload?.source_mode || '未知',
             detail: payload?.source_mode === 'degraded' ? '已停止自动拼装完整方案，改为真实信息视图。' : '当前方案页所使用的事实源。'
+        },
+        {
+            label: '渲染模式',
+            value: schemaMeta?.render_mode === 'schema' ? '配置驱动' : '兼容旧模板',
+            detail: schemaMeta?.section_count ? `当前目录共 ${schemaMeta.section_count} 个章节。` : '当前未提供可识别的方案目录配置。'
         },
         {
             label: '模板回退率',

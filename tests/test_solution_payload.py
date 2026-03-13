@@ -80,8 +80,8 @@ class SolutionPayloadTests(unittest.TestCase):
         self.server.write_solution_sidecar(report_name, snapshot)
         return self.server.build_solution_payload_from_report(report_name, "# 占位报告")
 
-    def _build_snapshot(self, report_name: str, *, topic: str, scenario_id: str = "", scenario_name: str = "", overview: str, needs=None, solutions=None, risks=None, actions=None, open_questions=None, evidence_index=None, analysis=None, coverage: float = 0.78, has_structured_evidence: bool = True):
-        return {
+    def _build_snapshot(self, report_name: str, *, topic: str, scenario_id: str = "", scenario_name: str = "", overview: str, needs=None, solutions=None, risks=None, actions=None, open_questions=None, evidence_index=None, analysis=None, coverage: float = 0.78, has_structured_evidence: bool = True, solution_schema=None):
+        payload = {
             "report_name": report_name,
             "topic": topic,
             "session_id": f"session-{report_name}",
@@ -111,6 +111,9 @@ class SolutionPayloadTests(unittest.TestCase):
                 "evidence_index": evidence_index or [],
             },
         }
+        if isinstance(solution_schema, dict):
+            payload["solution_schema"] = solution_schema
+        return payload
 
     def test_build_solution_payload_falls_back_to_legacy_markdown_for_old_report(self):
         report_content = (
@@ -298,6 +301,26 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertEqual(payload.get('headline_cards', [])[0].get('value'), '用户反馈')
 
     def test_structured_sidecar_profiles_are_differentiated(self):
+        feedback_schema = {
+            "version": "v1",
+            "sections": [
+                "推进判断",
+                "现状问题",
+                "方案对比",
+                "实施路径",
+                "风险边界",
+            ],
+        }
+        interview_schema = {
+            "version": "v1",
+            "sections": [
+                "推进判断",
+                "目标蓝图",
+                "落地模块",
+                "下一步推进",
+                "未决问题",
+            ],
+        }
         feedback_payload = self._write_structured_sidecar(
             'feedback-sidecar.md',
             self._build_snapshot(
@@ -322,6 +345,7 @@ class SolutionPayloadTests(unittest.TestCase):
                     {'action': '上线反馈分发试点', 'owner': '运营', 'timeline': '第2-3周', 'metric': '分发时效可追踪', 'evidence_refs': ['Q8']},
                 ],
                 evidence_index=[{'claim': '反馈闭环需要先统一归因口径', 'confidence': 'high', 'evidence_refs': ['Q1', 'Q4']}],
+                solution_schema=feedback_schema,
             ),
         )
         interview_payload = self._write_structured_sidecar(
@@ -348,6 +372,7 @@ class SolutionPayloadTests(unittest.TestCase):
                 ],
                 open_questions=[{'question': '是否要按样本成熟度拆分策略树', 'reason': '不同样本追问深度差异大', 'impact': '影响问题编排复杂度', 'suggested_follow_up': '补问高频样本路径', 'evidence_refs': ['Q8']}],
                 evidence_index=[{'claim': '访谈策略需要按样本状态动态切换', 'confidence': 'high', 'evidence_refs': ['Q1', 'Q3']}],
+                solution_schema=interview_schema,
             ),
         )
 
@@ -356,10 +381,12 @@ class SolutionPayloadTests(unittest.TestCase):
 
         self.assertEqual(feedback_payload.get('source_mode'), 'structured_sidecar')
         self.assertEqual(interview_payload.get('source_mode'), 'structured_sidecar')
+        self.assertEqual(feedback_payload.get('solution_schema_meta', {}).get('render_mode'), 'schema')
+        self.assertEqual(interview_payload.get('solution_schema_meta', {}).get('render_mode'), 'schema')
         self.assertNotEqual(feedback_payload.get('title'), interview_payload.get('title'))
         self.assertNotEqual(feedback_nav, interview_nav)
-        self.assertEqual(feedback_nav[:5], ['decision', 'problem-map', 'feedback-loop', 'dispatch', 'priority'])
-        self.assertEqual(interview_nav[:5], ['decision', 'strategy', 'orchestration', 'sample-trigger', 'insight-repo'])
+        self.assertEqual(feedback_nav[:5], ['decision', 'current-state', 'option-compare', 'roadmap', 'risks'])
+        self.assertEqual(interview_nav[:5], ['decision', 'target-blueprint', 'modules', 'actions', 'open-questions'])
         self.assertGreaterEqual(len(set(feedback_nav) ^ set(interview_nav)), 4)
 
     def test_structured_sidecar_degrades_when_evidence_binding_is_too_low(self):

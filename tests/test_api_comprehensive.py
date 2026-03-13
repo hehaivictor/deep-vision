@@ -880,6 +880,58 @@ class ComprehensiveApiTests(unittest.TestCase):
         delete_resp = self.client.delete(f"/api/scenarios/custom/{scenario_id}")
         self.assertEqual(delete_resp.status_code, 200)
 
+    def test_custom_scenario_create_with_solution_dsl(self):
+        self._register()
+        create_resp = self.client.post(
+            "/api/scenarios/custom",
+            json={
+                "name": "自定义方案场景",
+                "description": "验证 solution.dsl 编译与场景摘要输出",
+                "dimensions": [
+                    {"name": "现状诊断", "description": "识别当前问题", "key_aspects": ["问题", "影响"]},
+                    {"name": "目标蓝图", "description": "明确目标状态", "key_aspects": ["目标", "边界"]},
+                ],
+                "solution": {
+                    "mode": "dsl",
+                    "dsl": {
+                        "hero_focus": "推进判断",
+                        "solution_outline": ["现状问题", "目标蓝图", "方案对比", "实施路径"],
+                        "emphasis": ["风险边界", "下一步推进"],
+                    },
+                },
+            },
+        )
+        self.assertEqual(create_resp.status_code, 200, create_resp.get_data(as_text=True))
+        payload = create_resp.get_json() or {}
+        scenario_id = payload["scenario_id"]
+        scenario = payload["scenario"]
+
+        self.assertEqual((scenario.get("solution", {}) or {}).get("mode"), "dsl")
+        compiled_schema = scenario.get("compiled_solution_schema", {}) or {}
+        self.assertEqual(compiled_schema.get("version"), "v1")
+        self.assertEqual(
+            [item.get("section_id") for item in compiled_schema.get("sections", [])[:6]],
+            ["decision", "current-state", "target-blueprint", "option-compare", "roadmap", "risks"],
+        )
+
+        detail_resp = self.client.get(f"/api/scenarios/{scenario_id}")
+        self.assertEqual(detail_resp.status_code, 200)
+        detail_payload = detail_resp.get_json() or {}
+        self.assertEqual((detail_payload.get("meta", {}) or {}).get("source"), "user_defined")
+        self.assertTrue((detail_payload.get("compiled_solution_schema", {}) or {}).get("sections"))
+
+        list_resp = self.client.get("/api/scenarios")
+        self.assertEqual(list_resp.status_code, 200)
+        matched = next((item for item in (list_resp.get_json() or []) if item.get("id") == scenario_id), None)
+        self.assertIsNotNone(matched)
+        self.assertTrue(matched.get("has_solution_schema"))
+        self.assertEqual(matched.get("solution_mode"), "dsl")
+        self.assertGreaterEqual(int(matched.get("solution_sections_count") or 0), 6)
+        self.assertEqual(matched.get("scenario_source"), "user_defined")
+
+        delete_resp = self.client.delete(f"/api/scenarios/custom/{scenario_id}")
+        self.assertEqual(delete_resp.status_code, 200)
+
     def test_report_template_validate_and_preview_api(self):
         self._register()
 
