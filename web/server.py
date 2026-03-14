@@ -25829,6 +25829,395 @@ def _proposal_boundary_sentence(boundary_label: str, risk_label: str = "", audie
     return clean_solution_text(base, max_len=max_len)
 
 
+def _proposal_workstream_action(text: str) -> str:
+    raw = clean_solution_text(text, max_len=240)
+    if not raw:
+        return "推进"
+    if any(token in raw for token in ("接口", "契约", "门禁", "评审", "治理")):
+        return "前置"
+    if any(token in raw for token in ("迁移", "转换", "验证", "基线", "工具链")):
+        return "跑通"
+    if any(token in raw for token in ("架构", "分层", "路由", "网关", "推理", "混合云", "协同")):
+        return "拉通"
+    if any(token in raw for token in ("选型", "POC", "试点", "范围", "冻结", "验证")):
+        return "锁定"
+    if any(token in raw for token in ("训练", "部署", "监控", "托管")):
+        return "跑通"
+    return "推进"
+
+
+def _proposal_workstream_headline(name: str, objective: str = "", fallback: str = "", max_len: int = 36) -> str:
+    focus = (
+        _proposal_pick_focus_label(name, "", max_len=18)
+        or _proposal_pick_focus_label(objective, "", max_len=18)
+        or _proposal_pick_focus_label(fallback, "", max_len=18)
+    )
+    if not focus:
+        return _proposal_pick_heading(name, fallback or objective, max_len=max_len)
+    action = _proposal_workstream_action(" ".join(filter(None, [name, objective, fallback])))
+    patterns = {
+        "前置": f"把「{focus}」前置",
+        "跑通": f"跑通「{focus}」",
+        "拉通": f"拉通「{focus}」",
+        "锁定": f"锁定「{focus}」",
+        "推进": f"推进「{focus}」",
+    }
+    return clean_solution_text(patterns.get(action, patterns["推进"]), max_len=max_len) or _proposal_pick_heading(name, fallback or objective, max_len=max_len)
+
+
+def _proposal_workstream_summary(name: str, objective: str = "", fallback: str = "", max_len: int = 100) -> str:
+    focus = (
+        _proposal_pick_focus_label(name, "", max_len=18)
+        or _proposal_pick_focus_label(objective, "", max_len=18)
+        or _proposal_pick_focus_label(fallback, "", max_len=18)
+        or "关键工作流"
+    )
+    action = _proposal_workstream_action(" ".join(filter(None, [name, objective, fallback])))
+    text = ""
+    if action == "前置":
+        text = f"先把「{focus}」前置到试点入口，避免后续集成和协作反复返工。"
+    elif action == "拉通":
+        text = f"先把「{focus}」拉通成稳定协同链路，再验证扩张节奏是否可控。"
+    elif action == "跑通":
+        text = f"先把「{focus}」跑通成试点可用链路，再验证交付节奏和边界是否成立。"
+    elif action == "锁定":
+        text = f"先锁定「{focus}」的试点范围和验证标准，再决定是否扩大投入。"
+    else:
+        text = f"围绕「{focus}」形成首轮可交付动作，再按阶段继续推进。"
+    return clean_solution_text(text, max_len=max_len) or _proposal_pick_sentence(objective, fallback, max_len=max_len)
+
+
+def _proposal_risk_action_label(text: str, fallback: str = "", max_len: int = 20) -> str:
+    raw = clean_solution_text(" ".join(filter(None, [text, fallback])), max_len=240)
+    if not raw:
+        return "前置关键门禁"
+    if any(token in raw for token in ("培训", "专家", "PyTorch", "研究侧", "补位", "学习曲线")):
+        return clean_solution_text("补培训和研究侧补位", max_len=max_len)
+    if any(token in raw for token in ("接口", "契约", "评审", "委员会", "协作")):
+        return clean_solution_text("设接口评审和协作门禁", max_len=max_len)
+    if any(token in raw for token in ("迁移", "验证", "基线", "历史代码", "存量")):
+        return clean_solution_text("锁定迁移范围和验证基线", max_len=max_len)
+    if any(token in raw for token in ("算力", "预算", "资源", "基础设施")):
+        return clean_solution_text("冻结算力预算和关键资源", max_len=max_len)
+    if any(token in raw for token in ("合规", "脱敏", "审计", "法务")):
+        return clean_solution_text("前置脱敏和审计边界", max_len=max_len)
+    if any(token in raw for token in ("灰度", "熔断", "回滚")):
+        return clean_solution_text("补灰度和回滚门禁", max_len=max_len)
+    focus = _proposal_pick_focus_label(raw, "", max_len=14)
+    if focus:
+        return clean_solution_text(f"先锁定{focus}", max_len=max_len)
+    return clean_solution_text("前置关键门禁", max_len=max_len)
+
+
+def _proposal_risk_card_desc(title: str, detail: str = "", fallback: str = "", audience_key: str = "decision_maker", max_len: int = 96) -> str:
+    risk_label = _proposal_risk_label(title, detail, max_len=18)
+    action_label = _proposal_risk_action_label(detail, fallback, max_len=20)
+    if "学习成本" in risk_label:
+        consequence = "试点初期学习曲线拖慢排期"
+    elif "协同" in risk_label:
+        consequence = "跨团队返工失控"
+    elif "迁移" in risk_label:
+        consequence = "历史包袱拖慢试点"
+    elif "算力" in risk_label or "资源" in risk_label:
+        consequence = "资源缺口打断试点节奏"
+    elif "合规" in risk_label:
+        consequence = "合规返工影响上线判断"
+    elif "排期" in risk_label:
+        consequence = "整体排期继续失控"
+    else:
+        consequence = "关键边界在试点中途失控"
+    if audience_key == "execution":
+        text = f"先{action_label}，避免{consequence}。"
+    elif audience_key == "manager":
+        text = f"建议先{action_label}，避免{consequence}。"
+    else:
+        text = f"先{action_label}，避免{consequence}。"
+    return clean_solution_text(text, max_len=max_len) or _proposal_pick_sentence(detail, fallback, max_len=max_len)
+
+
+def _proposal_option_positioning(name: str, positioning: str = "", decision: str = "", max_len: int = 92) -> str:
+    focus = _proposal_pick_focus_label(name, positioning, max_len=18) or "关键路径"
+    decision_key = clean_solution_text(decision, max_len=16).lower()
+    if decision_key == "recommended":
+        text = f"围绕「{focus}」先做首轮试点，再按阶段验证扩张边界。"
+    elif decision_key == "alternative":
+        text = "先做方向判断，暂不进入完整方案评审。"
+    elif decision_key == "rejected":
+        text = "一开始全量铺开，投入、协同和返工都会同步放大。"
+    else:
+        text = _proposal_business_sentence(positioning, max_len=max_len)
+    return clean_solution_text(text, max_len=max_len) or _proposal_pick_sentence(positioning, name, max_len=max_len)
+
+
+def _proposal_option_fit_text(text: str, prefix: str, max_len: int = 64) -> str:
+    focus = _proposal_pick_focus_label(text, "", max_len=18)
+    if prefix == "更适合：" and focus:
+        return clean_solution_text(f"{prefix}目标明确、准备进入试点评审的团队", max_len=max_len)
+    if prefix == "适合：" and focus:
+        return clean_solution_text(f"{prefix}只需要方向判断的早期场景", max_len=max_len)
+    if prefix == "不适合：" and focus:
+        return clean_solution_text(f"{prefix}关键入口或执行资源暂时无法到位的项目", max_len=max_len)
+    return clean_solution_text(f"{prefix}{_proposal_business_sentence(text, max_len=max_len) or clean_solution_text(text, max_len=max_len)}", max_len=max_len)
+
+
+def _proposal_option_point(text: str, kind: str = "pro", decision: str = "", max_len: int = 24) -> str:
+    raw = _proposal_business_sentence(text, max_len=180) or clean_solution_text(text, max_len=180)
+    if not raw:
+        return ""
+    decision_key = clean_solution_text(decision, max_len=16).lower()
+    if kind == "pro":
+        if any(token in raw for token in ("投入最低", "启动最快", "启动快", "最快启动", "启动成本更低")):
+            return clean_solution_text("启动最快", max_len=max_len)
+        if any(token in raw for token in ("前期探索", "方向判断", "问题定义还不清楚", "早期探索")):
+            return clean_solution_text("适合早期探索", max_len=max_len)
+        if any(token in raw for token in ("兼顾", "深度", "试点可落地", "落地性")):
+            return clean_solution_text("兼顾深度与落地", max_len=max_len)
+        if any(token in raw for token in ("沉淀", "模块", "边界", "价值判断", "后续扩展")):
+            return clean_solution_text("同步沉淀扩张判断", max_len=max_len)
+        if any(token in raw for token in ("覆盖面最大", "覆盖面")):
+            return clean_solution_text("覆盖面最大", max_len=max_len)
+        if any(token in raw for token in ("真实问题", "真实决策", "高信号", "真实场景")):
+            return clean_solution_text("更贴近真实问题", max_len=max_len)
+    else:
+        if any(token in raw for token in ("难以真正解释", "深层原因", "解释真实放弃", "解释核心问题")):
+            return clean_solution_text("难解释核心问题", max_len=max_len)
+        if any(token in raw for token in ("噪声", "复用价值有限", "结论复用")):
+            return clean_solution_text("结论复用有限", max_len=max_len)
+        if any(token in raw for token in ("对齐", "验收口径", "边界")):
+            return clean_solution_text("边界需要先对齐", max_len=max_len)
+        if any(token in raw for token in ("招募", "合规", "执行约束", "法务")):
+            return clean_solution_text("招募合规要前置", max_len=max_len)
+        if any(token in raw for token in ("投入", "返工", "风险高", "周期", "协同")):
+            return clean_solution_text("投入与返工放大" if decision_key == "rejected" else "协同成本会上升", max_len=max_len)
+    focus = _proposal_pick_focus_label(raw, "", max_len=max_len)
+    if focus:
+        return clean_solution_text(focus, max_len=max_len)
+    return clean_solution_text(_proposal_pick_sentence(raw, "", max_len=max_len), max_len=max_len)
+
+
+def _proposal_option_points(values, kind: str = "pro", decision: str = "", limit: int = 2, max_len: int = 24) -> list[str]:
+    items = values if isinstance(values, list) else [values]
+    results = []
+    seen = set()
+    for item in items:
+        label = _proposal_option_point(item, kind=kind, decision=decision, max_len=max_len)
+        key = re.sub(r"\s+", "", label.lower()) if label else ""
+        if not label or key in seen:
+            continue
+        seen.add(key)
+        results.append(label)
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _proposal_comparison_judgement(text: str, focus: str = "", boundary: str = "", audience_key: str = "decision_maker", max_len: int = 72) -> str:
+    raw = _proposal_business_sentence(text, max_len=max_len * 3) or clean_solution_text(text, max_len=max_len * 3)
+    focus_label = clean_solution_text(focus, max_len=18) or _proposal_pick_focus_label(raw, "", max_len=18) or "关键路径"
+    boundary_label = clean_solution_text(boundary, max_len=18)
+    if audience_key == "execution":
+        result = f"先把「{focus_label}」试点跑通，再决定第二阶段是否展开。"
+    elif audience_key == "manager":
+        result = f"先围绕「{focus_label}」完成首轮试点，再安排第二阶段资源。"
+    else:
+        result = f"先把「{focus_label}」试点跑通，再判断第二阶段投入。"
+    if boundary_label and "边界" not in boundary_label and len(result) < max_len - 12:
+        result = result.replace("。", f"，边界先锁定在「{boundary_label}」。")
+    return clean_solution_text(result, max_len=max_len) or clean_solution_text(raw, max_len=max_len)
+
+
+def _proposal_owner_label(value: str, max_len: int = 18) -> str:
+    raw = clean_solution_text(value, max_len=120)
+    if not raw:
+        return "待定角色"
+    if any(token in raw for token in ("各层负责人", "各层", "负责人")) and "平台" in raw:
+        return clean_solution_text("平台与各层协同", max_len=max_len)
+    if any(token in raw for token in ("AI平台", "平台工程", "云厂商")):
+        return clean_solution_text("平台团队主责", max_len=max_len)
+    if "SRE" in raw or "架构师" in raw:
+        return clean_solution_text("架构与稳定性", max_len=max_len)
+    if "研究" in raw and "设计" in raw:
+        return clean_solution_text("设计与研究", max_len=max_len)
+    if "研究" in raw:
+        return clean_solution_text("研究主责", max_len=max_len)
+    if "运营" in raw:
+        return clean_solution_text("运营主责", max_len=max_len)
+    if "产品" in raw and "研发" in raw:
+        return clean_solution_text("产品与研发协同", max_len=max_len)
+    focus = _proposal_pick_focus_label(raw, "", max_len=max_len)
+    return clean_solution_text(focus, max_len=max_len) or clean_solution_text(raw, max_len=max_len) or "待定角色"
+
+
+def _proposal_dependency_label(text: str, max_len: int = 18) -> str:
+    raw = _proposal_business_sentence(text, max_len=180) or clean_solution_text(text, max_len=180)
+    if not raw:
+        return ""
+    if any(token in raw for token in ("历史代码", "迁移", "存量模型", "基线")):
+        return clean_solution_text("迁移范围先锁定", max_len=max_len)
+    if any(token in raw for token in ("接口", "契约", "协同", "评审", "对齐")):
+        return clean_solution_text("接口协同先达成", max_len=max_len)
+    if any(token in raw for token in ("TensorFlow", "PyTorch", "学习曲线", "培训", "补位")):
+        return clean_solution_text("培训补位到位", max_len=max_len)
+    if any(token in raw for token in ("算力", "资源", "基础设施", "混合云", "调度")):
+        return clean_solution_text("资源策略先跑通", max_len=max_len)
+    if any(token in raw for token in ("合规", "审计", "脱敏", "法务")):
+        return clean_solution_text("合规边界先确认", max_len=max_len)
+    if any(token in raw for token in ("入口", "样本", "招募")):
+        return clean_solution_text("样本入口先锁定", max_len=max_len)
+    focus = _proposal_risk_label(raw, "", max_len=max_len)
+    return clean_solution_text(focus, max_len=max_len)
+
+
+def _proposal_dependency_labels(values, limit: int = 2, max_len: int = 18) -> list[str]:
+    items = values if isinstance(values, list) else [values]
+    prioritized = []
+    for item in items:
+        label = _proposal_dependency_label(item, max_len=max_len)
+        if not label:
+            continue
+        score = 0
+        if "迁移范围" in label:
+            score = 50
+        elif "接口协同" in label:
+            score = 40
+        elif "资源策略" in label:
+            score = 30
+        elif "合规边界" in label:
+            score = 20
+        elif "样本入口" in label:
+            score = 15
+        elif "培训补位" in label:
+            score = 10
+        prioritized.append((score, label))
+    prioritized.sort(key=lambda item: (-item[0], item[1]))
+    results = []
+    seen = set()
+    for _, label in prioritized:
+        key = re.sub(r"\s+", "", label.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(label)
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _proposal_deliverable_label(text: str, max_len: int = 18) -> str:
+    raw = _proposal_business_sentence(text, max_len=180) or clean_solution_text(text, max_len=180)
+    if not raw:
+        return ""
+    if any(token in raw for token in ("平台POC", "选型", "云厂商")):
+        return clean_solution_text("平台选型完成", max_len=max_len)
+    if any(token in raw for token in ("上线周期", "流水线", "人工干预")):
+        return clean_solution_text("核心流水线跑通", max_len=max_len)
+    if any(token in raw for token in ("P99", "延迟", "故障转移", "性能")):
+        return clean_solution_text("性能与切换达标", max_len=max_len)
+    if any(token in raw for token in ("迁移", "可行性", "盘点")):
+        return clean_solution_text("迁移可行性明确", max_len=max_len)
+    if any(token in raw for token in ("接口契约", "集成测试", "覆盖率")):
+        return clean_solution_text("契约与集成过线", max_len=max_len)
+    if any(token in raw for token in ("OpenAPI", "规范", "CI", "契约校验")):
+        return clean_solution_text("接口规范落版", max_len=max_len)
+    if any(token in raw for token in ("原型", "试跑")):
+        return clean_solution_text("原型可试跑", max_len=max_len)
+    if any(token in raw for token in ("洞察", "结论")):
+        return clean_solution_text("首轮洞察产出", max_len=max_len)
+    if any(token in raw for token in ("入口评审", "样本")):
+        return clean_solution_text("样本入口就绪", max_len=max_len)
+    focus = _proposal_pick_focus_label(raw, "", max_len=max_len)
+    return clean_solution_text(focus, max_len=max_len)
+
+
+def _proposal_deliverable_labels(values, limit: int = 2, max_len: int = 18) -> list[str]:
+    items = values if isinstance(values, list) else [values]
+    results = []
+    seen = set()
+    for item in items:
+        label = _proposal_deliverable_label(item, max_len=max_len)
+        key = re.sub(r"\s+", "", label.lower()) if label else ""
+        if not label or key in seen:
+            continue
+        seen.add(key)
+        results.append(label)
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _proposal_acceptance_signal_value(text: str, max_len: int = 22) -> str:
+    raw = _proposal_business_sentence(text, max_len=180) or clean_solution_text(text, max_len=180)
+    if not raw:
+        return ""
+    if any(token in raw for token in ("上线周期", "天级", "人工干预")):
+        return clean_solution_text("上线周期压到天级", max_len=max_len)
+    if any(token in raw for token in ("云厂商", "选型", "决策文档")):
+        return clean_solution_text("平台选型完成", max_len=max_len)
+    if any(token in raw for token in ("P99", "故障转移", "延迟")):
+        return clean_solution_text("性能与切换达标", max_len=max_len)
+    if any(token in raw for token in ("迁移可行性", "现状盘点", "1-2个系统")):
+        return clean_solution_text("迁移可行性明确", max_len=max_len)
+    if any(token in raw for token in ("接口契约", "集成测试", "覆盖率")):
+        return clean_solution_text("契约与集成过线", max_len=max_len)
+    if any(token in raw for token in ("OpenAPI", "CI", "契约校验")):
+        return clean_solution_text("接口规范落版", max_len=max_len)
+    if any(token in raw for token in ("首轮洞察", "洞察")):
+        return clean_solution_text("首轮洞察产出", max_len=max_len)
+    if any(token in raw for token in ("原型", "试跑")):
+        return clean_solution_text("原型可试跑", max_len=max_len)
+    if any(token in raw for token in ("入口评审", "样本")):
+        return clean_solution_text("样本入口就绪", max_len=max_len)
+    focus = _proposal_pick_focus_label(raw, "", max_len=max_len)
+    return clean_solution_text(focus, max_len=max_len)
+
+
+def _proposal_acceptance_signal_note(text: str, max_len: int = 42) -> str:
+    raw = _proposal_business_sentence(text, max_len=180) or clean_solution_text(text, max_len=180)
+    if not raw:
+        return ""
+    if any(token in raw for token in ("上线周期", "天级", "人工干预")):
+        return clean_solution_text("人工干预同步下降", max_len=max_len)
+    if any(token in raw for token in ("云厂商", "选型", "决策文档")):
+        return clean_solution_text("形成选型与评估结论", max_len=max_len)
+    if any(token in raw for token in ("P99", "故障转移", "延迟")):
+        return clean_solution_text("核心时延与切换双达标", max_len=max_len)
+    if any(token in raw for token in ("迁移可行性", "现状盘点", "1-2个系统")):
+        return clean_solution_text("首批系统范围已明确", max_len=max_len)
+    if any(token in raw for token in ("接口契约", "集成测试", "覆盖率")):
+        return clean_solution_text("覆盖率和测试都过线", max_len=max_len)
+    if any(token in raw for token in ("OpenAPI", "CI", "契约校验")):
+        return clean_solution_text("规范与门禁同步落版", max_len=max_len)
+    return clean_solution_text(raw, max_len=max_len)
+
+
+def _proposal_phase_goal(phase: str, goal: str = "", milestone: str = "", max_len: int = 88) -> str:
+    phase_text = clean_solution_text(phase, max_len=40)
+    if "范围冻结" in phase_text:
+        text = "先锁定试点范围、关键入口和验收标准。"
+    elif "试点执行" in phase_text:
+        text = "跑通首轮试点，并验证关键模块是否能接住。"
+    elif "价值复盘" in phase_text:
+        text = "复盘试点价值，再决定是否扩大投入。"
+    else:
+        focus = _proposal_pick_focus_label(goal, milestone, max_len=18) or "关键阶段"
+        text = f"围绕「{focus}」完成本阶段判断和交付。"
+    return clean_solution_text(text, max_len=max_len) or _proposal_pick_sentence(goal, milestone, max_len=max_len)
+
+
+def _proposal_phase_milestone(phase: str, milestone: str = "", actions=None, max_len: int = 56) -> str:
+    phase_text = clean_solution_text(phase, max_len=40)
+    actions = actions if isinstance(actions, list) else []
+    if "范围冻结" in phase_text:
+        text = "形成试点范围说明"
+    elif "试点执行" in phase_text:
+        text = "形成首轮试点结果"
+    elif "价值复盘" in phase_text:
+        text = "形成是否扩张判断"
+    else:
+        text = _proposal_pick_sentence(milestone, "、".join(_proposal_compact_sentences(actions, max_items=2, max_len=16)), max_len=max_len)
+    return clean_solution_text(text, max_len=max_len)
+
+
 def _proposal_compact_points(values, limit: int = 4, max_len: int = 56, mode: str = "sentence") -> list[str]:
     items = values if isinstance(values, list) else [values]
     results = []
@@ -26277,7 +26666,22 @@ def _solution_postprocess_chapter_copy(chapter_copy: dict, fallback_copy: dict) 
                 title = _proposal_pick_focus_label(source_card.get("title", ""), fallback_card.get("title", ""), max_len=18)
             else:
                 title = _proposal_pick_heading(source_card.get("title", ""), fallback_card.get("title", ""), max_len=32)
-            desc = _proposal_pick_sentence(source_card.get("desc", ""), fallback_card.get("desc", ""), max_len=110)
+            if chapter_id == "workstreams":
+                desc = _proposal_workstream_summary(
+                    source_card.get("title", "") or fallback_card.get("title", ""),
+                    source_card.get("desc", "") or fallback_card.get("desc", ""),
+                    fallback=source_card.get("meta", "") or fallback_card.get("meta", ""),
+                    max_len=88,
+                )
+            elif chapter_id == "value_fit" and clean_solution_text(source_card.get("tag", "") or fallback_card.get("tag", ""), max_len=16).lower() in {"risk", "风险边界", "边界"}:
+                desc = _proposal_risk_card_desc(
+                    source_card.get("title", "") or fallback_card.get("title", ""),
+                    source_card.get("desc", "") or fallback_card.get("desc", ""),
+                    fallback=source_card.get("meta", "") or fallback_card.get("meta", ""),
+                    max_len=84,
+                )
+            else:
+                desc = _proposal_pick_sentence(source_card.get("desc", ""), fallback_card.get("desc", ""), max_len=110)
             source_tag = clean_solution_text(source_card.get("tag", ""), max_len=18)
             fallback_tag = clean_solution_text(fallback_card.get("tag", ""), max_len=18)
             if source_tag in {"AI", "模块", "章节"} and fallback_tag:
@@ -26403,7 +26807,7 @@ def _proposal_comparison_desc(option: dict, focus: str, boundary_label: str, max
         return ""
     decision = str(option.get("decision") or "").strip().lower()
     fit_for = clean_solution_text(option.get("fit_for", ""), max_len=72)
-    positioning = _proposal_business_sentence(option.get("positioning", ""), max_len=120)
+    positioning = _proposal_option_positioning(option.get("name", ""), option.get("positioning", ""), decision=decision, max_len=max_len)
     if decision == "recommended":
         return clean_solution_text(
             f"先用「{focus or '关键能力'}」锁定试点和能力底座，再在「{boundary_label}」前提下分阶段扩展。",
@@ -26429,10 +26833,10 @@ def _proposal_comparison_meta(option: dict, max_len: int = 64) -> str:
     fit_for = _proposal_business_sentence(option.get("fit_for", ""), max_len=max_len) or clean_solution_text(option.get("fit_for", ""), max_len=max_len)
     not_fit_for = _proposal_business_sentence(option.get("not_fit_for", ""), max_len=max_len) or clean_solution_text(option.get("not_fit_for", ""), max_len=max_len)
     if decision == "recommended":
-        return clean_solution_text(f"更适合：{fit_for}", max_len=max_len) if fit_for else ""
+        return _proposal_option_fit_text(fit_for, "更适合：", max_len=max_len) if fit_for else ""
     if decision == "rejected":
-        return clean_solution_text(f"不适合：{not_fit_for}", max_len=max_len) if not_fit_for else ""
-    return clean_solution_text(f"适合：{fit_for}", max_len=max_len) if fit_for else ""
+        return _proposal_option_fit_text(not_fit_for, "不适合：", max_len=max_len) if not_fit_for else ""
+    return _proposal_option_fit_text(fit_for, "适合：", max_len=max_len) if fit_for else ""
 
 
 def _proposal_workstream_cards_from_snapshot(normalized: dict, limit: int = 4) -> list[dict]:
@@ -27249,11 +27653,11 @@ def build_solution_render_model(snapshot: dict, proposal_brief: dict, chapter_co
         "track": [
             {
                 "badge": clean_solution_text(item.get("timeline", "") or f"{index + 1:02d}", max_len=18) or f"{index + 1:02d}",
-                "title": clean_solution_text(item.get("title", "") or item.get("phase", ""), max_len=32),
-                "detail": clean_solution_text(item.get("detail", "") or item.get("goal", "") or item.get("summary", ""), max_len=96),
-                "meta": clean_solution_text(item.get("summary", "") or item.get("milestone", ""), max_len=48),
+                "title": clean_solution_text(item.get("phase", "") or item.get("title", ""), max_len=24),
+                "detail": _proposal_phase_goal(item.get("phase", "") or item.get("title", ""), item.get("goal", "") or item.get("detail", "") or item.get("summary", ""), item.get("milestone", ""), max_len=72),
+                "meta": _proposal_phase_milestone(item.get("phase", "") or item.get("title", ""), item.get("milestone", "") or item.get("summary", ""), item.get("actions", []), max_len=36),
             }
-            for index, item in enumerate((milestone_cards or next_steps)[:3]) if isinstance(item, dict)
+            for index, item in enumerate((next_steps or milestone_cards)[:3]) if isinstance(item, dict)
         ],
         "audience": copy.deepcopy(audience_profile),
         "evidenceRefs": _proposal_unique_refs(hero, limit=8),
@@ -27264,20 +27668,33 @@ def build_solution_render_model(snapshot: dict, proposal_brief: dict, chapter_co
         if not isinstance(item, dict):
             continue
         source_card = workstream_cards[index] if index < len(workstream_cards) and isinstance(workstream_cards[index], dict) else {}
+        tab_label = _proposal_pick_focus_label(item.get("name", ""), source_card.get("title", ""), max_len=20) or clean_solution_text(item.get("name", ""), max_len=20)
+        tab_headline = _proposal_workstream_headline(
+            item.get("name", ""),
+            item.get("objective", ""),
+            fallback=source_card.get("summary", "") or source_card.get("detail", ""),
+            max_len=32,
+        )
+        tab_summary = _proposal_workstream_summary(
+            item.get("name", ""),
+            item.get("objective", ""),
+            fallback=source_card.get("summary", "") or source_card.get("detail", ""),
+            max_len=92,
+        )
         solution_tabs.append({
             "id": clean_solution_text(f"workstream-{index + 1}", max_len=24) or f"workstream-{index+1}",
-            "label": clean_solution_text(item.get("name", ""), max_len=20),
+            "label": tab_label,
             "tag": clean_solution_text(item.get("timeline", ""), max_len=18) or "工作流",
-            "headline": clean_solution_text(item.get("objective", "") or item.get("name", ""), max_len=48),
-            "summary": clean_solution_text(item.get("objective", "") or source_card.get("summary", ""), max_len=120),
-            "owner": clean_solution_text(item.get("owner_role", ""), max_len=24),
-            "dependencies": _solution_unique_compact_texts(item.get("dependencies", []), limit=2, max_len=32),
-            "deliverables": _solution_unique_compact_texts(item.get("deliverables", []), limit=2, max_len=32),
+            "headline": tab_headline,
+            "summary": tab_summary,
+            "owner": _proposal_owner_label(item.get("owner_role", ""), max_len=20),
+            "dependencies": _proposal_dependency_labels(item.get("dependencies", []), limit=2, max_len=18),
+            "deliverables": _proposal_deliverable_labels(item.get("deliverables", []), limit=2, max_len=18),
             "capabilities": [
                 card for card in [
                     {
-                        "title": clean_solution_text(cap, max_len=28),
-                        "desc": clean_solution_text(cap, max_len=88),
+                        "title": _proposal_workstream_headline(tab_label, cap, fallback=tab_headline, max_len=18),
+                        "desc": _proposal_workstream_summary(tab_label, cap, fallback=tab_summary, max_len=72),
                         "tag": "关键动作",
                     }
                     for cap in _solution_unique_compact_texts(item.get("key_actions", []), limit=3, max_len=56)
@@ -27285,10 +27702,11 @@ def build_solution_render_model(snapshot: dict, proposal_brief: dict, chapter_co
             ],
             "metrics": [
                 {
-                    "metric": clean_solution_text("验收信号", max_len=18),
-                    "target": clean_solution_text(signal, max_len=48),
+                    "metric": clean_solution_text(f"验收信号 {metric_index + 1:02d}", max_len=18),
+                    "target": _proposal_acceptance_signal_value(signal, max_len=22),
+                    "note": _proposal_acceptance_signal_note(signal, max_len=42),
                 }
-                for signal in _solution_unique_compact_texts(item.get("acceptance_signals", []), limit=2, max_len=48)
+                for metric_index, signal in enumerate(_solution_unique_compact_texts(item.get("acceptance_signals", []), limit=2, max_len=48))
             ],
         })
 
@@ -27301,18 +27719,25 @@ def build_solution_render_model(snapshot: dict, proposal_brief: dict, chapter_co
         if not isinstance(item, dict):
             continue
         fit_cards.append({
-            "title": clean_solution_text(item.get("title", ""), max_len=32),
-            "desc": clean_solution_text(item.get("detail", ""), max_len=110),
+            "title": _proposal_pick_heading(item.get("title", ""), "", max_len=32),
+            "desc": _proposal_pick_sentence(item.get("detail", ""), "", max_len=96),
             "tag": "适配理由",
             "evidenceRefs": _proposal_unique_refs(item, limit=6),
         })
     for item in boundaries[:SOLUTION_CONTENT_PRIMARY_LIMITS["value_fit"]["risk_cards"]]:
         if not isinstance(item, dict):
             continue
+        risk_tag = "risk" if clean_solution_text(item.get("type", ""), max_len=16).lower() == "risk" else "边界"
         fit_cards.append({
-            "title": clean_solution_text(item.get("title", ""), max_len=32),
-            "desc": clean_solution_text(item.get("detail", ""), max_len=110),
-            "tag": "risk" if clean_solution_text(item.get("type", ""), max_len=16).lower() == "risk" else "边界",
+            "title": _proposal_risk_label(item.get("title", ""), item.get("detail", ""), max_len=24),
+            "desc": _proposal_risk_card_desc(
+                item.get("title", ""),
+                item.get("detail", ""),
+                fallback=item.get("detail", ""),
+                audience_key=clean_solution_text(audience_profile.get("key", ""), max_len=24) or "decision_maker",
+                max_len=84,
+            ),
+            "tag": risk_tag,
             "evidenceRefs": _proposal_unique_refs(item, limit=6),
         })
 
@@ -27327,13 +27752,52 @@ def build_solution_render_model(snapshot: dict, proposal_brief: dict, chapter_co
             "eyebrow": clean_solution_text(comparison.get("eyebrow", ""), max_len=24) or "系统对比",
             "title": clean_solution_text(comparison.get("title", ""), max_len=88),
             "summary": clean_solution_text(comparison.get("summary", ""), max_len=180),
-            "judgement": clean_solution_text(comparison.get("judgement", ""), max_len=180),
-            "left": copy.deepcopy(alternative_option),
-            "right": copy.deepcopy(recommended_option),
-            "tertiary": copy.deepcopy(rejected_option) if isinstance(rejected_option, dict) else None,
+            "judgement": _proposal_comparison_judgement(
+                comparison.get("judgement", ""),
+                focus=_proposal_focus_label((recommended_option or {}).get("name", ""), max_len=18),
+                boundary=_proposal_boundary_label([
+                    normalized.get("draft", {}).get("analysis", {}).get("project_constraints", "") if isinstance(normalized.get("draft", {}).get("analysis", {}), dict) else "",
+                    normalized.get("draft", {}).get("analysis", {}).get("tech_constraints", "") if isinstance(normalized.get("draft", {}).get("analysis", {}), dict) else "",
+                ], max_items=2, max_len=18),
+                audience_key=clean_solution_text(audience_profile.get("key", ""), max_len=24) or "decision_maker",
+                max_len=76,
+            ),
+            "left": {
+                **copy.deepcopy(alternative_option),
+                "positioning": _proposal_option_positioning((alternative_option or {}).get("name", ""), (alternative_option or {}).get("positioning", ""), decision=(alternative_option or {}).get("decision", ""), max_len=88),
+                "pros": _proposal_option_points((alternative_option or {}).get("pros", []), kind="pro", decision=(alternative_option or {}).get("decision", ""), limit=2, max_len=20),
+                "cons": _proposal_option_points((alternative_option or {}).get("cons", []), kind="con", decision=(alternative_option or {}).get("decision", ""), limit=2, max_len=20),
+                "fit_for": clean_solution_text((_proposal_option_fit_text((alternative_option or {}).get("fit_for", ""), "适合：", max_len=56)).replace("适合：", ""), max_len=56),
+                "not_fit_for": clean_solution_text((_proposal_option_fit_text((alternative_option or {}).get("not_fit_for", ""), "不适合：", max_len=56)).replace("不适合：", ""), max_len=56),
+            },
+            "right": {
+                **copy.deepcopy(recommended_option),
+                "positioning": _proposal_option_positioning((recommended_option or {}).get("name", ""), (recommended_option or {}).get("positioning", ""), decision=(recommended_option or {}).get("decision", ""), max_len=88),
+                "pros": _proposal_option_points((recommended_option or {}).get("pros", []), kind="pro", decision=(recommended_option or {}).get("decision", ""), limit=2, max_len=20),
+                "cons": _proposal_option_points((recommended_option or {}).get("cons", []), kind="con", decision=(recommended_option or {}).get("decision", ""), limit=2, max_len=20),
+                "fit_for": clean_solution_text((_proposal_option_fit_text((recommended_option or {}).get("fit_for", ""), "更适合：", max_len=56)).replace("更适合：", ""), max_len=56),
+                "not_fit_for": clean_solution_text((_proposal_option_fit_text((recommended_option or {}).get("not_fit_for", ""), "不适合：", max_len=56)).replace("不适合：", ""), max_len=56),
+            },
+            "tertiary": ({
+                **copy.deepcopy(rejected_option),
+                "positioning": _proposal_option_positioning((rejected_option or {}).get("name", ""), (rejected_option or {}).get("positioning", ""), decision=(rejected_option or {}).get("decision", ""), max_len=88),
+                "pros": _proposal_option_points((rejected_option or {}).get("pros", []), kind="pro", decision=(rejected_option or {}).get("decision", ""), limit=2, max_len=20),
+                "cons": _proposal_option_points((rejected_option or {}).get("cons", []), kind="con", decision=(rejected_option or {}).get("decision", ""), limit=2, max_len=20),
+                "fit_for": clean_solution_text((_proposal_option_fit_text((rejected_option or {}).get("fit_for", ""), "适合：", max_len=56)).replace("适合：", ""), max_len=56),
+                "not_fit_for": clean_solution_text((_proposal_option_fit_text((rejected_option or {}).get("not_fit_for", ""), "不适合：", max_len=56)).replace("不适合：", ""), max_len=56),
+            } if isinstance(rejected_option, dict) else None),
             "analogy": {
                 "title": "当前判断",
-                "body": clean_solution_text((content_model.get("chapters", {}).get("comparison", {}) or {}).get("judgement", ""), max_len=220),
+                "body": _proposal_comparison_judgement(
+                    (content_model.get("chapters", {}).get("comparison", {}) or {}).get("judgement", ""),
+                    focus=_proposal_focus_label((recommended_option or {}).get("name", ""), max_len=18),
+                    boundary=_proposal_boundary_label([
+                        normalized.get("draft", {}).get("analysis", {}).get("project_constraints", "") if isinstance(normalized.get("draft", {}).get("analysis", {}), dict) else "",
+                        normalized.get("draft", {}).get("analysis", {}).get("tech_constraints", "") if isinstance(normalized.get("draft", {}).get("analysis", {}), dict) else "",
+                    ], max_items=2, max_len=18),
+                    audience_key=clean_solution_text(audience_profile.get("key", ""), max_len=24) or "decision_maker",
+                    max_len=76,
+                ),
             },
             "cases": [
                 {
@@ -27388,7 +27852,17 @@ def build_solution_render_model(snapshot: dict, proposal_brief: dict, chapter_co
                 }
                 for index, item in enumerate(_solution_unique_compact_texts(recommended.get("integration_points", []), limit=SOLUTION_CONTENT_PRIMARY_LIMITS["integration"]["entries"], max_len=56))
             ],
-            "phases": copy.deepcopy(next_steps[:SOLUTION_CONTENT_PRIMARY_LIMITS["integration"]["phases"]]),
+            "phases": [
+                {
+                    **copy.deepcopy(item),
+                    "phase": clean_solution_text(item.get("phase", ""), max_len=24),
+                    "goal": _proposal_phase_goal(item.get("phase", ""), item.get("goal", ""), item.get("milestone", ""), max_len=72),
+                    "actions": _proposal_compact_sentences(item.get("actions", []), max_items=2, max_len=18),
+                    "milestone": _proposal_phase_milestone(item.get("phase", ""), item.get("milestone", ""), item.get("actions", []), max_len=36),
+                }
+                for item in next_steps[:SOLUTION_CONTENT_PRIMARY_LIMITS["integration"]["phases"]]
+                if isinstance(item, dict)
+            ],
             "systemFigure": copy.deepcopy(integration.get("diagram", {}) if isinstance(integration.get("diagram", {}), dict) else {}),
             "businessFlowMermaid": business_flow,
             "evidenceRefs": _proposal_unique_refs([integration, recommended, next_steps], limit=8),
@@ -29062,26 +29536,39 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
         if not isinstance(item, dict):
             continue
         fit_cards.append({
-            "title": clean_solution_text(item.get("title", ""), max_len=32),
-            "desc": clean_solution_text(item.get("detail", ""), max_len=110),
+            "title": _proposal_pick_heading(item.get("title", ""), "", max_len=32),
+            "desc": _proposal_pick_sentence(item.get("detail", ""), "", max_len=96),
             "tag": "适配理由",
             "meta": _solution_join_meta(_proposal_unique_refs(item, limit=4)),
         })
     for item in risks_and_boundaries[:2]:
         if not isinstance(item, dict):
             continue
+        risk_tag = "risk" if item.get("type") == "risk" else "边界"
         fit_cards.append({
-            "title": clean_solution_text(item.get("title", ""), max_len=32),
-            "desc": clean_solution_text(item.get("detail", ""), max_len=110),
-            "tag": "risk" if item.get("type") == "risk" else "边界",
+            "title": _proposal_risk_label(item.get("title", ""), item.get("detail", ""), max_len=24),
+            "desc": _proposal_risk_card_desc(
+                item.get("title", ""),
+                item.get("detail", ""),
+                fallback=item.get("detail", ""),
+                audience_key=clean_solution_text((brief.get("meta", {}) or {}).get("audience", ""), max_len=24) or "decision_maker",
+                max_len=84,
+            ),
+            "tag": risk_tag,
             "meta": _solution_join_meta(_proposal_unique_refs(item, limit=4)),
         })
     for item in risk_source_cards[:2]:
         if not isinstance(item, dict):
             continue
         fit_cards.append({
-            "title": clean_solution_text(item.get("title", ""), max_len=32),
-            "desc": clean_solution_text(item.get("description", "") or item.get("guardrail", ""), max_len=110),
+            "title": _proposal_risk_label(item.get("title", ""), item.get("description", "") or item.get("guardrail", ""), max_len=24),
+            "desc": _proposal_risk_card_desc(
+                item.get("title", ""),
+                item.get("description", "") or item.get("guardrail", ""),
+                fallback=item.get("guardrail", ""),
+                audience_key=clean_solution_text((brief.get("meta", {}) or {}).get("audience", ""), max_len=24) or "decision_maker",
+                max_len=84,
+            ),
             "tag": "风险边界",
             "meta": clean_solution_text(item.get("guardrail", ""), max_len=48),
         })
@@ -29219,17 +29706,27 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "metrics": [],
             "cards": [
                 {
-                    "title": clean_solution_text(item.get("title", ""), max_len=32),
-                    "desc": clean_solution_text(item.get("summary", "") or item.get("detail", ""), max_len=100),
+                    "title": _proposal_pick_focus_label(item.get("title", ""), "", max_len=18) or clean_solution_text(item.get("title", ""), max_len=32),
+                    "desc": _proposal_workstream_summary(
+                        item.get("title", ""),
+                        item.get("summary", "") or item.get("detail", ""),
+                        fallback=item.get("detail", ""),
+                        max_len=88,
+                    ),
                     "tag": clean_solution_text(item.get("eyebrow", ""), max_len=18) or "工作流",
-                    "meta": clean_solution_text(item.get("detail", ""), max_len=72),
+                    "meta": _proposal_meta_label(item.get("detail", ""), max_len=48),
                 }
                 for item in workstream_source_cards[:4]
                 if isinstance(item, dict)
             ] or [
                 {
-                    "title": clean_solution_text(item.get("name", ""), max_len=32),
-                    "desc": clean_solution_text(item.get("objective", ""), max_len=100),
+                    "title": _proposal_pick_focus_label(item.get("name", ""), "", max_len=18) or clean_solution_text(item.get("name", ""), max_len=32),
+                    "desc": _proposal_workstream_summary(
+                        item.get("name", ""),
+                        item.get("objective", ""),
+                        fallback="、".join(_proposal_compact_sentences(item.get("key_actions", []), max_items=2, max_len=20)),
+                        max_len=88,
+                    ),
                     "tag": clean_solution_text(item.get("timeline", ""), max_len=18) or "工作流",
                     "meta": _proposal_sentence_from_parts([
                         clean_solution_text(item.get("owner_role", ""), max_len=20),

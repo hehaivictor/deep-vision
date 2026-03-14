@@ -575,7 +575,9 @@ class SolutionPayloadTests(unittest.TestCase):
 
         proposal_brief = self.server.build_solution_proposal_brief(snapshot, quality_signals={}, source_mode='structured_sidecar')
         chapter_copy = self.server.build_solution_chapter_copy(snapshot, proposal_brief, quality_signals={})
+        proposal_page = self.server.build_solution_proposal_page(snapshot, proposal_brief, chapter_copy)
         chapters = {item.get('id'): item for item in chapter_copy.get('chapters', []) if isinstance(item, dict)}
+        render_model = proposal_page.get('render_model', {}) if isinstance(proposal_page, dict) else {}
 
         self.assertIn('AI工程底座', proposal_brief.get('thesis', {}).get('headline', ''))
         self.assertNotIn('MLOps/LLMOps', proposal_brief.get('thesis', {}).get('headline', ''))
@@ -607,6 +609,34 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertIn('完成平台POC', (((chapters.get('hero') or {}).get('metrics') or [])[1] or {}).get('value', ''))
         self.assertIn('前提：试点样本真实可控', (((chapters.get('hero') or {}).get('metrics') or [])[1] or {}).get('note', ''))
         self.assertIn('迁移复杂、算力受限、兼顾连续性', (((chapters.get('value_fit') or {}).get('cards') or [])[2] or {}).get('desc', ''))
+        tabs = ((render_model.get('solutions', {}) or {}).get('tabs', []) or [])
+        comparison_render = render_model.get('comparison', {}) or {}
+        left_option = comparison_render.get('left', {}) or {}
+        right_option = comparison_render.get('right', {}) or {}
+        self.assertEqual(comparison_render.get('judgement'), '先把「AI工程底座」试点跑通，再判断第二阶段投入，边界先锁定在「迁移复杂、算力受限」')
+        self.assertEqual((tabs[0] if len(tabs) > 0 else {}).get('headline'), '跑通「AI工程底座」')
+        self.assertEqual((tabs[1] if len(tabs) > 1 else {}).get('headline'), '拉通「分层架构」')
+        self.assertEqual((tabs[2] if len(tabs) > 2 else {}).get('headline'), '把「接口治理」前置')
+        self.assertEqual((left_option.get('pros', []) or [None])[0], '启动最快')
+        self.assertEqual((left_option.get('pros', []) or [None, None])[1], '适合早期探索')
+        self.assertEqual((left_option.get('cons', []) or [None])[0], '难解释核心问题')
+        self.assertEqual((right_option.get('pros', []) or [None])[0], '兼顾深度与落地')
+        self.assertEqual((right_option.get('cons', []) or [None])[0], '边界需要先对齐')
+        self.assertEqual((tabs[0] if len(tabs) > 0 else {}).get('owner'), '平台团队主责')
+        self.assertEqual((((tabs[0] if len(tabs) > 0 else {}).get('dependencies') or [None]))[0], '迁移范围先锁定')
+        self.assertEqual((((tabs[0] if len(tabs) > 0 else {}).get('deliverables') or [None]))[0], '核心流水线跑通')
+        self.assertEqual((((tabs[0] if len(tabs) > 0 else {}).get('metrics') or [None]))[0], {'metric': '验收信号 01', 'target': '上线周期压到天级', 'note': '人工干预同步下降'})
+        self.assertEqual((tabs[1] if len(tabs) > 1 else {}).get('owner'), '架构与稳定性')
+        self.assertEqual((((tabs[1] if len(tabs) > 1 else {}).get('dependencies') or [None]))[0], '迁移范围先锁定')
+        self.assertEqual((((tabs[1] if len(tabs) > 1 else {}).get('deliverables') or [None]))[0], '性能与切换达标')
+        self.assertEqual((((tabs[1] if len(tabs) > 1 else {}).get('metrics') or [None]))[0], {'metric': '验收信号 01', 'target': '性能与切换达标', 'note': '核心时延与切换双达标'})
+        self.assertEqual((tabs[2] if len(tabs) > 2 else {}).get('owner'), '平台与各层协同')
+        self.assertEqual((((tabs[2] if len(tabs) > 2 else {}).get('dependencies') or [None]))[0], '迁移范围先锁定')
+        self.assertEqual((((tabs[2] if len(tabs) > 2 else {}).get('deliverables') or [None]))[0], '契约与集成过线')
+        self.assertEqual((((tabs[2] if len(tabs) > 2 else {}).get('metrics') or [None]))[0], {'metric': '验收信号 01', 'target': '契约与集成过线', 'note': '覆盖率和测试都过线'})
+        self.assertIn('先补培训和研究侧补位', ((((render_model.get('fit', {}) or {}).get('cards', []) or [])[4]) or {}).get('desc', ''))
+        self.assertIn('先设接口评审和协作门禁', ((((render_model.get('fit', {}) or {}).get('cards', []) or [])[5]) or {}).get('desc', ''))
+        self.assertNotIn('MLOps/LLMOps', json.dumps((render_model.get('fit', {}) or {}).get('cards', []), ensure_ascii=False))
 
     def test_ai_prompts_include_sample_style_guidance(self):
         prompt_payload = {

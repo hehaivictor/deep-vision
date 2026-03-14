@@ -1,4 +1,4 @@
-const SOLUTION_ASSET_VERSION = '20260314-solution-v25';
+const SOLUTION_ASSET_VERSION = '20260314-solution-v30';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 const SOLUTION_SOURCE_MODE_LABELS = {
     structured_sidecar: '结构化快照',
@@ -1796,8 +1796,9 @@ function solutionRenderComparisonSection(section) {
             <div class="proposal-comparison-grid">
                 ${solutionRenderOptionCard(section.left, 'contrast')}
                 <div class="proposal-comparison-center">
-                    <div class="proposal-comparison-center-label">核心判断</div>
+                    <div class="proposal-comparison-center-label">推荐结论</div>
                     <div class="proposal-comparison-center-value">${solutionEscapeHtml(section.judgement)}</div>
+                    ${section.summary ? `<div class="proposal-comparison-center-note">${solutionEscapeHtml(section.summary)}</div>` : ''}
                 </div>
                 ${solutionRenderOptionCard(section.right, 'recommended')}
             </div>
@@ -1971,6 +1972,7 @@ function solutionRenderSolutionTabsSection(section) {
                                         <div class="proposal-tab-metric">
                                             <div class="proposal-tab-metric-label">${solutionEscapeHtml(metric.metric || metric.label || '指标')}</div>
                                             <div class="proposal-tab-metric-value">${solutionEscapeHtml(metric.target || metric.value || metric.range || '')}</div>
+                                            ${metric.note ? `<div class="proposal-tab-metric-note">${solutionEscapeHtml(metric.note)}</div>` : ''}
                                         </div>
                                     `).join('')}
                                 </div>
@@ -2177,8 +2179,8 @@ function solutionRenderClosingSection(section, summaryCard) {
                     <h2 class="proposal-section-title">${solutionEscapeHtml(section?.title || '最终建议')}</h2>
                     ${section?.headline ? `<p class="proposal-closing-lead">${solutionEscapeHtml(section.headline)}</p>` : ''}
                     <div class="proposal-closing">
-                        ${section?.decision ? `<p>${solutionEscapeHtml(section.decision)}</p>` : ''}
-                        ${section?.boundary ? `<p>${solutionEscapeHtml(section.boundary)}</p>` : ''}
+                        ${section?.decision ? `<p class="proposal-closing-decision">${solutionEscapeHtml(section.decision)}</p>` : ''}
+                        ${section?.boundary ? `<p class="proposal-closing-boundary">${solutionEscapeHtml(section.boundary)}</p>` : ''}
                     </div>
                 </div>
                 ${!hasClosingContent && (summaryCard?.title || solutionNormalizeList(summaryCard?.bullets).length) ? `
