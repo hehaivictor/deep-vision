@@ -723,6 +723,15 @@ QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = _cfg_text("QUESTION_HIGH_EVIDENCE_SECOND
 if QUESTION_HIGH_EVIDENCE_SECONDARY_LANE not in {"question", "report", "search_decision"}:
     QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = "report"
 QUESTION_HIGH_EVIDENCE_DISABLE_DYNAMIC_LANE = _cfg_bool("QUESTION_HIGH_EVIDENCE_DISABLE_DYNAMIC_LANE", True)
+QUESTION_HIGH_EVIDENCE_HEDGED_ENABLED = _cfg_bool("QUESTION_HIGH_EVIDENCE_HEDGED_ENABLED", False)
+QUESTION_HEDGE_FAILURE_FALLBACK_ENABLED = _cfg_bool("QUESTION_HEDGE_FAILURE_FALLBACK_ENABLED", True)
+QUESTION_HEDGE_REQUIRE_SHADOW_BLOCKER = _cfg_bool("QUESTION_HEDGE_REQUIRE_SHADOW_BLOCKER", True)
+QUESTION_SESSION_HEDGE_BUDGET = _cfg_int("QUESTION_SESSION_HEDGE_BUDGET", 4)
+if QUESTION_SESSION_HEDGE_BUDGET < 0:
+    QUESTION_SESSION_HEDGE_BUDGET = 0
+QUESTION_DIMENSION_HEDGE_BUDGET = _cfg_int("QUESTION_DIMENSION_HEDGE_BUDGET", 1)
+if QUESTION_DIMENSION_HEDGE_BUDGET < 0:
+    QUESTION_DIMENSION_HEDGE_BUDGET = 0
 QUESTION_HEDGE_ADAPTIVE_ENABLED = _cfg_bool("QUESTION_HEDGE_ADAPTIVE_ENABLED", True)
 QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES = _cfg_int("QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES", 8)
 if QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES < 3:
@@ -9752,6 +9761,63 @@ def refresh_session_evidence_ledger(session: dict) -> dict:
     if isinstance(session, dict):
         session["evidence_ledger"] = ledger
     return ledger
+
+
+def _get_question_hedge_budget_state(session: dict, dimension: str) -> dict:
+    interview_log = session.get("interview_log", []) if isinstance(session, dict) else []
+    if not isinstance(interview_log, list):
+        interview_log = []
+    normalized_dimension = str(dimension or "").strip()
+    session_used = 0
+    dimension_used = 0
+    for log in interview_log:
+        if not isinstance(log, dict):
+            continue
+        if not bool(log.get("question_hedge_triggered", False)):
+            continue
+        session_used += 1
+        if str(log.get("dimension", "") or "").strip() == normalized_dimension:
+            dimension_used += 1
+
+    session_budget = max(0, int(QUESTION_SESSION_HEDGE_BUDGET or 0))
+    dimension_budget = max(0, int(QUESTION_DIMENSION_HEDGE_BUDGET or 0))
+    session_remaining = max(0, session_budget - session_used) if session_budget > 0 else 0
+    dimension_remaining = max(0, dimension_budget - dimension_used) if dimension_budget > 0 else 0
+    session_allowed = session_budget > 0 and session_remaining > 0
+    dimension_allowed = dimension_budget > 0 and dimension_remaining > 0
+    hedge_allowed = session_allowed and dimension_allowed
+    return {
+        "session_budget": session_budget,
+        "session_used": session_used,
+        "session_remaining": session_remaining,
+        "dimension_budget": dimension_budget,
+        "dimension_used": dimension_used,
+        "dimension_remaining": dimension_remaining,
+        "hedge_allowed": hedge_allowed,
+    }
+
+
+def _get_question_shadow_blocker_state(session: dict, dimension: str, ledger: Optional[dict] = None) -> dict:
+    effective_ledger = ledger if isinstance(ledger, dict) else build_session_evidence_ledger(session)
+    shadow_draft = effective_ledger.get("shadow_draft", {}) if isinstance(effective_ledger.get("shadow_draft", {}), dict) else {}
+    normalized_dimension = str(dimension or "").strip()
+    blocking_sections = []
+    for section_id, meta in shadow_draft.items():
+        if not isinstance(meta, dict):
+            continue
+        if bool(meta.get("ready", False)):
+            continue
+        blocking_dimensions = [
+            str(item or "").strip()
+            for item in (meta.get("blocking_dimensions", []) if isinstance(meta.get("blocking_dimensions", []), list) else [])
+            if str(item or "").strip()
+        ]
+        if normalized_dimension in blocking_dimensions:
+            blocking_sections.append(str(section_id or "").strip())
+    return {
+        "is_blocker": bool(blocking_sections),
+        "blocking_sections": blocking_sections,
+    }
 
 
 def plan_mid_interview_preflight(
@@ -19476,6 +19542,7 @@ def _select_question_generation_runtime_profile(
     hedge_delay_seconds = float(QUESTION_HEDGED_DELAY_SECONDS)
     dynamic_lane_order_enabled = True
     disallowed_lanes = []
+    fallback_enabled = False
     fast_timeout = _clamp_question_generation_timeout(QUESTION_FAST_TIMEOUT, minimum=5.0)
     fast_max_tokens = _clamp_question_generation_tokens(QUESTION_FAST_MAX_TOKENS, minimum=500)
     full_timeout = None
@@ -19515,6 +19582,8 @@ def _select_question_generation_runtime_profile(
         primary_lane = QUESTION_HIGH_EVIDENCE_PRIMARY_LANE
         secondary_lane = QUESTION_HIGH_EVIDENCE_SECONDARY_LANE
         effective_fast_allowed = False
+        hedged_enabled = bool(QUESTION_HIGH_EVIDENCE_HEDGED_ENABLED)
+        fallback_enabled = bool(QUESTION_HEDGE_FAILURE_FALLBACK_ENABLED)
         fast_output_mode = "full"
         full_timeout = _clamp_question_generation_timeout(
             max((15.0 if is_prefetch else 18.0), float((full_timeout or fast_timeout)) if full_timeout is not None else float(fast_timeout) + 10.0),
@@ -19639,6 +19708,7 @@ def _select_question_generation_runtime_profile(
         "hedge_delay_by_lane": hedge_delay_by_lane,
         "dynamic_lane_order_enabled": dynamic_lane_order_enabled,
         "disallowed_lanes": sorted(set(disallowed_lanes)),
+        "fallback_enabled": fallback_enabled,
         "answer_mode": answer_mode,
         "requires_rationale": requires_rationale,
         "evidence_intent": evidence_intent,
@@ -19653,6 +19723,7 @@ def _prepare_question_generation_runtime(
     base_call_type: str = "question",
     allow_fast_path: bool = True,
 ) -> dict:
+    evidence_ledger = refresh_session_evidence_ledger(session)
     full_prompt, truncated_docs, decision_meta = build_interview_prompt(
         session,
         dimension,
@@ -19691,6 +19762,25 @@ def _prepare_question_generation_runtime(
 
     runtime_profile["fast_prompt_mode"] = fast_prompt_mode
     runtime_profile["full_prompt_mode"] = str((decision_meta or {}).get("output_mode", "full") or "full")
+    hedge_budget_state = _get_question_hedge_budget_state(session, dimension)
+    shadow_blocker_state = _get_question_shadow_blocker_state(session, dimension, ledger=evidence_ledger)
+    concurrent_hedge_allowed = bool(runtime_profile.get("hedged_enabled", QUESTION_HEDGED_ENABLED))
+    fallback_enabled = bool(runtime_profile.get("fallback_enabled", False))
+    selection_reason = str(runtime_profile.get("selection_reason", "") or "").strip()
+
+    if runtime_profile.get("evidence_intent") == "high":
+        if QUESTION_HEDGE_REQUIRE_SHADOW_BLOCKER and not shadow_blocker_state["is_blocker"]:
+            concurrent_hedge_allowed = False
+            selection_reason = ",".join(filter(None, [selection_reason, "hedge_blocked=no_shadow_blocker"]))
+        if not hedge_budget_state["hedge_allowed"]:
+            concurrent_hedge_allowed = False
+            selection_reason = ",".join(filter(None, [selection_reason, "hedge_blocked=budget_exhausted"]))
+
+    runtime_profile["hedged_enabled"] = bool(concurrent_hedge_allowed)
+    runtime_profile["fallback_enabled"] = bool(fallback_enabled)
+    runtime_profile["selection_reason"] = selection_reason
+    runtime_profile["hedge_budget"] = copy.deepcopy(hedge_budget_state)
+    runtime_profile["shadow_blocker"] = copy.deepcopy(shadow_blocker_state)
 
     enriched_decision_meta = dict(decision_meta or {})
     enriched_decision_meta.update({
@@ -19705,6 +19795,10 @@ def _prepare_question_generation_runtime(
         "full_prompt_length": len(full_prompt or ""),
         "dynamic_lane_order_enabled": bool(runtime_profile.get("dynamic_lane_order_enabled", True)),
         "disallowed_lanes": list(runtime_profile.get("disallowed_lanes", []) or []),
+        "hedged_enabled": bool(runtime_profile.get("hedged_enabled", QUESTION_HEDGED_ENABLED)),
+        "fallback_enabled": bool(runtime_profile.get("fallback_enabled", False)),
+        "hedge_budget": copy.deepcopy(hedge_budget_state),
+        "shadow_blocker": copy.deepcopy(shadow_blocker_state),
         "answer_mode": runtime_profile.get("answer_mode", enriched_decision_meta.get("answer_mode", "pick_only")),
         "requires_rationale": bool(runtime_profile.get("requires_rationale", enriched_decision_meta.get("requires_rationale", False))),
         "evidence_intent": runtime_profile.get("evidence_intent", enriched_decision_meta.get("evidence_intent", "low")),
@@ -19718,6 +19812,7 @@ def _prepare_question_generation_runtime(
         "full_prompt": full_prompt,
         "truncated_docs": truncated_docs,
         "decision_meta": enriched_decision_meta,
+        "evidence_ledger": evidence_ledger,
         "runtime_profile": runtime_profile,
     }
 
@@ -19916,6 +20011,23 @@ def generate_question_with_tiered_strategy(
     runtime_profile: Optional[dict] = None,
 ) -> tuple[Optional[str], Optional[dict], str]:
     """问题生成双档策略：轻量 prompt 才尝试快档，失败时回退全量竞速。"""
+    def _annotate_question_result(
+        result_payload: Optional[dict],
+        call_meta: Optional[dict],
+        *,
+        fallback_triggered: bool = False,
+        hedge_triggered_override: Optional[bool] = None,
+    ) -> Optional[dict]:
+        if not isinstance(result_payload, dict):
+            return result_payload
+        meta = dict(call_meta or {})
+        attempts = copy.deepcopy(meta.get("attempts", [])) if isinstance(meta.get("attempts", []), list) else []
+        hedge_triggered = bool(hedge_triggered_override) if hedge_triggered_override is not None else len(attempts) > 1
+        result_payload["question_hedge_triggered"] = bool(hedge_triggered)
+        result_payload["question_fallback_triggered"] = bool(fallback_triggered)
+        result_payload["question_attempts"] = attempts
+        return result_payload
+
     runtime_profile = dict(runtime_profile or {})
     effective_fast_prompt = fast_prompt if isinstance(fast_prompt, str) and fast_prompt else prompt
     effective_fast_allowed = bool(runtime_profile.get("allow_fast_path", allow_fast_path))
@@ -19932,6 +20044,7 @@ def generate_question_with_tiered_strategy(
         minimum=600,
     )
     hedged_enabled = runtime_profile.get("hedged_enabled", QUESTION_HEDGED_ENABLED)
+    fallback_enabled = bool(runtime_profile.get("fallback_enabled", False))
     hedge_delay_seconds = runtime_profile.get("hedge_delay_seconds", QUESTION_HEDGED_DELAY_SECONDS)
     fast_primary_lane, fast_secondary_lane, fast_lane_meta = _resolve_dynamic_question_lane_order(runtime_profile, phase="fast")
     full_primary_lane, full_secondary_lane, full_lane_meta = _resolve_dynamic_question_lane_order(runtime_profile, phase="full")
@@ -20013,6 +20126,7 @@ def generate_question_with_tiered_strategy(
                 fallback_contract=runtime_profile,
             )
             if fast_result:
+                fast_result = _annotate_question_result(fast_result, fast_meta, fallback_triggered=False)
                 _record_question_fast_outcome(True, lane=fast_lane, reason="ok")
                 return fast_response, fast_result, f"fast:{fast_lane}"
             _record_question_fast_outcome(False, lane=fast_lane, reason="parse_failed")
@@ -20045,6 +20159,50 @@ def generate_question_with_tiered_strategy(
         parse_question_response(full_response, debug=debug),
         fallback_contract=runtime_profile,
     ) if full_response else None
+    if full_result:
+        full_result = _annotate_question_result(full_result, full_meta, fallback_triggered=False)
+
+    should_try_fallback = (
+        fallback_enabled
+        and not bool(hedged_enabled)
+        and full_primary_lane != full_secondary_lane
+        and not full_result
+    )
+    if should_try_fallback:
+        if debug:
+            print(f"↪️ 主通道未稳定产出，切换备用通道补发: {full_primary_lane} -> {full_secondary_lane}")
+        fallback_response, fallback_lane, fallback_meta = _call_question_with_optional_hedge(
+            prompt,
+            max_tokens=full_secondary_max_tokens,
+            call_type=f"{base_call_type}_fallback",
+            truncated_docs=truncated_docs,
+            timeout=full_secondary_timeout,
+            retry_on_timeout=True,
+            debug=debug,
+            primary_lane=full_secondary_lane,
+            secondary_lane=full_secondary_lane,
+            hedged_enabled=False,
+            hedge_delay_seconds=full_hedge_delay_seconds,
+            lane_profile_name=str(full_lane_meta.get("strategy_key", "") or ""),
+            lane_runtime_overrides=full_lane_runtime_overrides,
+        )
+        fallback_result = normalize_generated_question_result(
+            parse_question_response(fallback_response, debug=debug),
+            fallback_contract=runtime_profile,
+        ) if fallback_response else None
+        if fallback_result:
+            fallback_meta = dict(fallback_meta or {})
+            primary_attempts = list((full_meta or {}).get("attempts", []) if isinstance((full_meta or {}).get("attempts", []), list) else [])
+            fallback_attempts = list(fallback_meta.get("attempts", []) if isinstance(fallback_meta.get("attempts", []), list) else [])
+            fallback_meta["attempts"] = primary_attempts + fallback_attempts
+            fallback_result = _annotate_question_result(
+                fallback_result,
+                fallback_meta,
+                fallback_triggered=True,
+                hedge_triggered_override=False,
+            )
+            return fallback_response, fallback_result, f"full_fallback:{fallback_lane}"
+
     if debug and not full_response:
         print(f"⚠️ 全量档未命中，原因: {_format_question_tier_attempts_for_log(full_meta)}")
     elif debug and full_response and not full_result:
@@ -20666,6 +20824,8 @@ def submit_answer(session_id):
     question_generation_tier = data.get("question_generation_tier", "")
     question_selected_lane = data.get("question_selected_lane", "")
     question_runtime_profile = data.get("question_runtime_profile", "")
+    question_hedge_triggered = data.get("question_hedge_triggered", False)
+    question_fallback_triggered = data.get("question_fallback_triggered", False)
     preflight_intervened = data.get("preflight_intervened", False)
     preflight_fingerprint = data.get("preflight_fingerprint", "")
     preflight_planner_mode = data.get("preflight_planner_mode", "")
@@ -20712,6 +20872,10 @@ def submit_answer(session_id):
         return jsonify({"error": "question_selected_lane必须是字符串"}), 400
     if not isinstance(question_runtime_profile, str):
         return jsonify({"error": "question_runtime_profile必须是字符串"}), 400
+    if not isinstance(question_hedge_triggered, bool):
+        return jsonify({"error": "question_hedge_triggered必须是布尔值"}), 400
+    if not isinstance(question_fallback_triggered, bool):
+        return jsonify({"error": "question_fallback_triggered必须是布尔值"}), 400
     if not isinstance(preflight_intervened, bool):
         return jsonify({"error": "preflight_intervened必须是布尔值"}), 400
     if not isinstance(preflight_fingerprint, str):
@@ -20792,6 +20956,8 @@ def submit_answer(session_id):
         "question_generation_tier": str(question_generation_tier or "").strip(),
         "question_selected_lane": str(question_selected_lane or "").strip(),
         "question_runtime_profile": str(question_runtime_profile or "").strip(),
+        "question_hedge_triggered": bool(question_hedge_triggered),
+        "question_fallback_triggered": bool(question_fallback_triggered),
         "preflight_intervened": bool(preflight_intervened),
         "preflight_fingerprint": str(preflight_fingerprint or "").strip(),
         "preflight_planner_mode": str(preflight_planner_mode or "").strip(),
@@ -24378,6 +24544,8 @@ SOLUTION_PROPOSAL_BRIEF_AI_BASE_TOKENS = 4200
 SOLUTION_PROPOSAL_BRIEF_AI_BASE_TIMEOUT = 65.0
 SOLUTION_CHAPTER_COPY_AI_BASE_TOKENS = 5200
 SOLUTION_CHAPTER_COPY_AI_BASE_TIMEOUT = 70.0
+SOLUTION_REVIEW_AI_BASE_TOKENS = 2600
+SOLUTION_REVIEW_AI_BASE_TIMEOUT = 45.0
 SOLUTION_PROPOSAL_BRIEF_REQUIRED_KEYS = [
     "meta",
     "thesis",
@@ -24400,6 +24568,17 @@ SOLUTION_PROPOSAL_CHAPTER_IDS = [
     "roadmap",
     "value_fit",
 ]
+SOLUTION_PROPOSAL_RENDER_NAV_ITEMS = [
+    {"id": "overview", "label": "方案概览"},
+    {"id": "comparison", "label": "系统对比"},
+    {"id": "solutions", "label": "落地方案"},
+    {"id": "integration", "label": "系统集成"},
+    {"id": "knowledge", "label": "知识统一"},
+    {"id": "flywheel", "label": "数据联动"},
+    {"id": "value", "label": "预期价值"},
+    {"id": "fit", "label": "为什么适合"},
+    {"id": "closing", "label": "最终建议"},
+]
 SOLUTION_PROPOSAL_LAYOUTS = {
     "hero_metrics",
     "conflict_cards",
@@ -24409,6 +24588,18 @@ SOLUTION_PROPOSAL_LAYOUTS = {
     "loop_diagram",
     "phased_timeline",
     "value_grid",
+}
+SOLUTION_CONTENT_PRIMARY_LIMITS = {
+    "hero": {"metrics": 3, "proof_points": 2},
+    "why_now": {"cards": 3},
+    "comparison": {"cards": 3, "matrix_rows": 5},
+    "blueprint": {"cards": 3},
+    "workstreams": {"cards": 3},
+    "integration": {"entries": 3, "phases": 3},
+    "knowledge": {"pains": 3, "solutions": 3, "layers": 3},
+    "flywheel": {"nodes": 4, "cases": 3},
+    "value_fit": {"metrics": 4, "fit_cards": 4, "risk_cards": 2},
+    "closing": {"sentences": 3, "bullets": 3},
 }
 
 
@@ -25318,14 +25509,14 @@ def build_solution_runtime_snapshot(snapshot: dict) -> dict:
 
     decision_cards = [
         {
-            "eyebrow": "判断",
-            "title": "为什么值得现在推进",
+            "eyebrow": "主判断",
+            "title": "当前判断",
             "summary": context.get("pain_point", "核心议题"),
             "detail": context.get("summary", "当前报告已经沉淀出足够清晰的推进判断。"),
         },
         {
-            "eyebrow": "切口",
-            "title": "优先从哪里进入",
+            "eyebrow": "优先切口",
+            "title": "优先切口",
             "summary": context.get("entry_point", "首轮动作"),
             "detail": _solution_join_meta([
                 actions[0].get("timeline", "") if actions else "",
@@ -25333,8 +25524,8 @@ def build_solution_runtime_snapshot(snapshot: dict) -> dict:
             ]) or "优先从最靠近业务闭环的动作进入。",
         },
         {
-            "eyebrow": "边界",
-            "title": "推进前必须锁定什么",
+            "eyebrow": "边界条件",
+            "title": "成立边界",
             "summary": context.get("constraint", "交付边界"),
             "detail": clean_solution_text(
                 analysis.get("project_constraints", "") or analysis.get("tech_constraints", ""),
@@ -25450,6 +25641,798 @@ def _proposal_compact_sentences(values, max_items: int = 4, max_len: int = 120) 
 def _proposal_sentence_from_parts(parts: list[str], fallback: str, max_len: int = 140) -> str:
     text = clean_solution_text("，".join([part for part in parts if clean_solution_text(part, max_len=max_len)]), max_len=max_len)
     return text or clean_solution_text(fallback, max_len=max_len)
+
+
+SOLUTION_PROPOSAL_INTERNAL_TERMS = (
+    "proposal_brief",
+    "chapter_copy",
+    "payload",
+    "schema",
+    "结构化素材",
+    "方案页",
+    "提案页",
+    "页面骨架",
+    "渲染",
+    "字段",
+    "debug",
+)
+
+
+def _proposal_contains_internal_terms(value) -> bool:
+    text = clean_solution_text(value, max_len=240).lower()
+    if not text:
+        return False
+    return any(term in text for term in SOLUTION_PROPOSAL_INTERNAL_TERMS)
+
+
+_PROPOSAL_FOCUS_REPLACEMENTS = (
+    ("MLOps/LLMOps自动化平台", "AI工程底座"),
+    ("MLOps/LLMOps平台", "AI工程底座"),
+    ("MLOps平台", "AI工程底座"),
+    ("LLMOps平台", "AI工程底座"),
+    ("分层解耦架构落地", "分层架构"),
+    ("分层解耦架构", "分层架构"),
+    ("规格驱动接口治理", "接口治理"),
+    ("规格驱动化接口治理", "接口治理"),
+    ("自动化迁移工具链建设", "迁移工具链"),
+    ("混合云架构", "混合云能力"),
+    ("混合云资源调度能力", "混合云能力"),
+    ("企业微信 + ERP/CRM 全面打通", "系统打通"),
+)
+
+_PROPOSAL_SENTENCE_REPLACEMENTS = (
+    ("云厂商托管AI服务", "托管AI服务"),
+    ("模型训练-验证-部署-监控全链路自动化", "训练、部署和监控统一"),
+    ("模型层/推理层/网关层", "模型、推理和网关三层"),
+    ("建立OpenAPI/gRPC契约，通过代码生成严格管控层间接口", "建立统一接口契约，用自动化门禁锁定层间边界"),
+    ("OpenAPI/gRPC契约规范", "统一接口契约"),
+    ("代码生成工具与CI门禁", "代码生成和自动化门禁"),
+    ("公私云动态调度与秒级故障转移", "公私云统一调度和快速切换"),
+    ("核心模型私有化+弹性推理公有云，智能路由按延迟/成本/负载动态调度", "核心模型私有化，弹性推理走公有云，统一调度延迟、成本和负载"),
+    ("跨框架转换流水线", "跨框架迁移流水线"),
+    ("自动化精度验证与性能基线对比能力", "自动化验证和性能基线能力"),
+    ("降低对AI平台工程师/SRE的强依赖", "降低对少数专家的强依赖"),
+    ("已有足够结构化素材支撑高级提案页", "已有足够事实支撑试点方案"),
+    ("当前已有完整结构化素材和页面骨架渲染上下文。", "当前访谈结论、方案和行动已经足以支撑试点判断。"),
+    ("方案页再漂亮也只是一次性交付。", "否则这次试点仍会停留在一次性交付。"),
+)
+
+_PROPOSAL_HARD_TECH_TERMS = (
+    "MLOps",
+    "LLMOps",
+    "TensorFlow",
+    "PyTorch",
+    "ONNX",
+    "OpenAPI",
+    "gRPC",
+    "SRE",
+    "P99",
+    "CI门禁",
+    "静态图",
+    "动态调试",
+)
+
+_PROPOSAL_META_TITLE_PATTERNS = (
+    r"^(不是|没有).{0,48}(而是|就只是|不是).+",
+    r".*(最后一章|必须回答|内容堆满|路径选择|长期能力|回流机制).*",
+    r".*组织成.+(蓝图|推进路径).*",
+)
+
+
+def _proposal_focus_label(value: str, max_len: int = 18) -> str:
+    text = clean_solution_text(value, max_len=max_len * 3)
+    if not text:
+        return ""
+    quoted = re.search(r"[「\"]([^」\"]{2,24})[」\"]", text)
+    if quoted:
+        text = quoted.group(1)
+    for source, target in _PROPOSAL_FOCUS_REPLACEMENTS:
+        text = text.replace(source, target)
+    text = re.sub(r"（[^）]{0,24}）", "", text)
+    text = re.sub(r"\([^)]{0,24}\)", "", text)
+    text = re.sub(r"(优先建设路径|优先路径|优先建设|建设路径|落地方案|落地|方案|路径|工作流|模块)$", "", text).strip("「」 ")
+    text = re.sub(r"\s+", "", text)
+    return clean_solution_text(text, max_len=max_len)
+
+
+def _proposal_topic_label(value, max_len: int = 18) -> str:
+    text = clean_solution_text(value, max_len=max_len * 4)
+    if not text:
+        return ""
+    for source, target in _PROPOSAL_FOCUS_REPLACEMENTS:
+        text = text.replace(source, target)
+    text = text.replace("交互式访谈", "").replace("深度访谈", "")
+    text = re.sub(r"(需求调研|调研报告|访谈报告|报告|摘要|方案)$", "", text).strip("「」 ")
+    text = re.sub(r"\s+", "", text)
+    if "智能体" in text and "建设" not in text:
+        if "AI智能体" in text:
+            text = text.replace("AI智能体", "AI智能体建设")
+        else:
+            text = text.replace("智能体", "智能体建设")
+    if "用户反馈" in text and "闭环" not in text:
+        text = text.replace("用户反馈", "反馈闭环")
+    return clean_solution_text(text, max_len=max_len)
+
+
+def _proposal_boundary_label(value, max_items: int = 3, max_len: int = 28) -> str:
+    raw_values = value if isinstance(value, list) else [value]
+    text = clean_solution_text("；".join([clean_solution_text(item, max_len=160) for item in raw_values if clean_solution_text(item, max_len=160)]), max_len=240)
+    if not text:
+        return "边界条件"
+    parts = [item.strip("，。、；; ") for item in re.split(r"[；;]", text) if item.strip("，。、；; ")]
+    labels = []
+    for part in parts:
+        label = ""
+        if "迁移" in part or "历史代码" in part:
+            label = "迁移复杂"
+        elif "算力" in part or "基础设施" in part:
+            label = "算力受限"
+        elif "连续" in part or "业务连续" in part:
+            label = "兼顾连续性"
+        elif "合规" in part or "审计" in part or "脱敏" in part:
+            label = "合规前置"
+        elif "资源" in part or "预算" in part:
+            label = "资源受限"
+        elif "风险" in part and "重构" in part:
+            label = "控制重构风险"
+        else:
+            label = clean_solution_text(part, max_len=10)
+        label = clean_solution_text(label, max_len=10)
+        if not label or label in labels:
+            continue
+        labels.append(label)
+        if len(labels) >= max_items:
+            break
+    if not labels:
+        return "边界条件"
+    return clean_solution_text("、".join(labels), max_len=max_len) or "边界条件"
+
+
+def _proposal_risk_label(title: str, detail: str = "", max_len: int = 18) -> str:
+    text = clean_solution_text(f"{title} {detail}", max_len=240)
+    if not text:
+        return "关键风险"
+    if any(token in text for token in ("TensorFlow", "PyTorch", "学习曲线", "专家")):
+        return "研发学习成本高"
+    if any(token in text for token in ("接口", "契约", "协同", "评审流程")):
+        return "跨团队协同易失控"
+    if any(token in text for token in ("迁移", "历史代码", "存量模型")):
+        return "迁移复杂度高"
+    if any(token in text for token in ("算力", "基础设施", "资源")):
+        return "算力与资源受限"
+    if any(token in text for token in ("合规", "审计", "脱敏")):
+        return "合规压力前置"
+    if any(token in text for token in ("延期", "排期", "时效")):
+        return "排期风险上升"
+    return _proposal_focus_label(title, max_len=max_len) or clean_solution_text(title, max_len=max_len) or "关键风险"
+
+
+def _proposal_boundary_sentence(boundary_label: str, risk_label: str = "", audience_key: str = "decision_maker", max_len: int = 110) -> str:
+    boundary = clean_solution_text(boundary_label, max_len=24) or "关键边界"
+    risk = clean_solution_text(risk_label, max_len=18)
+    if audience_key == "execution":
+        base = f"前提是先锁定「{boundary}」"
+        if risk:
+            base += f"并提前处理「{risk}」"
+        base += "；否则先收缩为单点验证。"
+        return clean_solution_text(base, max_len=max_len)
+    if audience_key == "manager":
+        base = f"成立前提是「{boundary}」可提前确认"
+        if risk:
+            base += f"，同时把「{risk}」前置管控"
+        base += "；不满足时应先缩小试点范围。"
+        return clean_solution_text(base, max_len=max_len)
+    base = f"这条路径成立的前提是「{boundary}」可提前锁定"
+    if risk:
+        base += f"，并把「{risk}」控制在试点期内"
+    base += "；否则不建议直接扩大投入。"
+    return clean_solution_text(base, max_len=max_len)
+
+
+def _proposal_compact_points(values, limit: int = 4, max_len: int = 56, mode: str = "sentence") -> list[str]:
+    items = values if isinstance(values, list) else [values]
+    results = []
+    seen = set()
+    for item in items:
+        raw = clean_solution_text(item, max_len=max_len * 4)
+        if mode == "label":
+            risky = _proposal_has_hard_technical_terms(raw) or any(
+                token in raw for token in ("风险", "失败", "失效", "学习曲线", "延期", "混乱", "受阻", "迁移复杂", "协同失败")
+            )
+            if risky:
+                text = _proposal_risk_label(raw, "", max_len=max_len)
+            else:
+                text = _proposal_pick_focus_label(raw, "", max_len=max_len)
+        else:
+            text = _proposal_pick_sentence(raw, "", max_len=max_len)
+        if not text:
+            continue
+        key = re.sub(r"\s+", "", text.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(text)
+        if len(results) >= limit:
+            break
+    return results
+
+
+def _proposal_stage_label(values) -> str:
+    raw_values = values if isinstance(values, list) else [values]
+    combined = " ".join(clean_solution_text(item, max_len=120) for item in raw_values if clean_solution_text(item, max_len=120))
+    if not combined:
+        return "当前阶段"
+    if any(keyword in combined for keyword in ("试点", "首轮", "范围冻结", "POC", "验证")):
+        return "试点决策阶段"
+    if any(keyword in combined for keyword in ("迁移", "重构", "升级")):
+        return "架构升级阶段"
+    if any(keyword in combined for keyword in ("落地", "上线", "交付")):
+        return "落地启动阶段"
+    return "当前阶段"
+
+
+def _proposal_business_sentence(value, max_len: int = 100) -> str:
+    text = clean_solution_text(value, max_len=max_len * 4)
+    if not text:
+        return ""
+    for source, target in _PROPOSAL_FOCUS_REPLACEMENTS:
+        text = text.replace(source, target)
+    for source, target in _PROPOSAL_SENTENCE_REPLACEMENTS:
+        text = text.replace(source, target)
+    text = re.sub(r"证据\s*Q[\d、, ]+", "", text)
+    text = re.sub(r"Q\d+(?:、Q\d+)*", "", text)
+    text = re.sub(r"[·•]+", "，", text)
+    text = re.sub(r"\s+", "", text)
+    text = text.strip("，。；; ")
+    return clean_solution_text(text, max_len=max_len)
+
+
+def _proposal_business_tag(title: str, fallback: str = "核心模块") -> str:
+    label = _proposal_focus_label(title, max_len=18)
+    if "底座" in label:
+        return "能力底座"
+    if "架构" in label:
+        return "系统结构"
+    if "治理" in label:
+        return "治理机制"
+    if "迁移" in label or "工具链" in label:
+        return "迁移能力"
+    return clean_solution_text(fallback, max_len=18) or "核心模块"
+
+
+def _proposal_metric_label(value: str, fallback: str = "关键指标") -> str:
+    label = _proposal_focus_label(value, max_len=18)
+    if not label:
+        return fallback
+    if label.endswith(("建设节奏", "推进度", "落地率", "效率")):
+        return label
+    if "底座" in label:
+        return f"{label}建设节奏"
+    if "架构" in label:
+        return f"{label}推进度"
+    if "治理" in label:
+        return f"{label}落地率"
+    if "迁移" in label:
+        return f"{label}效率"
+    return label
+
+
+def _proposal_metric_value(value: str, max_len: int = 32) -> str:
+    text = _proposal_business_sentence(value, max_len=max_len * 4) or clean_solution_text(value, max_len=max_len * 4)
+    if not text:
+        return ""
+    replacements = (
+        ("完成平台选型与POC", "完成平台POC"),
+        ("完成核心流水线搭建", "上线核心流水线"),
+        ("模型上线周期从周级降至天级", "上线周期降到天级"),
+        ("人工干预环节减少70%", "人工干预减少70%"),
+        ("核心判断能直接回溯到样本、风险和执行动作", "核心判断可直接回溯"),
+        ("形成可复用的模块、路径与风险边界", "形成统一提案资产"),
+        ("支持管理层、业务和技术团队共用一套判断框架", "支持跨团队共用判断框架"),
+    )
+    for source, target in replacements:
+        text = text.replace(source, target)
+    parts = [part.strip("，。；; ") for part in re.split(r"[，。；;]", text) if part.strip("，。；; ")]
+    preferred = []
+    for part in parts:
+        if any(token in part for token in ("Q1", "Q2", "Q3", "%", "周", "天", "月", "POC", "上线", "回溯", "提案资产", "判断框架", "工作流")):
+            preferred.append(part)
+    compact = preferred[:2] or parts[:2]
+    return clean_solution_text("，".join(compact), max_len=max_len) or clean_solution_text(text, max_len=max_len)
+
+
+def _proposal_metric_note(value: str, max_len: int = 40) -> str:
+    text = _proposal_business_sentence(value, max_len=max_len * 3) or clean_solution_text(value, max_len=max_len * 3)
+    if not text:
+        return ""
+    replacements = (
+        ("关键入口和核心角色可按阶段投入", "前提：关键角色持续投入"),
+        ("首轮试点聚焦单一高信号场景", "前提：试点范围保持聚焦"),
+        ("样本真实性与触发时机控制到位", "前提：试点样本真实可控"),
+        ("关键问题能稳定命中核心访谈对象", "前提：核心问题持续命中"),
+        ("关键事实与阶段结论持续沉淀到统一台账", "前提：结论持续沉淀"),
+        ("试点结论能沉淀为统一提案资产", "前提：试点结论持续沉淀"),
+    )
+    for source, target in replacements:
+        text = text.replace(source, target)
+    if not text.startswith("前提："):
+        text = f"前提：{text}"
+    return clean_solution_text(text, max_len=max_len)
+
+
+def _proposal_has_hard_technical_terms(value) -> bool:
+    text = clean_solution_text(value, max_len=240)
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(term.lower() in lowered for term in _PROPOSAL_HARD_TECH_TERMS)
+
+
+def _proposal_looks_like_meta_title(value) -> bool:
+    text = clean_solution_text(value, max_len=160)
+    if not text:
+        return False
+    normalized = re.sub(r"\s+", "", text)
+    return any(re.search(pattern, normalized) for pattern in _PROPOSAL_META_TITLE_PATTERNS)
+
+
+def _proposal_looks_like_placeholder_title(value) -> bool:
+    raw = clean_solution_text(value, max_len=120)
+    if not raw:
+        return False
+    text = raw.lower()
+    if _proposal_looks_like_meta_title(raw):
+        return True
+    return any(token in text for token in ("why_now", "comparison", "blueprint", "workstreams", "integration", "roadmap", "value_fit"))
+
+
+def _proposal_pick_heading(value, fallback="", max_len: int = 72) -> str:
+    raw = clean_solution_text(value, max_len=max_len * 4)
+    fallback_text = _proposal_business_sentence(fallback, max_len=max_len) or clean_solution_text(fallback, max_len=max_len)
+    if not raw or _proposal_contains_internal_terms(raw):
+        return fallback_text
+    candidate = _proposal_business_sentence(raw, max_len=max_len) or clean_solution_text(raw, max_len=max_len)
+    if (_proposal_has_hard_technical_terms(raw) or len(raw) > max_len + 8 or _proposal_looks_like_placeholder_title(raw)) and fallback_text:
+        return fallback_text
+    if len(candidate) > max_len and fallback_text:
+        return fallback_text
+    return candidate or fallback_text
+
+
+def _proposal_pick_sentence(value, fallback="", max_len: int = 120) -> str:
+    raw = clean_solution_text(value, max_len=max_len * 4)
+    fallback_text = _proposal_business_sentence(fallback, max_len=max_len) or clean_solution_text(fallback, max_len=max_len)
+    if not raw or _proposal_contains_internal_terms(raw):
+        return fallback_text
+    candidate = _proposal_business_sentence(raw, max_len=max_len) or clean_solution_text(raw, max_len=max_len)
+    if (_proposal_has_hard_technical_terms(raw) and fallback_text) or (len(raw) > max_len * 2 and fallback_text):
+        return fallback_text
+    if len(candidate) > max_len and fallback_text:
+        return fallback_text
+    return candidate or fallback_text
+
+
+def _proposal_pick_focus_label(value, fallback="", max_len: int = 18) -> str:
+    raw = clean_solution_text(value, max_len=max_len * 4)
+    fallback_text = _proposal_focus_label(fallback, max_len=max_len) or clean_solution_text(fallback, max_len=max_len)
+    if not raw or _proposal_contains_internal_terms(raw):
+        return fallback_text
+    candidate = _proposal_focus_label(raw, max_len=max_len) or clean_solution_text(raw, max_len=max_len)
+    if _proposal_has_hard_technical_terms(raw) and fallback_text:
+        return fallback_text
+    return candidate or fallback_text
+
+
+def _proposal_pick_metric_label(value, fallback="关键指标", max_len: int = 18) -> str:
+    raw = clean_solution_text(value, max_len=max_len * 4)
+    fallback_text = clean_solution_text(_proposal_metric_label(fallback, fallback="关键指标"), max_len=max_len) or clean_solution_text(fallback, max_len=max_len) or "关键指标"
+    if not raw or _proposal_contains_internal_terms(raw):
+        return fallback_text
+    candidate = clean_solution_text(_proposal_metric_label(raw, fallback=fallback_text), max_len=max_len)
+    if _proposal_has_hard_technical_terms(raw) and fallback_text:
+        return fallback_text
+    return candidate or fallback_text
+
+
+def _proposal_postprocess_text_list(values, fallback_values, max_items: int, max_len: int = 88, mode: str = "sentence") -> list[str]:
+    source_items = values if isinstance(values, list) else []
+    fallback_items = fallback_values if isinstance(fallback_values, list) else []
+    normalized = []
+    seen = set()
+    limit = max(len(source_items), len(fallback_items))
+    for idx in range(limit):
+        source_value = source_items[idx] if idx < len(source_items) else ""
+        fallback_value = fallback_items[idx] if idx < len(fallback_items) else ""
+        if mode == "label":
+            text = _proposal_pick_focus_label(source_value, fallback_value, max_len=max_len)
+        else:
+            text = _proposal_pick_sentence(source_value, fallback_value, max_len=max_len)
+        key = re.sub(r"\s+", "", clean_solution_text(text, max_len=0).lower())
+        if not text or not key or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+        if len(normalized) >= max_items:
+            break
+    return normalized
+
+
+def _solution_postprocess_proposal_brief(brief: dict, fallback_brief: dict) -> dict:
+    processed = copy.deepcopy(brief if isinstance(brief, dict) else {})
+    fallback = fallback_brief if isinstance(fallback_brief, dict) else {}
+
+    processed_meta = processed.get("meta", {}) if isinstance(processed.get("meta", {}), dict) else {}
+    fallback_meta = fallback.get("meta", {}) if isinstance(fallback.get("meta", {}), dict) else {}
+    for key in ("audience", "audience_label", "audience_reasoning", "proposal_goal"):
+        fallback_value = clean_solution_text(fallback_meta.get(key, ""), max_len=88 if key == "audience_reasoning" else 24)
+        if fallback_value:
+            processed_meta[key] = fallback_value
+    processed["meta"] = processed_meta
+
+    processed_thesis = processed.get("thesis", {}) if isinstance(processed.get("thesis", {}), dict) else {}
+    fallback_thesis = fallback.get("thesis", {}) if isinstance(fallback.get("thesis", {}), dict) else {}
+    processed["thesis"] = {
+        "headline": _proposal_pick_heading(processed_thesis.get("headline", ""), fallback_thesis.get("headline", ""), max_len=72),
+        "subheadline": _proposal_pick_sentence(processed_thesis.get("subheadline", ""), fallback_thesis.get("subheadline", ""), max_len=160),
+        "why_now": _proposal_pick_sentence(processed_thesis.get("why_now", ""), fallback_thesis.get("why_now", ""), max_len=180),
+        "core_decision": _proposal_pick_sentence(processed_thesis.get("core_decision", ""), fallback_thesis.get("core_decision", ""), max_len=180),
+    }
+
+    processed_context = processed.get("context", {}) if isinstance(processed.get("context", {}), dict) else {}
+    fallback_context = fallback.get("context", {}) if isinstance(fallback.get("context", {}), dict) else {}
+    processed_context["business_scene"] = _proposal_pick_sentence(processed_context.get("business_scene", ""), fallback_context.get("business_scene", ""), max_len=80)
+    processed_context["current_state"] = _proposal_postprocess_text_list(processed_context.get("current_state", []), fallback_context.get("current_state", []), max_items=4, max_len=88)
+    processed_context["core_conflicts"] = _proposal_postprocess_text_list(processed_context.get("core_conflicts", []), fallback_context.get("core_conflicts", []), max_items=4, max_len=88)
+    processed_context["constraints"] = _proposal_postprocess_text_list(processed_context.get("constraints", []), fallback_context.get("constraints", []), max_items=4, max_len=72)
+    processed["context"] = processed_context
+
+    fallback_options = fallback.get("options", []) if isinstance(fallback.get("options", []), list) else []
+    processed_options = []
+    for idx, option in enumerate(processed.get("options", []) if isinstance(processed.get("options", []), list) else []):
+        if not isinstance(option, dict):
+            continue
+        fallback_option = fallback_options[idx] if idx < len(fallback_options) and isinstance(fallback_options[idx], dict) else {}
+        processed_options.append({
+            "name": _proposal_pick_heading(option.get("name", ""), fallback_option.get("name", ""), max_len=32),
+            "positioning": _proposal_pick_sentence(option.get("positioning", ""), fallback_option.get("positioning", ""), max_len=120),
+            "pros": _proposal_postprocess_text_list(option.get("pros", []), fallback_option.get("pros", []), max_items=4, max_len=64),
+            "cons": _proposal_postprocess_text_list(option.get("cons", []), fallback_option.get("cons", []), max_items=4, max_len=64),
+            "fit_for": _proposal_pick_sentence(option.get("fit_for", ""), fallback_option.get("fit_for", ""), max_len=96),
+            "not_fit_for": _proposal_pick_sentence(option.get("not_fit_for", ""), fallback_option.get("not_fit_for", ""), max_len=96),
+            "decision": clean_solution_text(option.get("decision", "") or fallback_option.get("decision", "alternative"), max_len=16).lower() or "alternative",
+            "evidence_refs": _proposal_unique_refs(option, limit=8) or _proposal_unique_refs(fallback_option, limit=8),
+        })
+    if processed_options:
+        processed["options"] = processed_options
+
+    processed_recommended = processed.get("recommended_solution", {}) if isinstance(processed.get("recommended_solution", {}), dict) else {}
+    fallback_recommended = fallback.get("recommended_solution", {}) if isinstance(fallback.get("recommended_solution", {}), dict) else {}
+    processed_recommended["north_star"] = _proposal_pick_sentence(processed_recommended.get("north_star", ""), fallback_recommended.get("north_star", ""), max_len=140)
+    processed_recommended["architecture_statement"] = _proposal_pick_sentence(processed_recommended.get("architecture_statement", ""), fallback_recommended.get("architecture_statement", ""), max_len=180)
+    fallback_modules = fallback_recommended.get("modules", []) if isinstance(fallback_recommended.get("modules", []), list) else []
+    processed_modules = []
+    for idx, module in enumerate(processed_recommended.get("modules", []) if isinstance(processed_recommended.get("modules", []), list) else []):
+        if not isinstance(module, dict):
+            continue
+        fallback_module = fallback_modules[idx] if idx < len(fallback_modules) and isinstance(fallback_modules[idx], dict) else {}
+        name = _proposal_pick_focus_label(module.get("name", ""), fallback_module.get("name", ""), max_len=18)
+        objective = _proposal_pick_sentence(module.get("objective", ""), fallback_module.get("objective", ""), max_len=120)
+        if not name or not objective:
+            continue
+        processed_modules.append({
+            "name": name,
+            "objective": objective,
+            "acceptance_signals": _proposal_postprocess_text_list(module.get("acceptance_signals", []), fallback_module.get("acceptance_signals", []), max_items=3, max_len=48),
+        })
+    if processed_modules:
+        processed_recommended["modules"] = processed_modules
+    processed_recommended["integration_points"] = _proposal_postprocess_text_list(processed_recommended.get("integration_points", []), fallback_recommended.get("integration_points", []), max_items=5, max_len=24, mode="label")
+    processed_recommended["dataflow"] = _proposal_postprocess_text_list(processed_recommended.get("dataflow", []), fallback_recommended.get("dataflow", []), max_items=5, max_len=24, mode="label")
+    processed_recommended["governance"] = _proposal_postprocess_text_list(processed_recommended.get("governance", []), fallback_recommended.get("governance", []), max_items=5, max_len=56)
+    processed["recommended_solution"] = processed_recommended
+
+    fallback_workstreams = fallback.get("workstreams", []) if isinstance(fallback.get("workstreams", []), list) else []
+    processed_workstreams = []
+    for idx, item in enumerate(processed.get("workstreams", []) if isinstance(processed.get("workstreams", []), list) else []):
+        if not isinstance(item, dict):
+            continue
+        fallback_item = fallback_workstreams[idx] if idx < len(fallback_workstreams) and isinstance(fallback_workstreams[idx], dict) else {}
+        name = _proposal_pick_heading(item.get("name", ""), fallback_item.get("name", ""), max_len=32)
+        objective = _proposal_pick_sentence(item.get("objective", ""), fallback_item.get("objective", ""), max_len=140)
+        if not name or not objective:
+            continue
+        processed_workstreams.append({
+            "name": name,
+            "objective": objective,
+            "key_actions": _proposal_postprocess_text_list(item.get("key_actions", []), fallback_item.get("key_actions", []), max_items=4, max_len=64),
+            "deliverables": _proposal_postprocess_text_list(item.get("deliverables", []), fallback_item.get("deliverables", []), max_items=3, max_len=48),
+            "owner_role": clean_solution_text(item.get("owner_role", "") or fallback_item.get("owner_role", ""), max_len=24),
+            "timeline": clean_solution_text(item.get("timeline", "") or fallback_item.get("timeline", ""), max_len=24),
+            "dependencies": _proposal_postprocess_text_list(item.get("dependencies", []), fallback_item.get("dependencies", []), max_items=3, max_len=48),
+            "acceptance_signals": _proposal_postprocess_text_list(item.get("acceptance_signals", []), fallback_item.get("acceptance_signals", []), max_items=3, max_len=48),
+            "evidence_refs": _proposal_unique_refs(item, limit=8) or _proposal_unique_refs(fallback_item, limit=8),
+        })
+    if processed_workstreams:
+        processed["workstreams"] = processed_workstreams
+
+    fallback_value_model = fallback.get("value_model", []) if isinstance(fallback.get("value_model", []), list) else []
+    processed_value_model = []
+    for idx, item in enumerate(processed.get("value_model", []) if isinstance(processed.get("value_model", []), list) else []):
+        if not isinstance(item, dict):
+            continue
+        fallback_item = fallback_value_model[idx] if idx < len(fallback_value_model) and isinstance(fallback_value_model[idx], dict) else {}
+        metric = _proposal_pick_metric_label(item.get("metric", ""), fallback_item.get("metric", ""), max_len=28)
+        target = _proposal_metric_value(item.get("target", "") or fallback_item.get("target", ""), max_len=72) or clean_solution_text(fallback_item.get("target", ""), max_len=72)
+        value_range = _proposal_metric_value(item.get("range", "") or fallback_item.get("range", ""), max_len=48) or clean_solution_text(fallback_item.get("range", ""), max_len=48)
+        assumptions = _proposal_postprocess_text_list(item.get("assumptions", []), fallback_item.get("assumptions", []), max_items=3, max_len=48)
+        if not metric or not (target or value_range):
+            continue
+        processed_value_model.append({
+            "metric": metric,
+            "baseline": _proposal_pick_sentence(item.get("baseline", ""), fallback_item.get("baseline", ""), max_len=96),
+            "target": target,
+            "range": value_range,
+            "assumptions": assumptions,
+            "evidence_refs": _proposal_unique_refs(item, limit=8) or _proposal_unique_refs(fallback_item, limit=8),
+        })
+    if processed_value_model:
+        processed["value_model"] = processed_value_model
+
+    for field_name in ("fit_reasons", "risks_and_boundaries"):
+        fallback_items = fallback.get(field_name, []) if isinstance(fallback.get(field_name, []), list) else []
+        processed_items = []
+        for idx, item in enumerate(processed.get(field_name, []) if isinstance(processed.get(field_name, []), list) else []):
+            if not isinstance(item, dict):
+                continue
+            fallback_item = fallback_items[idx] if idx < len(fallback_items) and isinstance(fallback_items[idx], dict) else {}
+            title = _proposal_pick_heading(item.get("title", ""), fallback_item.get("title", ""), max_len=36 if field_name == "risks_and_boundaries" else 32)
+            detail = _proposal_pick_sentence(item.get("detail", ""), fallback_item.get("detail", ""), max_len=110)
+            if not title or not detail:
+                continue
+            normalized_item = {
+                "title": title,
+                "detail": detail,
+                "evidence_refs": _proposal_unique_refs(item, limit=8) or _proposal_unique_refs(fallback_item, limit=8),
+            }
+            if field_name == "risks_and_boundaries":
+                normalized_item["type"] = clean_solution_text(item.get("type", "") or fallback_item.get("type", "risk"), max_len=16).lower() or "risk"
+            processed_items.append(normalized_item)
+        if processed_items:
+            processed[field_name] = processed_items
+
+    fallback_steps = fallback.get("next_steps", []) if isinstance(fallback.get("next_steps", []), list) else []
+    processed_steps = []
+    for idx, item in enumerate(processed.get("next_steps", []) if isinstance(processed.get("next_steps", []), list) else []):
+        if not isinstance(item, dict):
+            continue
+        fallback_item = fallback_steps[idx] if idx < len(fallback_steps) and isinstance(fallback_steps[idx], dict) else {}
+        phase = _proposal_pick_heading(item.get("phase", ""), fallback_item.get("phase", ""), max_len=36)
+        goal = _proposal_pick_sentence(item.get("goal", ""), fallback_item.get("goal", ""), max_len=120)
+        if not phase or not goal:
+            continue
+        processed_steps.append({
+            "phase": phase,
+            "goal": goal,
+            "actions": _proposal_postprocess_text_list(item.get("actions", []), fallback_item.get("actions", []), max_items=4, max_len=56),
+            "milestone": _proposal_pick_sentence(item.get("milestone", ""), fallback_item.get("milestone", ""), max_len=72),
+            "evidence_refs": _proposal_unique_refs(item, limit=8) or _proposal_unique_refs(fallback_item, limit=8),
+        })
+    if processed_steps:
+        processed["next_steps"] = processed_steps
+    return processed
+
+
+def _solution_postprocess_chapter_copy(chapter_copy: dict, fallback_copy: dict) -> dict:
+    processed = copy.deepcopy(chapter_copy if isinstance(chapter_copy, dict) else {})
+    fallback = fallback_copy if isinstance(fallback_copy, dict) else {}
+    chapter_map = {
+        str(item.get("id") or "").strip().lower(): item
+        for item in (processed.get("chapters", []) if isinstance(processed.get("chapters", []), list) else [])
+        if isinstance(item, dict)
+    }
+    fallback_map = {
+        str(item.get("id") or "").strip().lower(): item
+        for item in (fallback.get("chapters", []) if isinstance(fallback.get("chapters", []), list) else [])
+        if isinstance(item, dict)
+    }
+    normalized_chapters = []
+    for chapter_id in SOLUTION_PROPOSAL_CHAPTER_IDS:
+        chapter = copy.deepcopy(chapter_map.get(chapter_id, {"id": chapter_id}))
+        fallback_chapter = fallback_map.get(chapter_id, {})
+        chapter["id"] = chapter_id
+        chapter["nav_label"] = clean_solution_text(chapter.get("nav_label", "") or fallback_chapter.get("nav_label", ""), max_len=20) or clean_solution_text(fallback_chapter.get("nav_label", ""), max_len=20)
+        chapter["eyebrow"] = clean_solution_text(chapter.get("eyebrow", "") or fallback_chapter.get("eyebrow", ""), max_len=24) or clean_solution_text(fallback_chapter.get("eyebrow", ""), max_len=24)
+        chapter["title"] = _proposal_pick_heading(chapter.get("title", ""), fallback_chapter.get("title", ""), max_len=72)
+        chapter["judgement"] = _proposal_pick_sentence(chapter.get("judgement", ""), fallback_chapter.get("judgement", ""), max_len=160)
+        chapter["summary"] = _proposal_pick_sentence(chapter.get("summary", ""), fallback_chapter.get("summary", ""), max_len=200)
+
+        source_metrics = chapter.get("metrics", []) if isinstance(chapter.get("metrics", []), list) else []
+        fallback_metrics = fallback_chapter.get("metrics", []) if isinstance(fallback_chapter.get("metrics", []), list) else []
+        metrics = []
+        for idx in range(max(len(source_metrics), len(fallback_metrics))):
+            source_metric = source_metrics[idx] if idx < len(source_metrics) and isinstance(source_metrics[idx], dict) else {}
+            fallback_metric = fallback_metrics[idx] if idx < len(fallback_metrics) and isinstance(fallback_metrics[idx], dict) else {}
+            label = _proposal_pick_metric_label(source_metric.get("label", ""), fallback_metric.get("label", "关键指标"), max_len=18)
+            value = _proposal_metric_value(source_metric.get("value", "") or fallback_metric.get("value", ""), max_len=32) or clean_solution_text(fallback_metric.get("value", ""), max_len=32)
+            delta = _proposal_metric_value(source_metric.get("delta", "") or fallback_metric.get("delta", ""), max_len=32)
+            note = _proposal_metric_note(source_metric.get("note", "") or fallback_metric.get("note", ""), max_len=40) or clean_solution_text(fallback_metric.get("note", ""), max_len=40)
+            if not label or not value:
+                continue
+            metrics.append({"label": label, "value": value, "delta": delta, "note": note})
+            if len(metrics) >= 4:
+                break
+        if metrics:
+            chapter["metrics"] = metrics
+        elif fallback_metrics:
+            chapter["metrics"] = copy.deepcopy(fallback_metrics[:4])
+
+        source_cards = chapter.get("cards", []) if isinstance(chapter.get("cards", []), list) else []
+        fallback_cards = fallback_chapter.get("cards", []) if isinstance(fallback_chapter.get("cards", []), list) else []
+        cards = []
+        label_mode = chapter_id in {"why_now", "blueprint", "integration", "workstreams"}
+        for idx in range(max(len(source_cards), len(fallback_cards))):
+            source_card = source_cards[idx] if idx < len(source_cards) and isinstance(source_cards[idx], dict) else {}
+            fallback_card = fallback_cards[idx] if idx < len(fallback_cards) and isinstance(fallback_cards[idx], dict) else {}
+            if label_mode:
+                title = _proposal_pick_focus_label(source_card.get("title", ""), fallback_card.get("title", ""), max_len=18)
+            else:
+                title = _proposal_pick_heading(source_card.get("title", ""), fallback_card.get("title", ""), max_len=32)
+            desc = _proposal_pick_sentence(source_card.get("desc", ""), fallback_card.get("desc", ""), max_len=110)
+            source_tag = clean_solution_text(source_card.get("tag", ""), max_len=18)
+            fallback_tag = clean_solution_text(fallback_card.get("tag", ""), max_len=18)
+            if source_tag in {"AI", "模块", "章节"} and fallback_tag:
+                tag = fallback_tag
+            else:
+                tag = source_tag or fallback_tag
+            source_meta = clean_solution_text(source_card.get("meta", ""), max_len=96)
+            fallback_meta = clean_solution_text(fallback_card.get("meta", ""), max_len=96)
+            if chapter_id == "comparison" and source_meta.startswith(("更适合：", "适合：", "不适合：")) and not _proposal_has_hard_technical_terms(source_meta):
+                meta = clean_solution_text(source_meta, max_len=72)
+            else:
+                meta = _proposal_meta_label(source_meta, max_len=72) or fallback_meta or clean_solution_text(source_meta, max_len=72)
+            if not title or not desc:
+                continue
+            cards.append({"title": title, "desc": desc, "tag": tag, "meta": meta})
+            if len(cards) >= 5:
+                break
+        if cards:
+            chapter["cards"] = cards
+        elif fallback_cards:
+            chapter["cards"] = copy.deepcopy(fallback_cards[:5])
+
+        source_diagram = chapter.get("diagram") if isinstance(chapter.get("diagram"), dict) else {}
+        fallback_diagram = fallback_chapter.get("diagram") if isinstance(fallback_chapter.get("diagram"), dict) else {}
+        if source_diagram or fallback_diagram:
+            diagram = copy.deepcopy(source_diagram or fallback_diagram)
+            fallback_nodes = fallback_diagram.get("nodes", []) if isinstance(fallback_diagram.get("nodes", []), list) else []
+            nodes = diagram.get("nodes", []) if isinstance(diagram.get("nodes", []), list) else []
+            normalized_nodes = []
+            for idx, node in enumerate(nodes or fallback_nodes):
+                if not isinstance(node, dict):
+                    continue
+                fallback_node = fallback_nodes[idx] if idx < len(fallback_nodes) and isinstance(fallback_nodes[idx], dict) else {}
+                label = _proposal_pick_focus_label(node.get("label", ""), fallback_node.get("label", ""), max_len=18)
+                if not label:
+                    continue
+                normalized_nodes.append({
+                    "id": clean_solution_text(node.get("id", "") or fallback_node.get("id", "") or f"{chapter_id}-{idx+1}", max_len=24),
+                    "label": label,
+                    "group": clean_solution_text(node.get("group", "") or fallback_node.get("group", ""), max_len=16),
+                })
+            diagram["nodes"] = normalized_nodes[:8] if normalized_nodes else copy.deepcopy(fallback_nodes[:8])
+            diagram["edges"] = copy.deepcopy(diagram.get("edges", []) if isinstance(diagram.get("edges", []), list) else fallback_diagram.get("edges", []) if isinstance(fallback_diagram.get("edges", []), list) else [])
+            diagram["caption"] = _proposal_pick_sentence(diagram.get("caption", ""), fallback_diagram.get("caption", ""), max_len=88)
+            chapter["diagram"] = diagram
+
+        cta = chapter.get("cta", {}) if isinstance(chapter.get("cta", {}), dict) else {}
+        fallback_cta = fallback_chapter.get("cta", {}) if isinstance(fallback_chapter.get("cta", {}), dict) else {}
+        chapter["cta"] = {
+            "label": clean_solution_text(cta.get("label", "") or fallback_cta.get("label", ""), max_len=20) or clean_solution_text(fallback_cta.get("label", ""), max_len=20),
+            "target": clean_solution_text(cta.get("target", "") or fallback_cta.get("target", ""), max_len=24) or clean_solution_text(fallback_cta.get("target", ""), max_len=24),
+        }
+        chapter["evidence_refs"] = _proposal_unique_refs(chapter, limit=8) or _proposal_unique_refs(fallback_chapter, limit=8)
+        normalized_chapters.append(chapter)
+
+    processed["chapters"] = normalized_chapters
+    return processed
+
+
+def _finalize_solution_payload_for_delivery(payload: dict, snapshot: dict, source_mode: str = "structured_sidecar") -> dict:
+    if not isinstance(payload, dict):
+        return payload
+    if str(payload.get("source_mode") or "").strip().lower() == "degraded":
+        return copy.deepcopy(payload)
+
+    normalized = _normalize_solution_snapshot(snapshot)
+    if not normalized:
+        return copy.deepcopy(payload)
+
+    finalized = copy.deepcopy(payload)
+    quality_signals = finalized.get("quality_signals", {}) if isinstance(finalized.get("quality_signals", {}), dict) else {}
+    if not quality_signals:
+        quality_signals = build_solution_quality_signals(normalized, source_mode=source_mode)
+        finalized["quality_signals"] = quality_signals
+
+    rule_proposal_brief = build_solution_proposal_brief(normalized, quality_signals=quality_signals, source_mode=source_mode)
+    finalized["proposal_brief"] = _solution_postprocess_proposal_brief(finalized.get("proposal_brief", {}) or {}, rule_proposal_brief)
+
+    rule_chapter_copy = build_solution_chapter_copy(normalized, rule_proposal_brief, quality_signals=quality_signals)
+    finalized["chapter_copy"] = _solution_postprocess_chapter_copy(finalized.get("chapter_copy", {}) or {}, rule_chapter_copy)
+
+    quality_review = finalized.get("quality_review", {}) if isinstance(finalized.get("quality_review", {}), dict) else {}
+    if not quality_review:
+        quality_review = build_solution_quality_review(normalized, finalized["proposal_brief"], finalized["chapter_copy"])
+    finalized["quality_review"] = copy.deepcopy(quality_review)
+
+    proposal_page = build_solution_proposal_page(
+        normalized,
+        finalized["proposal_brief"],
+        finalized["chapter_copy"],
+        quality_review=quality_review,
+    )
+    finalized["proposal_page"] = proposal_page
+    finalized["proposal_content_model"] = copy.deepcopy(proposal_page.get("proposal_content_model", {}))
+    finalized["content_priority_plan"] = copy.deepcopy(proposal_page.get("content_priority_plan", {}))
+    finalized["closing_block"] = copy.deepcopy(proposal_page.get("closing_block", {}))
+    finalized["summary_card"] = copy.deepcopy(proposal_page.get("summary_card", {}))
+    finalized["render_model"] = copy.deepcopy(proposal_page.get("render_model", {}))
+    finalized["audience_profile"] = copy.deepcopy(proposal_page.get("audience_profile", {}))
+    finalized["comparison_matrix"] = copy.deepcopy(proposal_page.get("comparison_matrix", {}))
+    finalized["value_board"] = copy.deepcopy(proposal_page.get("value_board", {}))
+    finalized["quality_review"] = copy.deepcopy(proposal_page.get("quality_review", {}))
+    return finalized
+
+
+def _proposal_meta_label(value, max_len: int = 32) -> str:
+    if isinstance(value, str):
+        refs = re.findall(r"Q\d+", value)
+        if refs:
+            return clean_solution_text(" · ".join(refs[:4]), max_len=max_len) or clean_solution_text(" ".join(refs[:4]), max_len=max_len)
+    text = _proposal_business_sentence(value, max_len=max_len * 3) or clean_solution_text(value, max_len=max_len * 3)
+    if not text:
+        return ""
+    text = text.replace("历史代码库依赖深，存量模型迁移复杂", "迁移复杂")
+    text = text.replace("基础设施/算力不足", "算力受限")
+    text = text.replace("需平衡重构风险与业务连续性", "兼顾连续性")
+    parts = [part.strip("，。；; ") for part in re.split(r"[，；;]", text) if part.strip("，。；; ")]
+    return clean_solution_text("、".join(parts[:3]), max_len=max_len)
+
+
+def _proposal_comparison_desc(option: dict, focus: str, boundary_label: str, max_len: int = 96) -> str:
+    if not isinstance(option, dict):
+        return ""
+    decision = str(option.get("decision") or "").strip().lower()
+    fit_for = clean_solution_text(option.get("fit_for", ""), max_len=72)
+    positioning = _proposal_business_sentence(option.get("positioning", ""), max_len=120)
+    if decision == "recommended":
+        return clean_solution_text(
+            f"先用「{focus or '关键能力'}」锁定试点和能力底座，再在「{boundary_label}」前提下分阶段扩展。",
+            max_len=max_len,
+        )
+    if decision == "alternative":
+        return clean_solution_text(
+            f"启动最快，但更多只能换来方向判断，难以直接形成可评审方案。{fit_for}",
+            max_len=max_len,
+        ) or positioning
+    if decision == "rejected":
+        return clean_solution_text(
+            f"覆盖面最大，但会同时放大周期、协同和返工风险，不适合当前阶段直接展开。",
+            max_len=max_len,
+        ) or positioning
+    return positioning
+
+
+def _proposal_comparison_meta(option: dict, max_len: int = 64) -> str:
+    if not isinstance(option, dict):
+        return ""
+    decision = str(option.get("decision") or "").strip().lower()
+    fit_for = _proposal_business_sentence(option.get("fit_for", ""), max_len=max_len) or clean_solution_text(option.get("fit_for", ""), max_len=max_len)
+    not_fit_for = _proposal_business_sentence(option.get("not_fit_for", ""), max_len=max_len) or clean_solution_text(option.get("not_fit_for", ""), max_len=max_len)
+    if decision == "recommended":
+        return clean_solution_text(f"更适合：{fit_for}", max_len=max_len) if fit_for else ""
+    if decision == "rejected":
+        return clean_solution_text(f"不适合：{not_fit_for}", max_len=max_len) if not_fit_for else ""
+    return clean_solution_text(f"适合：{fit_for}", max_len=max_len) if fit_for else ""
 
 
 def _proposal_workstream_cards_from_snapshot(normalized: dict, limit: int = 4) -> list[dict]:
@@ -25650,6 +26633,940 @@ def _solution_chapter_copy_response_schema() -> dict:
     }
 
 
+def _solution_review_response_schema() -> dict:
+    return {
+        "audience": "decision_maker",
+        "overall_score": 0.0,
+        "status": "strong",
+        "issues": [],
+        "chapter_scores": [
+            {
+                "id": "hero",
+                "score": 0.0,
+                "issue": "",
+            }
+        ],
+        "chapter_updates": [
+            {
+                "id": "hero",
+                "title": "",
+                "judgement": "",
+                "summary": "",
+            }
+        ],
+    }
+
+
+def _solution_audience_label(audience_key: str) -> str:
+    return {
+        "decision_maker": "决策层视角",
+        "manager": "管理层视角",
+        "execution": "执行层视角",
+    }.get(str(audience_key or "").strip(), "决策层视角")
+
+
+def _solution_audience_reasoning(audience_key: str) -> str:
+    return {
+        "decision_maker": "更关注投入边界、取舍逻辑和是否值得进入试点评审。",
+        "manager": "更关注推进节奏、协同成本和阶段治理方式。",
+        "execution": "更关注负责人、交付物、依赖条件和验收信号。",
+    }.get(str(audience_key or "").strip(), "更关注方案是否能进入下一阶段决策。")
+
+
+def _solution_proposal_goal(audience_key: str) -> str:
+    return {
+        "decision_maker": "立项评审",
+        "manager": "内部共识",
+        "execution": "试点推进",
+    }.get(str(audience_key or "").strip(), "内部共识")
+
+
+def infer_solution_audience_profile(snapshot: dict, quality_signals: Optional[dict] = None) -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    draft = normalized.get("draft", {})
+    topic = clean_solution_text(normalized.get("topic", ""), max_len=120)
+    scenario = clean_solution_text(normalized.get("scenario_name", ""), max_len=80)
+    actions = draft.get("actions", []) if isinstance(draft.get("actions", []), list) else []
+    solutions = draft.get("solutions", []) if isinstance(draft.get("solutions", []), list) else []
+    risks = draft.get("risks", []) if isinstance(draft.get("risks", []), list) else []
+    text = " ".join([
+        topic,
+        scenario,
+        clean_solution_text((draft.get("overview") or ""), max_len=240),
+        clean_solution_text((draft.get("analysis", {}) or {}).get("project_constraints", ""), max_len=160) if isinstance(draft.get("analysis", {}), dict) else "",
+        clean_solution_text((draft.get("analysis", {}) or {}).get("tech_constraints", ""), max_len=160) if isinstance(draft.get("analysis", {}), dict) else "",
+    ])
+    decision_score = 0
+    manager_score = 0
+    execution_score = 0
+    if any(token in text for token in ("立项", "汇报", "售前", "预算", "ROI", "价值", "老板", "高层", "战略", "调研", "评估", "选型", "架构")):
+        decision_score += 2
+    if len(solutions) >= 3 and len(risks) >= 2:
+        decision_score += 2
+    if any(token in text for token in ("试点", "推进", "阶段", "协同", "节奏", "治理", "评审")):
+        manager_score += 2
+    if len(actions) >= 3:
+        manager_score += 1
+    if any(token in text for token in ("负责人", "研发", "设计", "运营", "交付", "埋点", "接口", "上线", "实施")):
+        execution_score += 2
+    if len(actions) >= 5:
+        execution_score += 1
+    if len(actions) >= 4 and any(
+        isinstance(item, dict) and (
+            clean_solution_text(item.get("owner", ""), max_len=24)
+            or clean_solution_text(item.get("timeline", ""), max_len=24)
+            or clean_solution_text(item.get("metric", ""), max_len=40)
+        )
+        for item in actions[:6]
+    ):
+        execution_score += 2
+    scores = {
+        "decision_maker": decision_score,
+        "manager": manager_score,
+        "execution": execution_score,
+    }
+    audience = max(scores, key=scores.get)
+    if audience == "execution" and decision_score >= execution_score - 1:
+        audience = "manager" if manager_score >= decision_score else "decision_maker"
+    if audience == "manager" and decision_score >= manager_score and not any(token in text for token in ("协同", "阶段", "治理", "评审")):
+        audience = "decision_maker"
+    if scores[audience] <= 1:
+        audience = "decision_maker"
+    return {
+        "key": audience,
+        "label": _solution_audience_label(audience),
+        "reasoning": _solution_audience_reasoning(audience),
+        "scores": scores,
+        "proposal_goal": _solution_proposal_goal(audience),
+    }
+
+
+def build_solution_comparison_matrix(options: list[dict], recommended_name: str = "") -> dict:
+    normalized_options = [item for item in options if isinstance(item, dict)]
+    dimensions = [
+        ("启动速度", {"alternative": ("高", "最快进入方向判断"), "recommended": ("中", "需要先锁定试点边界"), "rejected": ("低", "启动成本最高")}),
+        ("试点风险", {"alternative": ("中", "风险低但结论弱"), "recommended": ("高", "风险可控且更易验证"), "rejected": ("低", "返工与协同风险最高")}),
+        ("扩展性", {"alternative": ("低", "后续仍需重做"), "recommended": ("高", "能直接沉淀为能力底座"), "rejected": ("中", "理论上强但落地过重")}),
+        ("协同复杂度", {"alternative": ("高", "参与角色最少"), "recommended": ("中", "需要跨角色对齐但可控"), "rejected": ("低", "一开始就拉高协同复杂度")}),
+        ("适配当前阶段", {"alternative": ("中", "适合只做方向判断"), "recommended": ("高", "适合进入试点评审"), "rejected": ("低", "不适合当前阶段直接展开")}),
+    ]
+    matrix_rows = []
+    for label, mapping in dimensions:
+        cells = []
+        winner = ""
+        best_weight = -1
+        for option in normalized_options[:3]:
+            decision = str(option.get("decision") or "alternative").strip().lower()
+            badge, reason = mapping.get(decision, ("中", "待补充"))
+            weight = {"高": 3, "中": 2, "低": 1}.get(badge, 0)
+            if weight > best_weight:
+                best_weight = weight
+                winner = clean_solution_text(option.get("name", ""), max_len=32)
+            cells.append({
+                "option": clean_solution_text(option.get("name", ""), max_len=32),
+                "decision": decision,
+                "badge": badge,
+                "reason": clean_solution_text(reason, max_len=36),
+            })
+        matrix_rows.append({
+            "dimension": label,
+            "winner": winner,
+            "cells": cells,
+        })
+    return {
+        "recommended_name": clean_solution_text(recommended_name, max_len=32),
+        "rows": matrix_rows,
+    }
+
+
+def build_solution_value_board(value_model: list[dict], audience_profile: dict) -> dict:
+    items = []
+    for item in value_model[:4]:
+        if not isinstance(item, dict):
+            continue
+        items.append({
+            "label": clean_solution_text(item.get("metric", ""), max_len=24),
+            "value": _proposal_metric_value(item.get("target", "") or item.get("range", ""), max_len=32),
+            "delta": _proposal_metric_value(item.get("range", ""), max_len=28),
+            "assumption": _proposal_metric_note((item.get("assumptions", []) or [""])[0], max_len=40) if isinstance(item.get("assumptions", []), list) else "",
+            "baseline": clean_solution_text(item.get("baseline", ""), max_len=64),
+        })
+    return {
+        "headline": "量化价值与成立前提",
+        "items": items,
+    }
+
+
+def _solution_first_nonempty(*values, max_len: int = 120) -> str:
+    for value in values:
+        text = clean_solution_text(value, max_len=max_len)
+        if text:
+            return text
+    return ""
+
+
+def _solution_unique_compact_texts(values, limit: int = 4, max_len: int = 88, mode: str = "sentence") -> list[str]:
+    items = values if isinstance(values, list) else [values]
+    seen = set()
+    results = []
+    for item in items:
+        source = item
+        if isinstance(item, dict):
+            source = item.get("title") or item.get("name") or item.get("summary") or item.get("detail") or item.get("description") or ""
+        text = _proposal_pick_focus_label(source, "", max_len=max_len) if mode == "label" else _proposal_pick_sentence(source, "", max_len=max_len)
+        if not text:
+            continue
+        key = re.sub(r"\s+", "", text.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(text)
+        if len(results) >= limit:
+            break
+    return results
+
+
+def build_solution_headline_candidates(context: dict, audience_profile: dict, primary_focus: str, secondary_focus: str, topic_label: str, boundary_label: str) -> list[dict]:
+    audience_key = clean_solution_text((audience_profile or {}).get("key", ""), max_len=24) or "decision_maker"
+    pain_point = clean_solution_text((context or {}).get("pain_point", ""), max_len=32) or "核心矛盾"
+    entry_point = clean_solution_text((context or {}).get("entry_point", ""), max_len=24) or primary_focus or "关键切口"
+    focus = clean_solution_text(primary_focus, max_len=24) or entry_point or "关键能力"
+    secondary = clean_solution_text(secondary_focus, max_len=24)
+    topic = clean_solution_text(topic_label, max_len=24) or "当前项目"
+    boundary = clean_solution_text(boundary_label, max_len=24)
+    candidate_defs = [
+        ("decision", f"为什么当前先做「{focus}」"),
+        ("outcome", f"围绕「{focus}」把「{topic}」推进到首轮试点"),
+        ("constraint", f"在「{boundary or pain_point}」约束下，优先锁定「{focus}」"),
+        ("roadmap", f"先完成「{focus}」试点，再决定「{topic}」扩张范围"),
+        ("vision", f"让「{topic}」从单次判断走向可复用闭环"),
+        ("opportunity", f"把「{focus}」做成「{topic}」的能力入口"),
+    ]
+    if audience_key == "execution":
+        candidate_defs = [
+            ("roadmap", f"先锁定「{focus}」，再推进首轮试点执行"),
+            ("constraint", f"围绕「{focus}」冻结依赖、边界和交付节奏"),
+            ("decision", f"当前先做「{focus}」而不是扩大全量范围"),
+            ("outcome", f"把「{focus}」接成可交付的首轮闭环"),
+            ("vision", f"让「{topic}」进入可执行试点"),
+            ("opportunity", f"从「{focus}」切入，先完成首轮交付验证"),
+        ]
+    elif audience_key == "manager":
+        candidate_defs = [
+            ("decision", f"先围绕「{focus}」统一推进节奏，再决定扩张"),
+            ("roadmap", f"把「{focus}」做成第一阶段共识，再扩到「{topic}」"),
+            ("constraint", f"在「{boundary or pain_point}」前提下，优先锁定「{focus}」"),
+            ("outcome", f"围绕「{focus}」形成可协同的首轮闭环"),
+            ("vision", f"让「{topic}」从分散推进转向统一路径"),
+            ("opportunity", f"从「{focus}」进入，先把试点节奏跑顺"),
+        ]
+    if secondary:
+        candidate_defs.append(("pair", f"把「{focus}」与「{secondary}」接成首轮闭环"))
+    candidates = []
+    seen = set()
+    for mode, text in candidate_defs:
+        normalized = clean_solution_text(text, max_len=72)
+        if not normalized:
+            continue
+        key = re.sub(r"\s+", "", normalized.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append({"mode": mode, "text": normalized})
+    return candidates
+
+
+def score_solution_headline_candidate(candidate: dict, audience_profile: dict, context: dict, recent_titles: Optional[list[str]] = None) -> float:
+    text = clean_solution_text((candidate or {}).get("text", ""), max_len=120)
+    if not text:
+        return -999.0
+    audience_key = clean_solution_text((audience_profile or {}).get("key", ""), max_len=24) or "decision_maker"
+    pain_point = clean_solution_text((context or {}).get("pain_point", ""), max_len=32)
+    entry_point = clean_solution_text((context or {}).get("entry_point", ""), max_len=24)
+    score = 0.0
+    if "为什么" in text:
+        score += 1.4 if audience_key == "decision_maker" else 0.6
+    if "先把" in text and "再让" in text and "可复制推进" in text:
+        score -= 2.0
+    if len(text) <= 28:
+        score += 1.2
+    elif len(text) <= 40:
+        score += 0.7
+    elif len(text) > 60:
+        score -= 0.8
+    if pain_point and pain_point[:6] in text:
+        score += 0.6
+    if entry_point and entry_point[:6] in text:
+        score += 0.8
+    if _proposal_has_hard_technical_terms(text):
+        score -= 2.0
+    if _proposal_contains_internal_terms(text):
+        score -= 3.0
+    for recent in recent_titles or []:
+        recent_text = clean_solution_text(recent, max_len=120)
+        if recent_text and _solution_jaccard_similarity(text, recent_text) >= 0.72:
+            score -= 1.4
+    return round(score, 3)
+
+
+def select_solution_headline(candidates: list[dict], audience_profile: dict, context: dict, fallback: str = "") -> tuple[str, list[dict]]:
+    scored = []
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        score = score_solution_headline_candidate(item, audience_profile, context)
+        scored.append({
+            "mode": clean_solution_text(item.get("mode", ""), max_len=20) or "generic",
+            "text": clean_solution_text(item.get("text", ""), max_len=72),
+            "score": score,
+        })
+    scored.sort(key=lambda item: item.get("score", 0.0), reverse=True)
+    best = clean_solution_text((scored[0] or {}).get("text", ""), max_len=72) if scored else ""
+    return best or clean_solution_text(fallback, max_len=72), scored[:6]
+
+
+def build_solution_content_priority_plan(proposal_content_model: dict) -> dict:
+    chapter_map = proposal_content_model.get("chapters", {}) if isinstance(proposal_content_model.get("chapters", {}), dict) else {}
+    plan = {"version": "v1", "chapters": {}}
+    for chapter_id, limits in SOLUTION_CONTENT_PRIMARY_LIMITS.items():
+        chapter = chapter_map.get(chapter_id, {}) if isinstance(chapter_map.get(chapter_id, {}), dict) else {}
+        plan["chapters"][chapter_id] = {
+            "primary": _solution_unique_compact_texts(chapter.get("primary_keys", []), limit=6, max_len=24, mode="label"),
+            "secondary": _solution_unique_compact_texts(chapter.get("secondary_keys", []), limit=6, max_len=24, mode="label"),
+            "evidence": _proposal_unique_refs(chapter.get("evidence_refs", []), limit=8),
+            "hidden": _solution_unique_compact_texts(chapter.get("hidden_keys", []), limit=6, max_len=24, mode="label"),
+            "budgets": copy.deepcopy(limits),
+        }
+    return plan
+
+
+def build_solution_closing_block(proposal_brief: dict, proposal_content_model: dict, audience_profile: dict) -> dict:
+    brief = proposal_brief if isinstance(proposal_brief, dict) else {}
+    content_model = proposal_content_model if isinstance(proposal_content_model, dict) else {}
+    meta = brief.get("meta", {}) if isinstance(brief.get("meta", {}), dict) else {}
+    thesis = brief.get("thesis", {}) if isinstance(brief.get("thesis", {}), dict) else {}
+    next_steps = brief.get("next_steps", []) if isinstance(brief.get("next_steps", []), list) else []
+    chapters = content_model.get("chapters", {}) if isinstance(content_model.get("chapters", {}), dict) else {}
+    hero = chapters.get("hero", {}) if isinstance(chapters.get("hero", {}), dict) else {}
+    comparison = chapters.get("comparison", {}) if isinstance(chapters.get("comparison", {}), dict) else {}
+    value_fit = chapters.get("value_fit", {}) if isinstance(chapters.get("value_fit", {}), dict) else {}
+    audience_key = clean_solution_text((audience_profile or {}).get("key", ""), max_len=24) or "decision_maker"
+    focus = _solution_first_nonempty(hero.get("focus"), comparison.get("recommended_focus"), meta.get("topic"), max_len=24) or "推荐路径"
+    phase = _proposal_stage_label([step.get("phase", "") for step in next_steps if isinstance(step, dict)] + [thesis.get("why_now", "")]) or "当前阶段"
+    first_phase = next((step for step in next_steps if isinstance(step, dict)), {})
+    decision_action = _solution_first_nonempty(first_phase.get("goal", ""), thesis.get("core_decision", ""), hero.get("decision", ""), max_len=88)
+    boundary = _solution_first_nonempty(value_fit.get("boundary", ""), thesis.get("why_now", ""), hero.get("boundary", ""), max_len=88)
+    risk_label = ""
+    boundary_terms = []
+    for item in value_fit.get("boundaries", []) if isinstance(value_fit.get("boundaries", []), list) else []:
+        if not isinstance(item, dict):
+            continue
+        item_type = clean_solution_text(item.get("type", ""), max_len=16).lower()
+        if item_type == "risk" and not risk_label:
+            risk_label = _proposal_risk_label(item.get("title", ""), item.get("detail", ""), max_len=18)
+        if item_type == "boundary":
+            detail_label = _proposal_boundary_label(item.get("detail", ""), max_items=2, max_len=18)
+            if detail_label and detail_label != "边界条件":
+                boundary_terms.append(detail_label)
+        compact_title = clean_solution_text(item.get("title", ""), max_len=18)
+        if compact_title and compact_title not in ("项目边界", "技术边界", risk_label):
+            boundary_terms.append(compact_title)
+    boundary_terms = _proposal_compact_points(boundary_terms, limit=3, max_len=12, mode="label")
+    boundary_label = clean_solution_text("、".join(boundary_terms), max_len=24) or _proposal_boundary_label([boundary, thesis.get("why_now", ""), hero.get("why_now", "")], max_items=3, max_len=24)
+    headline = {
+        "decision_maker": f"当前更适合围绕「{focus}」完成首轮闭环，再决定是否扩大投入。",
+        "manager": f"建议先围绕「{focus}」统一节奏与边界，再进入下一阶段协同。",
+        "execution": f"建议先把「{focus}」做成可执行闭环，再扩到更大范围。",
+    }.get(audience_key, f"当前更适合先围绕「{focus}」完成首轮闭环。")
+    decision = {
+        "decision_maker": clean_solution_text(f"现在建议先批准「{focus}」相关试点，并以「{_solution_first_nonempty(first_phase.get('milestone', ''), phase, max_len=24)}」作为是否继续扩大投入的判断点。", max_len=110),
+        "manager": clean_solution_text(f"当前建议先锁定「{focus}」的试点范围、负责人和里程碑，再组织跨团队协同。", max_len=110),
+        "execution": clean_solution_text(f"当前建议先完成「{focus}」对应动作、依赖确认和验收定义，再进入试点执行。", max_len=110),
+    }.get(audience_key, clean_solution_text(decision_action, max_len=110))
+    boundary_sentence = _proposal_boundary_sentence(boundary_label, risk_label, audience_key, max_len=110)
+    audience_variant = {
+        key: {
+            "headline": clean_solution_text({
+                "decision_maker": f"围绕「{focus}」完成判断与试点，再决定是否扩大投入。",
+                "manager": f"先围绕「{focus}」统一节奏，再扩大协同范围。",
+                "execution": f"先把「{focus}」跑成可执行闭环，再进入下一阶段。",
+            }.get(key, headline), max_len=96),
+            "decision": clean_solution_text({
+                "decision_maker": decision,
+                "manager": clean_solution_text(f"现在优先锁定「{focus}」的阶段目标、负责人和里程碑。", max_len=96),
+                "execution": clean_solution_text(f"现在优先锁定「{focus}」的动作、依赖和验收口径。", max_len=96),
+            }.get(key, decision), max_len=96),
+            "boundary": clean_solution_text(_proposal_boundary_sentence(boundary_label, risk_label, key, max_len=96), max_len=96),
+        }
+        for key in ("decision_maker", "manager", "execution")
+    }
+    return {
+        "headline": clean_solution_text(headline, max_len=110),
+        "decision": decision,
+        "boundary": boundary_sentence,
+        "audience_variant": audience_variant,
+        "evidence_refs": _proposal_unique_refs([hero, comparison, value_fit, thesis], limit=8),
+        "next_action_refs": _proposal_unique_refs(first_phase, limit=6),
+    }
+
+
+def build_solution_share_summary(closing_block: dict, value_board: dict, audience_profile: dict) -> dict:
+    closing = closing_block if isinstance(closing_block, dict) else {}
+    board = value_board if isinstance(value_board, dict) else {}
+    items = board.get("items", []) if isinstance(board.get("items", []), list) else []
+    bullets = [
+        clean_solution_text(closing.get("decision", ""), max_len=88),
+        clean_solution_text(closing.get("boundary", ""), max_len=88),
+    ]
+    for item in items[:2]:
+        if not isinstance(item, dict):
+            continue
+        bullet = clean_solution_text(f"{item.get('label', '指标')}：{item.get('value', '')}", max_len=88)
+        if bullet:
+            bullets.append(bullet)
+    unique_bullets = []
+    seen = set()
+    for bullet in bullets:
+        key = re.sub(r"\s+", "", bullet.lower())
+        if not bullet or key in seen:
+            continue
+        seen.add(key)
+        unique_bullets.append(bullet)
+        if len(unique_bullets) >= SOLUTION_CONTENT_PRIMARY_LIMITS["closing"]["bullets"]:
+            break
+    focus = _proposal_focus_label(closing.get("headline", ""), max_len=18) or "当前路径"
+    return {
+        "title": clean_solution_text(f"{focus}先行，验证后再扩张", max_len=96),
+        "audience_label": clean_solution_text((audience_profile or {}).get("label", ""), max_len=24),
+        "bullets": unique_bullets,
+    }
+
+
+def build_solution_proposal_content_model(snapshot: dict, proposal_brief: dict, chapter_copy: dict, quality_review: Optional[dict] = None) -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    brief = proposal_brief if isinstance(proposal_brief, dict) else {}
+    copy_payload = chapter_copy if isinstance(chapter_copy, dict) else {}
+    chapters = {str(item.get("id") or ""): item for item in (copy_payload.get("chapters", []) if isinstance(copy_payload.get("chapters", []), list) else []) if isinstance(item, dict)}
+    support = build_solution_proposal_support(normalized)
+    support_derived = support.get("derived", {}) if isinstance(support.get("derived", {}), dict) else {}
+    audience_profile = infer_solution_audience_profile(normalized, quality_signals=(normalized.get("quality_signals", {}) if isinstance(normalized.get("quality_signals", {}), dict) else {}))
+    thesis = brief.get("thesis", {}) if isinstance(brief.get("thesis", {}), dict) else {}
+    brief_context = brief.get("context", {}) if isinstance(brief.get("context", {}), dict) else {}
+    recommended = brief.get("recommended_solution", {}) if isinstance(brief.get("recommended_solution", {}), dict) else {}
+    value_model = brief.get("value_model", []) if isinstance(brief.get("value_model", []), list) else []
+    workstreams = brief.get("workstreams", []) if isinstance(brief.get("workstreams", []), list) else []
+    fit_reasons = brief.get("fit_reasons", []) if isinstance(brief.get("fit_reasons", []), list) else []
+    boundaries = brief.get("risks_and_boundaries", []) if isinstance(brief.get("risks_and_boundaries", []), list) else []
+    options = brief.get("options", []) if isinstance(brief.get("options", []), list) else []
+    next_steps = brief.get("next_steps", []) if isinstance(brief.get("next_steps", []), list) else []
+    hero = chapters.get("hero", {}) if isinstance(chapters.get("hero", {}), dict) else {}
+    comparison = chapters.get("comparison", {}) if isinstance(chapters.get("comparison", {}), dict) else {}
+    blueprint = chapters.get("blueprint", {}) if isinstance(chapters.get("blueprint", {}), dict) else {}
+    workstream_chapter = chapters.get("workstreams", {}) if isinstance(chapters.get("workstreams", {}), dict) else {}
+    integration = chapters.get("integration", {}) if isinstance(chapters.get("integration", {}), dict) else {}
+    value_fit = chapters.get("value_fit", {}) if isinstance(chapters.get("value_fit", {}), dict) else {}
+    topic = clean_solution_text(normalized.get("topic", ""), max_len=48)
+    recommended_name = ""
+    for item in options:
+        if isinstance(item, dict) and str(item.get("decision") or "").strip().lower() == "recommended":
+            recommended_name = clean_solution_text(item.get("name", ""), max_len=32)
+            break
+    current_state_cards = support_derived.get("current_state_cards", []) if isinstance(support_derived.get("current_state_cards", []), list) else []
+    blueprint_cards = support_derived.get("target_blueprint_cards", []) if isinstance(support_derived.get("target_blueprint_cards", []), list) else []
+    workstream_cards = support_derived.get("workstream_cards", []) if isinstance(support_derived.get("workstream_cards", []), list) else []
+    milestone_cards = support_derived.get("milestones", []) if isinstance(support_derived.get("milestones", []), list) else []
+    analysis_blocks = support_derived.get("analysis_blocks", []) if isinstance(support_derived.get("analysis_blocks", []), list) else []
+    primary_focus = _proposal_focus_label(recommended_name, max_len=24) or _proposal_focus_label((blueprint_cards[0].get("title", "") if blueprint_cards else ""), max_len=24) or _proposal_focus_label((workstreams[0].get("name", "") if workstreams else ""), max_len=24) or "关键能力"
+    secondary_focus = _proposal_focus_label((blueprint_cards[1].get("title", "") if len(blueprint_cards) > 1 else ""), max_len=24) or _proposal_focus_label((workstreams[1].get("name", "") if len(workstreams) > 1 else ""), max_len=24)
+    title_candidates = build_solution_headline_candidates({
+        "pain_point": clean_solution_text((support.get("context", {}) or {}).get("pain_point", ""), max_len=32),
+        "entry_point": clean_solution_text((support.get("context", {}) or {}).get("entry_point", ""), max_len=24),
+    }, audience_profile, primary_focus, secondary_focus, _proposal_topic_label(topic, max_len=24), _proposal_boundary_label(brief_context.get("constraints", []), max_items=3, max_len=24))
+    return {
+        "version": "v2",
+        "meta": {
+            "topic": topic,
+            "audience_profile": copy.deepcopy(audience_profile),
+            "source_mode": clean_solution_text((brief.get("meta", {}) or {}).get("source_mode", ""), max_len=32) or "structured_sidecar",
+            "generation_mode": clean_solution_text((copy_payload.get("meta", {}) or {}).get("generation_mode", ""), max_len=16) or "rule",
+            "theme": clean_solution_text((copy_payload.get("meta", {}) or {}).get("theme", ""), max_len=32) or "executive_dark_editorial",
+            "quality_review": copy.deepcopy(quality_review if isinstance(quality_review, dict) else {}),
+        },
+        "chapters": {
+            "hero": {
+                "title_candidates": title_candidates,
+                "decision": clean_solution_text(hero.get("judgement", "") or thesis.get("core_decision", ""), max_len=160),
+                "why_now": clean_solution_text(thesis.get("why_now", ""), max_len=160),
+                "focus": primary_focus,
+                "metrics": copy.deepcopy((hero.get("metrics", []) if isinstance(hero.get("metrics", []), list) else [])[:4]),
+                "proof_points": _solution_unique_compact_texts((hero.get("cards", []) if isinstance(hero.get("cards", []), list) else []) + current_state_cards, limit=4, max_len=88),
+                "evidence_refs": _proposal_unique_refs([hero, thesis], limit=8),
+                "primary_keys": ["标题", "判断句", "指标", "证明点"],
+                "secondary_keys": ["副标题", "受众标签"],
+            },
+            "comparison": {
+                "recommended_focus": primary_focus,
+                "matrix": build_solution_comparison_matrix(options, recommended_name=recommended_name),
+                "options": copy.deepcopy(options[:3]),
+                "judgement": clean_solution_text(comparison.get("judgement", ""), max_len=140),
+                "summary": clean_solution_text(comparison.get("summary", ""), max_len=180),
+                "evidence_refs": _proposal_unique_refs([comparison, options], limit=8),
+                "primary_keys": ["推荐路径", "对比矩阵", "排除理由"],
+                "secondary_keys": ["对照路径", "细分场景"],
+            },
+            "blueprint": {
+                "focus": primary_focus,
+                "secondary_focus": secondary_focus,
+                "cards": copy.deepcopy((blueprint.get("cards", []) if isinstance(blueprint.get("cards", []), list) else [])[:4]),
+                "diagram": copy.deepcopy(blueprint.get("diagram", {}) if isinstance(blueprint.get("diagram", {}), dict) else {}),
+                "summary": clean_solution_text(blueprint.get("summary", "") or recommended.get("north_star", ""), max_len=180),
+                "judgement": clean_solution_text(blueprint.get("judgement", "") or recommended.get("architecture_statement", ""), max_len=140),
+                "evidence_refs": _proposal_unique_refs([blueprint, recommended], limit=8),
+                "primary_keys": ["蓝图主张", "主图", "核心模块"],
+                "secondary_keys": ["模块说明"],
+            },
+            "workstreams": {
+                "cards": copy.deepcopy((workstream_chapter.get("cards", []) if isinstance(workstream_chapter.get("cards", []), list) else [])[:4]),
+                "workstreams": copy.deepcopy(workstreams[:4]),
+                "raw_cards": copy.deepcopy(workstream_cards[:4]),
+                "evidence_refs": _proposal_unique_refs([workstream_chapter, workstreams], limit=8),
+                "primary_keys": ["工作流", "交付物", "验收信号"],
+                "secondary_keys": ["负责人", "依赖条件"],
+            },
+            "integration": {
+                "entries": _solution_unique_compact_texts(recommended.get("integration_points", []), limit=4, max_len=56),
+                "phases": copy.deepcopy(next_steps[:4]),
+                "diagram": copy.deepcopy(integration.get("diagram", {}) if isinstance(integration.get("diagram", {}), dict) else {}),
+                "summary": clean_solution_text(integration.get("summary", ""), max_len=180),
+                "judgement": clean_solution_text(integration.get("judgement", ""), max_len=140),
+                "evidence_refs": _proposal_unique_refs([integration, recommended, next_steps], limit=8),
+                "primary_keys": ["接入入口", "阶段路径", "系统闭环图"],
+                "secondary_keys": ["治理节点"],
+            },
+            "knowledge": {
+                "pains": _proposal_compact_points(list(brief_context.get("core_conflicts", [])) + list(brief_context.get("constraints", [])) + [item.get("title", "") for item in current_state_cards if isinstance(item, dict)], limit=4, max_len=28, mode="label"),
+                "solutions": _proposal_compact_points([item.get("title", "") for item in blueprint_cards if isinstance(item, dict)] + [item.get("name", "") for item in workstreams if isinstance(item, dict)], limit=4, max_len=28, mode="label"),
+                "layers": [
+                    {"title": "问题沉淀", "items": _proposal_compact_points(list(brief_context.get("core_conflicts", [])) + list(analysis_blocks), limit=3, max_len=32, mode="label")},
+                    {"title": "能力沉淀", "items": _proposal_compact_points([item.get("name", "") for item in workstreams if isinstance(item, dict)] + list(recommended.get("governance", [])), limit=3, max_len=32, mode="label")},
+                    {"title": "复盘沉淀", "items": _proposal_compact_points([item.get("milestone", "") for item in next_steps if isinstance(item, dict)] + [item.get("title", "") for item in milestone_cards if isinstance(item, dict)], limit=3, max_len=32, mode="label")},
+                ],
+                "loop": _proposal_compact_points([item.get("phase", "") for item in next_steps if isinstance(item, dict)] + [item.get("title", "") for item in milestone_cards if isinstance(item, dict)], limit=4, max_len=36, mode="label"),
+                "evidence_refs": _proposal_unique_refs([brief_context, recommended, next_steps], limit=8),
+                "primary_keys": ["当前困境", "统一资产", "沉淀层"],
+                "secondary_keys": ["复盘循环"],
+            },
+            "flywheel": {
+                "nodes": _proposal_compact_points([item.get("name", "") for item in workstreams if isinstance(item, dict)] + list(recommended.get("integration_points", [])), limit=4, max_len=28, mode="label"),
+                "cases": _proposal_compact_points([item.get("name", "") for item in workstreams if isinstance(item, dict)] + [item.get("phase", "") for item in next_steps if isinstance(item, dict)] + [item.get("metric", "") for item in value_model if isinstance(item, dict)], limit=4, max_len=36, mode="label"),
+                "evidence_refs": _proposal_unique_refs([workstreams, value_model], limit=8),
+                "primary_keys": ["联动节点", "回流案例"],
+                "secondary_keys": ["组织复利"],
+            },
+            "value_fit": {
+                "metrics": copy.deepcopy(value_model[:4]),
+                "fit_reasons": copy.deepcopy(fit_reasons[:4]),
+                "boundaries": copy.deepcopy(boundaries[:3]),
+                "summary": clean_solution_text(value_fit.get("summary", ""), max_len=180),
+                "judgement": clean_solution_text(value_fit.get("judgement", ""), max_len=140),
+                "boundary": _solution_first_nonempty(*(item.get("detail", "") for item in boundaries if isinstance(item, dict)), max_len=120),
+                "evidence_refs": _proposal_unique_refs([fit_reasons, boundaries, value_fit], limit=8),
+                "primary_keys": ["价值指标", "适配理由", "边界提醒"],
+                "secondary_keys": ["前提说明", "风险提示"],
+            },
+        },
+    }
+
+
+def _solution_render_simple_card(item: dict, title_key: str = "title", desc_key: str = "detail", tag: str = "") -> Optional[dict]:
+    if not isinstance(item, dict):
+        return None
+    title = clean_solution_text(item.get(title_key, ""), max_len=32)
+    desc = clean_solution_text(item.get(desc_key, ""), max_len=110)
+    if not title or not desc:
+        return None
+    return {
+        "title": title,
+        "desc": desc,
+        "tag": clean_solution_text(item.get("tag", "") or tag, max_len=20),
+        "meta": clean_solution_text(item.get("meta", "") or item.get("timeline", ""), max_len=72),
+        "evidenceRefs": _proposal_unique_refs(item, limit=6),
+    }
+
+
+def build_solution_render_model(snapshot: dict, proposal_brief: dict, chapter_copy: dict, proposal_content_model: dict, content_priority_plan: dict, closing_block: dict, summary_card: dict, quality_review: Optional[dict] = None) -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    brief = proposal_brief if isinstance(proposal_brief, dict) else {}
+    copy_payload = chapter_copy if isinstance(chapter_copy, dict) else {}
+    content_model = proposal_content_model if isinstance(proposal_content_model, dict) else {}
+    support = build_solution_proposal_support(normalized)
+    support_derived = support.get("derived", {}) if isinstance(support.get("derived", {}), dict) else {}
+    chapter_map = {str(item.get("id") or ""): item for item in (copy_payload.get("chapters", []) if isinstance(copy_payload.get("chapters", []), list) else []) if isinstance(item, dict)}
+    meta = content_model.get("meta", {}) if isinstance(content_model.get("meta", {}), dict) else {}
+    audience_profile = meta.get("audience_profile", {}) if isinstance(meta.get("audience_profile", {}), dict) else infer_solution_audience_profile(normalized)
+    options = brief.get("options", []) if isinstance(brief.get("options", []), list) else []
+    value_model = brief.get("value_model", []) if isinstance(brief.get("value_model", []), list) else []
+    recommended = brief.get("recommended_solution", {}) if isinstance(brief.get("recommended_solution", {}), dict) else {}
+    fit_reasons = brief.get("fit_reasons", []) if isinstance(brief.get("fit_reasons", []), list) else []
+    boundaries = brief.get("risks_and_boundaries", []) if isinstance(brief.get("risks_and_boundaries", []), list) else []
+    next_steps = brief.get("next_steps", []) if isinstance(brief.get("next_steps", []), list) else []
+    workstreams = brief.get("workstreams", []) if isinstance(brief.get("workstreams", []), list) else []
+    comparison_matrix = build_solution_comparison_matrix(options, recommended_name=clean_solution_text(next((item.get("name", "") for item in options if isinstance(item, dict) and str(item.get("decision") or "").lower() == "recommended"), ""), max_len=32))
+    value_board = build_solution_value_board(value_model, audience_profile)
+    hero = chapter_map.get("hero", {}) if isinstance(chapter_map.get("hero", {}), dict) else {}
+    comparison = chapter_map.get("comparison", {}) if isinstance(chapter_map.get("comparison", {}), dict) else {}
+    blueprint = chapter_map.get("blueprint", {}) if isinstance(chapter_map.get("blueprint", {}), dict) else {}
+    workstream_chapter = chapter_map.get("workstreams", {}) if isinstance(chapter_map.get("workstreams", {}), dict) else {}
+    integration = chapter_map.get("integration", {}) if isinstance(chapter_map.get("integration", {}), dict) else {}
+    roadmap = chapter_map.get("roadmap", {}) if isinstance(chapter_map.get("roadmap", {}), dict) else {}
+    value_fit = chapter_map.get("value_fit", {}) if isinstance(chapter_map.get("value_fit", {}), dict) else {}
+    comparison_options = [item for item in options if isinstance(item, dict)]
+    recommended_option = next((item for item in comparison_options if str(item.get("decision") or "").lower() == "recommended"), comparison_options[0] if comparison_options else {})
+    alternative_option = next((item for item in comparison_options if str(item.get("decision") or "").lower() == "alternative"), comparison_options[1] if len(comparison_options) > 1 else {})
+    rejected_option = next((item for item in comparison_options if str(item.get("decision") or "").lower() == "rejected"), comparison_options[2] if len(comparison_options) > 2 else {})
+    milestone_cards = support_derived.get("milestones", []) if isinstance(support_derived.get("milestones", []), list) else []
+    workstream_cards = support_derived.get("workstream_cards", []) if isinstance(support_derived.get("workstream_cards", []), list) else []
+    blueprint_cards = support_derived.get("target_blueprint_cards", []) if isinstance(support_derived.get("target_blueprint_cards", []), list) else []
+    current_state_cards = support_derived.get("current_state_cards", []) if isinstance(support_derived.get("current_state_cards", []), list) else []
+    business_flow = clean_solution_text(((support.get("visualizations", {}) if isinstance(support.get("visualizations", {}), dict) else {}).get("business_flow_mermaid", "")), max_len=12000)
+    compare_table_payload = support_derived.get("solution_compare_table", {}) if isinstance(support_derived.get("solution_compare_table", {}), dict) else {}
+    compare_table_rows = compare_table_payload.get("rows", []) if isinstance(compare_table_payload.get("rows", []), list) else []
+    integration_detail_points = _solution_unique_compact_texts(
+        (recommended.get("dataflow", []) if isinstance(recommended.get("dataflow", []), list) else [])
+        + (recommended.get("governance", []) if isinstance(recommended.get("governance", []), list) else [])
+        + [item.get("goal", "") for item in next_steps if isinstance(item, dict)],
+        limit=SOLUTION_CONTENT_PRIMARY_LIMITS["integration"]["entries"],
+        max_len=72,
+    )
+
+    overview = {
+        "eyebrow": clean_solution_text(hero.get("eyebrow", ""), max_len=24) or "DeepVision 企业级提案",
+        "title": clean_solution_text(hero.get("title", ""), max_len=96),
+        "subtitle": clean_solution_text(hero.get("summary", ""), max_len=180),
+        "judgement": clean_solution_text(hero.get("judgement", ""), max_len=180),
+        "proofPoints": _solution_unique_compact_texts((content_model.get("chapters", {}).get("hero", {}) or {}).get("proof_points", []), limit=SOLUTION_CONTENT_PRIMARY_LIMITS["hero"]["proof_points"], max_len=88),
+        "metrics": copy.deepcopy((hero.get("metrics", []) if isinstance(hero.get("metrics", []), list) else [])[:SOLUTION_CONTENT_PRIMARY_LIMITS["hero"]["metrics"]]),
+        "track": [
+            {
+                "badge": clean_solution_text(item.get("timeline", "") or f"{index + 1:02d}", max_len=18) or f"{index + 1:02d}",
+                "title": clean_solution_text(item.get("title", "") or item.get("phase", ""), max_len=32),
+                "detail": clean_solution_text(item.get("detail", "") or item.get("goal", "") or item.get("summary", ""), max_len=96),
+                "meta": clean_solution_text(item.get("summary", "") or item.get("milestone", ""), max_len=48),
+            }
+            for index, item in enumerate((milestone_cards or next_steps)[:3]) if isinstance(item, dict)
+        ],
+        "audience": copy.deepcopy(audience_profile),
+        "evidenceRefs": _proposal_unique_refs(hero, limit=8),
+    }
+
+    solution_tabs = []
+    for index, item in enumerate(workstreams[:SOLUTION_CONTENT_PRIMARY_LIMITS["workstreams"]["cards"]]):
+        if not isinstance(item, dict):
+            continue
+        source_card = workstream_cards[index] if index < len(workstream_cards) and isinstance(workstream_cards[index], dict) else {}
+        solution_tabs.append({
+            "id": clean_solution_text(f"workstream-{index + 1}", max_len=24) or f"workstream-{index+1}",
+            "label": clean_solution_text(item.get("name", ""), max_len=20),
+            "tag": clean_solution_text(item.get("timeline", ""), max_len=18) or "工作流",
+            "headline": clean_solution_text(item.get("objective", "") or item.get("name", ""), max_len=48),
+            "summary": clean_solution_text(item.get("objective", "") or source_card.get("summary", ""), max_len=120),
+            "owner": clean_solution_text(item.get("owner_role", ""), max_len=24),
+            "dependencies": _solution_unique_compact_texts(item.get("dependencies", []), limit=2, max_len=32),
+            "deliverables": _solution_unique_compact_texts(item.get("deliverables", []), limit=2, max_len=32),
+            "capabilities": [
+                card for card in [
+                    {
+                        "title": clean_solution_text(cap, max_len=28),
+                        "desc": clean_solution_text(cap, max_len=88),
+                        "tag": "关键动作",
+                    }
+                    for cap in _solution_unique_compact_texts(item.get("key_actions", []), limit=3, max_len=56)
+                ] if card.get("title")
+            ],
+            "metrics": [
+                {
+                    "metric": clean_solution_text("验收信号", max_len=18),
+                    "target": clean_solution_text(signal, max_len=48),
+                }
+                for signal in _solution_unique_compact_texts(item.get("acceptance_signals", []), limit=2, max_len=48)
+            ],
+        })
+
+    knowledge_chapter = content_model.get("chapters", {}).get("knowledge", {}) if isinstance(content_model.get("chapters", {}).get("knowledge", {}), dict) else {}
+    flywheel_chapter = content_model.get("chapters", {}).get("flywheel", {}) if isinstance(content_model.get("chapters", {}).get("flywheel", {}), dict) else {}
+    value_chapter = content_model.get("chapters", {}).get("value_fit", {}) if isinstance(content_model.get("chapters", {}).get("value_fit", {}), dict) else {}
+
+    fit_cards = []
+    for item in fit_reasons[:SOLUTION_CONTENT_PRIMARY_LIMITS["value_fit"]["fit_cards"]]:
+        if not isinstance(item, dict):
+            continue
+        fit_cards.append({
+            "title": clean_solution_text(item.get("title", ""), max_len=32),
+            "desc": clean_solution_text(item.get("detail", ""), max_len=110),
+            "tag": "适配理由",
+            "evidenceRefs": _proposal_unique_refs(item, limit=6),
+        })
+    for item in boundaries[:SOLUTION_CONTENT_PRIMARY_LIMITS["value_fit"]["risk_cards"]]:
+        if not isinstance(item, dict):
+            continue
+        fit_cards.append({
+            "title": clean_solution_text(item.get("title", ""), max_len=32),
+            "desc": clean_solution_text(item.get("detail", ""), max_len=110),
+            "tag": "risk" if clean_solution_text(item.get("type", ""), max_len=16).lower() == "risk" else "边界",
+            "evidenceRefs": _proposal_unique_refs(item, limit=6),
+        })
+
+    return {
+        "mode": "proposal",
+        "hasProposal": True,
+        "brandTitle": clean_solution_text(meta.get("topic", ""), max_len=48) or clean_solution_text(normalized.get("topic", ""), max_len=48) or "DeepVision 企业提案",
+        "navItems": copy.deepcopy(SOLUTION_PROPOSAL_RENDER_NAV_ITEMS),
+        "contentPriorityPlan": copy.deepcopy(content_priority_plan),
+        "overview": overview,
+        "comparison": {
+            "eyebrow": clean_solution_text(comparison.get("eyebrow", ""), max_len=24) or "系统对比",
+            "title": clean_solution_text(comparison.get("title", ""), max_len=88),
+            "summary": clean_solution_text(comparison.get("summary", ""), max_len=180),
+            "judgement": clean_solution_text(comparison.get("judgement", ""), max_len=180),
+            "left": copy.deepcopy(alternative_option),
+            "right": copy.deepcopy(recommended_option),
+            "tertiary": copy.deepcopy(rejected_option) if isinstance(rejected_option, dict) else None,
+            "analogy": {
+                "title": "当前判断",
+                "body": clean_solution_text((content_model.get("chapters", {}).get("comparison", {}) or {}).get("judgement", ""), max_len=220),
+            },
+            "cases": [
+                {
+                    "badge": clean_solution_text(row.get("dimension", ""), max_len=18),
+                    "title": clean_solution_text(row.get("dimension", ""), max_len=24),
+                    "left": clean_solution_text(((row.get("cells", []) or [{}])[0] or {}).get("reason", ""), max_len=88),
+                    "right": clean_solution_text(((row.get("cells", []) or [{}, {}])[1] or {}).get("reason", ""), max_len=88),
+                    "effect": clean_solution_text(f"当前更优：{row.get('winner', '')}", max_len=56),
+                }
+                for row in (comparison_matrix.get("rows", []) if isinstance(comparison_matrix.get("rows", []), list) else [])[:3]
+                if isinstance(row, dict)
+            ],
+            "tableRows": copy.deepcopy(compare_table_rows),
+            "matrix": comparison_matrix,
+            "evidenceRefs": _proposal_unique_refs([comparison, options], limit=8),
+        },
+        "solutions": {
+            "eyebrow": clean_solution_text(workstream_chapter.get("eyebrow", ""), max_len=24) or "落地方案",
+            "title": clean_solution_text(workstream_chapter.get("title", ""), max_len=88),
+            "summary": clean_solution_text(workstream_chapter.get("summary", ""), max_len=180),
+            "judgement": clean_solution_text(workstream_chapter.get("judgement", ""), max_len=180),
+            "blueprint": {
+                "eyebrow": clean_solution_text(blueprint.get("eyebrow", ""), max_len=24) or "推荐蓝图",
+                "title": clean_solution_text(blueprint.get("title", ""), max_len=88),
+                "summary": clean_solution_text(blueprint.get("summary", ""), max_len=180),
+                "judgement": clean_solution_text(blueprint.get("judgement", ""), max_len=160),
+                "cards": copy.deepcopy((blueprint.get("cards", []) if isinstance(blueprint.get("cards", []), list) else [])[:SOLUTION_CONTENT_PRIMARY_LIMITS["blueprint"]["cards"]]),
+                "figure": copy.deepcopy(blueprint.get("diagram", {}) if isinstance(blueprint.get("diagram", {}), dict) else {}),
+            },
+            "tabs": solution_tabs,
+            "evidenceRefs": _proposal_unique_refs([workstream_chapter, blueprint, workstreams], limit=8),
+        },
+        "integration": {
+            "eyebrow": clean_solution_text(integration.get("eyebrow", ""), max_len=24) or "系统集成",
+            "title": clean_solution_text(integration.get("title", ""), max_len=88),
+            "summary": clean_solution_text(integration.get("summary", ""), max_len=180),
+            "judgement": clean_solution_text(integration.get("judgement", ""), max_len=180),
+            "entryTitle": clean_solution_text("关键接入入口", max_len=20),
+            "entrySummary": clean_solution_text(f"先锁定「{_proposal_focus_label((recommended.get('integration_points', []) or ['关键入口'])[0], max_len=18) or '关键入口'}」作为首轮接入入口，再把执行与回流动作接起来。", max_len=96),
+            "pathTitle": clean_solution_text("推进路径", max_len=20),
+            "pathSummary": clean_solution_text("按范围冻结、试点执行、价值复盘三段推进，避免一开始同时铺开全部能力。", max_len=96),
+            "figureTitle": clean_solution_text("系统流转图", max_len=20),
+            "figureSummary": clean_solution_text("把入口、执行、回流和阶段节奏组织成真正的系统结构。", max_len=96),
+            "leftScenarios": [
+                {
+                    "eyebrow": clean_solution_text(f"入口 {index + 1:02d}", max_len=16),
+                    "title": clean_solution_text(item, max_len=24),
+                    "detail": clean_solution_text(
+                        integration_detail_points[index] if index < len(integration_detail_points) else f"围绕「{clean_solution_text(item, max_len=18)}」冻结入口、角色和接口边界。",
+                        max_len=88,
+                    ),
+                }
+                for index, item in enumerate(_solution_unique_compact_texts(recommended.get("integration_points", []), limit=SOLUTION_CONTENT_PRIMARY_LIMITS["integration"]["entries"], max_len=56))
+            ],
+            "phases": copy.deepcopy(next_steps[:SOLUTION_CONTENT_PRIMARY_LIMITS["integration"]["phases"]]),
+            "systemFigure": copy.deepcopy(integration.get("diagram", {}) if isinstance(integration.get("diagram", {}), dict) else {}),
+            "businessFlowMermaid": business_flow,
+            "evidenceRefs": _proposal_unique_refs([integration, recommended, next_steps], limit=8),
+        },
+        "knowledge": {
+            "eyebrow": "知识统一",
+            "title": clean_solution_text("把试点结论沉淀成统一知识资产", max_len=64),
+            "summary": clean_solution_text("把本次试点的判断、模块和边界沉淀进统一台账，后续项目才能越做越快。", max_len=120),
+            "judgement": clean_solution_text("如果试点结论不能复用，后续项目还会重复踩坑。", max_len=120),
+            "problemTitle": "当前困境",
+            "solutionTitle": "统一方案",
+            "pains": copy.deepcopy((knowledge_chapter.get("pains", []) if isinstance(knowledge_chapter.get("pains", []), list) else [])[:SOLUTION_CONTENT_PRIMARY_LIMITS["knowledge"]["pains"]]),
+            "solutions": copy.deepcopy((knowledge_chapter.get("solutions", []) if isinstance(knowledge_chapter.get("solutions", []), list) else [])[:SOLUTION_CONTENT_PRIMARY_LIMITS["knowledge"]["solutions"]]),
+            "layers": copy.deepcopy((knowledge_chapter.get("layers", []) if isinstance(knowledge_chapter.get("layers", []), list) else [])[:SOLUTION_CONTENT_PRIMARY_LIMITS["knowledge"]["layers"]]),
+            "loop": [
+                {"title": clean_solution_text(item, max_len=28), "detail": clean_solution_text(item, max_len=64)}
+                for item in (knowledge_chapter.get("loop", []) if isinstance(knowledge_chapter.get("loop", []), list) else [])[:4]
+            ],
+            "evidenceRefs": _proposal_unique_refs(knowledge_chapter, limit=8),
+        },
+        "flywheel": {
+            "eyebrow": "数据联动",
+            "title": clean_solution_text("让关键模块形成持续联动", max_len=64),
+            "summary": clean_solution_text("把切口、模块、系统接入和价值复盘接成循环，方案才会持续放大。", max_len=120),
+            "judgement": clean_solution_text("如果模块之间不能回流协同，这套方案就无法形成真正的组织复利。", max_len=120),
+            "diagram": {
+                "centerTitle": clean_solution_text(meta.get("topic", ""), max_len=28) or "企业级方案中枢",
+                "centerDetail": clean_solution_text(recommended.get("north_star", ""), max_len=88),
+                "nodes": [
+                    {"title": clean_solution_text(item, max_len=24), "detail": clean_solution_text(item, max_len=72)}
+                    for item in (flywheel_chapter.get("nodes", []) if isinstance(flywheel_chapter.get("nodes", []), list) else [])[:SOLUTION_CONTENT_PRIMARY_LIMITS["flywheel"]["nodes"]]
+                ],
+            },
+            "cases": [
+                {
+                    "badge": clean_solution_text(f"链路 {index + 1:02d}", max_len=16),
+                    "title": clean_solution_text(item, max_len=28),
+                    "body": clean_solution_text(f"围绕「{clean_solution_text(item, max_len=18)}」形成一条可持续回流的推进链路。", max_len=88),
+                }
+                for index, item in enumerate((flywheel_chapter.get("cases", []) if isinstance(flywheel_chapter.get("cases", []), list) else [])[:SOLUTION_CONTENT_PRIMARY_LIMITS["flywheel"]["cases"]])
+            ],
+            "evidenceRefs": _proposal_unique_refs(flywheel_chapter, limit=8),
+        },
+        "value": {
+            "eyebrow": clean_solution_text(value_fit.get("eyebrow", ""), max_len=24) or "预期价值",
+            "title": clean_solution_text(value_fit.get("title", ""), max_len=88),
+            "summary": clean_solution_text(value_fit.get("summary", ""), max_len=180),
+            "judgement": clean_solution_text(value_fit.get("judgement", ""), max_len=180),
+            "metrics": [
+                {
+                    "label": clean_solution_text(item.get("metric", ""), max_len=24),
+                    "value": _proposal_metric_value(item.get("target", "") or item.get("range", ""), max_len=32),
+                    "note": _proposal_metric_note((item.get("assumptions", []) or [""])[0], max_len=40) if isinstance(item.get("assumptions", []), list) else "",
+                }
+                for item in value_model[:SOLUTION_CONTENT_PRIMARY_LIMITS["value_fit"]["metrics"]] if isinstance(item, dict)
+            ],
+            "board": value_board,
+            "detailGroups": [
+                {
+                    "title": clean_solution_text(item.get("metric", ""), max_len=28),
+                    "body": clean_solution_text(item.get("baseline", ""), max_len=96),
+                    "note": _proposal_metric_note((item.get("assumptions", []) or [""])[0], max_len=48) if isinstance(item.get("assumptions", []), list) else "",
+                }
+                for item in value_model[:4] if isinstance(item, dict)
+            ],
+            "evidenceRefs": _proposal_unique_refs([value_fit, value_model], limit=8),
+        },
+        "fit": {
+            "eyebrow": "为什么适合",
+            "title": clean_solution_text("为什么这条路径尤其适合当前团队", max_len=64),
+            "summary": clean_solution_text("最后要把适配性、时机和路径选择一次讲清，管理层才能做最终判断。", max_len=120),
+            "judgement": clean_solution_text("只有价值、适配性和边界同时成立，这件事才值得进入试点和立项。", max_len=120),
+            "cards": fit_cards[:6],
+            "evidenceRefs": _proposal_unique_refs([fit_reasons, boundaries], limit=8),
+        },
+        "closing": {
+            "eyebrow": "决策收束",
+            "title": clean_solution_text("最终建议", max_len=32),
+            "headline": clean_solution_text(closing_block.get("headline", ""), max_len=120),
+            "decision": clean_solution_text(closing_block.get("decision", ""), max_len=120),
+            "boundary": clean_solution_text(closing_block.get("boundary", ""), max_len=120),
+            "evidenceRefs": _proposal_unique_refs(closing_block, limit=8),
+            "nextActionRefs": _proposal_unique_refs(closing_block.get("next_action_refs", []), limit=6),
+        },
+        "summaryCard": copy.deepcopy(summary_card),
+        "qualityReview": copy.deepcopy(quality_review if isinstance(quality_review, dict) else build_solution_quality_review(snapshot, proposal_brief, chapter_copy)),
+    }
+
+
+def build_solution_quality_review(snapshot: dict, proposal_brief: dict, chapter_copy: dict) -> dict:
+    brief = proposal_brief if isinstance(proposal_brief, dict) else {}
+    copy_payload = chapter_copy if isinstance(chapter_copy, dict) else {}
+    chapters = copy_payload.get("chapters", []) if isinstance(copy_payload.get("chapters", []), list) else []
+    chapter_map = {str(item.get("id") or ""): item for item in chapters if isinstance(item, dict)}
+    issues = []
+    chapter_scores = []
+
+    def add_chapter_score(chapter_id: str, score: float, issue: str = ""):
+        chapter_scores.append({
+            "id": chapter_id,
+            "score": round(max(0.0, min(1.0, score)), 2),
+            "issue": clean_solution_text(issue, max_len=88),
+        })
+        if issue:
+            issues.append(clean_solution_text(f"{chapter_id}: {issue}", max_len=120))
+
+    hero = chapter_map.get("hero", {})
+    comparison = chapter_map.get("comparison", {})
+    value_fit = chapter_map.get("value_fit", {})
+    thesis = brief.get("thesis", {}) if isinstance(brief.get("thesis", {}), dict) else {}
+    text_payload = [
+        clean_solution_text(hero.get("title", ""), max_len=160),
+        clean_solution_text(hero.get("judgement", ""), max_len=200),
+        clean_solution_text(comparison.get("title", ""), max_len=160),
+        clean_solution_text(value_fit.get("title", ""), max_len=160),
+        clean_solution_text(thesis.get("headline", ""), max_len=160),
+    ]
+    template_hits = sum(
+        1 for text in text_payload
+        if any(token in text for token in ("先把", "再让", "可复制推进", "真正的", "必须"))
+    )
+    template_phrase_rate = round(template_hits / max(1, len(text_payload)), 2)
+    headline_diversity_score = round(max(0.0, 1.0 - template_phrase_rate), 2)
+    hero_score = 1.0
+    if len(clean_solution_text(hero.get("title", ""), max_len=120)) > 28:
+        hero_score -= 0.2
+    if "为什么" not in clean_solution_text(hero.get("judgement", ""), max_len=160) and "建议" not in clean_solution_text(hero.get("judgement", ""), max_len=160):
+        hero_score -= 0.2
+    add_chapter_score("hero", hero_score, "标题或判断句还不够像总判断。" if hero_score < 0.75 else "")
+
+    comparison_cards = comparison.get("cards", []) if isinstance(comparison.get("cards", []), list) else []
+    comparison_score = 1.0
+    if len(comparison_cards) < 2:
+        comparison_score -= 0.4
+    if not any("不适合" in clean_solution_text((item or {}).get("meta", ""), max_len=96) or "难以" in clean_solution_text((item or {}).get("desc", ""), max_len=120) for item in comparison_cards):
+        comparison_score -= 0.25
+    add_chapter_score("comparison", comparison_score, "路径对比还缺少明确的排除理由。" if comparison_score < 0.75 else "")
+
+    value_score = 1.0
+    metrics = value_fit.get("metrics", []) if isinstance(value_fit.get("metrics", []), list) else []
+    if len(metrics) < 3:
+        value_score -= 0.35
+    if not all(clean_solution_text((item or {}).get("note", ""), max_len=64).startswith("前提：") for item in metrics[:3]):
+        value_score -= 0.2
+    add_chapter_score("value_fit", value_score, "价值区还需要更清晰的量化前提。" if value_score < 0.8 else "")
+
+    closing_score = 1.0
+    if not clean_solution_text(thesis.get("core_decision", ""), max_len=120):
+        closing_score -= 0.4
+    if not clean_solution_text(thesis.get("why_now", ""), max_len=120):
+        closing_score -= 0.25
+    if template_phrase_rate > 0.4:
+        closing_score -= 0.2
+    closing_issue = "最终收束还缺少足够清晰的决策建议。" if closing_score < 0.8 else ""
+    add_chapter_score("closing", closing_score, closing_issue)
+
+    overall = round(sum(item["score"] for item in chapter_scores) / max(1, len(chapter_scores)), 2)
+    status = "strong" if overall >= 0.82 else ("solid" if overall >= 0.72 else "needs_polish")
+    evidence_span = len(set(_proposal_unique_refs([brief, copy_payload], limit=24)))
+    audience_fit_score = 0.9 if clean_solution_text((brief.get("meta", {}) or {}).get("audience", ""), max_len=24) else 0.6
+    return {
+        "audience": clean_solution_text((brief.get("meta", {}) or {}).get("audience", ""), max_len=24) or "decision_maker",
+        "overall_score": overall,
+        "status": status,
+        "issues": issues[:6],
+        "template_phrase_rate": template_phrase_rate,
+        "headline_diversity_score": headline_diversity_score,
+        "chapter_independence_score": round(max(0.0, 1.0 - template_phrase_rate * 0.8), 2),
+        "decision_density": round((hero_score + comparison_score + closing_score) / 3, 2),
+        "evidence_span": evidence_span,
+        "audience_fit_score": audience_fit_score,
+        "closing_strength_score": round(closing_score, 2),
+        "closing_actionability_score": round(1.0 if clean_solution_text(thesis.get("core_decision", ""), max_len=120) else 0.4, 2),
+        "closing_boundary_score": round(1.0 if clean_solution_text(thesis.get("why_now", ""), max_len=120) else 0.4, 2),
+        "chapter_scores": chapter_scores,
+        "chapter_updates": [],
+    }
+
 def _solution_build_ai_prompt_payload(
     snapshot: dict,
     quality_signals: Optional[dict] = None,
@@ -25662,6 +27579,7 @@ def _solution_build_ai_prompt_payload(
     draft = normalized.get("draft", {})
     derived = runtime_snapshot.get("derived", {}) if isinstance(runtime_snapshot.get("derived", {}), dict) else {}
     quality = quality_signals if isinstance(quality_signals, dict) else {}
+    audience_profile = infer_solution_audience_profile(normalized, quality_signals=quality)
     return {
         "meta": {
             "topic": normalized.get("topic", ""),
@@ -25679,6 +27597,12 @@ def _solution_build_ai_prompt_payload(
                 "primary_decision": clean_solution_text(derived.get("primary_decision", ""), max_len=72),
                 "primary_workstream": clean_solution_text(derived.get("primary_workstream", ""), max_len=72),
                 "decision_cards": copy.deepcopy((derived.get("decision_cards", []) if isinstance(derived.get("decision_cards", []), list) else [])[:3]),
+                "current_state_cards": copy.deepcopy((derived.get("current_state_cards", []) if isinstance(derived.get("current_state_cards", []), list) else [])[:4]),
+                "target_blueprint_cards": copy.deepcopy((derived.get("target_blueprint_cards", []) if isinstance(derived.get("target_blueprint_cards", []), list) else [])[:5]),
+                "workstream_cards": copy.deepcopy((derived.get("workstream_cards", []) if isinstance(derived.get("workstream_cards", []), list) else [])[:5]),
+                "milestones": copy.deepcopy((derived.get("milestones", []) if isinstance(derived.get("milestones", []), list) else [])[:5]),
+                "risk_cards": copy.deepcopy((derived.get("risk_cards", []) if isinstance(derived.get("risk_cards", []), list) else [])[:4]),
+                "solution_compare_table": copy.deepcopy(derived.get("solution_compare_table", {}) if isinstance(derived.get("solution_compare_table", {}), dict) else {}),
                 "analysis_blocks": copy.deepcopy((derived.get("analysis_blocks", []) if isinstance(derived.get("analysis_blocks", []), list) else [])[:4]),
             },
         },
@@ -25688,10 +27612,15 @@ def _solution_build_ai_prompt_payload(
             "similarity_score": float(quality.get("similarity_score", 0.0) or 0.0),
             "strict_evidence": bool(quality.get("strict_evidence", False)),
         },
+        "audience_profile": audience_profile,
         "metric_cards": copy.deepcopy(_solution_metric_cards_from_snapshot(normalized, quality)[:4]),
         "draft": {
             "overview": draft.get("overview", ""),
             "analysis": copy.deepcopy(draft.get("analysis", {})),
+            "visualizations": {
+                "architecture_mermaid": clean_solution_text(((draft.get("visualizations", {}) if isinstance(draft.get("visualizations", {}), dict) else {}).get("architecture_mermaid", "")), max_len=12000),
+                "business_flow_mermaid": clean_solution_text(((draft.get("visualizations", {}) if isinstance(draft.get("visualizations", {}), dict) else {}).get("business_flow_mermaid", "")), max_len=12000),
+            },
             "needs": copy.deepcopy((draft.get("needs", []) if isinstance(draft.get("needs", []), list) else [])[:SOLUTION_PROPOSAL_AI_INPUT_ITEM_LIMIT]),
             "solutions": copy.deepcopy((draft.get("solutions", []) if isinstance(draft.get("solutions", []), list) else [])[:SOLUTION_PROPOSAL_AI_INPUT_ITEM_LIMIT]),
             "risks": copy.deepcopy((draft.get("risks", []) if isinstance(draft.get("risks", []), list) else [])[:SOLUTION_PROPOSAL_AI_INPUT_ITEM_LIMIT]),
@@ -25714,6 +27643,12 @@ def build_solution_proposal_brief_ai_prompt(prompt_payload: dict) -> str:
 3. 必须可落地，所有工作流都要有目标、动作、交付物和验收信号。
 4. 必须尽量量化，不要只写“提升效率”“优化体验”。
 5. 必须尽量绑定 evidence_refs，不能脱离输入事实胡编。
+6. 文风要像企业售前方案和管理层汇报，不要像系统实现说明。
+7. 标题和关键判断优先使用业务可理解短标签，不要把长技术术语直接当标题。
+8. blueprint / integration 必须说明系统怎么分层、能力怎么打通、为什么能持续扩展。
+9. audience_profile 会告诉你当前页面更偏决策层、管理层还是执行层，请按该受众调整语气、取舍重点和价值表达。
+10. 内容必须简洁，优先输出高信号判断，不要把报告原文大段搬进方案。
+11. 标题和判断句不要机械复用同一模板，尤其避免大量重复“先把…再…”句式。
 
 输出约束：
 - 只输出合法 JSON，禁止 markdown 代码块、解释文字、前后缀文本。
@@ -25725,9 +27660,20 @@ def build_solution_proposal_brief_ai_prompt(prompt_payload: dict) -> str:
 - risks_and_boundaries 必须同时覆盖风险或边界，不够确定时写 assumption
 - next_steps 必须体现阶段节奏，不要只列任务
 - 所有字段尽量写满；无法判断时写空字符串或空数组，不要省略字段
+- 禁止出现内部实现词：proposal_brief、chapter_copy、payload、schema、结构化素材、页面骨架、渲染、字段、debug
+- 不要讨论“页面怎么生成”，只讨论“业务为什么这样做、如何落地、预期价值和边界”
+- 如必须使用技术术语，请优先压缩成管理层易懂的表达，例如：AI工程底座、分层架构、接口治理、迁移工具链
+- 每个字段尽量短句化，单条价值、理由、边界都优先控制在一句话内
 
 输出 JSON 模板：
 {json.dumps(response_schema, ensure_ascii=False, indent=2)}
+
+参考写法（只作为风格示例，不要逐字照抄）：
+- 好标题：先把「AI工程底座」打稳，再让「智能体建设」进入可复制推进
+- 好判断：先用「AI工程底座」承接首轮试点，再由「分层架构」拉通关键模块协同，最后用接口治理和迁移工具链把试点能力沉淀成可扩展体系
+- 好 why_now：如果现在不先锁定统一底座，后续扩展只会持续放大协同成本
+- 好指标：完成平台POC，上线核心流水线
+- 好收束：把预期价值、启动边界和扩张条件摆在一起，管理层才能判断这件事值不值得做、该做到多大范围
 
 输入数据：
 {json.dumps(prompt_payload, ensure_ascii=False, indent=2)}
@@ -25745,6 +27691,9 @@ def build_solution_chapter_copy_ai_prompt(proposal_brief: dict, prompt_payload: 
 - 不复制报告目录，不写流水账
 - 每一章只推进一个论点
 - 页面既要高级，也要能指导决策
+- 风格对标高级售前方案：标题像结论，comparison 像系统定位对比，integration 像系统接入路径，value_fit 像最终决策收束
+- blueprint 要像“推荐蓝图”，讲清能力底座、系统分层和扩展方式
+- integration 要像“系统闭环”，讲清入口、执行、沉淀和复盘如何连接
 
 输出约束：
 - 只输出合法 JSON，禁止 markdown 代码块、解释文字、前后缀文本。
@@ -25759,9 +27708,31 @@ def build_solution_chapter_copy_ai_prompt(proposal_brief: dict, prompt_payload: 
 - roadmap 必须体现阶段推进
 - value_fit 必须同时覆盖价值与适配性
 - 文案要像提案，不要像系统字段或报告标题
+- 标题尽量压缩成 12-24 个字的商务句，不要直接复用长技术名称
+- 禁止出现内部实现词：proposal_brief、chapter_copy、payload、schema、结构化素材、页面骨架、渲染、字段、debug
+- 不要写“本页面”“本章节如何生成”“母版如何渲染”等实现描述
+- 如需提及技术方向，请优先改写成管理层易懂的短标签，例如：AI工程底座、分层架构、接口治理、迁移工具链
+- 保持内容紧凑：summary 和 judgement 优先用 1-2 句完成，不要写成长段
+- 每章 cards 只保留最高信号内容，不要把报告原文逐条搬运
 
 输出 JSON 模板：
 {json.dumps(response_schema, ensure_ascii=False, indent=2)}
+
+参考写法（只作为风格示例，不要逐字照抄）：
+- hero.title：先把「AI工程底座」打稳，再让「智能体建设」进入可复制推进
+- hero.card.title：为什么值得现在推进
+- hero.card.desc：如果现在不先锁定统一底座，后续扩展只会持续放大协同成本
+- comparison.title：为什么当前先做「AI工程底座」
+- comparison.card.desc：启动最快，但更多只能换来方向判断，难以直接形成可评审方案。
+- comparison.card.meta：更适合：希望8周内进入试点评审的团队
+- why_now.card.title：AI工程底座 / 分层架构 / 接口治理
+- why_now.card.desc：降低对少数专家的强依赖 / 让系统协同更稳定 / 提前锁定接口边界
+- blueprint.title：推荐蓝图：先稳住「AI工程底座」，再拉通「分层架构」
+- integration.title：把「支付失败页入口」接进系统闭环
+- hero.metric.note：前提：试点样本真实可控
+- value_fit.title：为什么这条路径更适合当前团队进入试点决策阶段
+- integration.summary：把关键入口、核心模块和治理节点打通后，每次试点都会增强下一轮判断、协同和扩张效率。
+- audience_profile.label 如果是“决策层视角”，标题和 judgement 更强调取舍、投入边界和试点评审；如果是“执行层视角”，则更强调交付物、依赖和验收信号。
 
 结构化提案输入：
 {json.dumps(proposal_brief, ensure_ascii=False, indent=2)}
@@ -25772,6 +27743,56 @@ def build_solution_chapter_copy_ai_prompt(proposal_brief: dict, prompt_payload: 
     "quality_signals": prompt_payload.get("quality_signals", {}),
     "metric_cards": prompt_payload.get("metric_cards", []),
 }, ensure_ascii=False, indent=2)}
+"""
+
+
+def build_solution_quality_review_ai_prompt(
+    proposal_brief: dict,
+    chapter_copy: dict,
+    prompt_payload: dict,
+    heuristic_review: dict,
+) -> str:
+    response_schema = _solution_review_response_schema()
+    return f"""你是企业级售前提案的主审编辑。
+
+你的任务是审查当前方案页章节内容是否足够像高级商务提案，并在必要时只重写有问题的章节标题、判断句或摘要。
+
+审查原则：
+1. hero 必须像总判断，不像报告标题。
+2. why_now 必须回答“为什么现在做”，而不是复述背景。
+3. comparison 必须明确“为什么不是别的路径”，不能只有路径摘要。
+4. blueprint / integration 必须讲清系统怎么打通、为什么能形成闭环。
+5. value_fit 必须同时给出价值和成立前提，不能只有口号。
+6. 禁止出现内部实现词：proposal_brief、chapter_copy、payload、schema、结构化素材、页面骨架、渲染、字段、debug。
+7. 请沿用 audience_profile 对应的受众口吻。
+
+输出要求：
+- 只输出合法 JSON，禁止解释文字。
+- 顶层字段必须包含：audience、overall_score、status、issues、chapter_scores、chapter_updates
+- overall_score 范围 0 到 1
+- status 只能是 strong、solid、needs_polish
+- chapter_scores 中的 id 只能来自：{", ".join(SOLUTION_PROPOSAL_CHAPTER_IDS)}
+- chapter_updates 只允许修改 title、judgement、summary，且只返回需要重写的章节
+- 如果整体已经足够强，可以返回空数组 chapter_updates
+
+输出 JSON 模板：
+{json.dumps(response_schema, ensure_ascii=False, indent=2)}
+
+当前启发式审查结果：
+{json.dumps(heuristic_review, ensure_ascii=False, indent=2)}
+
+受众与上下文：
+{json.dumps({
+    "meta": prompt_payload.get("meta", {}),
+    "audience_profile": prompt_payload.get("audience_profile", {}),
+    "quality_signals": prompt_payload.get("quality_signals", {}),
+}, ensure_ascii=False, indent=2)}
+
+结构化提案：
+{json.dumps(proposal_brief, ensure_ascii=False, indent=2)}
+
+当前章节文案：
+{json.dumps(chapter_copy, ensure_ascii=False, indent=2)}
 """
 
 
@@ -25956,6 +27977,8 @@ def _solution_ai_normalize_fit_reason(item) -> Optional[dict]:
         return None
     title = clean_solution_text(item.get("title", ""), max_len=32)
     detail = clean_solution_text(item.get("detail", ""), max_len=120)
+    if _proposal_contains_internal_terms(title) or _proposal_contains_internal_terms(detail):
+        return None
     if not title or not detail:
         return None
     return {
@@ -25970,6 +27993,8 @@ def _solution_ai_normalize_risk_boundary(item) -> Optional[dict]:
         return None
     title = clean_solution_text(item.get("title", ""), max_len=36)
     detail = clean_solution_text(item.get("detail", ""), max_len=120)
+    if _proposal_contains_internal_terms(title) or _proposal_contains_internal_terms(detail):
+        return None
     item_type = clean_solution_text(item.get("type", "risk"), max_len=16).lower()
     if item_type not in {"risk", "boundary", "assumption"}:
         item_type = "risk"
@@ -25988,6 +28013,8 @@ def _solution_ai_normalize_next_step(item) -> Optional[dict]:
         return None
     phase = clean_solution_text(item.get("phase", ""), max_len=36)
     goal = clean_solution_text(item.get("goal", ""), max_len=120)
+    if _proposal_contains_internal_terms(phase) or _proposal_contains_internal_terms(goal):
+        return None
     if not phase or not goal:
         return None
     return {
@@ -26039,6 +28066,9 @@ def _solution_ai_merge_proposal_brief(ai_candidate: dict, fallback_brief: dict, 
         merged_meta["topic"] = topic
     if audience:
         merged_meta["audience"] = audience
+        merged_meta["audience_label"] = _solution_audience_label(audience)
+        merged_meta["audience_reasoning"] = _solution_audience_reasoning(audience)
+        merged_meta["proposal_goal"] = _solution_proposal_goal(audience)
     if proposal_goal:
         merged_meta["proposal_goal"] = proposal_goal
     merged_meta["confidence"] = round(_solution_clamp_float(meta_candidate.get("confidence", merged_meta.get("confidence", 0.0)), default=merged_meta.get("confidence", 0.0), minimum=0.0, maximum=0.99), 2)
@@ -26050,6 +28080,8 @@ def _solution_ai_merge_proposal_brief(ai_candidate: dict, fallback_brief: dict, 
     merged_thesis = merged.get("thesis", {}) if isinstance(merged.get("thesis", {}), dict) else {}
     for key, limit in [("headline", 72), ("subheadline", 160), ("why_now", 180), ("core_decision", 180)]:
         value = clean_solution_text(thesis_candidate.get(key, ""), max_len=limit)
+        if _proposal_contains_internal_terms(value):
+            continue
         if value:
             merged_thesis[key] = value
     merged["thesis"] = merged_thesis
@@ -26057,6 +28089,8 @@ def _solution_ai_merge_proposal_brief(ai_candidate: dict, fallback_brief: dict, 
     context_candidate = ai_candidate.get("context", {}) if isinstance(ai_candidate.get("context", {}), dict) else {}
     merged_context = merged.get("context", {}) if isinstance(merged.get("context", {}), dict) else {}
     business_scene = clean_solution_text(context_candidate.get("business_scene", ""), max_len=80)
+    if _proposal_contains_internal_terms(business_scene):
+        business_scene = ""
     if business_scene:
         merged_context["business_scene"] = business_scene
     for key, max_items, max_len in [
@@ -26193,6 +28227,8 @@ def _solution_ai_merge_chapter_copy(ai_candidate: dict, fallback_copy: dict) -> 
             ("summary", 200),
         ]:
             value = clean_solution_text(candidate.get(key, ""), max_len=limit)
+            if _proposal_contains_internal_terms(value):
+                continue
             if value:
                 base[key] = value
         layout = clean_solution_text(candidate.get("layout", ""), max_len=24).lower()
@@ -26235,6 +28271,97 @@ def _solution_ai_merge_chapter_copy(ai_candidate: dict, fallback_copy: dict) -> 
 
     merged["chapters"] = normalized_chapters
     return merged
+
+
+def _solution_ai_merge_quality_review(ai_candidate: dict, fallback_review: dict) -> dict:
+    merged = copy.deepcopy(fallback_review if isinstance(fallback_review, dict) else {})
+    if not isinstance(ai_candidate, dict):
+        return merged
+
+    audience = clean_solution_text(ai_candidate.get("audience", ""), max_len=24).strip().lower()
+    if audience in {"decision_maker", "manager", "execution"}:
+        merged["audience"] = audience
+
+    merged["overall_score"] = round(
+        _solution_clamp_float(
+            ai_candidate.get("overall_score", merged.get("overall_score", 0.0)),
+            default=merged.get("overall_score", 0.0),
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        2,
+    )
+
+    status = clean_solution_text(ai_candidate.get("status", ""), max_len=24).lower()
+    if status in {"strong", "solid", "needs_polish"}:
+        merged["status"] = status
+
+    issues = _solution_ai_compact_texts(ai_candidate.get("issues", []), max_items=6, max_len=120)
+    if issues:
+        merged["issues"] = issues
+
+    normalized_scores = []
+    for entry in ai_candidate.get("chapter_scores", []) if isinstance(ai_candidate.get("chapter_scores", []), list) else []:
+        if not isinstance(entry, dict):
+            continue
+        chapter_id = clean_solution_text(entry.get("id", ""), max_len=24).lower()
+        if chapter_id not in SOLUTION_PROPOSAL_CHAPTER_IDS:
+            continue
+        normalized_scores.append({
+            "id": chapter_id,
+            "score": round(_solution_clamp_float(entry.get("score", 0.0), default=0.0, minimum=0.0, maximum=1.0), 2),
+            "issue": clean_solution_text(entry.get("issue", ""), max_len=88),
+        })
+    if normalized_scores:
+        merged["chapter_scores"] = normalized_scores
+
+    chapter_updates = []
+    for entry in ai_candidate.get("chapter_updates", []) if isinstance(ai_candidate.get("chapter_updates", []), list) else []:
+        if not isinstance(entry, dict):
+            continue
+        chapter_id = clean_solution_text(entry.get("id", ""), max_len=24).lower()
+        if chapter_id not in SOLUTION_PROPOSAL_CHAPTER_IDS:
+            continue
+        update_payload = {"id": chapter_id}
+        for key, limit in [("title", 72), ("judgement", 160), ("summary", 200)]:
+            value = clean_solution_text(entry.get(key, ""), max_len=limit)
+            if not value or _proposal_contains_internal_terms(value):
+                continue
+            update_payload[key] = value
+        if len(update_payload) > 1:
+            chapter_updates.append(update_payload)
+    merged["chapter_updates"] = chapter_updates[:6]
+    return merged
+
+
+def _solution_apply_quality_review_updates(chapter_copy: dict, chapter_updates: list[dict]) -> dict:
+    updated = copy.deepcopy(chapter_copy if isinstance(chapter_copy, dict) else {})
+    chapter_map = {
+        str(item.get("id") or "").strip().lower(): item
+        for item in (updated.get("chapters", []) if isinstance(updated.get("chapters", []), list) else [])
+        if isinstance(item, dict)
+    }
+    applied_updates = 0
+    for item in chapter_updates:
+        if not isinstance(item, dict):
+            continue
+        chapter_id = str(item.get("id") or "").strip().lower()
+        chapter = chapter_map.get(chapter_id)
+        if not chapter:
+            continue
+        changed = False
+        for key in ("title", "judgement", "summary"):
+            value = clean_solution_text(item.get(key, ""), max_len=200 if key == "summary" else 160)
+            if not value or _proposal_contains_internal_terms(value):
+                continue
+            chapter[key] = value
+            changed = True
+        if changed:
+            applied_updates += 1
+    meta = updated.get("meta", {}) if isinstance(updated.get("meta", {}), dict) else {}
+    meta["review_updates_applied"] = applied_updates
+    updated["meta"] = meta
+    return updated
 
 
 def build_solution_proposal_brief_with_ai(
@@ -26280,7 +28407,7 @@ def build_solution_proposal_brief_with_ai(
         require_all_keys=True,
     )
     merged = _solution_ai_merge_proposal_brief(parsed, fallback_brief, source_mode=source_mode)
-    return merged or fallback_brief
+    return _solution_postprocess_proposal_brief(merged or fallback_brief, fallback_brief)
 
 
 def build_solution_chapter_copy_with_ai(
@@ -26326,15 +28453,77 @@ def build_solution_chapter_copy_with_ai(
         require_all_keys=True,
     )
     merged = _solution_ai_merge_chapter_copy(parsed, fallback_copy)
-    return merged or fallback_copy
+    return _solution_postprocess_chapter_copy(merged or fallback_copy, fallback_copy)
+
+
+def review_solution_chapter_copy_with_ai(
+    snapshot: dict,
+    proposal_brief: dict,
+    chapter_copy: dict,
+    quality_signals: Optional[dict] = None,
+) -> tuple[dict, dict]:
+    fallback_copy = build_solution_chapter_copy(snapshot, proposal_brief, quality_signals=quality_signals)
+    fallback_review = build_solution_quality_review(snapshot, proposal_brief, chapter_copy)
+    fallback_review["review_mode"] = "heuristic"
+    if not _solution_ai_enabled():
+        return chapter_copy, fallback_review
+    if str((proposal_brief.get("meta", {}) or {}).get("generation_mode") or "").strip().lower() != "ai":
+        return chapter_copy, fallback_review
+    if str((chapter_copy.get("meta", {}) or {}).get("generation_mode") or "").strip().lower() != "ai":
+        return chapter_copy, fallback_review
+
+    source_mode = str((proposal_brief.get("meta", {}) or {}).get("source_mode") or "structured_sidecar")
+    prompt_payload = _solution_build_ai_prompt_payload(snapshot, quality_signals=quality_signals, source_mode=source_mode)
+    prompt = build_solution_quality_review_ai_prompt(proposal_brief, chapter_copy, prompt_payload, fallback_review)
+    prompt_length = len(prompt)
+    max_tokens = compute_adaptive_report_tokens(
+        SOLUTION_REVIEW_AI_BASE_TOKENS,
+        prompt_length,
+        floor_tokens=1800,
+    )
+    timeout = compute_adaptive_report_timeout(
+        SOLUTION_REVIEW_AI_BASE_TIMEOUT,
+        prompt_length,
+        timeout_cap=70.0,
+    )
+    preferred_lane = resolve_report_v3_phase_lane("draft", pipeline_lane="report")
+    raw_text = call_claude(
+        prompt,
+        max_tokens=max_tokens,
+        retry_on_timeout=True,
+        call_type="report_solution_quality_review",
+        timeout=timeout,
+        preferred_lane=preferred_lane,
+    )
+    if not raw_text:
+        return chapter_copy, fallback_review
+
+    parsed = parse_structured_json_response(
+        raw_text,
+        required_keys=["audience", "overall_score", "status", "issues", "chapter_scores", "chapter_updates"],
+        require_all_keys=True,
+    )
+    if not isinstance(parsed, dict):
+        return chapter_copy, fallback_review
+
+    merged_review = _solution_ai_merge_quality_review(parsed, fallback_review)
+    merged_review["review_mode"] = "ai"
+    reviewed_copy = _solution_apply_quality_review_updates(chapter_copy, merged_review.get("chapter_updates", []))
+    reviewed_copy = _solution_postprocess_chapter_copy(reviewed_copy, fallback_copy)
+    reviewed_meta = reviewed_copy.get("meta", {}) if isinstance(reviewed_copy.get("meta", {}), dict) else {}
+    reviewed_meta["review_mode"] = "ai"
+    reviewed_copy["meta"] = reviewed_meta
+    return reviewed_copy, merged_review
 
 
 def build_solution_proposal_brief(snapshot: dict, quality_signals: Optional[dict] = None, source_mode: str = "structured_sidecar") -> dict:
     normalized = _normalize_solution_snapshot(snapshot)
     context = _solution_context_from_snapshot(normalized)
+    audience_profile = infer_solution_audience_profile(normalized, quality_signals=quality_signals)
     runtime_snapshot = normalized.get("solution_snapshot", {}) if isinstance(normalized.get("solution_snapshot", {}), dict) else {}
     if not runtime_snapshot:
         runtime_snapshot = build_solution_runtime_snapshot(normalized)
+    derived = runtime_snapshot.get("derived", {}) if isinstance(runtime_snapshot.get("derived", {}), dict) else {}
     draft = normalized.get("draft", {})
     needs = draft.get("needs", [])
     solutions = draft.get("solutions", [])
@@ -26342,23 +28531,68 @@ def build_solution_proposal_brief(snapshot: dict, quality_signals: Optional[dict
     actions = draft.get("actions", [])
     analysis = draft.get("analysis", {})
     metrics = _solution_metric_cards_from_snapshot(normalized, quality_signals or {})
+    current_state_cards = derived.get("current_state_cards", []) if isinstance(derived.get("current_state_cards", []), list) else []
+    blueprint_cards = derived.get("target_blueprint_cards", []) if isinstance(derived.get("target_blueprint_cards", []), list) else []
+    workstream_cards = derived.get("workstream_cards", []) if isinstance(derived.get("workstream_cards", []), list) else []
+    milestone_cards = derived.get("milestones", []) if isinstance(derived.get("milestones", []), list) else []
+    risk_cards = derived.get("risk_cards", []) if isinstance(derived.get("risk_cards", []), list) else []
+    decision_cards = derived.get("decision_cards", []) if isinstance(derived.get("decision_cards", []), list) else []
+    primary_decision = clean_solution_text(derived.get("primary_decision", ""), max_len=72) or context.get("pain_point", "核心议题")
+    primary_workstream = clean_solution_text(derived.get("primary_workstream", ""), max_len=72) or context.get("entry_point", "首轮动作")
 
     subject = context.get("subject", "访谈结论")
     pain_point = context.get("pain_point", "核心议题")
     entry_point = context.get("entry_point", "首轮动作")
     constraint = context.get("constraint", "交付边界")
     overview = context.get("summary", "")
+    topic_label = _proposal_topic_label(normalized.get("topic", ""), max_len=18) or _proposal_topic_label(subject, max_len=18) or "当前项目"
+    boundary_label = _proposal_boundary_label([
+        constraint,
+        analysis.get("project_constraints", ""),
+        analysis.get("tech_constraints", ""),
+    ], max_items=3, max_len=24)
 
     workstreams = _proposal_workstream_cards_from_snapshot(normalized, limit=4)
     option_refs = _proposal_unique_refs([needs[:2], solutions[:2], actions[:2]], limit=8)
+    recommended_base = _proposal_focus_label(primary_workstream, max_len=24) or _proposal_focus_label(entry_point, max_len=24)
     recommended_name = clean_solution_text(
-        f"精准切入「{entry_point}」的闭环试点路径",
+        f"{recommended_base}优先路径" if recommended_base else "优先建设路径",
         max_len=42,
-    ) or "闭环试点路径"
+    ) or "优先建设路径"
+    blueprint_terms = [_proposal_focus_label(item.get("title", ""), max_len=24) for item in blueprint_cards[:2] if isinstance(item, dict)]
+    if len(blueprint_terms) < 2:
+        blueprint_terms.extend([
+            _proposal_focus_label(item.get("name", ""), max_len=24)
+            for item in workstreams[: 2 - len(blueprint_terms)]
+            if isinstance(item, dict)
+        ])
+    primary_focus = blueprint_terms[0] if blueprint_terms else (_proposal_focus_label(primary_workstream, max_len=24) or _proposal_focus_label(primary_decision, max_len=24))
+    secondary_focus = blueprint_terms[1] if len(blueprint_terms) > 1 else ""
+    headline_fallback = clean_solution_text(
+        f"围绕「{primary_focus or '关键能力'}」完成首轮试点，再决定是否扩大投入",
+        max_len=60,
+    )
+    headline_candidates = build_solution_headline_candidates(
+        context,
+        audience_profile,
+        primary_focus or entry_point,
+        secondary_focus,
+        topic_label,
+        boundary_label,
+    )
+    headline, headline_scored = select_solution_headline(
+        headline_candidates,
+        audience_profile,
+        context,
+        fallback=headline_fallback,
+    )
     options = [
         {
             "name": "保守路径",
-            "positioning": f"先做轻量信息收集与泛样本验证，尽快形成初步方向判断。",
+            "positioning": _proposal_sentence_from_parts([
+                "先延续当前分散推进和局部修补方式",
+                clean_solution_text((current_state_cards[0].get("summary", "") if current_state_cards else ""), max_len=72),
+            ], fallback="先做轻量信息收集与泛样本验证，尽快形成初步方向判断。", max_len=140),
             "pros": [
                 "投入最低，最快启动",
                 "适合问题定义还不清楚的前期探索",
@@ -26374,7 +28608,10 @@ def build_solution_proposal_brief(snapshot: dict, quality_signals: Optional[dict
         },
         {
             "name": recommended_name,
-            "positioning": f"围绕「{entry_point}」组织高价值样本、方案模块与试点节奏，在控制投入的同时保证结论强度。",
+            "positioning": _proposal_sentence_from_parts([
+                f"围绕「{entry_point}」组织高价值样本、方案模块与试点节奏",
+                clean_solution_text((blueprint_cards[0].get("summary", "") if blueprint_cards else ""), max_len=72),
+            ], fallback=f"围绕「{entry_point}」组织高价值样本、方案模块与试点节奏，在控制投入的同时保证结论强度。", max_len=140),
             "pros": [
                 f"兼顾「{pain_point}」深度与试点可落地性",
                 "能同步沉淀后续扩展所需的模块、边界和价值判断",
@@ -26406,12 +28643,21 @@ def build_solution_proposal_brief(snapshot: dict, quality_signals: Optional[dict
         },
     ]
 
+    why_now_statement = clean_solution_text(
+        _proposal_sentence_from_parts([
+            "当前团队同时承受人才短缺、算力受限和历史迁移压力",
+            f"如果不先把「{primary_focus or '关键能力'}」做成统一底座，后续扩展只会持续放大协同成本",
+            "而现在已经具备进入试点决策和边界冻结的条件",
+        ], fallback=f"当前更适合先围绕「{primary_focus or pain_point}」锁定试点和边界，再决定是否扩大投入。", max_len=140),
+        max_len=160,
+    )
+
     value_model = [
         {
             "metric": "试点推进速度",
             "baseline": "报告产出后仍需多轮会议才能进入试点评审",
-            "target": "形成 8 周内可执行节奏",
-            "range": "2-3 个阶段内完成闭环试点",
+            "target": _proposal_metric_value((milestone_cards[0].get("timeline", "") if milestone_cards else ""), max_len=20) or "2-8周进入试点",
+            "range": _proposal_metric_value((milestone_cards[0].get("detail", "") if milestone_cards else ""), max_len=36) or "2-3个阶段完成闭环试点",
             "assumptions": [
                 "关键入口和核心角色可按阶段投入",
                 "首轮试点聚焦单一高信号场景",
@@ -26419,10 +28665,10 @@ def build_solution_proposal_brief(snapshot: dict, quality_signals: Optional[dict
             "evidence_refs": _proposal_unique_refs(actions[:3], limit=6),
         },
         {
-            "metric": "高价值结论密度",
+            "metric": _proposal_metric_label((blueprint_cards[0].get("title", "") if blueprint_cards else ""), fallback="能力底座建设节奏"),
             "baseline": "结论停留在表层反馈，难以形成可执行判断",
-            "target": "围绕核心问题形成结构化 workstreams 与验收信号",
-            "range": f"{len(workstreams) or 3} 个关键工作流",
+            "target": _proposal_metric_value((blueprint_cards[0].get("detail", "") if blueprint_cards else ""), max_len=36) or "围绕核心问题形成结构化工作流",
+            "range": f"{len(workstreams) or 3}个关键工作流",
             "assumptions": [
                 "样本真实性与触发时机控制到位",
                 "关键问题能稳定命中核心访谈对象",
@@ -26430,20 +28676,20 @@ def build_solution_proposal_brief(snapshot: dict, quality_signals: Optional[dict
             "evidence_refs": _proposal_unique_refs([needs[:3], solutions[:3]], limit=6),
         },
         {
-            "metric": metrics[0].get("label", "证据绑定率"),
-            "baseline": "关键结论依赖人工翻阅访谈内容",
-            "target": metrics[0].get("value", ""),
-            "range": "持续绑定核心判断与证据锚点",
+            "metric": "关键判断可追溯性",
+            "baseline": "跨角色对齐仍依赖人工解释和会议补充",
+            "target": _proposal_metric_value("核心判断能直接回溯到样本、风险和执行动作", max_len=28),
+            "range": "关键路径具备统一证据链",
             "assumptions": [
-                "报告结构化条目持续完善",
+                "关键事实与阶段结论持续沉淀到统一台账",
             ],
             "evidence_refs": _proposal_unique_refs([needs[:2], solutions[:2], risks[:2]], limit=6),
         },
         {
             "metric": "后续复用价值",
             "baseline": "单次项目结论难以复用到后续优化与扩展",
-            "target": "形成可复用的模块、路径与风险边界",
-            "range": "支持设计、产品、运营和研发共同复盘",
+            "target": _proposal_metric_value("形成可复用的模块、路径与风险边界", max_len=24),
+            "range": _proposal_metric_value("支持管理层、业务和技术团队共用一套判断框架", max_len=28),
             "assumptions": [
                 "试点结论能沉淀为统一提案资产",
             ],
@@ -26451,11 +28697,54 @@ def build_solution_proposal_brief(snapshot: dict, quality_signals: Optional[dict
         },
     ]
 
+    architecture_statement = clean_solution_text(
+        runtime_snapshot.get("decision_frame", {}).get("why_this_path", ""),
+        max_len=160,
+    )
+    if not architecture_statement or architecture_statement == clean_solution_text(primary_workstream, max_len=160):
+        architecture_statement = clean_solution_text(
+            _proposal_sentence_from_parts([
+                f"先用「{primary_focus or '关键能力'}」承接首轮试点",
+                f"再由「{secondary_focus or '分层架构'}」拉通关键模块协同",
+                "最后用接口治理和迁移工具链把试点能力沉淀成可扩展体系",
+            ], fallback="先稳住能力底座，再把系统协同、治理和扩展路径连成一套可持续推进体系。", max_len=140),
+            max_len=160,
+        )
+
+    module_labels = []
+    for item in blueprint_cards[:4]:
+        if not isinstance(item, dict):
+            continue
+        label = _proposal_focus_label(item.get("title", ""), max_len=18)
+        if not label or label in module_labels:
+            continue
+        module_labels.append(label)
+    if len(module_labels) < 3:
+        for item in workstreams[:4]:
+            if not isinstance(item, dict):
+                continue
+            label = _proposal_focus_label(item.get("name", ""), max_len=18)
+            if not label or label in module_labels:
+                continue
+            module_labels.append(label)
+            if len(module_labels) >= 4:
+                break
+
+    integration_labels = []
+    for value in [entry_point, *module_labels, "试点复盘"]:
+        label = _proposal_focus_label(value, max_len=18) or _proposal_topic_label(value, max_len=18)
+        if not label or label in integration_labels:
+            continue
+        integration_labels.append(label)
+        if len(integration_labels) >= 5:
+            break
+
     fit_reasons = [
         {
             "title": "核心问题已经足够聚焦",
             "detail": _proposal_sentence_from_parts([
-                f"当前报告已经把重点收敛到「{pain_point}」",
+                f"当前报告已经把重点收敛到「{_proposal_focus_label(pain_point, max_len=18) or pain_point}」",
+                "问题、路径和边界都已显性化",
                 "适合直接进入方案比选与试点设计",
             ], fallback="当前报告的问题焦点已经足够聚焦，适合进入提案设计。"),
             "evidence_refs": _proposal_unique_refs(needs[:3], limit=6),
@@ -26463,7 +28752,7 @@ def build_solution_proposal_brief(snapshot: dict, quality_signals: Optional[dict
         {
             "title": "首轮切口可以被清晰验证",
             "detail": _proposal_sentence_from_parts([
-                f"优先围绕「{entry_point}」切入",
+                f"优先围绕「{_proposal_focus_label(entry_point, max_len=18) or entry_point}」切入",
                 "更容易在短周期内验证真实路径和执行节奏",
             ], fallback="首轮切口明确，有利于短周期验证。"),
             "evidence_refs": _proposal_unique_refs([solutions[:2], actions[:2]], limit=6),
@@ -26471,25 +28760,30 @@ def build_solution_proposal_brief(snapshot: dict, quality_signals: Optional[dict
         {
             "title": "边界条件已经显性化",
             "detail": _proposal_sentence_from_parts([
-                f"报告已暴露「{constraint}」等关键边界",
+                f"报告已把「{boundary_label}」等关键边界提前暴露",
                 "可以在方案阶段前置处理资源、合规和交付风险",
             ], fallback="关键边界已显性化，便于方案阶段前置约束管理。"),
             "evidence_refs": _proposal_unique_refs([risks[:2], analysis.get("project_constraints", ""), analysis.get("tech_constraints", "")], limit=6),
         },
         {
-            "title": "已有足够结构化素材支撑高级提案页",
-            "detail": f"当前已沉淀 {len(needs)} 条需求、{len(solutions)} 条方案建议、{len(actions)} 条行动计划，可支持从判断到实施路径的完整提案叙事。",
+            "title": "现有基础能力足以承接首轮试点",
+            "detail": _proposal_sentence_from_parts([
+                f"当前已形成 {len(blueprint_cards) or len(workstreams)} 个关键模块和 {len(actions)} 条推进动作",
+                clean_solution_text((milestone_cards[0].get('title', '') if milestone_cards else ''), max_len=32),
+                "说明首轮试点不是从零启动，而是可以直接进入边界锁定和阶段推进",
+            ], fallback=f"当前已形成 {len(blueprint_cards) or len(workstreams)} 个关键模块和 {len(actions)} 条推进动作，具备直接启动首轮试点的基础。"),
             "evidence_refs": _proposal_unique_refs([needs[:3], solutions[:3], actions[:3]], limit=8),
         },
     ]
 
     risks_and_boundaries = []
     for item in risks[:3]:
+        risk_title = _proposal_risk_label(item.get("risk", ""), _solution_join_meta([item.get("impact", ""), item.get("mitigation", "")]), max_len=18)
         risks_and_boundaries.append({
-            "title": clean_solution_text(item.get("risk", ""), max_len=40),
+            "title": risk_title,
             "detail": _proposal_sentence_from_parts([
-                clean_solution_text(item.get("impact", ""), max_len=72),
-                clean_solution_text(item.get("mitigation", ""), max_len=72),
+                _proposal_business_sentence(item.get("impact", ""), max_len=52),
+                f"通过{_proposal_business_sentence(item.get('mitigation', ''), max_len=40)}提前控制",
             ], fallback="需要在方案推进前明确应对与缓解动作。"),
             "type": "risk",
             "evidence_refs": _proposal_unique_refs(item, limit=6),
@@ -26500,7 +28794,7 @@ def build_solution_proposal_brief(snapshot: dict, quality_signals: Optional[dict
             continue
         risks_and_boundaries.append({
             "title": label,
-            "detail": text,
+            "detail": _proposal_boundary_sentence(_proposal_boundary_label(text, max_items=3, max_len=24), "", audience_profile.get("key", "decision_maker"), max_len=96),
             "type": "boundary",
             "evidence_refs": [],
         })
@@ -26556,24 +28850,37 @@ def build_solution_proposal_brief(snapshot: dict, quality_signals: Optional[dict
 
     recommended_modules = [
         {
-            "name": item.get("name", ""),
-            "objective": item.get("objective", ""),
-            "acceptance_signals": item.get("acceptance_signals", []),
+            "name": _proposal_focus_label(item.get("title", ""), max_len=20) or item.get("title", ""),
+            "objective": item.get("summary", ""),
+            "acceptance_signals": _proposal_compact_sentences([item.get("detail", "")], max_items=2, max_len=64),
         }
-        for item in workstreams[:4]
+        for item in blueprint_cards[:4]
+        if isinstance(item, dict)
     ]
-    integration_points = _proposal_compact_sentences([
+    if not recommended_modules:
+        recommended_modules = [
+            {
+                "name": item.get("name", ""),
+                "objective": item.get("objective", ""),
+                "acceptance_signals": item.get("acceptance_signals", []),
+            }
+            for item in workstreams[:4]
+        ]
+    integration_points = integration_labels or _proposal_compact_sentences([
         entry_point,
+        *(item.get("title", "") for item in blueprint_cards[:3] if isinstance(item, dict)),
         analysis.get("business_flow", ""),
         analysis.get("tech_constraints", ""),
         analysis.get("project_constraints", ""),
-        *(item.get("action", "") for item in actions[:3]),
+        *(item.get("title", "") for item in milestone_cards[:3] if isinstance(item, dict)),
     ], max_items=5, max_len=72)
     dataflow = _proposal_compact_sentences([
-        *(item.get("action", "") for item in actions[:5]),
-        *(item.get("title", "") for item in solutions[:2]),
+        *(item.get("title", "") for item in milestone_cards[:5] if isinstance(item, dict)),
+        *(item.get("title", "") for item in blueprint_cards[:2] if isinstance(item, dict)),
+        *(item.get("action", "") for item in actions[:2]),
     ], max_items=5, max_len=72)
     governance = _proposal_compact_sentences([
+        *(item.get("guardrail", "") for item in risk_cards[:3] if isinstance(item, dict)),
         *(item.get("mitigation", "") for item in risks[:3]),
         analysis.get("tech_constraints", ""),
         analysis.get("project_constraints", ""),
@@ -26582,31 +28889,36 @@ def build_solution_proposal_brief(snapshot: dict, quality_signals: Optional[dict
     return {
         "meta": {
             "topic": clean_solution_text(normalized.get("topic", ""), max_len=80) or subject,
-            "audience": "decision_maker",
-            "proposal_goal": "内部共识",
+            "audience": audience_profile.get("key", "decision_maker"),
+            "audience_label": audience_profile.get("label", _solution_audience_label("decision_maker")),
+            "audience_reasoning": audience_profile.get("reasoning", _solution_audience_reasoning("decision_maker")),
+            "proposal_goal": audience_profile.get("proposal_goal", _solution_proposal_goal("decision_maker")),
             "confidence": round(max(0.3, min(0.98, 1 - float((quality_signals or {}).get("fallback_ratio", 0.0) or 0.0))), 2),
             "source_mode": source_mode,
+            "headline_candidates": headline_scored,
         },
         "thesis": {
-            "headline": clean_solution_text(f"先围绕「{entry_point}」完成闭环试点，再决定是否扩大投入", max_len=64),
+            "headline": headline or headline_fallback,
             "subheadline": clean_solution_text(
-                f"当前真正需要优先解决的不是更多信息，而是让「{pain_point}」在既定边界下被快速验证。",
-                max_len=120,
+                f"当前更该先把「{topic_label}」从讨论状态推进到可验证试点，而不是一开始就在大范围能力上同时开工。",
+                max_len=110,
             ),
-            "why_now": clean_solution_text(overview, max_len=160) or clean_solution_text(f"因为「{pain_point}」已经进入可执行评审阶段。", max_len=160),
+            "why_now": why_now_statement or clean_solution_text(runtime_snapshot.get("decision_frame", {}).get("why_now", ""), max_len=160) or clean_solution_text(overview, max_len=160) or clean_solution_text(f"因为「{pain_point}」已经进入可执行评审阶段。", max_len=160),
             "core_decision": clean_solution_text(
-                f"建议采用「{recommended_name}」，优先验证 {pain_point}，并把 {constraint} 前置为试点边界。",
-                max_len=160,
+                f"建议采用「{recommended_name}」，先把「{primary_focus or recommended_base or '关键能力'}」做成首轮底座，再在「{boundary_label}」前提下分阶段扩展其余能力。",
+                max_len=120,
             ),
         },
         "context": {
-            "business_scene": subject,
+            "business_scene": clean_solution_text(normalized.get("topic", ""), max_len=72) or subject,
             "current_state": _proposal_compact_sentences([
                 overview,
+                *(item.get("summary", "") for item in current_state_cards[:3] if isinstance(item, dict)),
                 *(item.get("description", "") or item.get("name", "") for item in needs[:4]),
             ], max_items=4, max_len=96),
             "core_conflicts": _proposal_compact_sentences([
                 f"要解决「{pain_point}」，但仍受「{constraint}」限制",
+                *(item.get("title", "") for item in risk_cards[:2] if isinstance(item, dict)),
                 analysis.get("business_flow", ""),
                 *(item.get("risk", "") for item in risks[:2]),
             ], max_items=4, max_len=96),
@@ -26620,13 +28932,10 @@ def build_solution_proposal_brief(snapshot: dict, quality_signals: Optional[dict
         "options": options,
         "recommended_solution": {
             "north_star": clean_solution_text(
-                f"让「{subject}」从一次性调研结论升级为可复用的试点与扩展路径。",
+                f"把「{clean_solution_text(normalized.get('topic', ''), max_len=36) or subject}」从单次项目判断，做成可复用、可扩展、可持续复盘的能力底座。",
                 max_len=120,
             ),
-            "architecture_statement": clean_solution_text(
-                f"以「{entry_point}」为首轮验证入口，把问题识别、方案模块、执行动作和价值复盘串成连续闭环。",
-                max_len=160,
-            ),
+            "architecture_statement": architecture_statement,
             "modules": recommended_modules,
             "integration_points": integration_points,
             "dataflow": dataflow,
@@ -26645,6 +28954,10 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
     normalized = _normalize_solution_snapshot(snapshot)
     brief = proposal_brief if isinstance(proposal_brief, dict) else {}
     context = _solution_context_from_snapshot(normalized)
+    runtime_snapshot = normalized.get("solution_snapshot", {}) if isinstance(normalized.get("solution_snapshot", {}), dict) else {}
+    if not runtime_snapshot:
+        runtime_snapshot = build_solution_runtime_snapshot(normalized)
+    derived = runtime_snapshot.get("derived", {}) if isinstance(runtime_snapshot.get("derived", {}), dict) else {}
     thesis = brief.get("thesis", {}) if isinstance(brief.get("thesis", {}), dict) else {}
     brief_context = brief.get("context", {}) if isinstance(brief.get("context", {}), dict) else {}
     options = brief.get("options", []) if isinstance(brief.get("options", []), list) else []
@@ -26655,6 +28968,12 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
     risks_and_boundaries = brief.get("risks_and_boundaries", []) if isinstance(brief.get("risks_and_boundaries", []), list) else []
     next_steps = brief.get("next_steps", []) if isinstance(brief.get("next_steps", []), list) else []
     draft = normalized.get("draft", {})
+    decision_cards = derived.get("decision_cards", []) if isinstance(derived.get("decision_cards", []), list) else []
+    current_state_cards = derived.get("current_state_cards", []) if isinstance(derived.get("current_state_cards", []), list) else []
+    blueprint_source_cards = derived.get("target_blueprint_cards", []) if isinstance(derived.get("target_blueprint_cards", []), list) else []
+    workstream_source_cards = derived.get("workstream_cards", []) if isinstance(derived.get("workstream_cards", []), list) else []
+    milestone_source_cards = derived.get("milestones", []) if isinstance(derived.get("milestones", []), list) else []
+    risk_source_cards = derived.get("risk_cards", []) if isinstance(derived.get("risk_cards", []), list) else []
 
     hero_metrics = []
     for item in value_model[:4]:
@@ -26662,34 +28981,24 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             continue
         hero_metrics.append({
             "label": clean_solution_text(item.get("metric", ""), max_len=28) or "指标",
-            "value": clean_solution_text(item.get("target", "") or item.get("range", ""), max_len=32) or "待确认",
-            "delta": clean_solution_text(item.get("range", ""), max_len=24),
-            "note": clean_solution_text((item.get("assumptions", []) or [""])[0], max_len=56) if isinstance(item.get("assumptions", []), list) else "",
+            "value": _proposal_metric_value(item.get("target", "") or item.get("range", ""), max_len=32) or "待确认",
+            "delta": _proposal_metric_value(item.get("range", ""), max_len=24),
+            "note": _proposal_metric_note((item.get("assumptions", []) or [""])[0], max_len=40) if isinstance(item.get("assumptions", []), list) else "",
         })
     if len(hero_metrics) < 3:
         hero_metrics.extend(_solution_metric_cards_from_snapshot(normalized, quality_signals or {})[: max(0, 4 - len(hero_metrics))])
     while len(hero_metrics) < 3:
         hero_metrics.append({"label": "方案成熟度", "value": "持续完善", "delta": "", "note": "等待更多结构化证据补充"})
 
-    hero_cards = []
-    for item in workstreams[:2]:
-        if not isinstance(item, dict):
-            continue
-        hero_cards.append({
-            "title": clean_solution_text(item.get("name", ""), max_len=36),
-            "desc": clean_solution_text(item.get("objective", ""), max_len=88),
-            "tag": clean_solution_text(item.get("timeline", ""), max_len=16) or "工作流",
-            "meta": clean_solution_text(item.get("owner_role", ""), max_len=18),
-        })
-    if not hero_cards:
-        hero_cards = [
-            {
-                "title": clean_solution_text(context.get("entry_point", "首轮切口"), max_len=36),
-                "desc": clean_solution_text(thesis.get("core_decision", ""), max_len=88),
-                "tag": "推荐路径",
-                "meta": "提案判断",
-            }
-        ]
+    comparison_focus_hint = (
+        _proposal_focus_label(context.get("entry_point", ""), max_len=18)
+        or _proposal_focus_label(context.get("pain_point", ""), max_len=18)
+        or "关键能力"
+    )
+    comparison_boundary = _proposal_boundary_label([
+        context.get("constraint", ""),
+        *(brief_context.get("constraints", []) if isinstance(brief_context.get("constraints", []), list) else []),
+    ], max_items=3, max_len=24)
 
     comparison_cards = []
     for option in options[:3]:
@@ -26697,36 +29006,56 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             continue
         comparison_cards.append({
             "title": clean_solution_text(option.get("name", ""), max_len=32),
-            "desc": clean_solution_text(option.get("positioning", ""), max_len=120),
+            "desc": _proposal_comparison_desc(option, comparison_focus_hint, comparison_boundary, max_len=100) or clean_solution_text(option.get("positioning", ""), max_len=120),
             "tag": {"recommended": "推荐", "alternative": "备选", "rejected": "不建议"}.get(option.get("decision"), "路径"),
-            "meta": clean_solution_text(option.get("fit_for", ""), max_len=72),
+            "meta": _proposal_comparison_meta(option, max_len=72) or clean_solution_text(option.get("fit_for", ""), max_len=72),
         })
 
     blueprint_cards = []
-    for module in recommended.get("modules", [])[:4] if isinstance(recommended.get("modules", []), list) else []:
-        if not isinstance(module, dict):
+    for item in blueprint_source_cards[:4]:
+        if not isinstance(item, dict):
             continue
         blueprint_cards.append({
-            "title": clean_solution_text(module.get("name", ""), max_len=32),
-            "desc": clean_solution_text(module.get("objective", ""), max_len=100),
-            "tag": "核心模块",
-            "meta": "、".join(_proposal_compact_sentences(module.get("acceptance_signals", []), max_items=2, max_len=24)),
+            "title": _proposal_focus_label(item.get("title", ""), max_len=18) or clean_solution_text(item.get("title", ""), max_len=32),
+            "desc": _proposal_business_sentence(item.get("summary", "") or item.get("detail", ""), max_len=100) or clean_solution_text(item.get("summary", "") or item.get("detail", ""), max_len=100),
+            "tag": _proposal_business_tag(item.get("title", ""), fallback="核心模块"),
+            "meta": _proposal_business_sentence(item.get("detail", ""), max_len=64) or clean_solution_text(item.get("detail", ""), max_len=64),
         })
+    if not blueprint_cards:
+        for module in recommended.get("modules", [])[:4] if isinstance(recommended.get("modules", []), list) else []:
+            if not isinstance(module, dict):
+                continue
+            blueprint_cards.append({
+                "title": _proposal_focus_label(module.get("name", ""), max_len=18) or clean_solution_text(module.get("name", ""), max_len=32),
+                "desc": _proposal_business_sentence(module.get("objective", ""), max_len=100) or clean_solution_text(module.get("objective", ""), max_len=100),
+                "tag": _proposal_business_tag(module.get("name", ""), fallback="核心模块"),
+                "meta": "、".join(_proposal_compact_sentences(module.get("acceptance_signals", []), max_items=2, max_len=24)),
+            })
     if not blueprint_cards:
         blueprint_cards = hero_cards[:]
 
     integration_points = recommended.get("integration_points", []) if isinstance(recommended.get("integration_points", []), list) else []
     dataflow_points = recommended.get("dataflow", []) if isinstance(recommended.get("dataflow", []), list) else []
     roadmap_cards = []
-    for step in next_steps[:3]:
-        if not isinstance(step, dict):
+    for item in milestone_source_cards[:3]:
+        if not isinstance(item, dict):
             continue
         roadmap_cards.append({
-            "title": clean_solution_text(step.get("phase", ""), max_len=32),
-            "desc": clean_solution_text(step.get("goal", ""), max_len=100),
-            "tag": "阶段推进",
-            "meta": clean_solution_text(step.get("milestone", ""), max_len=72),
+            "title": clean_solution_text(item.get("title", "") or item.get("step", ""), max_len=32),
+            "desc": clean_solution_text(item.get("detail", "") or item.get("summary", ""), max_len=100),
+            "tag": clean_solution_text(item.get("timeline", ""), max_len=18) or "阶段推进",
+            "meta": clean_solution_text(item.get("summary", "") or item.get("timeline", ""), max_len=72),
         })
+    if not roadmap_cards:
+        for step in next_steps[:3]:
+            if not isinstance(step, dict):
+                continue
+            roadmap_cards.append({
+                "title": clean_solution_text(step.get("phase", ""), max_len=32),
+                "desc": clean_solution_text(step.get("goal", ""), max_len=100),
+                "tag": "阶段推进",
+                "meta": clean_solution_text(step.get("milestone", ""), max_len=72),
+            })
 
     fit_cards = []
     for item in fit_reasons[:3]:
@@ -26747,12 +29076,58 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "tag": "risk" if item.get("type") == "risk" else "边界",
             "meta": _solution_join_meta(_proposal_unique_refs(item, limit=4)),
         })
+    for item in risk_source_cards[:2]:
+        if not isinstance(item, dict):
+            continue
+        fit_cards.append({
+            "title": clean_solution_text(item.get("title", ""), max_len=32),
+            "desc": clean_solution_text(item.get("description", "") or item.get("guardrail", ""), max_len=110),
+            "tag": "风险边界",
+            "meta": clean_solution_text(item.get("guardrail", ""), max_len=48),
+        })
+
+    recommended_option = next((item for item in options if isinstance(item, dict) and item.get("decision") == "recommended"), options[0] if options else {})
+    recommended_option_name = clean_solution_text((recommended_option or {}).get("name", ""), max_len=24) or "推荐路径"
+    blueprint_focus = _proposal_focus_label((blueprint_cards[0].get("title", "") if blueprint_cards else ""), max_len=24) or _proposal_focus_label(context.get("entry_point", ""), max_len=24) or "关键能力"
+    integration_focus = _proposal_focus_label((integration_points[0] if integration_points else ""), max_len=24) or _proposal_focus_label(context.get("entry_point", ""), max_len=24) or "关键入口"
+    blueprint_secondary = _proposal_focus_label((blueprint_cards[1].get("title", "") if len(blueprint_cards) > 1 else ""), max_len=24) or "分层架构"
+    boundary_label = _proposal_boundary_label([
+        context.get("constraint", ""),
+        *(brief_context.get("constraints", []) if isinstance(brief_context.get("constraints", []), list) else []),
+    ], max_items=3, max_len=24)
+    fit_focus = _proposal_stage_label([
+        *(step.get("phase", "") for step in next_steps[:3] if isinstance(step, dict)),
+        context.get("constraint", ""),
+        thesis.get("why_now", ""),
+    ]) or "当前阶段"
+    comparison_focus = blueprint_focus or _proposal_focus_label(recommended_option_name, max_len=24) or "关键能力"
+
+    hero_cards = [
+        {
+            "title": "为什么值得现在推进",
+            "desc": clean_solution_text(
+                f"如果现在不先把「{blueprint_focus}」做成统一底座，后续扩展只会持续放大协同成本。",
+                max_len=88,
+            ),
+            "tag": "判断",
+            "meta": _proposal_meta_label(boundary_label, max_len=24),
+        },
+        {
+            "title": "优先从哪里进入",
+            "desc": clean_solution_text(
+                f"先用「{comparison_focus}」锁定试点和能力底座，再决定第二阶段扩张范围。",
+                max_len=88,
+            ),
+            "tag": "切口",
+            "meta": _proposal_metric_value((value_model[0].get("target", "") if value_model else ""), max_len=18) or clean_solution_text(context.get("entry_point", ""), max_len=18),
+        },
+    ]
 
     chapters = [
         {
             "id": "hero",
             "nav_label": "方案判断",
-            "eyebrow": "DeepVision 高级提案页",
+            "eyebrow": "DeepVision 企业级方案",
             "title": clean_solution_text(thesis.get("headline", ""), max_len=72) or clean_solution_text(f"围绕「{context.get('entry_point', '关键切口')}」形成首轮闭环试点", max_len=72),
             "judgement": clean_solution_text(thesis.get("core_decision", ""), max_len=140) or clean_solution_text(thesis.get("why_now", ""), max_len=140),
             "summary": clean_solution_text(thesis.get("subheadline", ""), max_len=180) or clean_solution_text(context.get("summary", ""), max_len=180),
@@ -26767,15 +29142,24 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "id": "why_now",
             "nav_label": "为什么现在做",
             "eyebrow": "业务矛盾与现实约束",
-            "title": clean_solution_text(f"现在推进，不是因为信息更多，而是因为关键问题已经收敛", max_len=72),
+            "title": clean_solution_text(f"为什么当前先围绕「{comparison_focus}」推进", max_len=72),
             "judgement": clean_solution_text(
-                f"当前真正需要优先解决的是「{context.get('pain_point', '核心议题')}」，而不是继续堆积更多未组织的信息。",
+                thesis.get("why_now", "") or f"当前真正需要优先解决的是「{context.get('pain_point', '核心议题')}」，而不是继续堆积更多未组织的信息。",
                 max_len=140,
             ),
-            "summary": clean_solution_text(thesis.get("why_now", ""), max_len=180) or clean_solution_text(context.get("summary", ""), max_len=180),
+            "summary": clean_solution_text(context.get("summary", ""), max_len=180) or clean_solution_text(thesis.get("why_now", ""), max_len=180),
             "layout": "conflict_cards",
             "metrics": [],
             "cards": [
+                {
+                    "title": _proposal_focus_label(item.get("title", ""), max_len=18) or clean_solution_text(item.get("title", ""), max_len=32),
+                    "desc": _proposal_business_sentence(item.get("summary", "") or item.get("detail", ""), max_len=88) or clean_solution_text(item.get("summary", "") or item.get("detail", ""), max_len=100),
+                    "tag": _proposal_business_tag(item.get("title", ""), fallback="现状"),
+                    "meta": _proposal_meta_label(item.get("detail", ""), max_len=32),
+                }
+                for item in current_state_cards[:4]
+                if isinstance(item, dict) and clean_solution_text(item.get("title", ""), max_len=32)
+            ] or [
                 {"title": clean_solution_text(item, max_len=32), "desc": clean_solution_text(item, max_len=100), "tag": "核心矛盾", "meta": ""}
                 for item in (brief_context.get("core_conflicts", []) or brief_context.get("current_state", []) or [])[:4]
                 if clean_solution_text(item, max_len=100)
@@ -26788,9 +29172,9 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "id": "comparison",
             "nav_label": "路径对比",
             "eyebrow": "方案取舍",
-            "title": "不是把内容堆满，而是先做对的路径选择",
-            "judgement": "先做可验证的推荐路径，再决定是否扩大投入，比一开始追求全量能力更稳健。",
-            "summary": "方案页必须展示取舍逻辑，而不是只有单一路径。这样决策者才能理解为什么现在推荐这样推进。",
+            "title": clean_solution_text(f"为什么当前先做「{comparison_focus}」", max_len=42) or "为什么当前先做关键能力",
+            "judgement": clean_solution_text(f"当前阶段更应该先把「{comparison_focus}」打成底座，再决定第二阶段扩张范围。", max_len=88) or "先做可验证的推荐路径，再决定是否扩大投入，比一开始追求全量能力更稳健。",
+            "summary": clean_solution_text(f"先用单点试点验证「{comparison_focus}」的真实价值、协同方式和治理边界，再按阶段扩到更大范围。", max_len=100) or "方案必须展示取舍逻辑，而不是只有单一路径。这样决策者才能理解为什么现在推荐这样推进。",
             "layout": "dual_comparison",
             "metrics": [],
             "cards": comparison_cards[:3],
@@ -26802,9 +29186,9 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "id": "blueprint",
             "nav_label": "推荐蓝图",
             "eyebrow": "方案结构",
-            "title": clean_solution_text(f"把「{context.get('entry_point', '关键切口')}」组织成可扩展的能力蓝图", max_len=72),
-            "judgement": clean_solution_text(recommended.get("architecture_statement", ""), max_len=140) or "推荐路径不是单点动作，而是一套可连续推进的能力链。",
-            "summary": clean_solution_text(recommended.get("north_star", ""), max_len=180) or "先形成蓝图，再做模块拆解和阶段推进。",
+            "title": clean_solution_text(f"推荐蓝图：先稳住「{blueprint_focus}」，再拉通「{blueprint_secondary}」", max_len=42),
+            "judgement": clean_solution_text(recommended.get("architecture_statement", ""), max_len=120) or "推荐路径不是单点动作，而是一套可连续推进的能力链。",
+            "summary": clean_solution_text(f"先把能力底座、系统分层和治理方式定清楚，再按阶段把试点能力扩成可持续体系。", max_len=100) or "先形成蓝图，再做模块拆解和阶段推进。",
             "layout": "blueprint_diagram",
             "metrics": [],
             "cards": blueprint_cards[:4],
@@ -26819,7 +29203,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
                     for idx in range(1, max(1, len(blueprint_cards[:4])))
                     if idx < len(blueprint_cards[:4])
                 ],
-                "caption": clean_solution_text(recommended.get("architecture_statement", ""), max_len=72) or "从判断到实施的结构蓝图",
+                "caption": clean_solution_text(f"从「{blueprint_focus}」到「{blueprint_secondary}」，再用接口治理把试点能力接成可扩展体系。", max_len=72),
             },
             "cta": {"label": "展开关键模块", "target": "workstreams"},
             "evidence_refs": _proposal_unique_refs([recommended.get("evidence_refs", []), workstreams[:3]], limit=8),
@@ -26828,12 +29212,21 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "id": "workstreams",
             "nav_label": "关键模块",
             "eyebrow": "落地工作流",
-            "title": "真正的落地方案，必须能拆成清晰工作流",
-            "judgement": "决定项目质量的不是页面文案，而是每个工作流是否有目标、交付物、负责人和验收信号。",
-            "summary": "先把关键工作流讲清楚，执行团队才知道怎么接手，决策层才知道为什么这件事可落地。",
+            "title": clean_solution_text(f"把「{comparison_focus}」拆成团队能接手的关键工作流", max_len=72),
+            "judgement": clean_solution_text("每个工作流都需要目标、交付物、负责人和验收信号，执行团队才能真正接住。", max_len=120),
+            "summary": clean_solution_text("先把工作流拆清楚，再决定资源、排期和协同方式，方案才会真正进入执行。", max_len=120),
             "layout": "tabbed_cards",
             "metrics": [],
             "cards": [
+                {
+                    "title": clean_solution_text(item.get("title", ""), max_len=32),
+                    "desc": clean_solution_text(item.get("summary", "") or item.get("detail", ""), max_len=100),
+                    "tag": clean_solution_text(item.get("eyebrow", ""), max_len=18) or "工作流",
+                    "meta": clean_solution_text(item.get("detail", ""), max_len=72),
+                }
+                for item in workstream_source_cards[:4]
+                if isinstance(item, dict)
+            ] or [
                 {
                     "title": clean_solution_text(item.get("name", ""), max_len=32),
                     "desc": clean_solution_text(item.get("objective", ""), max_len=100),
@@ -26855,13 +29248,21 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "id": "integration",
             "nav_label": "系统闭环",
             "eyebrow": "流程与沉淀",
-            "title": "没有回流机制，就只是一次性项目，不是长期能力",
-            "judgement": "方案页必须讲清楚输入、执行、输出和回流，否则就只有行动清单，没有组织复利。",
-            "summary": "把入口、模块、执行动作和价值复盘连接起来，方案才会从一次性交付升级成持续增强机制。",
+            "title": clean_solution_text(f"把「{integration_focus}」接进系统闭环", max_len=32) or "把关键入口接进系统闭环",
+            "judgement": "只有把入口、执行、沉淀和复盘接成一条链，试点动作才会沉淀成组织能力。",
+            "summary": "把关键入口、核心模块和治理节点打通后，每次试点都会增强下一轮判断、协同和扩张效率。",
             "layout": "loop_diagram",
             "metrics": [],
             "cards": [
-                {"title": clean_solution_text(item, max_len=28), "desc": clean_solution_text(item, max_len=100), "tag": "闭环节点", "meta": ""}
+                {
+                    "title": _proposal_focus_label(item, max_len=18) or clean_solution_text(item, max_len=28),
+                    "desc": clean_solution_text(
+                        f"把「{_proposal_focus_label(item, max_len=18) or clean_solution_text(item, max_len=24)}」接入统一闭环后，可与上下游动作形成稳定协同。",
+                        max_len=100,
+                    ),
+                    "tag": "闭环节点",
+                    "meta": _proposal_business_sentence(item, max_len=56) or clean_solution_text(item, max_len=56),
+                }
                 for item in integration_points[:4]
             ] or hero_cards,
             "diagram": {
@@ -26874,7 +29275,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
                     {"from": f"loop-{idx}", "to": f"loop-{idx + 1}", "label": "流转"}
                     for idx in range(1, 4)
                 ] + [{"from": "loop-4", "to": "loop-1", "label": "回流"}],
-                "caption": clean_solution_text("每次执行都应增强下一次判断与协同效率。", max_len=72),
+                "caption": clean_solution_text("让入口、执行、沉淀和复盘形成回流，试点能力才能持续放大组织效率。", max_len=64),
             },
             "cta": {"label": "查看实施路径", "target": "roadmap"},
             "evidence_refs": _proposal_unique_refs([recommended.get("evidence_refs", []), next_steps[:2]], limit=8),
@@ -26883,9 +29284,9 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "id": "roadmap",
             "nav_label": "实施路径",
             "eyebrow": "推进节奏",
-            "title": "先闭环试点，再决定是否扩大能力版图",
-            "judgement": "提案页必须给出阶段节奏，而不是只列动作清单。否则不会形成真正的推进感。",
-            "summary": "按阶段推进能同时控制投入、风险和组织协同复杂度，也更符合高质量方案页的阅读节奏。",
+            "title": clean_solution_text(f"先完成「{comparison_focus}」首轮闭环，再决定是否扩大范围", max_len=72),
+            "judgement": clean_solution_text("方案必须给出阶段节奏，而不是只列动作清单，这样团队才知道每一阶段要完成什么。", max_len=120),
+            "summary": clean_solution_text("按阶段推进能同时控制投入、风险和协同复杂度，也更符合管理层审阅和执行接手的节奏。", max_len=120),
             "layout": "phased_timeline",
             "metrics": [],
             "cards": roadmap_cards[:3],
@@ -26908,9 +29309,9 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "id": "value_fit",
             "nav_label": "预期价值",
             "eyebrow": "价值与边界",
-            "title": "高级方案页的最后一章，必须回答为什么这套方案尤其适合当前项目",
-            "judgement": "没有价值判断和适配性收束，方案页再漂亮也只是信息展示，不是真正的提案。",
-            "summary": "把预期价值、适配理由和边界条件同时摆出来，页面才会有说服力，也更接近你给的理想样例。",
+            "title": clean_solution_text(f"为什么这条路径更适合当前团队进入{fit_focus}", max_len=42) or "为什么这条路径更适合当前团队",
+            "judgement": clean_solution_text("这条路径同时控制投入节奏、协同复杂度和试点风险，更适合当前团队先打透一条可验证路径。", max_len=88),
+            "summary": clean_solution_text("把预期价值、启动边界和扩张条件摆在一起，管理层才能判断这件事值不值得做、该做到多大范围。", max_len=100),
             "layout": "value_grid",
             "metrics": hero_metrics[:4],
             "cards": fit_cards[:5],
@@ -26930,14 +29331,59 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
     }
 
 
-def build_solution_proposal_page(snapshot: dict, proposal_brief: dict, chapter_copy: dict) -> dict:
+def build_solution_proposal_page(
+    snapshot: dict,
+    proposal_brief: dict,
+    chapter_copy: dict,
+    quality_review: Optional[dict] = None,
+) -> dict:
     brief = proposal_brief if isinstance(proposal_brief, dict) else {}
     copy_payload = chapter_copy if isinstance(chapter_copy, dict) else {}
     chapters = copy_payload.get("chapters", []) if isinstance(copy_payload.get("chapters", []), list) else []
+    meta = brief.get("meta", {}) if isinstance(brief.get("meta", {}), dict) else {}
+    audience_key = str(meta.get("audience") or "decision_maker").strip() or "decision_maker"
+    audience_profile = {
+        "key": audience_key,
+        "label": clean_solution_text(meta.get("audience_label", ""), max_len=24) or _solution_audience_label(audience_key),
+        "reasoning": clean_solution_text(meta.get("audience_reasoning", ""), max_len=88) or _solution_audience_reasoning(audience_key),
+        "proposal_goal": clean_solution_text(meta.get("proposal_goal", ""), max_len=24) or _solution_proposal_goal(audience_key),
+    }
+    options = brief.get("options", []) if isinstance(brief.get("options", []), list) else []
+    value_model = brief.get("value_model", []) if isinstance(brief.get("value_model", []), list) else []
+    recommended_name = ""
+    for option in options:
+        if isinstance(option, dict) and str(option.get("decision") or "").strip().lower() == "recommended":
+            recommended_name = clean_solution_text(option.get("name", ""), max_len=32)
+            break
+    comparison_matrix = build_solution_comparison_matrix(options, recommended_name=recommended_name)
+    value_board = build_solution_value_board(value_model, audience_profile)
+    proposal_content_model = build_solution_proposal_content_model(snapshot, proposal_brief, chapter_copy, quality_review=quality_review)
+    content_priority_plan = build_solution_content_priority_plan(proposal_content_model)
+    closing_block = build_solution_closing_block(proposal_brief, proposal_content_model, audience_profile)
+    summary_card = build_solution_share_summary(closing_block, value_board, audience_profile)
+    render_model = build_solution_render_model(
+        snapshot,
+        proposal_brief,
+        chapter_copy,
+        proposal_content_model,
+        content_priority_plan,
+        closing_block,
+        summary_card,
+        quality_review=quality_review,
+    )
     return {
         "theme": str((copy_payload.get("meta", {}) or {}).get("theme") or "executive_dark_editorial"),
-        "audience": str((brief.get("meta", {}) or {}).get("audience") or "decision_maker"),
-        "topic": str((brief.get("meta", {}) or {}).get("topic") or ""),
+        "audience": audience_key,
+        "audience_profile": audience_profile,
+        "topic": str(meta.get("topic") or ""),
+        "comparison_matrix": comparison_matrix,
+        "value_board": value_board,
+        "proposal_content_model": proposal_content_model,
+        "content_priority_plan": content_priority_plan,
+        "closing_block": closing_block,
+        "summary_card": summary_card,
+        "render_model": render_model,
+        "quality_review": copy.deepcopy(quality_review if isinstance(quality_review, dict) else build_solution_quality_review(snapshot, proposal_brief, chapter_copy)),
         "chapters": chapters,
         "nav_items": [
             {
@@ -26947,6 +29393,34 @@ def build_solution_proposal_page(snapshot: dict, proposal_brief: dict, chapter_c
             for chapter in chapters
             if isinstance(chapter, dict) and str(chapter.get("id") or "").strip()
         ],
+    }
+
+
+def build_solution_proposal_support(snapshot: dict) -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    runtime_snapshot = normalized.get("solution_snapshot", {}) if isinstance(normalized.get("solution_snapshot", {}), dict) else {}
+    if not runtime_snapshot:
+        runtime_snapshot = build_solution_runtime_snapshot(normalized)
+    derived = runtime_snapshot.get("derived", {}) if isinstance(runtime_snapshot.get("derived", {}), dict) else {}
+    visualizations = normalized.get("draft", {}).get("visualizations", {}) if isinstance(normalized.get("draft", {}).get("visualizations", {}), dict) else {}
+    return {
+        "context": copy.deepcopy(runtime_snapshot.get("context", {})),
+        "decision_frame": copy.deepcopy(runtime_snapshot.get("decision_frame", {})),
+        "derived": {
+            "decision_cards": copy.deepcopy((derived.get("decision_cards", []) if isinstance(derived.get("decision_cards", []), list) else [])[:4]),
+            "current_state_cards": copy.deepcopy((derived.get("current_state_cards", []) if isinstance(derived.get("current_state_cards", []), list) else [])[:6]),
+            "target_blueprint_cards": copy.deepcopy((derived.get("target_blueprint_cards", []) if isinstance(derived.get("target_blueprint_cards", []), list) else [])[:6]),
+            "solution_compare_table": copy.deepcopy(derived.get("solution_compare_table", {}) if isinstance(derived.get("solution_compare_table", {}), dict) else {}),
+            "workstream_cards": copy.deepcopy((derived.get("workstream_cards", []) if isinstance(derived.get("workstream_cards", []), list) else [])[:6]),
+            "milestones": copy.deepcopy((derived.get("milestones", []) if isinstance(derived.get("milestones", []), list) else [])[:6]),
+            "action_checklist": copy.deepcopy((derived.get("action_checklist", []) if isinstance(derived.get("action_checklist", []), list) else [])[:6]),
+            "risk_cards": copy.deepcopy((derived.get("risk_cards", []) if isinstance(derived.get("risk_cards", []), list) else [])[:6]),
+            "analysis_blocks": copy.deepcopy((derived.get("analysis_blocks", []) if isinstance(derived.get("analysis_blocks", []), list) else [])[:6]),
+        },
+        "visualizations": {
+            "architecture_mermaid": clean_solution_text(visualizations.get("architecture_mermaid", ""), max_len=12000),
+            "business_flow_mermaid": clean_solution_text(visualizations.get("business_flow_mermaid", ""), max_len=12000),
+        },
     }
 
 
@@ -27358,6 +29832,7 @@ def _build_solution_degraded_payload(snapshot: dict, source_mode: str, quality_s
     context = _solution_context_from_snapshot(snapshot)
     normalized = context["normalized"]
     draft = normalized["draft"]
+    audience_profile = infer_solution_audience_profile(normalized, quality_signals=quality_signals)
     sections = [
         _solution_section(
             "degraded-reason",
@@ -27406,6 +29881,11 @@ def _build_solution_degraded_payload(snapshot: dict, source_mode: str, quality_s
         "proposal_brief": {},
         "chapter_copy": {},
         "proposal_page": {},
+        "proposal_support": {},
+        "audience_profile": audience_profile,
+        "comparison_matrix": {},
+        "value_board": {},
+        "quality_review": {},
         "nav_items": nav_items,
         "sections": sections,
     }
@@ -27442,9 +29922,21 @@ def _build_solution_payload_from_snapshot(snapshot: dict, source_mode: str = "st
         sections = _build_solution_sections_from_snapshot(normalized, quality_signals)
     hero = build_solution_hero_from_schema(normalized, quality_signals, default_hero) if use_schema_renderer else default_hero
     nav_items = [{"id": section.get("id"), "label": section.get("label")} for section in sections]
+    rule_proposal_brief = build_solution_proposal_brief(normalized, quality_signals=quality_signals, source_mode=source_mode)
     proposal_brief = build_solution_proposal_brief_with_ai(normalized, quality_signals=quality_signals, source_mode=source_mode)
+    proposal_brief = _solution_postprocess_proposal_brief(proposal_brief, rule_proposal_brief)
+    rule_chapter_copy = build_solution_chapter_copy(normalized, rule_proposal_brief, quality_signals=quality_signals)
     chapter_copy = build_solution_chapter_copy_with_ai(normalized, proposal_brief, quality_signals=quality_signals)
-    proposal_page = build_solution_proposal_page(normalized, proposal_brief, chapter_copy)
+    chapter_copy = _solution_postprocess_chapter_copy(chapter_copy, rule_chapter_copy)
+    chapter_copy, quality_review = review_solution_chapter_copy_with_ai(
+        normalized,
+        proposal_brief,
+        chapter_copy,
+        quality_signals=quality_signals,
+    )
+    chapter_copy = _solution_postprocess_chapter_copy(chapter_copy, rule_chapter_copy)
+    proposal_page = build_solution_proposal_page(normalized, proposal_brief, chapter_copy, quality_review=quality_review)
+    proposal_support = build_solution_proposal_support(normalized)
     return {
         "report_name": normalized.get("report_name", ""),
         "title": title,
@@ -27468,6 +29960,16 @@ def _build_solution_payload_from_snapshot(snapshot: dict, source_mode: str = "st
         "proposal_brief": proposal_brief,
         "chapter_copy": chapter_copy,
         "proposal_page": proposal_page,
+        "proposal_support": proposal_support,
+        "proposal_content_model": copy.deepcopy(proposal_page.get("proposal_content_model", {})),
+        "content_priority_plan": copy.deepcopy(proposal_page.get("content_priority_plan", {})),
+        "closing_block": copy.deepcopy(proposal_page.get("closing_block", {})),
+        "summary_card": copy.deepcopy(proposal_page.get("summary_card", {})),
+        "render_model": copy.deepcopy(proposal_page.get("render_model", {})),
+        "audience_profile": copy.deepcopy(proposal_page.get("audience_profile", {})),
+        "comparison_matrix": copy.deepcopy(proposal_page.get("comparison_matrix", {})),
+        "value_board": copy.deepcopy(proposal_page.get("value_board", {})),
+        "quality_review": copy.deepcopy(proposal_page.get("quality_review", {})),
         "nav_items": nav_items,
         "sections": sections,
     }
@@ -27633,11 +30135,13 @@ def _build_payload_from_legacy_solution(legacy_payload: dict) -> dict:
 def build_solution_payload_from_report(report_name: str, report_content: str) -> dict:
     sidecar = read_solution_sidecar(report_name)
     if sidecar:
-        return _build_solution_payload_from_snapshot(sidecar, source_mode="structured_sidecar")
+        payload = _build_solution_payload_from_snapshot(sidecar, source_mode="structured_sidecar")
+        return _finalize_solution_payload_for_delivery(payload, sidecar, source_mode="structured_sidecar")
 
     markdown_snapshot = build_solution_snapshot_from_markdown_report(report_name, report_content)
     if markdown_snapshot:
-        return _build_solution_payload_from_snapshot(markdown_snapshot, source_mode="legacy_markdown")
+        payload = _build_solution_payload_from_snapshot(markdown_snapshot, source_mode="legacy_markdown")
+        return _finalize_solution_payload_for_delivery(payload, markdown_snapshot, source_mode="legacy_markdown")
 
     legacy_payload = build_legacy_solution_payload_from_report(report_name, report_content)
     return _build_payload_from_legacy_solution(legacy_payload)
@@ -27783,7 +30287,10 @@ def get_report_solution(filename):
         generated_at = None
     content = normalize_report_time_fields(content, generated_at=generated_at)
     payload = build_solution_payload_from_report(normalized, content)
-    return jsonify(payload)
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.route('/api/reports/<path:filename>/appendix/pdf', methods=['GET'])

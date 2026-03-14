@@ -7,7 +7,7 @@
     <link rel="shortcut icon" href="favicon.svg">
     <title>DeepVision 查看方案</title>
     <link rel="stylesheet" href="vendor/css/fonts.css">
-    <link rel="stylesheet" href="solution.css?v=20260314-solution-v19">
+    <link rel="stylesheet" href="solution.css?v=20260314-solution-v25">
 </head>
 <body>
     <div class="solution-page">
@@ -15,50 +15,18 @@
             <section class="solution-state-card" id="solution-state-card">
                 <div class="solution-state-badge">正在准备</div>
                 <h1 class="solution-state-title">正在生成方案视图</h1>
-                <p class="solution-state-text">系统会根据当前访谈报告内容提炼差异化方案，请稍候。</p>
+                <p class="solution-state-text">系统会根据当前访谈报告内容生成样例式提案方案，请稍候。</p>
             </section>
 
             <div class="solution-shell" id="solution-shell" hidden>
-                <div class="solution-topbar">
-                    <div class="solution-topbar-main">
-                        <nav class="solution-nav" id="solution-nav"></nav>
-                    </div>
-                </div>
-
-                <section class="solution-quality-strip solution-glass-card solution-reveal" id="solution-quality-strip" hidden></section>
-
-                <section class="solution-hero solution-reveal" id="hero" data-solution-section>
-                    <div class="solution-hero-copy">
-                        <div class="solution-hero-copy-top">
-                            <div class="solution-eyebrow" id="solution-hero-eyebrow">DeepVision 差异化方案</div>
-                        </div>
-                        <div class="solution-hero-heading">
-                            <h1 class="solution-title" id="solution-title"></h1>
-                            <p class="solution-subtitle" id="solution-subtitle"></p>
-                        </div>
-                        <article class="solution-hero-summary solution-glass-card" id="solution-hero-summary"></article>
-                        <div class="solution-hero-highlight-grid" id="solution-hero-highlights"></div>
-                    </div>
-                    <div class="solution-hero-panel">
-                        <div class="solution-hero-panel-stack">
-                            <article class="solution-panel-card solution-glass-card" id="solution-hero-actions-card">
-                                <div class="solution-panel-kicker">首轮行动</div>
-                                <h2 class="solution-panel-title">现在先做什么</h2>
-                                <div class="solution-panel-list" id="solution-hero-actions"></div>
-                            </article>
-                            <article class="solution-panel-card solution-glass-card" id="solution-hero-metrics-card">
-                                <div class="solution-panel-kicker">质量指标</div>
-                                <h2 class="solution-panel-title">方案事实密度</h2>
-                                <div class="solution-panel-metrics" id="solution-hero-metrics"></div>
-                            </article>
-                        </div>
-                    </div>
-                </section>
-
-                <div class="solution-sections" id="solution-sections"></div>
+                <header class="solution-topbar" id="solution-topbar"></header>
+                <section class="solution-quality-strip" id="solution-quality-strip" hidden></section>
+                <div class="solution-content" id="solution-content"></div>
             </div>
         </main>
     </div>
+
+    <nav class="solution-mobile-nav" id="solution-mobile-nav" hidden></nav>
 
     <aside class="solution-evidence-drawer" id="solution-evidence-drawer" hidden>
         <div class="solution-evidence-backdrop" data-evidence-close></div>
@@ -74,6 +42,6 @@
         </div>
     </aside>
 
-    <script src="solution.js?v=20260314-solution-v19"></script>
+    <script src="solution.js?v=20260314-solution-v25"></script>
 </body>
 </html>

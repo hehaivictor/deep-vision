@@ -478,6 +478,16 @@ class SolutionPayloadTests(unittest.TestCase):
         proposal_brief = payload.get('proposal_brief', {}) or {}
         chapter_copy = payload.get('chapter_copy', {}) or {}
         proposal_page = payload.get('proposal_page', {}) or {}
+        proposal_support = payload.get('proposal_support', {}) or {}
+        proposal_content_model = payload.get('proposal_content_model', {}) or {}
+        content_priority_plan = payload.get('content_priority_plan', {}) or {}
+        closing_block = payload.get('closing_block', {}) or {}
+        summary_card = payload.get('summary_card', {}) or {}
+        render_model = payload.get('render_model', {}) or {}
+        audience_profile = payload.get('audience_profile', {}) or {}
+        comparison_matrix = payload.get('comparison_matrix', {}) or {}
+        value_board = payload.get('value_board', {}) or {}
+        quality_review = payload.get('quality_review', {}) or {}
         chapters = chapter_copy.get('chapters', []) or []
         chapter_ids = [item.get('id') for item in chapters]
 
@@ -489,8 +499,168 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertEqual(chapter_ids, ['hero', 'why_now', 'comparison', 'blueprint', 'workstreams', 'integration', 'roadmap', 'value_fit'])
         self.assertEqual(proposal_page.get('theme'), 'executive_dark_editorial')
         self.assertEqual([item.get('id') for item in proposal_page.get('nav_items', [])], chapter_ids)
+        self.assertIn('derived', proposal_support)
+        self.assertTrue((proposal_support.get('derived', {}) or {}).get('workstream_cards'))
+        self.assertTrue((proposal_support.get('derived', {}) or {}).get('milestones'))
+        self.assertEqual(proposal_content_model.get('version'), 'v2')
+        self.assertIn('hero', proposal_content_model.get('chapters', {}))
+        self.assertEqual(content_priority_plan.get('version'), 'v1')
+        self.assertIn('hero', content_priority_plan.get('chapters', {}))
+        self.assertTrue(closing_block.get('headline'))
+        self.assertTrue(closing_block.get('decision'))
+        self.assertTrue(summary_card.get('title'))
+        self.assertGreaterEqual(len(summary_card.get('bullets', [])), 2)
+        self.assertEqual(render_model.get('mode'), 'proposal')
+        self.assertTrue(render_model.get('closing', {}).get('headline'))
+        self.assertTrue(render_model.get('summaryCard', {}).get('title'))
+        self.assertEqual((render_model.get('navItems', []) or [])[-1].get('id'), 'closing')
         self.assertGreaterEqual(len((chapters[0] or {}).get('metrics', [])), 3)
         self.assertGreaterEqual(len((chapters[4] or {}).get('cards', [])), 3)
+        self.assertEqual(audience_profile.get('key'), proposal_page.get('audience_profile', {}).get('key'))
+        self.assertTrue(audience_profile.get('label'))
+        self.assertGreaterEqual(len(comparison_matrix.get('rows', [])), 5)
+        self.assertGreaterEqual(len(value_board.get('items', [])), 3)
+        self.assertIn(quality_review.get('status'), {'strong', 'solid', 'needs_polish'})
+        self.assertIn('overall_score', quality_review)
+
+    def test_structured_sidecar_rule_copy_avoids_internal_implementation_terms(self):
+        payload = self._write_structured_sidecar(
+            'proposal-rule-copy.md',
+            self._build_snapshot(
+                'proposal-rule-copy.md',
+                topic='交易支付风控体验优化',
+                scenario_name='交互式访谈',
+                overview='当前需要先锁定高价值样本、真实触发时机和混合复现路径，才能解释用户为什么放弃支付而非申诉。',
+                needs=[
+                    {'priority': 'P0', 'name': '高价值样本招募更精准', 'description': '先锁定真实被拦截用户。', 'evidence_refs': ['Q1']},
+                    {'priority': 'P0', 'name': '触发时机更贴近真实决策瞬间', 'description': '不能过早也不能过晚。', 'evidence_refs': ['Q2']},
+                    {'priority': 'P1', 'name': '复现方式兼顾深度与成本', 'description': '高保真和低保真需要组合。', 'evidence_refs': ['Q3']},
+                ],
+                solutions=[
+                    {'title': '建立高价值样本招募通道', 'description': '围绕支付失败页和拦截页组织样本入口。', 'owner': '运营', 'timeline': '第1周', 'metric': '形成首批样本池', 'evidence_refs': ['Q4']},
+                    {'title': '设计延时触发策略', 'description': '在高信号时刻触发访谈，减少体验干扰。', 'owner': '研究', 'timeline': '第2周', 'metric': '触发命中率提升', 'evidence_refs': ['Q5']},
+                    {'title': '搭建混合复现机制', 'description': '结合低保真原型和录屏回放提取真实变量。', 'owner': '设计+研究', 'timeline': '第3周', 'metric': '形成首轮归因洞察', 'evidence_refs': ['Q6']},
+                ],
+                risks=[
+                    {'risk': '真实样本不足', 'impact': '结论失真', 'mitigation': '先锁定高价值入口', 'evidence_refs': ['Q7']},
+                    {'risk': '合规评审拖慢试点', 'impact': '周期拉长', 'mitigation': '提前完成脱敏与评审', 'evidence_refs': ['Q8']},
+                ],
+                actions=[
+                    {'action': '确认支付失败页样本入口', 'owner': '运营', 'timeline': 'T+3天', 'metric': '入口评审通过', 'evidence_refs': ['Q9']},
+                    {'action': '制定延时触发规则', 'owner': '研究', 'timeline': 'T+5天', 'metric': '形成触发规则', 'evidence_refs': ['Q10']},
+                    {'action': '完成混合复现原型', 'owner': '设计', 'timeline': 'T+7天', 'metric': '可点击原型就绪', 'evidence_refs': ['Q11']},
+                    {'action': '启动首轮试点访谈', 'owner': '研究+运营', 'timeline': 'T+14天', 'metric': '回收首批有效样本', 'evidence_refs': ['Q12']},
+                ],
+            ),
+        )
+
+        proposal_text = json.dumps([
+            payload.get('proposal_brief', {}),
+            payload.get('chapter_copy', {}),
+        ], ensure_ascii=False)
+
+        self.assertNotIn('结构化素材', proposal_text)
+        self.assertNotIn('页面骨架', proposal_text)
+        self.assertNotIn('渲染', proposal_text)
+
+    def test_real_ai_platform_report_compresses_business_titles(self):
+        report_path = ROOT_DIR / "data" / "reports" / "deep-vision-20260314-e2a4fd23-交互式访谈-AI-智能体需求调研.md.solution.json"
+        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(self.server._proposal_focus_label("MLOps/LLMOps平台优先建设"), "AI工程底座")
+        self.assertEqual(
+            self.server._proposal_boundary_label("历史代码库依赖深，存量模型迁移复杂；基础设施/算力不足；需平衡重构风险与业务连续..."),
+            "迁移复杂、算力受限、兼顾连续性",
+        )
+
+        proposal_brief = self.server.build_solution_proposal_brief(snapshot, quality_signals={}, source_mode='structured_sidecar')
+        chapter_copy = self.server.build_solution_chapter_copy(snapshot, proposal_brief, quality_signals={})
+        chapters = {item.get('id'): item for item in chapter_copy.get('chapters', []) if isinstance(item, dict)}
+
+        self.assertIn('AI工程底座', proposal_brief.get('thesis', {}).get('headline', ''))
+        self.assertNotIn('MLOps/LLMOps', proposal_brief.get('thesis', {}).get('headline', ''))
+        self.assertLessEqual(len(proposal_brief.get('thesis', {}).get('headline', '')), 60)
+        self.assertIn('AI工程底座', proposal_brief.get('thesis', {}).get('core_decision', ''))
+        self.assertIn('迁移复杂、算力受限、兼顾连续性', proposal_brief.get('thesis', {}).get('core_decision', ''))
+        self.assertIn('人才短缺、算力受限和历史迁移压力', proposal_brief.get('thesis', {}).get('why_now', ''))
+        self.assertIn('分层架构', proposal_brief.get('recommended_solution', {}).get('architecture_statement', ''))
+        self.assertIn('接口治理', proposal_brief.get('recommended_solution', {}).get('architecture_statement', ''))
+        self.assertEqual((chapters.get('comparison') or {}).get('title'), '为什么当前先做「AI工程底座」')
+        self.assertIn('AI工程底座', (chapters.get('comparison') or {}).get('judgement', ''))
+        self.assertIn('难以直接形成可评审方案', ((((chapters.get('comparison') or {}).get('cards') or [])[0]) or {}).get('desc', ''))
+        self.assertIn('更适合：', ((((chapters.get('comparison') or {}).get('cards') or [None, None])[1]) or {}).get('meta', ''))
+        self.assertNotIn('MLOps/LLMOps', json.dumps((chapters.get('comparison') or {}).get('cards', []), ensure_ascii=False))
+        self.assertEqual((((chapters.get('hero') or {}).get('cards') or [])[0] or {}).get('meta'), '迁移复杂、算力受限、兼顾连续性')
+        self.assertEqual((((chapters.get('why_now') or {}).get('cards') or [])[2] or {}).get('title'), '混合云能力')
+        self.assertEqual((((chapters.get('why_now') or {}).get('cards') or [])[3] or {}).get('title'), '接口治理')
+        self.assertEqual((((chapters.get('why_now') or {}).get('cards') or [])[0] or {}).get('meta'), 'Q4 · Q6')
+        self.assertEqual((chapters.get('blueprint') or {}).get('title'), '推荐蓝图：先稳住「AI工程底座」，再拉通「分层架构」')
+        self.assertIn('接口治理', ((chapters.get('blueprint') or {}).get('diagram') or {}).get('caption', ''))
+        self.assertNotIn('MLOps/LLMOps', json.dumps((chapters.get('blueprint') or {}).get('cards', []), ensure_ascii=False))
+        self.assertEqual((((chapters.get('blueprint') or {}).get('cards') or [])[0] or {}).get('tag'), '能力底座')
+        self.assertEqual((chapters.get('integration') or {}).get('title'), '把「AI工程底座」接进系统闭环')
+        self.assertIn('系统闭环', (chapters.get('integration') or {}).get('title', ''))
+        self.assertIn('组织效率', ((chapters.get('integration') or {}).get('diagram') or {}).get('caption', ''))
+        self.assertEqual((chapters.get('value_fit') or {}).get('title'), '为什么这条路径更适合当前团队进入试点决策阶段')
+        self.assertNotIn('MLOps/LLMOps', (chapters.get('value_fit') or {}).get('title', ''))
+        self.assertEqual((((chapters.get('hero') or {}).get('metrics') or [])[1] or {}).get('label'), 'AI工程底座建设节奏')
+        self.assertIn('完成平台POC', (((chapters.get('hero') or {}).get('metrics') or [])[1] or {}).get('value', ''))
+        self.assertIn('前提：试点样本真实可控', (((chapters.get('hero') or {}).get('metrics') or [])[1] or {}).get('note', ''))
+        self.assertIn('迁移复杂、算力受限、兼顾连续性', (((chapters.get('value_fit') or {}).get('cards') or [])[2] or {}).get('desc', ''))
+
+    def test_ai_prompts_include_sample_style_guidance(self):
+        prompt_payload = {
+            "meta": {"topic": "AI 智能体建设"},
+            "audience_profile": {"key": "decision_maker", "label": "决策层视角"},
+            "quality_signals": {"fallback_ratio": 0.0},
+            "metric_cards": [{"label": "试点速度", "value": "8周"}],
+        }
+        proposal_prompt = self.server.build_solution_proposal_brief_ai_prompt(prompt_payload)
+        chapter_prompt = self.server.build_solution_chapter_copy_ai_prompt(
+            {"meta": {"topic": "AI 智能体建设"}, "thesis": {"headline": "测试标题"}},
+            prompt_payload,
+        )
+        review_prompt = self.server.build_solution_quality_review_ai_prompt(
+            {"meta": {"topic": "AI 智能体建设"}},
+            {"chapters": [{"id": "hero", "title": "测试标题"}]},
+            prompt_payload,
+            {"status": "solid", "overall_score": 0.76},
+        )
+
+        self.assertIn('参考写法', proposal_prompt)
+        self.assertIn('AI工程底座', proposal_prompt)
+        self.assertIn('可复制推进', proposal_prompt)
+        self.assertIn('audience_profile', proposal_prompt)
+        self.assertIn('推荐蓝图：先稳住「AI工程底座」，再拉通「分层架构」', chapter_prompt)
+        self.assertIn('把「支付失败页入口」接进系统闭环', chapter_prompt)
+        self.assertIn('chapter_updates', review_prompt)
+        self.assertIn('当前启发式审查结果', review_prompt)
+
+    def test_auto_infers_execution_audience_for_action_heavy_snapshot(self):
+        snapshot = self._build_snapshot(
+            'proposal-audience.md',
+            topic='客服知识接入提效',
+            scenario_name='交互式访谈',
+            overview='当前需要围绕客服接待流程冻结接口、负责人、上线节奏和回滚方案。',
+            needs=[
+                {'priority': 'P0', 'name': '客服入口稳定', 'description': '保证工单与IM入口都可接入。', 'evidence_refs': ['Q1']},
+                {'priority': 'P0', 'name': '负责人明确', 'description': '每个动作都有 owner。', 'evidence_refs': ['Q2']},
+            ],
+            solutions=[
+                {'title': '接入客服工单接口', 'description': '研发完成接口接入与埋点。', 'owner': '研发', 'timeline': '第1周', 'metric': '接口联调通过', 'evidence_refs': ['Q3']},
+                {'title': '建立知识回流规则', 'description': '运营和客服共同补充知识反馈。', 'owner': '运营+客服', 'timeline': '第2周', 'metric': '首轮知识回流完成', 'evidence_refs': ['Q4']},
+            ],
+            actions=[
+                {'action': '冻结接口字段', 'owner': '研发', 'timeline': 'T+2天', 'metric': '接口定义确认', 'evidence_refs': ['Q5']},
+                {'action': '确认负责人矩阵', 'owner': '项目经理', 'timeline': 'T+3天', 'metric': '角色矩阵通过', 'evidence_refs': ['Q6']},
+                {'action': '完成联调', 'owner': '研发', 'timeline': 'T+5天', 'metric': '联调通过', 'evidence_refs': ['Q7']},
+                {'action': '安排上线窗口', 'owner': '运维', 'timeline': 'T+7天', 'metric': '上线计划锁定', 'evidence_refs': ['Q8']},
+                {'action': '执行回滚演练', 'owner': '运维', 'timeline': 'T+8天', 'metric': '回滚方案通过', 'evidence_refs': ['Q9']},
+            ],
+        )
+        profile = self.server.infer_solution_audience_profile(snapshot, quality_signals={})
+        self.assertEqual(profile.get('key'), 'execution')
+        self.assertEqual(profile.get('proposal_goal'), '试点推进')
 
     def test_structured_sidecar_prefers_ai_generated_proposal_and_chapter_copy(self):
         snapshot = self._build_snapshot(
@@ -620,6 +790,20 @@ class SolutionPayloadTests(unittest.TestCase):
                 for index, chapter_id in enumerate(chapter_ids)
             ],
         }
+        review_response = {
+            "audience": "decision_maker",
+            "overall_score": 0.91,
+            "status": "strong",
+            "issues": [],
+            "chapter_scores": [
+                {"id": "hero", "score": 0.94, "issue": ""},
+                {"id": "comparison", "score": 0.9, "issue": ""},
+                {"id": "value_fit", "score": 0.89, "issue": ""},
+            ],
+            "chapter_updates": [
+                {"id": "hero", "title": "AI 自审后的判断标题", "judgement": "AI 自审后的 hero 判断句", "summary": "AI 自审后的 hero 概述"}
+            ],
+        }
 
         def _fake_call_claude(_prompt, *args, **kwargs):
             call_type = kwargs.get('call_type', '')
@@ -627,6 +811,8 @@ class SolutionPayloadTests(unittest.TestCase):
                 return json.dumps(brief_response, ensure_ascii=False)
             if call_type == 'report_solution_chapter_copy':
                 return json.dumps(chapter_response, ensure_ascii=False)
+            if call_type == 'report_solution_quality_review':
+                return json.dumps(review_response, ensure_ascii=False)
             return ''
 
         with patch.object(self.server, 'ENABLE_AI', True), \
@@ -636,12 +822,208 @@ class SolutionPayloadTests(unittest.TestCase):
 
         proposal_brief = payload.get('proposal_brief', {}) or {}
         chapter_copy = payload.get('chapter_copy', {}) or {}
+        quality_review = payload.get('quality_review', {}) or {}
         self.assertEqual(proposal_brief.get('meta', {}).get('generation_mode'), 'ai')
         self.assertEqual(chapter_copy.get('meta', {}).get('generation_mode'), 'ai')
+        self.assertEqual(chapter_copy.get('meta', {}).get('review_mode'), 'ai')
         self.assertEqual(proposal_brief.get('thesis', {}).get('headline'), brief_response['thesis']['headline'])
-        self.assertEqual((chapter_copy.get('chapters', [])[0] or {}).get('title'), 'AI 生成的判断标题')
+        self.assertEqual((chapter_copy.get('chapters', [])[0] or {}).get('title'), 'AI自审后的判断标题')
+        self.assertEqual(quality_review.get('review_mode'), 'ai')
+        self.assertEqual(quality_review.get('status'), 'strong')
         self.assertEqual(payload.get('proposal_page', {}).get('theme'), 'executive_dark_editorial')
         self.assertEqual([item.get('id') for item in payload.get('proposal_page', {}).get('nav_items', [])], chapter_ids)
+        self.assertTrue(payload.get('closing_block', {}).get('headline'))
+        self.assertTrue(payload.get('summary_card', {}).get('bullets'))
+        self.assertTrue(payload.get('render_model', {}).get('overview', {}).get('title'))
+
+    def test_ai_outputs_are_postprocessed_to_sample_business_tone(self):
+        report_path = ROOT_DIR / "data" / "reports" / "deep-vision-20260314-e2a4fd23-交互式访谈-AI-智能体需求调研.md.solution.json"
+        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+
+        technical_brief_response = {
+            "meta": {
+                "topic": "交互式访谈 AI 智能体需求调研",
+                "audience": "decision_maker",
+                "proposal_goal": "内部共识",
+                "confidence": 0.92,
+            },
+            "thesis": {
+                "headline": "先完成「MLOps/LLMOps平台优先建设」和「分层解耦架构落地」双核心落地，再把交互式访谈AI智能体需求调研推进到全链路",
+                "subheadline": "当前需要同步完成MLOps/LLMOps自动化平台、分层解耦架构落地、规格驱动化接口治理和自动化迁移工具链建设。",
+                "why_now": "当前阶段需要优先完成MLOps/LLMOps平台、混合云资源调度能力和规格驱动化接口治理，避免后续返工。",
+                "core_decision": "建议采用MLOps/LLMOps平台优先建设路径，在分层解耦架构落地与自动化迁移工具链建设同时推进的前提下扩大投入。",
+            },
+            "context": {
+                "business_scene": "AI 平台升级",
+                "current_state": ["MLOps/LLMOps平台与TensorFlow工程链路割裂"],
+                "core_conflicts": ["OpenAPI/gRPC契约与CI门禁尚未统一"],
+                "constraints": ["历史代码库依赖深，存量模型迁移复杂", "基础设施/算力不足"],
+                "evidence_refs": ["Q4", "Q6"],
+            },
+            "options": [
+                {"name": "保守路径", "positioning": "先完成泛化MLOps能力梳理", "pros": ["快"], "cons": ["浅"], "fit_for": "预算紧的团队", "not_fit_for": "需要试点评审的团队", "decision": "alternative", "evidence_refs": ["Q4"]},
+                {"name": "MLOps/LLMOps平台优先建设路径", "positioning": "先完成MLOps/LLMOps自动化平台与分层解耦架构落地", "pros": ["全"], "cons": ["复杂"], "fit_for": "希望尽快推进试点评审的团队", "not_fit_for": "无法锁定范围的团队", "decision": "recommended", "evidence_refs": ["Q6"]},
+                {"name": "激进路径", "positioning": "直接重构全链路", "pros": ["大"], "cons": ["风险高"], "fit_for": "长期专项", "not_fit_for": "当前阶段", "decision": "rejected", "evidence_refs": ["Q7"]},
+            ],
+            "recommended_solution": {
+                "north_star": "让MLOps/LLMOps平台、分层解耦架构落地和自动化迁移工具链建设一起推进。",
+                "architecture_statement": "通过MLOps/LLMOps平台优先建设、分层解耦架构落地、规格驱动化接口治理和自动化迁移工具链建设形成统一体系。",
+                "modules": [
+                    {"name": "MLOps/LLMOps平台优先建设", "objective": "完成平台与流水线统一", "acceptance_signals": ["平台 POC"]},
+                    {"name": "分层解耦架构落地", "objective": "完成模型层、推理层和网关层拆分", "acceptance_signals": ["完成拆分"]},
+                    {"name": "规格驱动化接口治理", "objective": "完成 OpenAPI/gRPC 契约与 CI 门禁接入", "acceptance_signals": ["契约稳定"]},
+                ],
+                "integration_points": ["MLOps/LLMOps平台优先建设", "分层解耦架构落地", "规格驱动化接口治理", "自动化迁移工具链建设"],
+                "dataflow": ["训练", "验证", "部署", "监控"],
+                "governance": ["OpenAPI/gRPC契约", "CI门禁"],
+                "evidence_refs": ["Q4", "Q6"],
+            },
+            "workstreams": [
+                {"name": "MLOps/LLMOps平台优先建设", "objective": "完成平台选型和流水线搭建", "key_actions": ["选型"], "deliverables": ["POC"], "owner_role": "平台", "timeline": "第1阶段", "dependencies": ["云资源"], "acceptance_signals": ["POC"], "evidence_refs": ["Q4"]},
+                {"name": "分层解耦架构落地", "objective": "拆分模型层/推理层/网关层", "key_actions": ["拆分"], "deliverables": ["边界"], "owner_role": "架构", "timeline": "第2阶段", "dependencies": ["平台"], "acceptance_signals": ["边界稳定"], "evidence_refs": ["Q6"]},
+                {"name": "自动化迁移工具链建设", "objective": "完成 ONNX 与自动化验证流水线", "key_actions": ["迁移"], "deliverables": ["迁移工具"], "owner_role": "平台", "timeline": "第3阶段", "dependencies": ["分层"], "acceptance_signals": ["可迁移"], "evidence_refs": ["Q7"]},
+            ],
+            "value_model": [
+                {"metric": "MLOps/LLMOps平台优先建设", "baseline": "无", "target": "完成平台POC，上线核心流水线", "range": "4个关键工作流", "assumptions": ["样本真实可控"], "evidence_refs": ["Q4"]},
+                {"metric": "分层解耦架构落地", "baseline": "弱", "target": "完成边界定义", "range": "三层解耦", "assumptions": ["边界稳定"], "evidence_refs": ["Q6"]},
+                {"metric": "自动化迁移工具链建设", "baseline": "人工为主", "target": "覆盖80%存量模型", "range": "单模型迁移投入下降", "assumptions": ["模型可迁移"], "evidence_refs": ["Q7"]},
+            ],
+            "fit_reasons": [
+                {"title": "结构化素材足以支撑提案骨架渲染", "detail": "当前已有完整结构化素材和页面骨架渲染上下文。", "evidence_refs": ["Q4"]},
+                {"title": "约束边界明确", "detail": "迁移复杂与算力受限已经显性化。", "evidence_refs": ["Q6"]},
+                {"title": "试点节奏清晰", "detail": "可以进入试点评审。", "evidence_refs": ["Q7"]},
+            ],
+            "risks_and_boundaries": [
+                {"title": "TensorFlow学习曲线陡峭", "detail": "团队需要额外培训。", "type": "risk", "evidence_refs": ["Q19"]},
+                {"title": "试点边界", "detail": "首轮不做全量改造。", "type": "boundary", "evidence_refs": ["Q8"]},
+            ],
+            "next_steps": [
+                {"phase": "Phase 1", "goal": "完成MLOps/LLMOps平台优先建设", "actions": ["POC"], "milestone": "平台 POC", "evidence_refs": ["Q4"]},
+                {"phase": "Phase 2", "goal": "完成分层解耦架构落地", "actions": ["拆分"], "milestone": "边界稳定", "evidence_refs": ["Q6"]},
+                {"phase": "Phase 3", "goal": "完成自动化迁移工具链建设", "actions": ["迁移"], "milestone": "迁移可用", "evidence_refs": ["Q7"]},
+            ],
+        }
+        chapter_ids = ['hero', 'why_now', 'comparison', 'blueprint', 'workstreams', 'integration', 'roadmap', 'value_fit']
+        technical_chapter_response = {
+            "meta": {"theme": "executive_dark_editorial", "tone": "judgemental_clear_premium", "nav_style": "sticky"},
+            "chapters": [
+                {
+                    "id": chapter_id,
+                    "nav_label": f"章节{idx+1}",
+                    "eyebrow": "AI 提案页",
+                    "title": "先完成「MLOps/LLMOps平台优先建设」和「分层解耦架构落地」双核心落地，再把交互式访谈AI智能体需求调研推进到全链路" if chapter_id == 'hero' else (
+                        "不是把内容堆满，而是先做对的路径选择" if chapter_id == 'comparison' else (
+                            "把「MLOps/LLMOps平台优先建设」组织成分层蓝图与推进路径" if chapter_id == 'blueprint' else (
+                                "没有回流机制，就只是一次性项目，不是长期能力" if chapter_id == 'integration' else (
+                                    "高级方案页的最后一章，必须回答为什么这套方案尤其适合当前项目" if chapter_id == 'value_fit' else f"{chapter_id} 标题"
+                                )
+                            )
+                        )
+                    ),
+                    "judgement": f"{chapter_id} 需要同时推进 MLOps/LLMOps 平台、OpenAPI/gRPC 契约与自动化迁移工具链建设。",
+                    "summary": f"{chapter_id} 摘要里保留了 TensorFlow、ONNX 和 CI门禁 等长技术表述。",
+                    "layout": ['hero_metrics', 'conflict_cards', 'dual_comparison', 'blueprint_diagram', 'tabbed_cards', 'loop_diagram', 'phased_timeline', 'value_grid'][idx],
+                    "metrics": [
+                        {"label": "MLOps/LLMOps平台优先建设", "value": "完成平台POC，上线核心流水线", "delta": "4个关键工作流", "note": "样本真实可控"},
+                        {"label": "分层解耦架构落地", "value": "完成边界定义", "delta": "三层解耦", "note": "边界稳定"},
+                        {"label": "自动化迁移工具链建设", "value": "覆盖80%存量模型", "delta": "人工投入下降", "note": "模型可迁移"},
+                    ] if chapter_id in {'hero', 'value_fit'} else [],
+                    "cards": [
+                        {"title": "MLOps/LLMOps平台优先建设", "desc": "需要完成 MLOps/LLMOps 平台、OpenAPI/gRPC 契约和 ONNX 自动化验证。", "tag": "AI", "meta": "TensorFlow / ONNX / Q4"},
+                        {"title": "分层解耦架构落地", "desc": "需要继续推动模型层/推理层/网关层拆分。", "tag": "AI", "meta": "Q6"},
+                        {"title": "自动化迁移工具链建设", "desc": "需要推进 ONNX 和 CI门禁 接入。", "tag": "AI", "meta": "Q7"},
+                    ],
+                    "diagram": {
+                        "type": "architecture" if chapter_id == 'blueprint' else ("loop" if chapter_id == 'integration' else None),
+                        "nodes": [
+                            {"id": "n1", "label": "MLOps/LLMOps平台优先建设", "group": "module"},
+                            {"id": "n2", "label": "分层解耦架构落地", "group": "module"},
+                        ] if chapter_id in {'blueprint', 'integration'} else [],
+                        "edges": [{"from": "n1", "to": "n2", "label": "推进"}] if chapter_id in {'blueprint', 'integration'} else [],
+                        "caption": "通过 MLOps/LLMOps 平台优先建设、OpenAPI/gRPC 契约和自动化迁移工具链建设完成闭环。" if chapter_id in {'blueprint', 'integration'} else "",
+                    },
+                    "cta": {"label": "继续", "target": "roadmap"},
+                    "evidence_refs": ["Q4", "Q6"],
+                }
+                for idx, chapter_id in enumerate(chapter_ids)
+            ],
+        }
+        quality_review_response = {
+            "audience": "decision_maker",
+            "overall_score": 0.79,
+            "status": "solid",
+            "issues": [],
+            "chapter_scores": [{"id": "hero", "score": 0.78, "issue": ""}],
+            "chapter_updates": [
+                {"id": "hero", "title": "先完成「MLOps/LLMOps平台优先建设」和「分层解耦架构落地」双核心落地", "judgement": "同步推进 MLOps/LLMOps 平台与 OpenAPI/gRPC 契约", "summary": "保留 TensorFlow 与 ONNX 表述"},
+                {"id": "blueprint", "title": "推荐蓝图：先稳住「MLOps/LLMOps平台优先建设」，再拉通「分层解耦架构落地」"},
+            ],
+        }
+
+        def _fake_call_claude(_prompt, *args, **kwargs):
+            call_type = kwargs.get('call_type', '')
+            if call_type == 'report_solution_proposal_brief':
+                return json.dumps(technical_brief_response, ensure_ascii=False)
+            if call_type == 'report_solution_chapter_copy':
+                return json.dumps(technical_chapter_response, ensure_ascii=False)
+            if call_type == 'report_solution_quality_review':
+                return json.dumps(quality_review_response, ensure_ascii=False)
+            return ''
+
+        with patch.object(self.server, 'ENABLE_AI', True), \
+             patch.object(self.server, 'HAS_ANTHROPIC', True), \
+             patch.object(self.server, 'call_claude', new=_fake_call_claude):
+            payload = self.server._build_solution_payload_from_snapshot(snapshot, source_mode='structured_sidecar')
+
+        proposal_brief = payload.get('proposal_brief', {}) or {}
+        chapters = {item.get('id'): item for item in (payload.get('chapter_copy', {}) or {}).get('chapters', []) if isinstance(item, dict)}
+
+        self.assertEqual(proposal_brief.get('meta', {}).get('generation_mode'), 'ai')
+        self.assertEqual(payload.get('quality_review', {}).get('review_mode'), 'ai')
+        self.assertEqual(payload.get('audience_profile', {}).get('key'), 'decision_maker')
+        self.assertIn('AI工程底座', proposal_brief.get('thesis', {}).get('headline', ''))
+        self.assertNotIn('MLOps/LLMOps', proposal_brief.get('thesis', {}).get('headline', ''))
+        self.assertNotIn('OpenAPI/gRPC', proposal_brief.get('recommended_solution', {}).get('architecture_statement', ''))
+        self.assertEqual((chapters.get('hero') or {}).get('title'), '为什么当前先做「AI工程底座」')
+        self.assertEqual((chapters.get('comparison') or {}).get('title'), '为什么当前先做「AI工程底座」')
+        self.assertEqual((chapters.get('blueprint') or {}).get('title'), '推荐蓝图：先稳住「AI工程底座」，再拉通「分层架构」')
+        self.assertEqual((chapters.get('integration') or {}).get('title'), '把「AI工程底座」接进系统闭环')
+        self.assertEqual((chapters.get('value_fit') or {}).get('title'), '为什么这条路径更适合当前团队进入试点决策阶段')
+        self.assertNotIn('MLOps/LLMOps', json.dumps(chapters, ensure_ascii=False))
+        metrics_text = json.dumps((chapters.get('hero') or {}).get('metrics', []), ensure_ascii=False)
+        self.assertNotIn('MLOps/LLMOps', metrics_text)
+        self.assertIn('分层架构推进度', metrics_text)
+        self.assertIn('迁移工具链效率', metrics_text)
+        self.assertIn('能力底座', json.dumps((chapters.get('blueprint') or {}).get('cards', []), ensure_ascii=False))
+        self.assertNotIn('结构化素材', json.dumps((chapters.get('value_fit') or {}).get('cards', []), ensure_ascii=False))
+
+    def test_build_solution_payload_from_report_rehardens_delivery_titles(self):
+        report_path = ROOT_DIR / "data" / "reports" / "deep-vision-20260314-e2a4fd23-交互式访谈-AI-智能体需求调研.md.solution.json"
+        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+        report_name = "delivery-hardened.md"
+        snapshot["report_name"] = report_name
+        self.server.write_solution_sidecar(report_name, snapshot)
+
+        stale_payload = self.server._build_solution_payload_from_snapshot(snapshot, source_mode='structured_sidecar')
+        stale_payload["proposal_brief"]["thesis"]["headline"] = "先完成「MLOps/LLMOps平台优先建设」和「分层解耦架构落地」双核心落地，再把交互式访谈AI智能体需求调研推进到全链路"
+        chapter_order = [item.get('id') for item in (stale_payload.get("chapter_copy", {}) or {}).get("chapters", []) if isinstance(item, dict)]
+        stale_chapter_map = {item.get('id'): item for item in (stale_payload.get("chapter_copy", {}) or {}).get("chapters", []) if isinstance(item, dict)}
+        stale_chapter_map["comparison"]["title"] = "不是把内容堆满，而是先做对的路径选择"
+        stale_chapter_map["blueprint"]["title"] = "把「MLOps/LLMOps平台优先建设」组织成分层蓝图与推进路径"
+        stale_chapter_map["integration"]["title"] = "没有回流机制，就只是一次性项目，不是长期能力"
+        stale_chapter_map["value_fit"]["title"] = "高级方案页的最后一章，必须回答为什么这套方案尤其适合当前项目"
+        stale_payload["chapter_copy"]["chapters"] = [stale_chapter_map[chapter_id] for chapter_id in chapter_order]
+
+        with patch.object(self.server, "_build_solution_payload_from_snapshot", return_value=stale_payload):
+            payload = self.server.build_solution_payload_from_report(report_name, "# 占位报告")
+
+        final_chapters = {item.get('id'): item for item in (payload.get("chapter_copy", {}) or {}).get("chapters", []) if isinstance(item, dict)}
+        self.assertEqual(payload.get("proposal_brief", {}).get("thesis", {}).get("headline"), "为什么当前先做「AI工程底座」")
+        self.assertEqual((final_chapters.get("comparison") or {}).get("title"), "为什么当前先做「AI工程底座」")
+        self.assertEqual((final_chapters.get("blueprint") or {}).get("title"), "推荐蓝图：先稳住「AI工程底座」，再拉通「分层架构」")
+        self.assertEqual((final_chapters.get("integration") or {}).get("title"), "把「AI工程底座」接进系统闭环")
+        self.assertEqual((final_chapters.get("value_fit") or {}).get("title"), "为什么这条路径更适合当前团队进入试点决策阶段")
+        self.assertEqual(payload.get("proposal_page", {}).get("audience_profile", {}).get("key"), payload.get("audience_profile", {}).get("key"))
 
     def test_structured_sidecar_falls_back_to_rules_when_ai_returns_bad_json(self):
         snapshot = self._build_snapshot(

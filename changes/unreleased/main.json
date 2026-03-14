@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "63c548e",
+  "committedAt": "2026-03-14T14:42:02+08:00",
+  "versionType": "major",
+  "title": "重构方案页提案母版与内容生成链路",
+  "changes": [
+    "后端：收敛方案页内容单真源，补充标题候选、受众推断、收束区块与传播摘要",
+    "前端：优先消费 render_model，收紧样例式提案渲染并移除末尾重复建议展示",
+    "测试：补齐方案页协议与真实报告回归用例",
+    "文档：新增样例页重建规格说明"
+  ],
+  "changedFiles": [
+    "docs/fortune-trend-proposal-rebuild-spec.md",
+    "tests/test_solution_payload.py",
+    "web/server.py",
+    "web/solution.css",
+    "web/solution.html",
+    "web/solution.js"
+  ]
+}
