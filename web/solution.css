@@ -20,10 +20,12 @@
     --solution-green: #8ce6bd;
     --solution-shadow: 0 28px 60px rgba(0, 0, 0, 0.34);
     --solution-shadow-soft: 0 16px 36px rgba(0, 0, 0, 0.22);
+    --solution-shadow-gold: 0 20px 46px rgba(122, 85, 16, 0.18);
     --solution-radius-xl: 34px;
     --solution-radius-lg: 26px;
     --solution-radius-md: 18px;
     --solution-radius-sm: 12px;
+    --solution-radius-2xl: 40px;
     --solution-content-width: min(1440px, calc(100vw - 64px));
     --solution-top-offset: 24px;
     --solution-serif: "Iowan Old Style", "Palatino Linotype", "Noto Serif SC", "Songti SC", "STSong", serif;
@@ -166,15 +168,15 @@ a {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    min-height: 34px;
-    padding: 0 14px;
+    min-height: 32px;
+    padding: 0 13px;
     border-radius: 999px;
-    border: 1px solid rgba(215, 164, 74, 0.25);
-    background: rgba(215, 164, 74, 0.08);
-    color: #f5d094;
-    font-size: 0.76rem;
+    border: 1px solid rgba(215, 164, 74, 0.18);
+    background: rgba(215, 164, 74, 0.06);
+    color: rgba(245, 208, 148, 0.9);
+    font-size: 0.72rem;
     font-weight: 700;
-    letter-spacing: 0.16em;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
 }
 
@@ -243,10 +245,10 @@ a {
 }
 
 .solution-brand-kicker {
-    color: var(--solution-text-dim);
-    font-size: 0.77rem;
-    font-weight: 600;
-    letter-spacing: 0.14em;
+    color: rgba(196, 208, 223, 0.56);
+    font-size: 0.72rem;
+    font-weight: 650;
+    letter-spacing: 0.18em;
     text-transform: uppercase;
     white-space: nowrap;
     overflow: hidden;
@@ -255,8 +257,9 @@ a {
 
 .solution-brand-title {
     margin-top: 4px;
-    font-size: 1rem;
-    font-weight: 700;
+    font-size: 1.02rem;
+    font-weight: 720;
+    letter-spacing: 0.01em;
     color: var(--solution-text);
     white-space: nowrap;
     overflow: hidden;
@@ -471,7 +474,7 @@ a {
 .proposal-section-head {
     display: grid;
     gap: 14px;
-    max-width: 58rem;
+    max-width: 52rem;
     margin-bottom: 32px;
 }
 
@@ -510,7 +513,8 @@ a {
 .proposal-detail-card p {
     margin: 0;
     color: var(--solution-text-soft);
-    line-height: 1.78;
+    line-height: 1.72;
+    max-width: 46rem;
 }
 
 .proposal-section-judgement,
@@ -520,7 +524,8 @@ a {
     border-left: 2px solid rgba(96, 213, 255, 0.46);
     color: #ecf6ff;
     font-size: 1.05rem;
-    line-height: 1.8;
+    line-height: 1.74;
+    max-width: 42rem;
 }
 
 .proposal-hero {
@@ -559,9 +564,9 @@ a {
 }
 
 .proposal-hero-subtitle {
-    max-width: 42rem;
-    font-size: 1.04rem;
-    line-height: 1.72;
+    max-width: 37rem;
+    font-size: 1.01rem;
+    line-height: 1.68;
 }
 
 .proposal-hero-judgement {
@@ -923,34 +928,48 @@ a {
 .proposal-comparison-center {
     display: grid;
     align-content: center;
-    gap: 18px;
-    padding: 28px;
+    gap: 20px;
+    padding: 32px 30px;
     min-height: 100%;
     border-radius: var(--solution-radius-lg);
-    border: 1px dashed rgba(96, 213, 255, 0.2);
+    border: 1px solid rgba(120, 150, 187, 0.18);
     background:
-        radial-gradient(circle at top center, rgba(96, 213, 255, 0.16), transparent 68%),
-        linear-gradient(180deg, rgba(8, 18, 33, 0.88), rgba(7, 16, 30, 0.74));
+        radial-gradient(circle at top center, rgba(96, 213, 255, 0.18), transparent 62%),
+        radial-gradient(circle at bottom left, rgba(215, 164, 74, 0.08), transparent 38%),
+        linear-gradient(180deg, rgba(10, 21, 38, 0.94), rgba(7, 16, 30, 0.8));
     box-shadow:
-        inset 0 1px 0 rgba(255, 255, 255, 0.05),
-        0 16px 42px rgba(4, 12, 24, 0.26);
+        inset 0 1px 0 rgba(255, 255, 255, 0.06),
+        0 18px 44px rgba(4, 12, 24, 0.28);
     text-align: left;
+    position: relative;
+    overflow: hidden;
+}
+
+.proposal-comparison-center::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto auto 30px;
+    width: 108px;
+    height: 2px;
+    background: linear-gradient(90deg, rgba(96, 213, 255, 0.78), transparent);
+    pointer-events: none;
 }
 
 .proposal-comparison-center-value {
     font-family: var(--solution-serif);
-    font-size: clamp(1.5rem, 2.4vw, 2rem);
-    line-height: 1.35;
+    font-size: clamp(1.55rem, 2.5vw, 2.08rem);
+    line-height: 1.26;
     letter-spacing: -0.03em;
     color: var(--solution-text);
+    max-width: 13ch;
 }
 
 .proposal-comparison-center-note {
     color: var(--solution-text-soft);
-    line-height: 1.72;
-    max-width: 24rem;
+    line-height: 1.66;
+    max-width: 22rem;
     border-top: 1px solid rgba(255, 255, 255, 0.06);
-    padding-top: 14px;
+    padding-top: 15px;
 }
 
 .proposal-comparison-tertiary {
@@ -1802,6 +1821,10 @@ a {
     padding: 24px;
     position: relative;
     overflow: hidden;
+    border-color: rgba(255, 255, 255, 0.07);
+    background:
+        linear-gradient(160deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.018)),
+        rgba(7, 18, 34, 0.8);
 }
 
 .proposal-value-card::before {
@@ -1811,6 +1834,15 @@ a {
     width: 72px;
     height: 2px;
     background: linear-gradient(90deg, rgba(215, 164, 74, 0.72), transparent);
+}
+
+.proposal-value-card:first-child {
+    border-color: rgba(215, 164, 74, 0.22);
+    background:
+        radial-gradient(circle at top left, rgba(215, 164, 74, 0.14), transparent 46%),
+        linear-gradient(180deg, rgba(215, 164, 74, 0.08), rgba(255, 255, 255, 0.02)),
+        rgba(11, 21, 38, 0.86);
+    box-shadow: var(--solution-shadow-gold);
 }
 
 .proposal-value-card-value {
@@ -1832,6 +1864,9 @@ a {
 .proposal-fit-card {
     grid-template-columns: 1fr;
     gap: 12px;
+    background:
+        linear-gradient(160deg, rgba(255, 255, 255, 0.042), rgba(255, 255, 255, 0.016)),
+        rgba(7, 18, 34, 0.76);
 }
 
 .proposal-closing {
@@ -1857,22 +1892,24 @@ a {
 .proposal-closing-shell {
     display: grid;
     grid-template-columns: minmax(0, 1.34fr) minmax(300px, 0.86fr);
-    gap: 22px;
+    gap: 24px;
     align-items: stretch;
 }
 
 .proposal-closing-main {
     display: grid;
-    gap: 18px;
+    gap: 20px;
     align-content: start;
-    padding: 32px;
+    padding: 34px;
     border-radius: var(--solution-radius-2xl);
-    border: 1px solid rgba(215, 164, 74, 0.2);
+    border: 1px solid rgba(215, 164, 74, 0.22);
     background:
-        radial-gradient(circle at top right, rgba(202, 138, 4, 0.18), transparent 52%),
-        rgba(12, 19, 35, 0.88);
+        radial-gradient(circle at top right, rgba(202, 138, 4, 0.2), transparent 50%),
+        radial-gradient(circle at bottom left, rgba(96, 213, 255, 0.06), transparent 30%),
+        rgba(12, 19, 35, 0.9);
     position: relative;
     overflow: hidden;
+    box-shadow: 0 26px 54px rgba(4, 12, 24, 0.28);
 }
 
 .proposal-closing-main::before {
@@ -1884,13 +1921,23 @@ a {
     background: linear-gradient(90deg, rgba(215, 164, 74, 0.88), transparent);
 }
 
+.proposal-closing-main::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0 auto;
+    width: 200px;
+    height: 200px;
+    background: radial-gradient(circle, rgba(215, 164, 74, 0.12), transparent 70%);
+    pointer-events: none;
+}
+
 .proposal-closing-lead {
     margin-top: 16px;
     font-family: var(--solution-serif);
-    font-size: clamp(1.35rem, 2vw, 2rem);
-    line-height: 1.28;
+    font-size: clamp(1.42rem, 2.1vw, 2.05rem);
+    line-height: 1.22;
     color: #fff7e8;
-    max-width: 22ch;
+    max-width: 18ch;
 }
 
 .proposal-summary-card {
@@ -1927,17 +1974,17 @@ a {
 
 .proposal-closing-decision {
     color: #fff5df;
-    font-size: 1rem;
-    font-weight: 700;
-    line-height: 1.78;
-    max-width: 40rem;
+    font-size: 1.02rem;
+    font-weight: 760;
+    line-height: 1.66;
+    max-width: 34rem;
 }
 
 .proposal-closing-boundary {
     color: rgba(239, 225, 197, 0.82);
-    font-size: 0.92rem;
-    line-height: 1.82;
-    max-width: 42rem;
+    font-size: 0.9rem;
+    line-height: 1.72;
+    max-width: 36rem;
 }
 
 .proposal-table-wrap {
@@ -2367,11 +2414,12 @@ body.is-evidence-open {
 
     .proposal-comparison-center {
         gap: 14px;
-        padding: 22px 20px;
+        padding: 24px 20px;
     }
 
     .proposal-comparison-center-value {
         font-size: clamp(1.32rem, 7vw, 1.72rem);
+        max-width: none;
     }
 
     .proposal-closing-lead {
@@ -2436,6 +2484,15 @@ body.is-evidence-open {
 
     .proposal-closing-shell {
         gap: 18px;
+    }
+
+    .proposal-closing-main {
+        gap: 18px;
+    }
+
+    .proposal-closing-main::after {
+        width: 140px;
+        height: 140px;
     }
 
     .solution-evidence-panel {

@@ -479,6 +479,9 @@ class SolutionPayloadTests(unittest.TestCase):
         chapter_copy = payload.get('chapter_copy', {}) or {}
         proposal_page = payload.get('proposal_page', {}) or {}
         proposal_support = payload.get('proposal_support', {}) or {}
+        decision_brief = payload.get('decision_brief', {}) or {}
+        narrative_outline = payload.get('narrative_outline', {}) or {}
+        page_copy = payload.get('page_copy', {}) or {}
         proposal_content_model = payload.get('proposal_content_model', {}) or {}
         content_priority_plan = payload.get('content_priority_plan', {}) or {}
         closing_block = payload.get('closing_block', {}) or {}
@@ -495,27 +498,33 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertGreaterEqual(len(proposal_brief.get('options', [])), 2)
         self.assertGreaterEqual(len(proposal_brief.get('workstreams', [])), 3)
         self.assertGreaterEqual(len(proposal_brief.get('value_model', [])), 3)
+        self.assertEqual(payload.get('proposal_version'), 'decision_v1')
         self.assertEqual(len(chapters), 8)
         self.assertEqual(chapter_ids, ['hero', 'why_now', 'comparison', 'blueprint', 'workstreams', 'integration', 'roadmap', 'value_fit'])
         self.assertEqual(proposal_page.get('theme'), 'executive_dark_editorial')
-        self.assertEqual([item.get('id') for item in proposal_page.get('nav_items', [])], chapter_ids)
+        self.assertEqual(decision_brief.get('version'), 'decision_v1')
+        self.assertEqual(narrative_outline.get('version'), 'decision_v1')
+        self.assertEqual([item.get('id') for item in proposal_page.get('nav_items', [])], ['overview', 'urgency', 'comparison', 'delivery', 'value', 'closing'])
+        self.assertEqual([item.get('id') for item in (narrative_outline.get('chapters', []) or [])], ['overview', 'urgency', 'comparison', 'delivery', 'value', 'closing'])
+        self.assertTrue(page_copy.get('overview', {}).get('title'))
         self.assertIn('derived', proposal_support)
         self.assertTrue((proposal_support.get('derived', {}) or {}).get('workstream_cards'))
         self.assertTrue((proposal_support.get('derived', {}) or {}).get('milestones'))
         self.assertEqual(proposal_content_model.get('version'), 'v2')
         self.assertIn('hero', proposal_content_model.get('chapters', {}))
-        self.assertEqual(content_priority_plan.get('version'), 'v1')
-        self.assertIn('hero', content_priority_plan.get('chapters', {}))
+        self.assertEqual(content_priority_plan.get('version'), 'decision_v1')
+        self.assertIn('overview', content_priority_plan.get('chapters', {}))
         self.assertTrue(closing_block.get('headline'))
         self.assertTrue(closing_block.get('decision'))
         self.assertTrue(summary_card.get('title'))
         self.assertGreaterEqual(len(summary_card.get('bullets', [])), 2)
-        self.assertEqual(render_model.get('mode'), 'proposal')
+        self.assertEqual(render_model.get('mode'), 'decision_v1')
         self.assertTrue(render_model.get('closing', {}).get('headline'))
         self.assertTrue(render_model.get('summaryCard', {}).get('title'))
         self.assertEqual((render_model.get('navItems', []) or [])[-1].get('id'), 'closing')
-        self.assertGreaterEqual(len((chapters[0] or {}).get('metrics', [])), 3)
-        self.assertGreaterEqual(len((chapters[4] or {}).get('cards', [])), 3)
+        self.assertTrue(render_model.get('urgency', {}).get('cards'))
+        self.assertTrue(render_model.get('delivery', {}).get('workstreams'))
+        self.assertTrue(render_model.get('value', {}).get('fitCards'))
         self.assertEqual(audience_profile.get('key'), proposal_page.get('audience_profile', {}).get('key'))
         self.assertTrue(audience_profile.get('label'))
         self.assertGreaterEqual(len(comparison_matrix.get('rows', [])), 5)
@@ -578,6 +587,9 @@ class SolutionPayloadTests(unittest.TestCase):
         proposal_page = self.server.build_solution_proposal_page(snapshot, proposal_brief, chapter_copy)
         chapters = {item.get('id'): item for item in chapter_copy.get('chapters', []) if isinstance(item, dict)}
         render_model = proposal_page.get('render_model', {}) if isinstance(proposal_page, dict) else {}
+        delivery_render = render_model.get('delivery', {}) or {}
+        comparison_render = render_model.get('comparison', {}) or {}
+        value_render = render_model.get('value', {}) or {}
 
         self.assertIn('AI工程底座', proposal_brief.get('thesis', {}).get('headline', ''))
         self.assertNotIn('MLOps/LLMOps', proposal_brief.get('thesis', {}).get('headline', ''))
@@ -609,10 +621,10 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertIn('完成平台POC', (((chapters.get('hero') or {}).get('metrics') or [])[1] or {}).get('value', ''))
         self.assertIn('前提：试点样本真实可控', (((chapters.get('hero') or {}).get('metrics') or [])[1] or {}).get('note', ''))
         self.assertIn('迁移复杂、算力受限、兼顾连续性', (((chapters.get('value_fit') or {}).get('cards') or [])[2] or {}).get('desc', ''))
-        tabs = ((render_model.get('solutions', {}) or {}).get('tabs', []) or [])
-        comparison_render = render_model.get('comparison', {}) or {}
+        tabs = (delivery_render.get('workstreams', []) or [])
         left_option = comparison_render.get('left', {}) or {}
         right_option = comparison_render.get('right', {}) or {}
+        boundary_cards = value_render.get('boundaryCards', []) or []
         self.assertEqual(comparison_render.get('judgement'), '先把「AI工程底座」试点跑通，再判断第二阶段投入，边界先锁定在「迁移复杂、算力受限」')
         self.assertEqual((tabs[0] if len(tabs) > 0 else {}).get('headline'), '跑通「AI工程底座」')
         self.assertEqual((tabs[1] if len(tabs) > 1 else {}).get('headline'), '拉通「分层架构」')
@@ -634,9 +646,10 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertEqual((((tabs[2] if len(tabs) > 2 else {}).get('dependencies') or [None]))[0], '迁移范围先锁定')
         self.assertEqual((((tabs[2] if len(tabs) > 2 else {}).get('deliverables') or [None]))[0], '契约与集成过线')
         self.assertEqual((((tabs[2] if len(tabs) > 2 else {}).get('metrics') or [None]))[0], {'metric': '验收信号 01', 'target': '契约与集成过线', 'note': '覆盖率和测试都过线'})
-        self.assertIn('先补培训和研究侧补位', ((((render_model.get('fit', {}) or {}).get('cards', []) or [])[4]) or {}).get('desc', ''))
-        self.assertIn('先设接口评审和协作门禁', ((((render_model.get('fit', {}) or {}).get('cards', []) or [])[5]) or {}).get('desc', ''))
-        self.assertNotIn('MLOps/LLMOps', json.dumps((render_model.get('fit', {}) or {}).get('cards', []), ensure_ascii=False))
+        self.assertTrue(value_render.get('fitCards'))
+        self.assertIn('先补培训和研究侧补位', (((boundary_cards or [])[0]) or {}).get('desc', ''))
+        self.assertIn('先设接口评审和协作门禁', (((boundary_cards or [None, None])[1]) or {}).get('desc', ''))
+        self.assertNotIn('MLOps/LLMOps', json.dumps(value_render.get('fitCards', []), ensure_ascii=False))
 
     def test_ai_prompts_include_sample_style_guidance(self):
         prompt_payload = {
@@ -861,7 +874,8 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertEqual(quality_review.get('review_mode'), 'ai')
         self.assertEqual(quality_review.get('status'), 'strong')
         self.assertEqual(payload.get('proposal_page', {}).get('theme'), 'executive_dark_editorial')
-        self.assertEqual([item.get('id') for item in payload.get('proposal_page', {}).get('nav_items', [])], chapter_ids)
+        self.assertEqual(payload.get('proposal_page', {}).get('proposal_version'), 'decision_v1')
+        self.assertEqual([item.get('id') for item in payload.get('proposal_page', {}).get('nav_items', [])], ['overview', 'urgency', 'comparison', 'delivery', 'value', 'closing'])
         self.assertTrue(payload.get('closing_block', {}).get('headline'))
         self.assertTrue(payload.get('summary_card', {}).get('bullets'))
         self.assertTrue(payload.get('render_model', {}).get('overview', {}).get('title'))

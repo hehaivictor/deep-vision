@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "14dc4e0",
+  "committedAt": "2026-03-14T23:09:32+08:00",
+  "versionType": "patch",
+  "title": "切换方案页到 decision_v1 决策型主链路",
+  "changes": [
+    "优化：压缩导航层级并收口提案页层次与可读性",
+    "测试：更新方案页 payload 与 decision_v1 回归断言"
+  ],
+  "changedFiles": [
+    "tests/test_solution_payload.py",
+    "web/server.py",
+    "web/solution.css",
+    "web/solution.html",
+    "web/solution.js"
+  ]
+}

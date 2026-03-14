@@ -24579,6 +24579,14 @@ SOLUTION_PROPOSAL_RENDER_NAV_ITEMS = [
     {"id": "fit", "label": "为什么适合"},
     {"id": "closing", "label": "最终建议"},
 ]
+SOLUTION_DECISION_RENDER_NAV_ITEMS = [
+    {"id": "overview", "label": "方案判断"},
+    {"id": "urgency", "label": "为什么现在做"},
+    {"id": "comparison", "label": "路径取舍"},
+    {"id": "delivery", "label": "落地路径"},
+    {"id": "value", "label": "价值判断"},
+    {"id": "closing", "label": "最终建议"},
+]
 SOLUTION_PROPOSAL_LAYOUTS = {
     "hero_metrics",
     "conflict_cards",
@@ -24599,6 +24607,14 @@ SOLUTION_CONTENT_PRIMARY_LIMITS = {
     "knowledge": {"pains": 3, "solutions": 3, "layers": 3},
     "flywheel": {"nodes": 4, "cases": 3},
     "value_fit": {"metrics": 4, "fit_cards": 4, "risk_cards": 2},
+    "closing": {"sentences": 3, "bullets": 3},
+}
+SOLUTION_DECISION_CONTENT_LIMITS = {
+    "overview": {"metrics": 3, "proof_points": 2},
+    "urgency": {"cards": 3},
+    "comparison": {"paths": 3, "matrix_rows": 5},
+    "delivery": {"workstreams": 3, "phases": 3, "blueprint_cards": 3},
+    "value": {"metrics": 4, "fit_cards": 3, "boundary_cards": 2},
     "closing": {"sentences": 3, "bullets": 3},
 }
 
@@ -26774,12 +26790,17 @@ def _finalize_solution_payload_for_delivery(payload: dict, snapshot: dict, sourc
         finalized["chapter_copy"],
         quality_review=quality_review,
     )
+    finalized["proposal_version"] = str(proposal_page.get("proposal_version") or "decision_v1")
     finalized["proposal_page"] = proposal_page
+    finalized["decision_brief"] = copy.deepcopy(proposal_page.get("decision_brief", {}))
+    finalized["narrative_outline"] = copy.deepcopy(proposal_page.get("narrative_outline", {}))
+    finalized["page_copy"] = copy.deepcopy(proposal_page.get("page_copy", {}))
     finalized["proposal_content_model"] = copy.deepcopy(proposal_page.get("proposal_content_model", {}))
     finalized["content_priority_plan"] = copy.deepcopy(proposal_page.get("content_priority_plan", {}))
     finalized["closing_block"] = copy.deepcopy(proposal_page.get("closing_block", {}))
     finalized["summary_card"] = copy.deepcopy(proposal_page.get("summary_card", {}))
     finalized["render_model"] = copy.deepcopy(proposal_page.get("render_model", {}))
+    finalized["render_model_legacy"] = copy.deepcopy(proposal_page.get("render_model_legacy", {}))
     finalized["audience_profile"] = copy.deepcopy(proposal_page.get("audience_profile", {}))
     finalized["comparison_matrix"] = copy.deepcopy(proposal_page.get("comparison_matrix", {}))
     finalized["value_board"] = copy.deepcopy(proposal_page.get("value_board", {}))
@@ -27949,6 +27970,336 @@ def build_solution_render_model(snapshot: dict, proposal_brief: dict, chapter_co
         },
         "summaryCard": copy.deepcopy(summary_card),
         "qualityReview": copy.deepcopy(quality_review if isinstance(quality_review, dict) else build_solution_quality_review(snapshot, proposal_brief, chapter_copy)),
+    }
+
+
+def build_solution_decision_brief_v1(
+    snapshot: dict,
+    proposal_brief: dict,
+    legacy_render_model: dict,
+    closing_block: dict,
+    audience_profile: dict,
+    comparison_matrix: Optional[dict] = None,
+    value_board: Optional[dict] = None,
+) -> dict:
+    normalized = _normalize_solution_snapshot(snapshot)
+    brief = proposal_brief if isinstance(proposal_brief, dict) else {}
+    render_model = legacy_render_model if isinstance(legacy_render_model, dict) else {}
+    closing = closing_block if isinstance(closing_block, dict) else {}
+    comparison = comparison_matrix if isinstance(comparison_matrix, dict) else {}
+    board = value_board if isinstance(value_board, dict) else {}
+    overview = render_model.get("overview", {}) if isinstance(render_model.get("overview", {}), dict) else {}
+    comparison_render = render_model.get("comparison", {}) if isinstance(render_model.get("comparison", {}), dict) else {}
+    solutions_render = render_model.get("solutions", {}) if isinstance(render_model.get("solutions", {}), dict) else {}
+    integration_render = render_model.get("integration", {}) if isinstance(render_model.get("integration", {}), dict) else {}
+    value_render = render_model.get("value", {}) if isinstance(render_model.get("value", {}), dict) else {}
+    fit_render = render_model.get("fit", {}) if isinstance(render_model.get("fit", {}), dict) else {}
+    options = brief.get("options", []) if isinstance(brief.get("options", []), list) else []
+    recommended_option = next((item for item in options if isinstance(item, dict) and str(item.get("decision") or "").lower() == "recommended"), options[0] if options else {})
+    workstreams = brief.get("workstreams", []) if isinstance(brief.get("workstreams", []), list) else []
+    roadmap = brief.get("next_steps", []) if isinstance(brief.get("next_steps", []), list) else []
+    value_points = brief.get("value_model", []) if isinstance(brief.get("value_model", []), list) else []
+    boundaries = brief.get("risks_and_boundaries", []) if isinstance(brief.get("risks_and_boundaries", []), list) else []
+    context = brief.get("context", {}) if isinstance(brief.get("context", {}), dict) else {}
+    thesis = brief.get("thesis", {}) if isinstance(brief.get("thesis", {}), dict) else {}
+    return {
+        "version": "decision_v1",
+        "topic": clean_solution_text(normalized.get("topic", ""), max_len=64) or clean_solution_text(brief.get("meta", {}).get("topic", ""), max_len=64),
+        "audience_profile": copy.deepcopy(audience_profile if isinstance(audience_profile, dict) else {}),
+        "one_thesis": clean_solution_text(closing.get("headline", ""), max_len=120) or clean_solution_text(thesis.get("headline", ""), max_len=120) or clean_solution_text(overview.get("title", ""), max_len=120),
+        "why_now": clean_solution_text(thesis.get("why_now", ""), max_len=160) or clean_solution_text(overview.get("judgement", ""), max_len=160),
+        "insight_line": clean_solution_text(comparison_render.get("judgement", ""), max_len=120),
+        "core_conflicts": _proposal_compact_sentences(context.get("core_conflicts", []) or overview.get("proofPoints", []), max_items=3, max_len=88),
+        "alternatives": copy.deepcopy(options[:3]),
+        "chosen_path": {
+            "name": clean_solution_text((recommended_option or {}).get("name", ""), max_len=40),
+            "positioning": clean_solution_text((recommended_option or {}).get("positioning", ""), max_len=140) or clean_solution_text(comparison_render.get("judgement", ""), max_len=140),
+            "proof_points": _proposal_compact_sentences((overview.get("proofPoints", []) if isinstance(overview.get("proofPoints", []), list) else []) + (context.get("constraints", []) if isinstance(context.get("constraints", []), list) else []), max_items=3, max_len=88),
+            "evidence_refs": _proposal_unique_refs([recommended_option, overview, comparison_render], limit=8),
+        },
+        "workstreams": copy.deepcopy(workstreams[:SOLUTION_DECISION_CONTENT_LIMITS["delivery"]["workstreams"]]),
+        "roadmap": copy.deepcopy(roadmap[:SOLUTION_DECISION_CONTENT_LIMITS["delivery"]["phases"]]),
+        "value_points": copy.deepcopy(value_points[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["metrics"]]),
+        "fit_reasons": copy.deepcopy(brief.get("fit_reasons", [])[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["fit_cards"]] if isinstance(brief.get("fit_reasons", []), list) else []),
+        "boundaries": copy.deepcopy(boundaries[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["boundary_cards"]]),
+        "comparison_matrix": copy.deepcopy(comparison),
+        "value_board": copy.deepcopy(board),
+        "delivery_support": {
+            "blueprint": copy.deepcopy(solutions_render.get("blueprint", {})),
+            "workstreams": copy.deepcopy(solutions_render.get("tabs", [])[:SOLUTION_DECISION_CONTENT_LIMITS["delivery"]["workstreams"]]),
+            "phases": copy.deepcopy(integration_render.get("phases", [])[:SOLUTION_DECISION_CONTENT_LIMITS["delivery"]["phases"]]),
+        },
+        "value_support": {
+            "metrics": copy.deepcopy(value_render.get("metrics", [])[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["metrics"]]),
+            "fit_cards": copy.deepcopy(fit_render.get("cards", [])[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["fit_cards"]]),
+            "boundary_cards": copy.deepcopy([
+                item
+                for item in (fit_render.get("cards", []) if isinstance(fit_render.get("cards", []), list) else [])
+                if isinstance(item, dict) and clean_solution_text(item.get("tag", ""), max_len=16).lower() in {"risk", "边界"}
+            ][:SOLUTION_DECISION_CONTENT_LIMITS["value"]["boundary_cards"]]),
+        },
+        "final_recommendation": {
+            "headline": clean_solution_text(closing.get("headline", ""), max_len=120),
+            "decision": clean_solution_text(closing.get("decision", ""), max_len=120),
+            "boundary": clean_solution_text(closing.get("boundary", ""), max_len=120),
+            "evidence_refs": _proposal_unique_refs(closing, limit=8),
+        },
+    }
+
+
+def build_solution_narrative_outline_v1(decision_brief: dict) -> dict:
+    brief = decision_brief if isinstance(decision_brief, dict) else {}
+    return {
+        "version": "decision_v1",
+        "chapters": [
+            {"id": "overview", "label": "方案判断", "goal": "先给明确判断"},
+            {"id": "urgency", "label": "为什么现在做", "goal": "解释时机与核心矛盾"},
+            {"id": "comparison", "label": "路径取舍", "goal": "说明为什么选这条路径"},
+            {"id": "delivery", "label": "落地路径", "goal": "把方案拆成可执行工作流和阶段"},
+            {"id": "value", "label": "价值判断", "goal": "说明收益、适配性和边界"},
+            {"id": "closing", "label": "最终建议", "goal": "给出最后决策建议"},
+        ],
+        "topic": clean_solution_text(brief.get("topic", ""), max_len=64),
+    }
+
+
+def build_solution_content_priority_plan_v1(decision_brief: dict) -> dict:
+    brief = decision_brief if isinstance(decision_brief, dict) else {}
+    return {
+        "version": "decision_v1",
+        "chapters": {
+            "overview": {
+                "primary": ["总判断", "为什么现在做", "关键指标"],
+                "secondary": ["证明点", "受众标签"],
+                "evidence": _proposal_unique_refs([brief.get("chosen_path", {}), brief.get("final_recommendation", {})], limit=8),
+                "hidden": [],
+                "budgets": copy.deepcopy(SOLUTION_DECISION_CONTENT_LIMITS["overview"]),
+            },
+            "urgency": {
+                "primary": ["关键矛盾", "非做不可的时机"],
+                "secondary": ["补充背景"],
+                "evidence": _proposal_unique_refs(brief.get("core_conflicts", []), limit=6),
+                "hidden": ["长背景"],
+                "budgets": copy.deepcopy(SOLUTION_DECISION_CONTENT_LIMITS["urgency"]),
+            },
+            "comparison": {
+                "primary": ["推荐路径", "备选路径", "不建议路径", "对比矩阵"],
+                "secondary": ["补充说明"],
+                "evidence": _proposal_unique_refs([brief.get("alternatives", []), brief.get("comparison_matrix", {})], limit=8),
+                "hidden": ["详细长表"],
+                "budgets": copy.deepcopy(SOLUTION_DECISION_CONTENT_LIMITS["comparison"]),
+            },
+            "delivery": {
+                "primary": ["关键工作流", "阶段节奏", "蓝图支撑"],
+                "secondary": ["负责人", "依赖条件"],
+                "evidence": _proposal_unique_refs([brief.get("workstreams", []), brief.get("roadmap", [])], limit=8),
+                "hidden": ["扩展模块"],
+                "budgets": copy.deepcopy(SOLUTION_DECISION_CONTENT_LIMITS["delivery"]),
+            },
+            "value": {
+                "primary": ["价值结果", "适配性", "边界条件"],
+                "secondary": ["前提说明"],
+                "evidence": _proposal_unique_refs([brief.get("value_points", []), brief.get("fit_reasons", []), brief.get("boundaries", [])], limit=8),
+                "hidden": ["补充价值说明"],
+                "budgets": copy.deepcopy(SOLUTION_DECISION_CONTENT_LIMITS["value"]),
+            },
+            "closing": {
+                "primary": ["总判断", "当前建议", "边界提醒"],
+                "secondary": ["传播摘要"],
+                "evidence": _proposal_unique_refs(brief.get("final_recommendation", {}), limit=8),
+                "hidden": [],
+                "budgets": copy.deepcopy(SOLUTION_DECISION_CONTENT_LIMITS["closing"]),
+            },
+        },
+    }
+
+
+def build_solution_page_copy_v1(
+    decision_brief: dict,
+    legacy_render_model: dict,
+    comparison_matrix: dict,
+    value_board: dict,
+    closing_block: dict,
+    summary_card: dict,
+    audience_profile: dict,
+) -> dict:
+    brief = decision_brief if isinstance(decision_brief, dict) else {}
+    render_model = legacy_render_model if isinstance(legacy_render_model, dict) else {}
+    overview = render_model.get("overview", {}) if isinstance(render_model.get("overview", {}), dict) else {}
+    comparison = render_model.get("comparison", {}) if isinstance(render_model.get("comparison", {}), dict) else {}
+    delivery_support = brief.get("delivery_support", {}) if isinstance(brief.get("delivery_support", {}), dict) else {}
+    blueprint = delivery_support.get("blueprint", {}) if isinstance(delivery_support.get("blueprint", {}), dict) else {}
+    return {
+        "version": "decision_v1",
+        "overview": {
+            "eyebrow": clean_solution_text(overview.get("eyebrow", ""), max_len=24) or "方案判断",
+            "title": clean_solution_text(overview.get("title", ""), max_len=96),
+            "subtitle": clean_solution_text(overview.get("subtitle", ""), max_len=180),
+            "judgement": clean_solution_text(brief.get("one_thesis", ""), max_len=180) or clean_solution_text(overview.get("judgement", ""), max_len=180),
+            "proofPoints": _proposal_compact_sentences(overview.get("proofPoints", []), max_items=SOLUTION_DECISION_CONTENT_LIMITS["overview"]["proof_points"], max_len=88),
+            "metrics": copy.deepcopy((overview.get("metrics", []) if isinstance(overview.get("metrics", []), list) else [])[:SOLUTION_DECISION_CONTENT_LIMITS["overview"]["metrics"]]),
+            "track": copy.deepcopy((overview.get("track", []) if isinstance(overview.get("track", []), list) else [])[:3]),
+        },
+        "urgency": {
+            "eyebrow": "为什么现在做",
+            "title": clean_solution_text(f"现在先把「{_proposal_focus_label((brief.get('chosen_path', {}) or {}).get('name', ''), max_len=18) or '关键路径'}」做透，才不会把后续投入做散", max_len=88),
+            "summary": clean_solution_text(brief.get("why_now", ""), max_len=180),
+            "judgement": clean_solution_text(brief.get("insight_line", ""), max_len=160) or clean_solution_text(brief.get("why_now", ""), max_len=160),
+            "cards": [
+                {
+                    "title": clean_solution_text(item, max_len=32),
+                    "desc": clean_solution_text(item, max_len=96),
+                    "tag": f"矛盾 {index + 1:02d}",
+                    "meta": "",
+                    "evidenceRefs": _proposal_unique_refs(item, limit=4),
+                }
+                for index, item in enumerate(_proposal_compact_sentences(brief.get("core_conflicts", []), max_items=SOLUTION_DECISION_CONTENT_LIMITS["urgency"]["cards"], max_len=88))
+            ],
+        },
+        "comparison": {
+            "eyebrow": clean_solution_text(comparison.get("eyebrow", ""), max_len=24) or "路径取舍",
+            "title": clean_solution_text(comparison.get("title", ""), max_len=88),
+            "summary": clean_solution_text(comparison.get("summary", ""), max_len=180),
+            "judgement": clean_solution_text(comparison.get("judgement", ""), max_len=180),
+            "left": copy.deepcopy(comparison.get("left", {})),
+            "right": copy.deepcopy(comparison.get("right", {})),
+            "tertiary": copy.deepcopy(comparison.get("tertiary", {})),
+            "matrix": copy.deepcopy(comparison_matrix if isinstance(comparison_matrix, dict) else {}),
+            "evidenceRefs": _proposal_unique_refs([brief.get("alternatives", []), comparison], limit=8),
+        },
+        "delivery": {
+            "eyebrow": "落地路径",
+            "title": clean_solution_text("先把关键路径跑通，再按阶段扩大范围", max_len=88),
+            "summary": clean_solution_text("主页面只保留最关键的 3 个工作流和 3 个阶段，确保一眼就能看懂怎么推进。", max_len=180),
+            "judgement": clean_solution_text("真正的方案不是模块越多越好，而是每个工作流都能直接进入执行和验收。", max_len=180),
+            "blueprint": {
+                "eyebrow": clean_solution_text(blueprint.get("eyebrow", ""), max_len=24) or "推荐蓝图",
+                "title": clean_solution_text(blueprint.get("title", ""), max_len=88),
+                "summary": clean_solution_text(blueprint.get("summary", ""), max_len=180),
+                "judgement": clean_solution_text(blueprint.get("judgement", ""), max_len=160),
+                "cards": copy.deepcopy((blueprint.get("cards", []) if isinstance(blueprint.get("cards", []), list) else [])[:SOLUTION_DECISION_CONTENT_LIMITS["delivery"]["blueprint_cards"]]),
+                "figure": copy.deepcopy(blueprint.get("figure", {}) if isinstance(blueprint.get("figure", {}), dict) else {}),
+            },
+            "workstreams": copy.deepcopy((delivery_support.get("workstreams", []) if isinstance(delivery_support.get("workstreams", []), list) else [])[:SOLUTION_DECISION_CONTENT_LIMITS["delivery"]["workstreams"]]),
+            "phases": copy.deepcopy((delivery_support.get("phases", []) if isinstance(delivery_support.get("phases", []), list) else [])[:SOLUTION_DECISION_CONTENT_LIMITS["delivery"]["phases"]]),
+            "evidenceRefs": _proposal_unique_refs([brief.get("workstreams", []), brief.get("roadmap", [])], limit=8),
+        },
+        "value": {
+            "eyebrow": "价值判断",
+            "title": clean_solution_text("值不值得做，关键看这 3 到 4 个结果能不能成立", max_len=88),
+            "summary": clean_solution_text("把收益、适配性和边界放在一起看，管理层才能判断这件事是该批、该收缩还是该暂缓。", max_len=180),
+            "judgement": clean_solution_text("如果价值结果和成立前提不能同时说清，这页就还不算方案，只算信息整理。", max_len=180),
+            "metrics": copy.deepcopy((brief.get("value_support", {}) or {}).get("metrics", [])[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["metrics"]] if isinstance(brief.get("value_support", {}), dict) else []),
+            "board": copy.deepcopy(value_board if isinstance(value_board, dict) else {}),
+            "fitCards": copy.deepcopy((brief.get("value_support", {}) or {}).get("fit_cards", [])[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["fit_cards"]] if isinstance(brief.get("value_support", {}), dict) else []),
+            "boundaryCards": copy.deepcopy(((brief.get("value_support", {}) or {}).get("boundary_cards", [])[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["boundary_cards"]] if isinstance(brief.get("value_support", {}), dict) and (brief.get("value_support", {}) or {}).get("boundary_cards") else (brief.get("boundaries", []) if isinstance(brief.get("boundaries", []), list) else [])[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["boundary_cards"]])),
+            "evidenceRefs": _proposal_unique_refs([brief.get("value_points", []), brief.get("fit_reasons", []), brief.get("boundaries", [])], limit=8),
+        },
+        "closing": {
+            "eyebrow": "决策收束",
+            "title": "最终建议",
+            "headline": clean_solution_text((closing_block or {}).get("headline", ""), max_len=120),
+            "decision": clean_solution_text((closing_block or {}).get("decision", ""), max_len=120),
+            "boundary": clean_solution_text((closing_block or {}).get("boundary", ""), max_len=120),
+            "evidenceRefs": _proposal_unique_refs(closing_block, limit=8),
+        },
+        "summaryCard": copy.deepcopy(summary_card if isinstance(summary_card, dict) else {}),
+        "audienceProfile": copy.deepcopy(audience_profile if isinstance(audience_profile, dict) else {}),
+    }
+
+
+def build_solution_quality_review_v1(
+    decision_brief: dict,
+    page_copy_v1: dict,
+    legacy_render_model: dict,
+    legacy_quality_review: Optional[dict] = None,
+) -> dict:
+    brief = decision_brief if isinstance(decision_brief, dict) else {}
+    page = page_copy_v1 if isinstance(page_copy_v1, dict) else {}
+    legacy_review = legacy_quality_review if isinstance(legacy_quality_review, dict) else {}
+    overview = page.get("overview", {}) if isinstance(page.get("overview", {}), dict) else {}
+    comparison = page.get("comparison", {}) if isinstance(page.get("comparison", {}), dict) else {}
+    delivery = page.get("delivery", {}) if isinstance(page.get("delivery", {}), dict) else {}
+    value = page.get("value", {}) if isinstance(page.get("value", {}), dict) else {}
+    closing = page.get("closing", {}) if isinstance(page.get("closing", {}), dict) else {}
+    issues = []
+    scores = {
+        "thesis_clarity": 1.0 if clean_solution_text(overview.get("title", ""), max_len=96) and clean_solution_text(overview.get("judgement", ""), max_len=180) else 0.4,
+        "chapter_brevity": 1.0 if len(clean_solution_text(comparison.get("summary", ""), max_len=180)) <= 180 and len(clean_solution_text(value.get("summary", ""), max_len=180)) <= 180 else 0.6,
+        "path_tradeoff_strength": 1.0 if comparison.get("left") and comparison.get("right") and comparison.get("matrix", {}).get("rows") else 0.5,
+        "page_cohesion": 1.0 if delivery.get("workstreams") and delivery.get("phases") else 0.6,
+        "insight_density": 1.0 if brief.get("insight_line") else 0.6,
+        "closing_actionability": 1.0 if closing.get("decision") and closing.get("boundary") else 0.5,
+    }
+    if scores["thesis_clarity"] < 0.8:
+        issues.append("总判断还不够清楚，首屏缺少明确立场。")
+    if scores["path_tradeoff_strength"] < 0.8:
+        issues.append("路径取舍不够强，还需要更明确的推荐与不建议路径。")
+    if scores["closing_actionability"] < 0.8:
+        issues.append("最终建议还不够像决策动作，缺少批复和边界提醒。")
+    overall_score = round(sum(scores.values()) / max(1, len(scores)), 2)
+    status = "strong" if overall_score >= 0.88 else "solid" if overall_score >= 0.72 else "needs_polish"
+    merged_issues = issues + _proposal_compact_sentences(legacy_review.get("issues", []), max_items=2, max_len=88)
+    return {
+        "version": "decision_v1",
+        "audience": clean_solution_text((brief.get("audience_profile", {}) or {}).get("key", ""), max_len=24) or clean_solution_text((legacy_review or {}).get("audience", ""), max_len=24) or "decision_maker",
+        "overall_score": overall_score,
+        "status": status,
+        "issues": merged_issues[:6],
+        "review_mode": clean_solution_text((legacy_review or {}).get("review_mode", ""), max_len=16) or "heuristic",
+        "scores": scores,
+    }
+
+
+def build_solution_render_model_v1(
+    decision_brief: dict,
+    narrative_outline: dict,
+    page_copy_v1: dict,
+    comparison_matrix: dict,
+    value_board: dict,
+    closing_block: dict,
+    summary_card: dict,
+    audience_profile: dict,
+    content_priority_plan_v1: dict,
+    quality_review_v1: dict,
+    legacy_render_model: dict,
+) -> dict:
+    brief = decision_brief if isinstance(decision_brief, dict) else {}
+    page = page_copy_v1 if isinstance(page_copy_v1, dict) else {}
+    overview = page.get("overview", {}) if isinstance(page.get("overview", {}), dict) else {}
+    urgency = page.get("urgency", {}) if isinstance(page.get("urgency", {}), dict) else {}
+    comparison = page.get("comparison", {}) if isinstance(page.get("comparison", {}), dict) else {}
+    delivery = page.get("delivery", {}) if isinstance(page.get("delivery", {}), dict) else {}
+    value = page.get("value", {}) if isinstance(page.get("value", {}), dict) else {}
+    closing = page.get("closing", {}) if isinstance(page.get("closing", {}), dict) else {}
+    outline_items = narrative_outline.get("chapters", []) if isinstance(narrative_outline.get("chapters", []), list) else []
+    nav_items = [{"id": str(item.get("id") or ""), "label": str(item.get("label") or "")} for item in outline_items if isinstance(item, dict) and str(item.get("id") or "").strip()]
+    return {
+        "mode": "decision_v1",
+        "hasProposal": True,
+        "brandTitle": clean_solution_text(brief.get("topic", ""), max_len=48) or clean_solution_text((legacy_render_model or {}).get("brandTitle", ""), max_len=48) or "DeepVision 决策提案",
+        "navItems": nav_items or copy.deepcopy(SOLUTION_DECISION_RENDER_NAV_ITEMS),
+        "contentPriorityPlan": copy.deepcopy(content_priority_plan_v1 if isinstance(content_priority_plan_v1, dict) else {}),
+        "overview": copy.deepcopy(overview),
+        "urgency": copy.deepcopy(urgency),
+        "comparison": {
+            **copy.deepcopy(comparison),
+            "matrix": copy.deepcopy(comparison_matrix if isinstance(comparison_matrix, dict) else comparison.get("matrix", {})),
+        },
+        "delivery": copy.deepcopy(delivery),
+        "value": {
+            **copy.deepcopy(value),
+            "board": copy.deepcopy(value_board if isinstance(value_board, dict) else value.get("board", {})),
+        },
+        "closing": {
+            **copy.deepcopy(closing),
+            "headline": clean_solution_text((closing_block or {}).get("headline", ""), max_len=120) or clean_solution_text(closing.get("headline", ""), max_len=120),
+            "decision": clean_solution_text((closing_block or {}).get("decision", ""), max_len=120) or clean_solution_text(closing.get("decision", ""), max_len=120),
+            "boundary": clean_solution_text((closing_block or {}).get("boundary", ""), max_len=120) or clean_solution_text(closing.get("boundary", ""), max_len=120),
+        },
+        "summaryCard": copy.deepcopy(summary_card if isinstance(summary_card, dict) else {}),
+        "qualityReview": copy.deepcopy(quality_review_v1 if isinstance(quality_review_v1, dict) else {}),
+        "audienceProfile": copy.deepcopy(audience_profile if isinstance(audience_profile, dict) else {}),
     }
 
 
@@ -29855,34 +30206,81 @@ def build_solution_proposal_page(
     comparison_matrix = build_solution_comparison_matrix(options, recommended_name=recommended_name)
     value_board = build_solution_value_board(value_model, audience_profile)
     proposal_content_model = build_solution_proposal_content_model(snapshot, proposal_brief, chapter_copy, quality_review=quality_review)
-    content_priority_plan = build_solution_content_priority_plan(proposal_content_model)
+    content_priority_plan_legacy = build_solution_content_priority_plan(proposal_content_model)
     closing_block = build_solution_closing_block(proposal_brief, proposal_content_model, audience_profile)
     summary_card = build_solution_share_summary(closing_block, value_board, audience_profile)
-    render_model = build_solution_render_model(
+    render_model_legacy = build_solution_render_model(
         snapshot,
         proposal_brief,
         chapter_copy,
         proposal_content_model,
-        content_priority_plan,
+        content_priority_plan_legacy,
         closing_block,
         summary_card,
         quality_review=quality_review,
     )
+    decision_brief = build_solution_decision_brief_v1(
+        snapshot,
+        proposal_brief,
+        render_model_legacy,
+        closing_block,
+        audience_profile,
+        comparison_matrix=comparison_matrix,
+        value_board=value_board,
+    )
+    narrative_outline = build_solution_narrative_outline_v1(decision_brief)
+    content_priority_plan = build_solution_content_priority_plan_v1(decision_brief)
+    page_copy = build_solution_page_copy_v1(
+        decision_brief,
+        render_model_legacy,
+        comparison_matrix,
+        value_board,
+        closing_block,
+        summary_card,
+        audience_profile,
+    )
+    quality_review_v1 = build_solution_quality_review_v1(
+        decision_brief,
+        page_copy,
+        render_model_legacy,
+        legacy_quality_review=quality_review,
+    )
+    render_model = build_solution_render_model_v1(
+        decision_brief,
+        narrative_outline,
+        page_copy,
+        comparison_matrix,
+        value_board,
+        closing_block,
+        summary_card,
+        audience_profile,
+        content_priority_plan,
+        quality_review_v1,
+        render_model_legacy,
+    )
     return {
+        "proposal_version": "decision_v1",
         "theme": str((copy_payload.get("meta", {}) or {}).get("theme") or "executive_dark_editorial"),
         "audience": audience_key,
         "audience_profile": audience_profile,
         "topic": str(meta.get("topic") or ""),
+        "decision_brief": decision_brief,
+        "narrative_outline": narrative_outline,
+        "page_copy": page_copy,
         "comparison_matrix": comparison_matrix,
         "value_board": value_board,
         "proposal_content_model": proposal_content_model,
         "content_priority_plan": content_priority_plan,
+        "content_priority_plan_legacy": content_priority_plan_legacy,
         "closing_block": closing_block,
         "summary_card": summary_card,
         "render_model": render_model,
-        "quality_review": copy.deepcopy(quality_review if isinstance(quality_review, dict) else build_solution_quality_review(snapshot, proposal_brief, chapter_copy)),
+        "render_model_legacy": render_model_legacy,
+        "quality_review": quality_review_v1,
+        "quality_review_legacy": copy.deepcopy(quality_review if isinstance(quality_review, dict) else build_solution_quality_review(snapshot, proposal_brief, chapter_copy)),
         "chapters": chapters,
-        "nav_items": [
+        "nav_items": copy.deepcopy(SOLUTION_DECISION_RENDER_NAV_ITEMS),
+        "nav_items_legacy": [
             {
                 "id": str(chapter.get("id") or ""),
                 "label": str(chapter.get("nav_label") or chapter.get("title") or "章节"),
@@ -30353,6 +30751,7 @@ def _build_solution_degraded_payload(snapshot: dict, source_mode: str, quality_s
     subtitle = clean_solution_text("由于证据绑定不足、事实槽位不足或近期方案相似度过高，系统已降级为真实信息视图。", max_len=88)
     nav_items = [{"id": section.get("id"), "label": section.get("label")} for section in sections]
     return {
+        "proposal_version": "decision_v1",
         "report_name": normalized.get("report_name", ""),
         "title": title,
         "subtitle": subtitle,
@@ -30458,11 +30857,15 @@ def _build_solution_payload_from_snapshot(snapshot: dict, source_mode: str = "st
         "chapter_copy": chapter_copy,
         "proposal_page": proposal_page,
         "proposal_support": proposal_support,
+        "decision_brief": copy.deepcopy(proposal_page.get("decision_brief", {})),
+        "narrative_outline": copy.deepcopy(proposal_page.get("narrative_outline", {})),
+        "page_copy": copy.deepcopy(proposal_page.get("page_copy", {})),
         "proposal_content_model": copy.deepcopy(proposal_page.get("proposal_content_model", {})),
         "content_priority_plan": copy.deepcopy(proposal_page.get("content_priority_plan", {})),
         "closing_block": copy.deepcopy(proposal_page.get("closing_block", {})),
         "summary_card": copy.deepcopy(proposal_page.get("summary_card", {})),
         "render_model": copy.deepcopy(proposal_page.get("render_model", {})),
+        "render_model_legacy": copy.deepcopy(proposal_page.get("render_model_legacy", {})),
         "audience_profile": copy.deepcopy(proposal_page.get("audience_profile", {})),
         "comparison_matrix": copy.deepcopy(proposal_page.get("comparison_matrix", {})),
         "value_board": copy.deepcopy(proposal_page.get("value_board", {})),

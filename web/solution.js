@@ -1,4 +1,4 @@
-const SOLUTION_ASSET_VERSION = '20260314-solution-v30';
+const SOLUTION_ASSET_VERSION = '20260314-solution-v32';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 const SOLUTION_SOURCE_MODE_LABELS = {
     structured_sidecar: '结构化快照',
@@ -6,14 +6,12 @@ const SOLUTION_SOURCE_MODE_LABELS = {
     degraded: '降级视图'
 };
 const SOLUTION_NAV_ITEMS = [
-    { id: 'overview', label: '方案概览' },
-    { id: 'comparison', label: '系统对比' },
-    { id: 'solutions', label: '落地方案' },
-    { id: 'integration', label: '系统集成' },
-    { id: 'knowledge', label: '知识统一' },
-    { id: 'flywheel', label: '数据联动' },
-    { id: 'value', label: '预期价值' },
-    { id: 'fit', label: '为什么适合' }
+    { id: 'overview', label: '方案判断' },
+    { id: 'urgency', label: '为什么现在做' },
+    { id: 'comparison', label: '路径取舍' },
+    { id: 'delivery', label: '落地路径' },
+    { id: 'value', label: '价值判断' },
+    { id: 'closing', label: '最终建议' }
 ];
 const SOLUTION_BUSINESS_FOCUS_REPLACEMENTS = [
     ['MLOps/LLMOps自动化平台', 'AI工程底座'],
@@ -496,6 +494,82 @@ function solutionNormalizeRenderModel(value) {
         evidenceRefs: solutionCollectRefs(value.overview.evidenceRefs || value.overview.evidence_refs || [])
     } : null;
     if (!overview?.title) return null;
+    if (mode === 'decision_v1' || (value.delivery && typeof value.delivery === 'object') || (value.urgency && typeof value.urgency === 'object')) {
+        return {
+            mode: 'decision_v1',
+            hasProposal: value.hasProposal !== false,
+            brandTitle: solutionShortText(value.brandTitle || '', 48),
+            navItems: solutionNormalizeList(value.navItems).filter((item) => item?.id && item?.label),
+            contentPriorityPlan: value.contentPriorityPlan && typeof value.contentPriorityPlan === 'object' ? value.contentPriorityPlan : null,
+            overview: { ...overview, primaryTarget: 'delivery' },
+            urgency: value.urgency && typeof value.urgency === 'object' ? {
+                eyebrow: solutionShortText(value.urgency.eyebrow || '', 24),
+                title: solutionBusinessHeading(value.urgency.title || '', '', 88),
+                summary: solutionBusinessSentence(value.urgency.summary || '', 180),
+                judgement: solutionBusinessSentence(value.urgency.judgement || '', 180),
+                cards: solutionNormalizeList(value.urgency.cards).map(solutionNormalizeCardItem).filter(Boolean),
+                evidenceRefs: solutionCollectRefs(value.urgency.evidenceRefs || value.urgency.evidence_refs || [])
+            } : null,
+            comparison: value.comparison && typeof value.comparison === 'object' ? {
+                eyebrow: solutionShortText(value.comparison.eyebrow || '', 24),
+                title: solutionBusinessHeading(value.comparison.title || '', '', 88),
+                summary: solutionBusinessSentence(value.comparison.summary || '', 180),
+                judgement: solutionBusinessSentence(value.comparison.judgement || '', 180),
+                left: solutionNormalizeOption(value.comparison.left || {}),
+                right: solutionNormalizeOption(value.comparison.right || {}),
+                tertiary: value.comparison.tertiary ? solutionNormalizeOption(value.comparison.tertiary) : null,
+                analogy: {
+                    title: '推荐结论',
+                    body: solutionBusinessSentence(value.comparison.judgement || value.comparison.summary || '', 220)
+                },
+                cases: [],
+                tableRows: solutionNormalizeList(value.comparison.tableRows),
+                matrix: solutionNormalizeComparisonMatrix(value.comparison.matrix),
+                evidenceRefs: solutionCollectRefs(value.comparison.evidenceRefs || value.comparison.evidence_refs || [])
+            } : null,
+            delivery: value.delivery && typeof value.delivery === 'object' ? {
+                eyebrow: solutionShortText(value.delivery.eyebrow || '', 24),
+                title: solutionBusinessHeading(value.delivery.title || '', '', 88),
+                summary: solutionBusinessSentence(value.delivery.summary || '', 180),
+                judgement: solutionBusinessSentence(value.delivery.judgement || '', 180),
+                blueprint: value.delivery.blueprint && typeof value.delivery.blueprint === 'object' ? {
+                    eyebrow: solutionShortText(value.delivery.blueprint.eyebrow || '', 24),
+                    title: solutionBusinessHeading(value.delivery.blueprint.title || '', '', 88),
+                    summary: solutionBusinessSentence(value.delivery.blueprint.summary || '', 180),
+                    judgement: solutionBusinessSentence(value.delivery.blueprint.judgement || '', 160),
+                    cards: solutionNormalizeList(value.delivery.blueprint.cards).map(solutionNormalizeCardItem).filter(Boolean),
+                    figure: value.delivery.blueprint.figure && typeof value.delivery.blueprint.figure === 'object' ? value.delivery.blueprint.figure : null
+                } : null,
+                workstreams: solutionNormalizeList(value.delivery.workstreams),
+                phases: solutionNormalizeList(value.delivery.phases).map(solutionNormalizePhase).filter(Boolean),
+                evidenceRefs: solutionCollectRefs(value.delivery.evidenceRefs || value.delivery.evidence_refs || [])
+            } : null,
+            value: value.value && typeof value.value === 'object' ? {
+                eyebrow: solutionShortText(value.value.eyebrow || '', 24),
+                title: solutionBusinessHeading(value.value.title || '', '', 88),
+                summary: solutionBusinessSentence(value.value.summary || '', 180),
+                judgement: solutionBusinessSentence(value.value.judgement || '', 180),
+                metrics: solutionNormalizeList(value.value.metrics).map(solutionNormalizeMetricItem).filter(Boolean),
+                board: solutionNormalizeValueBoard(value.value.board),
+                fitCards: solutionNormalizeList(value.value.fitCards).map(solutionNormalizeCardItem).filter(Boolean),
+                boundaryCards: solutionNormalizeList(value.value.boundaryCards).map((item) => {
+                    if (!item || typeof item !== 'object') return null;
+                    return {
+                        title: solutionBusinessHeading(item.title || '', '', 40),
+                        desc: solutionBusinessSentence(item.detail || item.desc || '', 140),
+                        tag: solutionShortText(item.type || '边界', 16),
+                        meta: '',
+                        evidenceRefs: solutionCollectRefs(item)
+                    };
+                }).filter(Boolean),
+                evidenceRefs: solutionCollectRefs(value.value.evidenceRefs || value.value.evidence_refs || [])
+            } : null,
+            closing: solutionNormalizeClosingBlock(value.closing),
+            summaryCard: solutionNormalizeSummaryCard(value.summaryCard),
+            qualityReview: solutionNormalizeQualityReview(value.qualityReview),
+            audienceProfile: solutionNormalizeAudienceProfile(value.audienceProfile || overview.audience)
+        };
+    }
     return {
         mode,
         hasProposal: value.hasProposal !== false,
@@ -591,6 +665,7 @@ function solutionGetProposalPage(payload) {
     const renderModel = solutionNormalizeRenderModel(proposal?.render_model || payload?.render_model);
     if (!chapters.length && !renderModel) return null;
     return {
+        proposalVersion: solutionShortText(proposal?.proposal_version || payload?.proposal_version || '', 24) || 'legacy_v0',
         theme: String(proposal?.theme || 'executive_dark_editorial'),
         navItems: solutionNormalizeList(proposal?.nav_items).filter((item) => item?.id),
         audienceProfile: solutionNormalizeAudienceProfile(proposal?.audience_profile || payload?.audience_profile),
@@ -599,6 +674,9 @@ function solutionGetProposalPage(payload) {
         contentPriorityPlan: proposal?.content_priority_plan || payload?.content_priority_plan || null,
         closingBlock: solutionNormalizeClosingBlock(proposal?.closing_block || payload?.closing_block),
         summaryCard: solutionNormalizeSummaryCard(proposal?.summary_card || payload?.summary_card),
+        decisionBrief: proposal?.decision_brief || payload?.decision_brief || null,
+        narrativeOutline: proposal?.narrative_outline || payload?.narrative_outline || null,
+        pageCopy: proposal?.page_copy || payload?.page_copy || null,
         renderModel,
         qualityReview: solutionNormalizeQualityReview(proposal?.quality_review || payload?.quality_review),
         chapters
@@ -1522,13 +1600,13 @@ function solutionRenderTopbar(model, payload) {
             ${solutionEscapeHtml(item.label)}
         </button>
     `).join('');
-    const finalTarget = model?.closing?.headline ? 'closing' : 'fit';
+    const finalTarget = model?.closing?.headline ? 'closing' : (model?.mode === 'decision_v1' ? 'value' : 'fit');
     topbar.innerHTML = `
         <div class="solution-topbar-inner">
             <div class="solution-brand">
                 <div class="solution-brand-mark">DV</div>
                 <div class="solution-brand-copy">
-                    <div class="solution-brand-kicker">样例式提案方案 · ${solutionEscapeHtml(SOLUTION_SOURCE_MODE_LABELS[payload?.source_mode] || '方案')}</div>
+                    <div class="solution-brand-kicker">企业决策提案 · ${solutionEscapeHtml(SOLUTION_SOURCE_MODE_LABELS[payload?.source_mode] || '方案')}</div>
                     <div class="solution-brand-title">${solutionEscapeHtml(model.brandTitle)}</div>
                 </div>
             </div>
@@ -1720,7 +1798,7 @@ function solutionRenderHeroSection(section) {
                         `).join('')}
                     </div>
                     <div class="proposal-hero-actions">
-                        <button type="button" class="solution-primary-action" data-scroll-target="solutions">深入了解方案</button>
+                        <button type="button" class="solution-primary-action" data-scroll-target="${solutionEscapeHtml(section.primaryTarget || 'solutions')}">深入了解方案</button>
                         ${solutionRenderEvidenceButton(section.title, section.evidenceRefs, '查看结论证据')}
                     </div>
                 </div>
@@ -2197,6 +2275,169 @@ function solutionRenderClosingSection(section, summaryCard) {
     `;
 }
 
+function solutionRenderUrgencySection(section) {
+    if (!section) return '';
+    return `
+        <section class="proposal-section" id="urgency" data-solution-section>
+            ${solutionRenderSectionHead(section)}
+            <div class="proposal-detail-grid">
+                ${solutionNormalizeList(section.cards).map((item) => `
+                    <article class="proposal-detail-card">
+                        <div class="proposal-fit-tag">${solutionEscapeHtml(item.tag || '关键矛盾')}</div>
+                        <h4>${solutionEscapeHtml(item.title)}</h4>
+                        <p>${solutionEscapeHtml(item.desc)}</p>
+                        ${item.meta ? `<div class="proposal-detail-note">${solutionEscapeHtml(item.meta)}</div>` : ''}
+                    </article>
+                `).join('')}
+            </div>
+        </section>
+    `;
+}
+
+function solutionRenderDeliverySection(section) {
+    if (!section) return '';
+    const blueprint = section.blueprint || {};
+    return `
+        <section class="proposal-section" id="delivery" data-solution-section>
+            ${solutionRenderSectionHead(section)}
+            ${blueprint?.title ? `
+                <div class="proposal-solution-shell">
+                    <div class="proposal-blueprint-block">
+                        <div class="proposal-blueprint-head">
+                            <div class="proposal-section-label">${solutionEscapeHtml(blueprint.eyebrow || '推荐蓝图')}</div>
+                            <h3>${solutionEscapeHtml(blueprint.title)}</h3>
+                            ${blueprint.summary ? `<p>${solutionEscapeHtml(blueprint.summary)}</p>` : ''}
+                        </div>
+                        ${solutionRenderBlueprintFigure({ figure: blueprint.figure, cards: blueprint.cards })}
+                    </div>
+                </div>
+            ` : ''}
+            ${solutionNormalizeList(section.workstreams).length ? `
+                <div class="proposal-solution-shell" data-solution-tabs>
+                    <div class="proposal-tab-bar" role="tablist" aria-label="落地工作流">
+                        ${solutionNormalizeList(section.workstreams).map((item, index) => `
+                            <button
+                                type="button"
+                                class="proposal-tab-button${index === 0 ? ' is-active' : ''}"
+                                data-tab-target="delivery-${solutionEscapeHtml(item.id || `workstream-${index + 1}`)}"
+                                role="tab"
+                                aria-selected="${index === 0 ? 'true' : 'false'}"
+                            >
+                                <span>${solutionEscapeHtml(item.label || item.headline || `工作流 ${index + 1}`)}</span>
+                                ${item.tag ? `<small>${solutionEscapeHtml(item.tag)}</small>` : ''}
+                            </button>
+                        `).join('')}
+                    </div>
+                    <div class="proposal-tab-panels">
+                        ${solutionNormalizeList(section.workstreams).map((item, index) => `
+                            <article class="proposal-tab-panel${index === 0 ? ' is-active' : ''}" id="delivery-${solutionEscapeHtml(item.id || `workstream-${index + 1}`)}" role="tabpanel" ${index === 0 ? '' : 'hidden'}>
+                                <div class="proposal-tab-panel-head">
+                                    <div>
+                                        <div class="proposal-tab-panel-tag">${solutionEscapeHtml(item.tag || '关键工作流')}</div>
+                                        <h3 class="proposal-tab-panel-title">${solutionEscapeHtml(item.headline || item.label || `工作流 ${index + 1}`)}</h3>
+                                        ${item.summary ? `<p class="proposal-tab-panel-summary">${solutionEscapeHtml(item.summary)}</p>` : ''}
+                                    </div>
+                                    <div class="proposal-meta-pills">
+                                        ${item.owner ? `<span class="proposal-meta-pill">${solutionEscapeHtml(item.owner)}</span>` : ''}
+                                        ${solutionNormalizeList(item.dependencies).slice(0, 1).map((dependency) => `<span class="proposal-meta-pill">${solutionEscapeHtml(dependency)}</span>`).join('')}
+                                        ${solutionNormalizeList(item.deliverables).slice(0, 1).map((deliverable) => `<span class="proposal-meta-pill">${solutionEscapeHtml(deliverable)}</span>`).join('')}
+                                    </div>
+                                </div>
+                                <div class="proposal-capability-grid">
+                                    ${solutionNormalizeList(item.capabilities).map((card) => `
+                                        <article class="proposal-capability-card">
+                                            <div class="proposal-capability-tag">${solutionEscapeHtml(card.tag || '动作')}</div>
+                                            <h4>${solutionEscapeHtml(card.title)}</h4>
+                                            <p>${solutionEscapeHtml(card.desc)}</p>
+                                        </article>
+                                    `).join('')}
+                                </div>
+                                ${solutionNormalizeList(item.metrics).length ? `
+                                    <div class="proposal-tab-metrics">
+                                        ${solutionNormalizeList(item.metrics).map((metric) => `
+                                            <div class="proposal-tab-metric">
+                                                <div class="proposal-tab-metric-label">${solutionEscapeHtml(metric.metric || metric.label || '指标')}</div>
+                                                <div class="proposal-tab-metric-value">${solutionEscapeHtml(metric.target || metric.value || '')}</div>
+                                                ${metric.note ? `<div class="proposal-tab-metric-note">${solutionEscapeHtml(metric.note)}</div>` : ''}
+                                            </div>
+                                        `).join('')}
+                                    </div>
+                                ` : ''}
+                            </article>
+                        `).join('')}
+                    </div>
+                </div>
+            ` : ''}
+            ${solutionNormalizeList(section.phases).length ? `
+                <div class="proposal-integration-card">
+                    <div class="proposal-integration-card-head">
+                        <div class="proposal-section-label">阶段路线</div>
+                        <h3>把决策路径压成 3 个阶段，先冻结边界，再执行试点，最后复盘价值</h3>
+                    </div>
+                    <div class="proposal-phase-path">
+                        ${solutionNormalizeList(section.phases).map((item, index) => `
+                            <article class="proposal-phase-card">
+                                <div class="proposal-phase-step">${solutionEscapeHtml(String(index + 1).padStart(2, '0'))}</div>
+                                <div class="proposal-phase-copy">
+                                    <div class="proposal-phase-title">${solutionEscapeHtml(item.phase)}</div>
+                                    <p>${solutionEscapeHtml(item.goal)}</p>
+                                    ${solutionNormalizeList(item.actions).length ? `
+                                        <ul class="proposal-bullet-list">
+                                            ${solutionNormalizeList(item.actions).map((action) => `<li>${solutionEscapeHtml(action)}</li>`).join('')}
+                                        </ul>
+                                    ` : ''}
+                                    ${item.milestone ? `<div class="proposal-phase-milestone">${solutionEscapeHtml(item.milestone)}</div>` : ''}
+                                </div>
+                            </article>
+                        `).join('')}
+                    </div>
+                </div>
+            ` : ''}
+        </section>
+    `;
+}
+
+function solutionRenderValueDecisionSection(section) {
+    if (!section) return '';
+    return `
+        <section class="proposal-section" id="value" data-solution-section>
+            ${solutionRenderSectionHead(section)}
+            ${solutionRenderValueBoard(section.board)}
+            <div class="proposal-value-grid">
+                ${solutionNormalizeList(section.metrics).map((item) => `
+                    <article class="proposal-value-card">
+                        <div class="proposal-value-card-label">${solutionEscapeHtml(item.label)}</div>
+                        <div class="proposal-value-card-value">${solutionEscapeHtml(item.value)}</div>
+                        ${item.note ? `<div class="proposal-value-card-note">${solutionEscapeHtml(item.note)}</div>` : ''}
+                    </article>
+                `).join('')}
+            </div>
+            ${solutionNormalizeList(section.fitCards).length ? `
+                <div class="proposal-fit-grid">
+                    ${solutionNormalizeList(section.fitCards).map((item) => `
+                        <article class="proposal-fit-card">
+                            <div class="proposal-fit-tag">${solutionEscapeHtml(item.tag || '适配理由')}</div>
+                            <h3>${solutionEscapeHtml(item.title)}</h3>
+                            <p>${solutionEscapeHtml(item.desc)}</p>
+                        </article>
+                    `).join('')}
+                </div>
+            ` : ''}
+            ${solutionNormalizeList(section.boundaryCards).length ? `
+                <div class="proposal-detail-grid">
+                    ${solutionNormalizeList(section.boundaryCards).map((item) => `
+                        <article class="proposal-detail-card">
+                            <div class="proposal-fit-tag">${solutionEscapeHtml(item.tag || '边界')}</div>
+                            <h4>${solutionEscapeHtml(item.title)}</h4>
+                            <p>${solutionEscapeHtml(item.desc)}</p>
+                        </article>
+                    `).join('')}
+                </div>
+            ` : ''}
+        </section>
+    `;
+}
+
 function solutionRenderGenericCards(items) {
     return `
         <div class="proposal-detail-grid">
@@ -2334,6 +2575,17 @@ function solutionRenderDegradedExperience(payload) {
 function solutionRenderProposalExperience(model) {
     const content = document.getElementById('solution-content');
     if (!content) return [];
+    if (model.mode === 'decision_v1') {
+        content.innerHTML = [
+            solutionRenderHeroSection(model.overview),
+            solutionRenderUrgencySection(model.urgency),
+            solutionRenderComparisonSection(model.comparison),
+            solutionRenderDeliverySection(model.delivery),
+            solutionRenderValueDecisionSection(model.value),
+            solutionRenderClosingSection(model.closing, model.summaryCard)
+        ].join('');
+        return solutionNormalizeList(model.navItems);
+    }
     content.innerHTML = [
         solutionRenderHeroSection(model.overview),
         solutionRenderComparisonSection(model.comparison),
