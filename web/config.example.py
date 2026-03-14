@@ -166,6 +166,16 @@ QUESTION_HIGH_EVIDENCE_PRIMARY_LANE = "question"
 QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = "report"
 # 作用：高取证强度问题是否禁用基于历史时延/成功率的动态 lane 晋升。
 QUESTION_HIGH_EVIDENCE_DISABLE_DYNAMIC_LANE = True
+# 作用：高取证强度问题是否允许直接并发备用通道，默认关闭，优先单发失败后补发。
+QUESTION_HIGH_EVIDENCE_HEDGED_ENABLED = False
+# 作用：是否启用主通道失败后的备用通道补发。
+QUESTION_HEDGE_FAILURE_FALLBACK_ENABLED = True
+# 作用：是否仅允许真正阻塞 shadow draft 的题目启用并发竞速。
+QUESTION_HEDGE_REQUIRE_SHADOW_BLOCKER = True
+# 作用：单个会话内允许发生问题并发竞速的总次数预算。
+QUESTION_SESSION_HEDGE_BUDGET = 4
+# 作用：单个维度内允许发生问题并发竞速的次数预算。
+QUESTION_DIMENSION_HEDGE_BUDGET = 1
 # 作用：控制只有主备客户端不同才启用问题竞速。
 QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT = True
 # 作用：按 lane 覆盖问题快档超时时间。

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "6de639c",
+  "committedAt": "2026-03-14T14:44:21+08:00",
+  "versionType": "minor",
+  "title": "完善高取证问题通道回退与竞速配置",
+  "changes": [
+    "前端：补充问题竞速与补发状态透传，保持会话恢复一致",
+    "配置：新增高取证问题并发竞速与预算示例项",
+    "测试：补齐高取证问题主通道失败回退与预算约束用例"
+  ],
+  "changedFiles": [
+    "tests/test_question_fast_strategy.py",
+    "web/.env.example",
+    "web/app.js",
+    "web/config.example.py"
+  ]
+}

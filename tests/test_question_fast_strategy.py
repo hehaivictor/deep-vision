@@ -93,6 +93,11 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.server.QUESTION_HIGH_EVIDENCE_PRIMARY_LANE = "question"
         self.server.QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = "report"
         self.server.QUESTION_HIGH_EVIDENCE_DISABLE_DYNAMIC_LANE = True
+        self.server.QUESTION_HIGH_EVIDENCE_HEDGED_ENABLED = False
+        self.server.QUESTION_HEDGE_FAILURE_FALLBACK_ENABLED = True
+        self.server.QUESTION_HEDGE_REQUIRE_SHADOW_BLOCKER = True
+        self.server.QUESTION_SESSION_HEDGE_BUDGET = 4
+        self.server.QUESTION_DIMENSION_HEDGE_BUDGET = 1
         self.server.PREFETCH_QUESTION_TIMEOUT = 48.0
         self.server.PREFETCH_QUESTION_MAX_TOKENS = 1200
         self.server.PREFETCH_QUESTION_FAST_TIMEOUT = 10.5
@@ -214,6 +219,8 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertFalse(profile["allow_fast_path"])
         self.assertEqual(profile["primary_lane"], "question")
         self.assertEqual(profile["secondary_lane"], "report")
+        self.assertFalse(profile["hedged_enabled"])
+        self.assertTrue(profile["fallback_enabled"])
         self.assertFalse(profile["dynamic_lane_order_enabled"])
         self.assertIn("summary", profile["disallowed_lanes"])
 
@@ -308,6 +315,104 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertEqual(prepared["fast_prompt"], "PROMPT:light")
         self.assertEqual(prepared["runtime_profile"]["fast_prompt_mode"], "light")
 
+    def test_prepare_runtime_disables_high_evidence_hedge_without_shadow_blocker(self):
+        original_build = self.server.build_interview_prompt
+        original_select = self.server._select_question_generation_runtime_profile
+        original_refresh = self.server.refresh_session_evidence_ledger
+        self.addCleanup(setattr, self.server, "build_interview_prompt", original_build)
+        self.addCleanup(setattr, self.server, "_select_question_generation_runtime_profile", original_select)
+        self.addCleanup(setattr, self.server, "refresh_session_evidence_ledger", original_refresh)
+
+        self.server.build_interview_prompt = lambda *args, **kwargs: (
+            "PROMPT:full",
+            [],
+            {"output_mode": "full", "answer_mode": "pick_with_reason", "requires_rationale": True, "evidence_intent": "high"},
+        )
+        self.server._select_question_generation_runtime_profile = lambda *args, **kwargs: {
+            "profile_name": "question_probe_evidence",
+            "selection_reason": "high_evidence_intent",
+            "allow_fast_path": False,
+            "fast_output_mode": "full",
+            "full_output_mode": "full",
+            "fast_timeout": 8.0,
+            "fast_max_tokens": 640,
+            "full_timeout": 24.0,
+            "full_max_tokens": 1200,
+            "primary_lane": "question",
+            "secondary_lane": "report",
+            "hedged_enabled": True,
+            "fallback_enabled": True,
+            "answer_mode": "pick_with_reason",
+            "requires_rationale": True,
+            "evidence_intent": "high",
+        }
+        self.server.refresh_session_evidence_ledger = lambda _session: {
+            "shadow_draft": {
+                "solutions": {"ready": False, "blocking_dimensions": ["other_dimension"], "readiness_score": 0.1},
+            }
+        }
+
+        prepared = self.server._prepare_question_generation_runtime(
+            session={"topic": "测试", "dimensions": {"project_constraints": {"items": []}}, "interview_log": []},
+            dimension="project_constraints",
+            all_dim_logs=[],
+        )
+
+        self.assertFalse(prepared["runtime_profile"]["hedged_enabled"])
+        self.assertTrue(prepared["runtime_profile"]["fallback_enabled"])
+        self.assertIn("hedge_blocked=no_shadow_blocker", prepared["runtime_profile"]["selection_reason"])
+
+    def test_prepare_runtime_disables_hedge_when_budget_exhausted(self):
+        original_build = self.server.build_interview_prompt
+        original_select = self.server._select_question_generation_runtime_profile
+        original_refresh = self.server.refresh_session_evidence_ledger
+        self.addCleanup(setattr, self.server, "build_interview_prompt", original_build)
+        self.addCleanup(setattr, self.server, "_select_question_generation_runtime_profile", original_select)
+        self.addCleanup(setattr, self.server, "refresh_session_evidence_ledger", original_refresh)
+
+        self.server.build_interview_prompt = lambda *args, **kwargs: (
+            "PROMPT:full",
+            [],
+            {"output_mode": "full", "answer_mode": "pick_with_reason", "requires_rationale": True, "evidence_intent": "high"},
+        )
+        self.server._select_question_generation_runtime_profile = lambda *args, **kwargs: {
+            "profile_name": "question_probe_evidence",
+            "selection_reason": "high_evidence_intent",
+            "allow_fast_path": False,
+            "fast_output_mode": "full",
+            "full_output_mode": "full",
+            "fast_timeout": 8.0,
+            "fast_max_tokens": 640,
+            "full_timeout": 24.0,
+            "full_max_tokens": 1200,
+            "primary_lane": "question",
+            "secondary_lane": "report",
+            "hedged_enabled": True,
+            "fallback_enabled": True,
+            "answer_mode": "pick_with_reason",
+            "requires_rationale": True,
+            "evidence_intent": "high",
+        }
+        self.server.refresh_session_evidence_ledger = lambda _session: {
+            "shadow_draft": {
+                "actions": {"ready": False, "blocking_dimensions": ["project_constraints"], "readiness_score": 0.1},
+            }
+        }
+
+        prepared = self.server._prepare_question_generation_runtime(
+            session={
+                "topic": "测试",
+                "dimensions": {"project_constraints": {"items": []}},
+                "interview_log": [{"dimension": "project_constraints", "question_hedge_triggered": True}],
+            },
+            dimension="project_constraints",
+            all_dim_logs=[],
+        )
+
+        self.assertFalse(prepared["runtime_profile"]["hedged_enabled"])
+        self.assertEqual(prepared["runtime_profile"]["hedge_budget"]["dimension_remaining"], 0)
+        self.assertIn("hedge_blocked=budget_exhausted", prepared["runtime_profile"]["selection_reason"])
+
     def test_generate_question_uses_fast_prompt_and_runtime_profile(self):
         calls = []
         original_call = self.server._call_question_with_optional_hedge
@@ -368,7 +473,75 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertEqual(calls[0]["kwargs"]["secondary_lane"], "summary")
         self.assertEqual(tier_used, "fast:question")
         self.assertEqual(result["question"], "请确认最核心诉求？")
+        self.assertFalse(result["question_hedge_triggered"])
+        self.assertFalse(result["question_fallback_triggered"])
         self.assertIn("question", response)
+
+    def test_generate_question_uses_secondary_fallback_for_high_evidence_primary_failure(self):
+        calls = []
+        original_call = self.server._call_question_with_optional_hedge
+        original_parse = self.server.parse_question_response
+        self.addCleanup(setattr, self.server, "_call_question_with_optional_hedge", original_call)
+        self.addCleanup(setattr, self.server, "parse_question_response", original_parse)
+
+        def fake_call(prompt, max_tokens, call_type, truncated_docs=None, timeout=None, retry_on_timeout=False, debug=False, **kwargs):
+            calls.append({
+                "call_type": call_type,
+                "primary_lane": kwargs.get("primary_lane"),
+                "secondary_lane": kwargs.get("secondary_lane"),
+                "hedged_enabled": kwargs.get("hedged_enabled"),
+            })
+            if call_type == "question":
+                return None, "question", {"attempts": [{"lane": "question", "success": False}]}
+            return (
+                '{"question":"请补充关键成熟度判断","options":["稳定性","成本","生态"],"multi_select":true,"is_follow_up":false,"follow_up_reason":null}',
+                "report",
+                {"attempts": [{"lane": "report", "success": True}], "response_length": 60},
+            )
+
+        self.server._call_question_with_optional_hedge = fake_call
+        self.server.parse_question_response = lambda response, debug=False: {
+            "question": "请补充关键成熟度判断",
+            "options": ["稳定性", "成本", "生态"],
+            "multi_select": True,
+            "is_follow_up": False,
+            "follow_up_reason": None,
+        } if response else None
+
+        response, result, tier_used = self.server.generate_question_with_tiered_strategy(
+            "FULL_PROMPT",
+            truncated_docs=[],
+            debug=False,
+            base_call_type="question",
+            allow_fast_path=False,
+            fast_prompt="FULL_PROMPT",
+            runtime_profile={
+                "profile_name": "question_probe_evidence",
+                "selection_reason": "high_evidence_intent",
+                "allow_fast_path": False,
+                "fast_prompt_mode": "full",
+                "full_prompt_mode": "full",
+                "full_timeout": 24.0,
+                "full_max_tokens": 1200,
+                "primary_lane": "question",
+                "secondary_lane": "report",
+                "hedged_enabled": False,
+                "fallback_enabled": True,
+                "hedge_delay_seconds": 1.0,
+                "answer_mode": "pick_with_reason",
+                "requires_rationale": True,
+                "evidence_intent": "high",
+            },
+        )
+
+        self.assertEqual([item["call_type"] for item in calls], ["question", "question_fallback"])
+        self.assertEqual(calls[1]["primary_lane"], "report")
+        self.assertFalse(calls[1]["hedged_enabled"])
+        self.assertEqual(tier_used, "full_fallback:report")
+        self.assertTrue(result["question_fallback_triggered"])
+        self.assertFalse(result["question_hedge_triggered"])
+        self.assertEqual(result["question"], "请补充关键成熟度判断")
+        self.assertIn("report", tier_used)
 
     def test_dynamic_lane_order_promotes_better_lane(self):
         runtime_profile = {
