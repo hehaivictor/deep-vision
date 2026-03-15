@@ -603,7 +603,7 @@ a {
     line-height: 1.04;
     letter-spacing: -0.05em;
     text-wrap: balance;
-    max-inline-size: min(24ch, 100%);
+    max-inline-size: min(32ch, 100%);
 }
 
 .proposal-section-summary,
@@ -653,7 +653,7 @@ a {
 
 .proposal-hero-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1.24fr) minmax(300px, 0.76fr);
+    grid-template-columns: minmax(0, 1.1fr) minmax(340px, 0.9fr);
     gap: clamp(24px, 2.6vw, 44px);
     align-items: start;
 }
@@ -668,7 +668,7 @@ a {
 
 .proposal-hero-copy-main {
     gap: 12px;
-    max-width: min(100%, 78rem);
+    max-width: min(100%, 84rem);
 }
 
 .proposal-hero-top {
@@ -814,14 +814,21 @@ a {
 
 .proposal-metric-wall {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
+    grid-template-areas:
+        "primary featured"
+        "support support";
     gap: 16px;
     align-items: stretch;
 }
 
-@container hero-side (max-width: 480px) {
+@container hero-side (max-width: 720px) {
     .proposal-metric-wall {
         grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+            "featured"
+            "primary"
+            "support";
     }
 }
 
@@ -891,13 +898,31 @@ a {
     pointer-events: none;
 }
 
-.proposal-metric-card:first-child {
+.proposal-metric-card.is-primary {
+    grid-area: primary;
     background:
         radial-gradient(circle at top left, rgba(96, 213, 255, 0.14), transparent 42%),
         linear-gradient(180deg, rgba(96, 213, 255, 0.08), rgba(255, 255, 255, 0.02)),
         rgba(12, 25, 45, 0.84);
     border-color: rgba(96, 213, 255, 0.18);
     box-shadow: 0 18px 42px rgba(4, 14, 28, 0.24);
+}
+
+.proposal-metric-card.is-featured {
+    grid-area: featured;
+    padding: 26px 24px 24px;
+    min-height: 244px;
+    background:
+        radial-gradient(circle at top left, rgba(215, 164, 74, 0.12), transparent 40%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01)),
+        rgba(10, 22, 40, 0.86);
+    border-color: rgba(215, 164, 74, 0.18);
+}
+
+.proposal-metric-card.is-supporting {
+    grid-area: support;
+    min-height: 156px;
+    gap: 8px;
 }
 
 .proposal-metric-label {
@@ -914,6 +939,16 @@ a {
     font-size: clamp(2.05rem, 3.6vw, 3.25rem);
     line-height: 0.92;
     letter-spacing: -0.06em;
+}
+
+.proposal-metric-card.is-featured .proposal-metric-value {
+    font-size: clamp(2.55rem, 4.6vw, 4.15rem);
+    line-height: 0.9;
+}
+
+.proposal-metric-card.is-supporting .proposal-metric-value {
+    font-size: clamp(1.55rem, 2.6vw, 2.18rem);
+    line-height: 0.98;
 }
 
 .proposal-metric-delta {
@@ -936,6 +971,9 @@ a {
     gap: 16px;
     padding: 24px;
     align-content: start;
+    background:
+        radial-gradient(circle at top left, rgba(96, 213, 255, 0.08), transparent 42%),
+        rgba(8, 18, 33, 0.84);
 }
 
 .proposal-track-list {
@@ -1140,7 +1178,7 @@ a {
     line-height: 1.26;
     letter-spacing: -0.03em;
     color: var(--solution-text);
-    max-inline-size: min(22ch, 100%);
+    max-inline-size: min(28ch, 100%);
     text-wrap: balance;
 }
 
@@ -1177,6 +1215,13 @@ a {
     background: rgba(64, 18, 28, 0.28);
     color: #ffd3d3;
     flex-wrap: wrap;
+}
+
+.proposal-comparison-tertiary + .solution-expand-toggle {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    margin-top: 18px;
 }
 
 .proposal-tertiary-text {
@@ -2194,13 +2239,13 @@ a {
         rgba(34, 16, 20, 0.82);
 }
 
-.proposal-fit-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
 .proposal-fit-card {
+    display: grid;
     grid-template-columns: 1fr;
     gap: 12px;
+    padding: 22px;
+    border-radius: var(--solution-radius-lg);
+    border: 1px solid rgba(255, 255, 255, 0.08);
     background:
         linear-gradient(160deg, rgba(255, 255, 255, 0.042), rgba(255, 255, 255, 0.016)),
         rgba(7, 18, 34, 0.76);
@@ -2752,7 +2797,7 @@ body.is-evidence-open {
     .proposal-section-title,
     .proposal-hero-title {
         font-size: clamp(2rem, 11vw, 3rem);
-        max-inline-size: min(100%, 11ch);
+        max-inline-size: min(100%, 13ch);
     }
 
     .proposal-hero-grid {

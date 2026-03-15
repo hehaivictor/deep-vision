@@ -27058,11 +27058,33 @@ def _finalize_solution_payload_for_delivery(payload: dict, snapshot: dict, sourc
 
 
 def _proposal_meta_label(value, max_len: int = 32) -> str:
+    def collect_parts(raw) -> list[str]:
+        if isinstance(raw, str):
+            text = clean_solution_text(raw, max_len=max_len * 3)
+            return [text] if text else []
+        if isinstance(raw, dict):
+            parts: list[str] = []
+            for key in ("title", "label", "name", "headline", "tag", "detail", "desc", "description", "metric", "value"):
+                part = clean_solution_text(raw.get(key, ""), max_len=max_len * 2)
+                if part:
+                    parts.append(part)
+            return parts[:3]
+        if isinstance(raw, list):
+            parts: list[str] = []
+            for item in raw:
+                parts.extend(collect_parts(item))
+                if len(parts) >= 3:
+                    break
+            return parts[:3]
+        return []
+
     if isinstance(value, str):
         refs = re.findall(r"Q\d+", value)
         if refs:
             return clean_solution_text(" · ".join(refs[:4]), max_len=max_len) or clean_solution_text(" ".join(refs[:4]), max_len=max_len)
-    text = _proposal_business_sentence(value, max_len=max_len * 3) or clean_solution_text(value, max_len=max_len * 3)
+    normalized_parts = collect_parts(value)
+    normalized_text = "、".join(normalized_parts[:3]) if normalized_parts else ""
+    text = _proposal_business_sentence(normalized_text or value, max_len=max_len * 3) or clean_solution_text(normalized_text or value, max_len=max_len * 3)
     if not text:
         return ""
     text = text.replace("历史代码库依赖深，存量模型迁移复杂", "迁移复杂")

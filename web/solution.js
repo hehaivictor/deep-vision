@@ -1,4 +1,4 @@
-const SOLUTION_ASSET_VERSION = '20260315-solution-v36';
+const SOLUTION_ASSET_VERSION = '20260315-solution-v37';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 const SOLUTION_SOURCE_MODE_LABELS = {
     structured_sidecar: '结构化快照',
@@ -1989,6 +1989,7 @@ function solutionRenderHeroSection(section) {
     const judgement = solutionDistinctText(section?.judgement, [title, subtitle]);
     const trustSignals = solutionUniqueTextValues(section?.trustSignals || [], 3).filter((item) => !solutionTextEquivalent(item, subtitle) && !solutionTextEquivalent(item, judgement));
     const proofPoints = solutionUniqueTextValues(section?.proofPoints || [], 2).filter((item) => !solutionTextEquivalent(item, subtitle) && !solutionTextEquivalent(item, judgement));
+    const metrics = solutionNormalizeList(section.metrics).slice(0, 3);
     return `
         <section class="proposal-section proposal-hero" id="overview" data-solution-section>
             <div class="proposal-hero-grid">
@@ -2033,14 +2034,24 @@ function solutionRenderHeroSection(section) {
                 </div>
                 <div class="proposal-hero-side">
                     <div class="proposal-metric-wall">
-                        ${solutionNormalizeList(section.metrics).map((item) => `
-                            <article class="proposal-metric-card">
+                        ${metrics.map((item, index) => {
+                            const total = metrics.length;
+                            const roleClass = total === 1
+                                ? 'is-featured'
+                                : index === 0
+                                    ? 'is-primary'
+                                    : index === 1
+                                        ? 'is-featured'
+                                        : 'is-supporting';
+                            return `
+                            <article class="proposal-metric-card ${roleClass}">
                                 <div class="proposal-metric-label">${solutionEscapeHtml(item.label)}</div>
                                 <div class="proposal-metric-value">${solutionEscapeHtml(item.value)}</div>
                                 ${item.delta ? `<div class="proposal-metric-delta">${solutionEscapeHtml(item.delta)}</div>` : ''}
                                 ${item.note ? `<div class="proposal-metric-note">${solutionEscapeHtml(item.note)}</div>` : ''}
                             </article>
-                        `).join('')}
+                        `;
+                        }).join('')}
                     </div>
                     <article class="proposal-track-card">
                         <div class="proposal-track-label">推进节奏</div>
@@ -2677,6 +2688,18 @@ function solutionRenderValueDecisionSection(section) {
     const boundaryTags = Array.from(new Set(boundaryCards.map((item) => String(item?.tag || '').trim()).filter(Boolean)));
     const showFitTags = fitTags.length > 1;
     const showBoundaryTags = boundaryTags.length > 1;
+    const detailCards = [
+        ...fitCards.map((item) => ({
+            ...item,
+            _kind: 'fit',
+            _showTag: showFitTags && Boolean(item.tag),
+        })),
+        ...boundaryCards.map((item) => ({
+            ...item,
+            _kind: 'boundary',
+            _showTag: showBoundaryTags && Boolean(item.tag),
+        })),
+    ];
     return `
         <section class="proposal-section" id="value" data-solution-section>
             ${solutionRenderSectionHead(section)}
@@ -2690,22 +2713,11 @@ function solutionRenderValueDecisionSection(section) {
                     </article>
                 `).join('')}
             </div>
-            ${fitCards.length ? `
-                <div class="proposal-fit-grid">
-                    ${fitCards.map((item) => `
-                        <article class="proposal-fit-card">
-                            ${showFitTags && item.tag ? `<div class="proposal-fit-tag">${solutionEscapeHtml(item.tag)}</div>` : ''}
-                            <h3>${solutionEscapeHtml(item.title)}</h3>
-                            ${item.desc ? `<p>${solutionEscapeHtml(item.desc)}</p>` : ''}
-                        </article>
-                    `).join('')}
-                </div>
-            ` : ''}
-            ${boundaryCards.length ? `
+            ${detailCards.length ? `
                 <div class="proposal-detail-grid">
-                    ${boundaryCards.map((item) => `
-                        <article class="proposal-detail-card">
-                            ${showBoundaryTags && item.tag ? `<div class="proposal-fit-tag">${solutionEscapeHtml(item.tag)}</div>` : ''}
+                    ${detailCards.map((item) => `
+                        <article class="${item._kind === 'fit' ? 'proposal-fit-card' : 'proposal-detail-card'}">
+                            ${item._showTag && item.tag ? `<div class="proposal-fit-tag">${solutionEscapeHtml(item.tag)}</div>` : ''}
                             <h4>${solutionEscapeHtml(item.title)}</h4>
                             ${item.desc ? `<p>${solutionEscapeHtml(item.desc)}</p>` : ''}
                         </article>

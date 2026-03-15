@@ -770,6 +770,18 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertEqual(boundary.get('title'), '样本偏差风险')
         self.assertEqual(boundary.get('desc'), '先优先锁定真实样本入口')
 
+    def test_proposal_meta_label_handles_structured_values_without_stringifying(self):
+        label = self.server._proposal_meta_label(
+            [
+                {'title': '研发学习成本高', 'detail': '需要先补培训和研究侧补位'},
+                {'title': '样本偏差风险', 'detail': '真实样本入口要先锁定'},
+            ],
+            max_len=24,
+        )
+        self.assertIn('研发学习成本高', label)
+        self.assertNotIn('[{', label)
+        self.assertNotIn('TITLE', label.upper())
+
     def test_ai_prompts_include_sample_style_guidance(self):
         prompt_payload = {
             "meta": {"topic": "AI 智能体建设"},
