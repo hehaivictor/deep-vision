@@ -1,4 +1,4 @@
-const SOLUTION_ASSET_VERSION = '20260314-solution-v32';
+const SOLUTION_ASSET_VERSION = '20260315-solution-v34';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 const SOLUTION_SOURCE_MODE_LABELS = {
     structured_sidecar: '结构化快照',
@@ -113,6 +113,56 @@ function solutionBusinessFocusLabel(value, maxLength = 18) {
 function solutionBusinessSentence(value, maxLength = 96) {
     const text = solutionBusinessReplace(value).replace(/\s+/g, ' ').trim();
     return solutionShortText(text, maxLength);
+}
+
+function solutionTextFingerprint(value) {
+    let text = solutionBusinessReplace(value).toLowerCase().trim();
+    if (!text) return '';
+    [
+        ['为什么当前先做', ''],
+        ['为什么现在做', ''],
+        ['为什么选', ''],
+        ['推荐路径', ''],
+        ['推荐结论', ''],
+        ['当前建议', ''],
+        ['最终建议', ''],
+        ['当前更适合', ''],
+        ['围绕', ''],
+        ['先把', ''],
+        ['先做', ''],
+        ['优先', ''],
+        ['试点', ''],
+        ['首轮', ''],
+        ['跑通', ''],
+        ['锁定', ''],
+        ['拉通', ''],
+        ['推进', ''],
+        ['做透', ''],
+        ['完成', '']
+    ].forEach(([source, target]) => {
+        text = text.split(source).join(target);
+    });
+    return text.replace(/[「」"'“”‘’、，。；：:！!？?\s]/g, '');
+}
+
+function solutionTextEquivalent(left, right) {
+    const leftKey = solutionTextFingerprint(left);
+    const rightKey = solutionTextFingerprint(right);
+    return Boolean(leftKey && rightKey && leftKey === rightKey);
+}
+
+function solutionUniqueTextValues(values, limit = 0) {
+    const items = Array.isArray(values) ? values : [values];
+    const seen = new Set();
+    const result = [];
+    items.forEach((item) => {
+        const text = String(item || '').trim();
+        const key = solutionTextFingerprint(text);
+        if (!text || !key || seen.has(key)) return;
+        seen.add(key);
+        result.push(text);
+    });
+    return limit > 0 ? result.slice(0, limit) : result;
 }
 
 function solutionShouldUseContentFallback(value, maxLength = 96) {
@@ -348,6 +398,7 @@ function solutionNormalizeCardItem(item) {
         desc,
         tag: solutionShortText(item.tag || item.badge || item.owner || '', 18),
         meta: solutionBusinessMetaLabel(item.meta || item.detail || '', 88),
+        variant: solutionShortText(item.variant || item.tone || '', 16).toLowerCase(),
         evidenceRefs: solutionCollectRefs(item)
     };
 }
@@ -482,6 +533,8 @@ function solutionNormalizeRenderModel(value) {
         title: solutionBusinessHeading(value.overview.title || '', '', 96),
         subtitle: solutionBusinessSentence(value.overview.subtitle || '', 180),
         judgement: solutionBusinessSentence(value.overview.judgement || '', 180),
+        insightLine: solutionBusinessSentence(value.overview.insightLine || value.overview.insight_line || '', 120),
+        trustSignals: solutionCompactStrings(value.overview.trustSignals || value.overview.trust_signals || [], 3, 56),
         proofPoints: solutionCompactStrings(value.overview.proofPoints, 3, 88),
         metrics: solutionNormalizeList(value.overview.metrics).map(solutionNormalizeMetricItem).filter(Boolean),
         track: solutionNormalizeList(value.overview.track).map((item) => ({
@@ -1789,6 +1842,19 @@ function solutionRenderHeroSection(section) {
                     <h1 class="proposal-hero-title">${solutionEscapeHtml(section.title)}</h1>
                     ${section.subtitle ? `<p class="proposal-hero-subtitle">${solutionEscapeHtml(section.subtitle)}</p>` : ''}
                     ${section.judgement ? `<p class="proposal-hero-judgement">${solutionEscapeHtml(section.judgement)}</p>` : ''}
+                    ${solutionNormalizeList(section.trustSignals).length ? `
+                        <div class="proposal-trust-signals">
+                            ${solutionNormalizeList(section.trustSignals).map((item) => `
+                                <span class="proposal-trust-signal">${solutionEscapeHtml(item)}</span>
+                            `).join('')}
+                        </div>
+                    ` : ''}
+                    ${section.insightLine ? `
+                        <article class="proposal-insight-line">
+                            <div class="proposal-insight-kicker">关键洞察</div>
+                            <p class="proposal-insight-text">${solutionEscapeHtml(section.insightLine)}</p>
+                        </article>
+                    ` : ''}
                     <div class="proposal-proof-list">
                         ${solutionNormalizeList(section.proofPoints).map((item) => `
                             <div class="proposal-proof-item">
@@ -1868,6 +1934,12 @@ function solutionRenderOptionCard(option, variant = 'default') {
 }
 
 function solutionRenderComparisonSection(section) {
+    const summary = solutionTextEquivalent(section?.summary, section?.judgement) ? '' : section?.summary;
+    const tertiaryText = section?.tertiary?.positioning
+        && !solutionTextEquivalent(section.tertiary.positioning, section?.judgement)
+        && !solutionTextEquivalent(section.tertiary.positioning, summary)
+        ? `${section.tertiary.name}：${section.tertiary.positioning}`
+        : '';
     return `
         <section class="proposal-section" id="comparison" data-solution-section>
             ${solutionRenderSectionHead(section)}
@@ -1876,20 +1948,21 @@ function solutionRenderComparisonSection(section) {
                 <div class="proposal-comparison-center">
                     <div class="proposal-comparison-center-label">推荐结论</div>
                     <div class="proposal-comparison-center-value">${solutionEscapeHtml(section.judgement)}</div>
-                    ${section.summary ? `<div class="proposal-comparison-center-note">${solutionEscapeHtml(section.summary)}</div>` : ''}
+                    ${summary ? `
+                        <div class="proposal-comparison-center-note">
+                            <div class="proposal-comparison-center-note-label">为什么不是别的路径</div>
+                            <p>${solutionEscapeHtml(summary)}</p>
+                        </div>
+                    ` : ''}
                 </div>
                 ${solutionRenderOptionCard(section.right, 'recommended')}
             </div>
-            ${section.tertiary ? `
+            ${tertiaryText ? `
                 <div class="proposal-comparison-tertiary">
                     <span class="proposal-tertiary-label">不建议直接采用</span>
-                    <span class="proposal-tertiary-text">${solutionEscapeHtml(section.tertiary.name)}：${solutionEscapeHtml(section.tertiary.positioning)}</span>
+                    <span class="proposal-tertiary-text">${solutionEscapeHtml(tertiaryText)}</span>
                 </div>
             ` : ''}
-            <article class="proposal-analogy-card">
-                <div class="proposal-analogy-label">${solutionEscapeHtml(section.analogy.title)}</div>
-                <p>${solutionEscapeHtml(section.analogy.body)}</p>
-            </article>
             <button type="button" class="solution-expand-toggle" data-toggle-target="comparison-detail">
                 查看完整对比细节
             </button>
@@ -2251,7 +2324,10 @@ function solutionRenderClosingSection(section, summaryCard) {
             <div class="proposal-closing-shell">
                 <div class="proposal-closing-main">
                     <div class="proposal-section-label-row">
-                        <span class="proposal-section-label">${solutionEscapeHtml(section?.eyebrow || '决策收束')}</span>
+                        <div class="proposal-closing-headline-row">
+                            <span class="proposal-section-label">${solutionEscapeHtml(section?.eyebrow || '决策收束')}</span>
+                            ${section?.decision ? '<span class="proposal-closing-status">建议当前拍板</span>' : ''}
+                        </div>
                         ${solutionRenderEvidenceButton(section?.title || '最终建议', section?.evidenceRefs || [])}
                     </div>
                     <h2 class="proposal-section-title">${solutionEscapeHtml(section?.title || '最终建议')}</h2>
@@ -2280,13 +2356,15 @@ function solutionRenderUrgencySection(section) {
     return `
         <section class="proposal-section" id="urgency" data-solution-section>
             ${solutionRenderSectionHead(section)}
-            <div class="proposal-detail-grid">
+            <div class="proposal-urgency-grid">
                 ${solutionNormalizeList(section.cards).map((item) => `
-                    <article class="proposal-detail-card">
-                        <div class="proposal-fit-tag">${solutionEscapeHtml(item.tag || '关键矛盾')}</div>
-                        <h4>${solutionEscapeHtml(item.title)}</h4>
-                        <p>${solutionEscapeHtml(item.desc)}</p>
-                        ${item.meta ? `<div class="proposal-detail-note">${solutionEscapeHtml(item.meta)}</div>` : ''}
+                    <article class="proposal-urgency-card${item.variant ? ` is-${solutionEscapeHtml(item.variant)}` : ''}">
+                        <div class="proposal-urgency-card-head">
+                            <div class="proposal-urgency-tag">${solutionEscapeHtml(item.tag || '关键矛盾')}</div>
+                            ${item.meta ? `<div class="proposal-urgency-meta">${solutionEscapeHtml(item.meta)}</div>` : ''}
+                        </div>
+                        <h3 class="proposal-urgency-title">${solutionEscapeHtml(item.title)}</h3>
+                        <p class="proposal-urgency-desc">${solutionEscapeHtml(item.desc)}</p>
                     </article>
                 `).join('')}
             </div>
@@ -2329,42 +2407,51 @@ function solutionRenderDeliverySection(section) {
                         `).join('')}
                     </div>
                     <div class="proposal-tab-panels">
-                        ${solutionNormalizeList(section.workstreams).map((item, index) => `
-                            <article class="proposal-tab-panel${index === 0 ? ' is-active' : ''}" id="delivery-${solutionEscapeHtml(item.id || `workstream-${index + 1}`)}" role="tabpanel" ${index === 0 ? '' : 'hidden'}>
-                                <div class="proposal-tab-panel-head">
-                                    <div>
-                                        <div class="proposal-tab-panel-tag">${solutionEscapeHtml(item.tag || '关键工作流')}</div>
-                                        <h3 class="proposal-tab-panel-title">${solutionEscapeHtml(item.headline || item.label || `工作流 ${index + 1}`)}</h3>
-                                        ${item.summary ? `<p class="proposal-tab-panel-summary">${solutionEscapeHtml(item.summary)}</p>` : ''}
+                        ${solutionNormalizeList(section.workstreams).map((item, index) => {
+                            const pills = solutionUniqueTextValues([
+                                item.owner,
+                                ...solutionNormalizeList(item.dependencies).slice(0, 1),
+                                ...solutionNormalizeList(item.deliverables).slice(0, 1)
+                            ], 2);
+                            const capabilities = solutionUniqueBy(
+                                solutionNormalizeList(item.capabilities),
+                                (card) => solutionTextFingerprint(`${card?.title || ''} ${card?.desc || ''}`)
+                            ).slice(0, 2);
+                            return `
+                                <article class="proposal-tab-panel${index === 0 ? ' is-active' : ''}" id="delivery-${solutionEscapeHtml(item.id || `workstream-${index + 1}`)}" role="tabpanel" ${index === 0 ? '' : 'hidden'}>
+                                    <div class="proposal-tab-panel-head">
+                                        <div>
+                                            <div class="proposal-tab-panel-tag">${solutionEscapeHtml(item.tag || '关键工作流')}</div>
+                                            <h3 class="proposal-tab-panel-title">${solutionEscapeHtml(item.headline || item.label || `工作流 ${index + 1}`)}</h3>
+                                            ${item.summary ? `<p class="proposal-tab-panel-summary">${solutionEscapeHtml(item.summary)}</p>` : ''}
+                                        </div>
+                                        <div class="proposal-meta-pills">
+                                            ${pills.map((pill) => `<span class="proposal-meta-pill">${solutionEscapeHtml(pill)}</span>`).join('')}
+                                        </div>
                                     </div>
-                                    <div class="proposal-meta-pills">
-                                        ${item.owner ? `<span class="proposal-meta-pill">${solutionEscapeHtml(item.owner)}</span>` : ''}
-                                        ${solutionNormalizeList(item.dependencies).slice(0, 1).map((dependency) => `<span class="proposal-meta-pill">${solutionEscapeHtml(dependency)}</span>`).join('')}
-                                        ${solutionNormalizeList(item.deliverables).slice(0, 1).map((deliverable) => `<span class="proposal-meta-pill">${solutionEscapeHtml(deliverable)}</span>`).join('')}
-                                    </div>
-                                </div>
-                                <div class="proposal-capability-grid">
-                                    ${solutionNormalizeList(item.capabilities).map((card) => `
-                                        <article class="proposal-capability-card">
-                                            <div class="proposal-capability-tag">${solutionEscapeHtml(card.tag || '动作')}</div>
-                                            <h4>${solutionEscapeHtml(card.title)}</h4>
-                                            <p>${solutionEscapeHtml(card.desc)}</p>
-                                        </article>
-                                    `).join('')}
-                                </div>
-                                ${solutionNormalizeList(item.metrics).length ? `
-                                    <div class="proposal-tab-metrics">
-                                        ${solutionNormalizeList(item.metrics).map((metric) => `
-                                            <div class="proposal-tab-metric">
-                                                <div class="proposal-tab-metric-label">${solutionEscapeHtml(metric.metric || metric.label || '指标')}</div>
-                                                <div class="proposal-tab-metric-value">${solutionEscapeHtml(metric.target || metric.value || '')}</div>
-                                                ${metric.note ? `<div class="proposal-tab-metric-note">${solutionEscapeHtml(metric.note)}</div>` : ''}
-                                            </div>
+                                    <div class="proposal-capability-grid">
+                                        ${capabilities.map((card) => `
+                                            <article class="proposal-capability-card">
+                                                <div class="proposal-capability-tag">${solutionEscapeHtml(card.tag || '动作')}</div>
+                                                <h4>${solutionEscapeHtml(card.title)}</h4>
+                                                <p>${solutionEscapeHtml(card.desc)}</p>
+                                            </article>
                                         `).join('')}
                                     </div>
-                                ` : ''}
-                            </article>
-                        `).join('')}
+                                    ${solutionNormalizeList(item.metrics).slice(0, 2).length ? `
+                                        <div class="proposal-tab-metrics">
+                                            ${solutionNormalizeList(item.metrics).slice(0, 2).map((metric) => `
+                                                <div class="proposal-tab-metric">
+                                                    <div class="proposal-tab-metric-label">${solutionEscapeHtml(metric.metric || metric.label || '指标')}</div>
+                                                    <div class="proposal-tab-metric-value">${solutionEscapeHtml(metric.target || metric.value || '')}</div>
+                                                    ${metric.note ? `<div class="proposal-tab-metric-note">${solutionEscapeHtml(metric.note)}</div>` : ''}
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    ` : ''}
+                                </article>
+                            `;
+                        }).join('')}
                     </div>
                 </div>
             ` : ''}

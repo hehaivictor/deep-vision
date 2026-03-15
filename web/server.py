@@ -25659,6 +25659,61 @@ def _proposal_sentence_from_parts(parts: list[str], fallback: str, max_len: int 
     return text or clean_solution_text(fallback, max_len=max_len)
 
 
+def _proposal_text_fingerprint(value) -> str:
+    text = clean_solution_text(value, max_len=0).lower()
+    if not text:
+        return ""
+    for source, target in _PROPOSAL_FOCUS_REPLACEMENTS:
+        text = text.replace(source.lower(), target.lower())
+    for source, target in _PROPOSAL_SENTENCE_REPLACEMENTS:
+        text = text.replace(source.lower(), target.lower())
+    for source, target in (
+        ("为什么当前先做", ""),
+        ("为什么现在做", ""),
+        ("为什么选", ""),
+        ("推荐路径", ""),
+        ("推荐结论", ""),
+        ("当前建议", ""),
+        ("最终建议", ""),
+        ("当前更适合", ""),
+        ("围绕", ""),
+        ("先把", ""),
+        ("先做", ""),
+        ("优先", ""),
+        ("试点", ""),
+        ("首轮", ""),
+        ("跑通", ""),
+        ("锁定", ""),
+        ("拉通", ""),
+        ("推进", ""),
+        ("做透", ""),
+        ("完成", ""),
+        ("进入", ""),
+        ("阶段", ""),
+    ):
+        text = text.replace(source, target)
+    text = re.sub(r"[「」\"'“”‘’、，。；：:！!？?\s]", "", text)
+    return text
+
+
+def _proposal_pick_unique_copy(candidates, seen: set[str], max_len: int = 120) -> str:
+    values = candidates if isinstance(candidates, list) else [candidates]
+    fallback = ""
+    for value in values:
+        text = clean_solution_text(value, max_len=max_len)
+        if text and not fallback:
+            fallback = text
+        key = _proposal_text_fingerprint(text)
+        if not text:
+            continue
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        return text
+    return fallback
+
+
 SOLUTION_PROPOSAL_INTERNAL_TERMS = (
     "proposal_brief",
     "chapter_copy",
@@ -27205,17 +27260,35 @@ def build_solution_comparison_matrix(options: list[dict], recommended_name: str 
 
 
 def build_solution_value_board(value_model: list[dict], audience_profile: dict) -> dict:
-    items = []
+    audience_key = clean_solution_text((audience_profile or {}).get("key", ""), max_len=24) or "decision_maker"
+    weighted_items = []
     for item in value_model[:4]:
         if not isinstance(item, dict):
             continue
-        items.append({
+        label = clean_solution_text(item.get("metric", ""), max_len=24)
+        score = 0
+        if any(token in label for token in ("立项", "试点", "评审", "决策", "投入")):
+            score += 20
+        if any(token in label for token in ("周期", "效率", "命中", "转化")):
+            score += 10
+        if any(token in label for token in ("复用", "闭环", "沉淀")):
+            score += 6
+        audience_hint = {
+            "decision_maker": "可直接作为是否进入下一阶段的判断点",
+            "manager": "可直接作为节奏和资源配置的判断点",
+            "execution": "可直接作为试点执行是否过线的判断点",
+        }.get(audience_key, "可直接作为是否继续推进的判断点")
+        weighted_items.append({
+            "score": score,
             "label": clean_solution_text(item.get("metric", ""), max_len=24),
             "value": _proposal_metric_value(item.get("target", "") or item.get("range", ""), max_len=32),
             "delta": _proposal_metric_value(item.get("range", ""), max_len=28),
             "assumption": _proposal_metric_note((item.get("assumptions", []) or [""])[0], max_len=40) if isinstance(item.get("assumptions", []), list) else "",
             "baseline": clean_solution_text(item.get("baseline", ""), max_len=64),
+            "audience_hint": clean_solution_text(audience_hint, max_len=40) if score >= 20 else "",
         })
+    weighted_items.sort(key=lambda item: item.get("score", 0), reverse=True)
+    items = [{key: value for key, value in item.items() if key != "score"} for item in weighted_items]
     return {
         "headline": "量化价值与成立前提",
         "items": items,
@@ -27247,6 +27320,77 @@ def _solution_unique_compact_texts(values, limit: int = 4, max_len: int = 88, mo
         seen.add(key)
         results.append(text)
         if len(results) >= limit:
+            break
+    return results
+
+
+def _proposal_build_insight_line(
+    core_conflicts,
+    chosen_path: dict,
+    why_now: str = "",
+    boundaries=None,
+    audience_key: str = "decision_maker",
+    max_len: int = 120,
+) -> str:
+    focus = (
+        _proposal_pick_focus_label((chosen_path or {}).get("name", ""), (chosen_path or {}).get("positioning", ""), max_len=18)
+        or _proposal_pick_focus_label(why_now, "", max_len=18)
+        or "关键路径"
+    )
+    conflict_text = " ".join(_proposal_compact_sentences(core_conflicts, max_items=2, max_len=72))
+    boundary_label = _proposal_boundary_label(boundaries or why_now, max_items=2, max_len=18)
+    if any(token in conflict_text for token in ("样本", "招募", "触发", "入口", "访谈")):
+        surface = "继续扩样本"
+    elif any(token in conflict_text for token in ("接口", "契约", "协同", "评审", "治理")):
+        surface = "继续加模块"
+    elif any(token in conflict_text for token in ("架构", "平台", "底座", "迁移", "算力", "训练", "部署")):
+        surface = "继续堆能力"
+    elif any(token in conflict_text for token in ("预算", "资源", "投入", "排期")):
+        surface = "继续摊薄投入"
+    else:
+        surface = "继续铺开动作"
+    if audience_key == "execution":
+        text = f"先别把动作铺满，先让「{focus}」形成一条可执行、可验收的首轮链路。"
+    elif audience_key == "manager":
+        text = f"当前最重要的不是{surface}，而是先把「{focus}」锁成统一节奏和验收口径。"
+    else:
+        text = f"当前真正要先解决的不是{surface}，而是把「{focus}」压成可评审的试点边界。"
+    if boundary_label and "边界" not in text and len(text) <= max_len - 14:
+        text = text.replace("。", f"边界先锁定在「{boundary_label}」。")
+    return clean_solution_text(text, max_len=max_len)
+
+
+def _proposal_build_trust_signals(
+    chosen_path: dict,
+    alternatives,
+    workstreams,
+    roadmap,
+    value_points,
+    final_recommendation: dict,
+    max_items: int = 3,
+    max_len: int = 52,
+) -> list[str]:
+    refs = _proposal_unique_refs([chosen_path, workstreams, value_points, final_recommendation], limit=8)
+    items = []
+    if refs:
+        items.append(clean_solution_text(f"关键判断已绑定 {len(refs)} 条访谈证据", max_len=max_len))
+    if isinstance(alternatives, list) and alternatives:
+        items.append(clean_solution_text(f"已比较 {min(len(alternatives), 3)} 条路径并给出推荐裁决", max_len=max_len))
+    if isinstance(workstreams, list) and isinstance(roadmap, list) and workstreams and roadmap:
+        items.append(clean_solution_text(f"已压成 {min(len(workstreams), 3)} 条工作流与 {min(len(roadmap), 3)} 个阶段", max_len=max_len))
+    if isinstance(value_points, list) and value_points:
+        items.append(clean_solution_text("收益结果、成立前提和边界已同步给出", max_len=max_len))
+    if final_recommendation and clean_solution_text((final_recommendation or {}).get("decision", ""), max_len=96):
+        items.append(clean_solution_text("当前建议和扩大投入判断点已经明确", max_len=max_len))
+    seen = set()
+    results = []
+    for item in items:
+        key = re.sub(r"\s+", "", (item or "").lower())
+        if not item or key in seen:
+            continue
+        seen.add(key)
+        results.append(item)
+        if len(results) >= max_items:
             break
     return results
 
@@ -27404,9 +27548,12 @@ def build_solution_closing_block(proposal_brief: dict, proposal_content_model: d
         "execution": f"建议先把「{focus}」做成可执行闭环，再扩到更大范围。",
     }.get(audience_key, f"当前更适合先围绕「{focus}」完成首轮闭环。")
     decision = {
-        "decision_maker": clean_solution_text(f"现在建议先批准「{focus}」相关试点，并以「{_solution_first_nonempty(first_phase.get('milestone', ''), phase, max_len=24)}」作为是否继续扩大投入的判断点。", max_len=110),
+        "decision_maker": clean_solution_text(
+            f"现在建议先批准「{focus}」首轮试点，并冻结边界、负责人和里程碑；达到「{_solution_first_nonempty(first_phase.get('milestone', ''), phase, max_len=24)}」后，再决定是否扩大投入。",
+            max_len=110,
+        ),
         "manager": clean_solution_text(f"当前建议先锁定「{focus}」的试点范围、负责人和里程碑，再组织跨团队协同。", max_len=110),
-        "execution": clean_solution_text(f"当前建议先完成「{focus}」对应动作、依赖确认和验收定义，再进入试点执行。", max_len=110),
+        "execution": clean_solution_text(f"当前建议先冻结「{focus}」对应动作、依赖和验收定义，再进入试点执行。", max_len=110),
     }.get(audience_key, clean_solution_text(decision_action, max_len=110))
     boundary_sentence = _proposal_boundary_sentence(boundary_label, risk_label, audience_key, max_len=110)
     audience_variant = {
@@ -27689,38 +27836,83 @@ def build_solution_render_model(snapshot: dict, proposal_brief: dict, chapter_co
         if not isinstance(item, dict):
             continue
         source_card = workstream_cards[index] if index < len(workstream_cards) and isinstance(workstream_cards[index], dict) else {}
-        tab_label = _proposal_pick_focus_label(item.get("name", ""), source_card.get("title", ""), max_len=20) or clean_solution_text(item.get("name", ""), max_len=20)
-        tab_headline = _proposal_workstream_headline(
+        tab_label = _proposal_pick_focus_label(item.get("name", ""), source_card.get("title", ""), max_len=16) or clean_solution_text(item.get("name", ""), max_len=16)
+        tab_headline = _proposal_pick_heading(
+            item.get("objective", ""),
+            fallback=item.get("name", "") or source_card.get("title", ""),
+            max_len=22,
+        ) or _proposal_workstream_headline(
             item.get("name", ""),
             item.get("objective", ""),
             fallback=source_card.get("summary", "") or source_card.get("detail", ""),
-            max_len=32,
+            max_len=22,
         )
-        tab_summary = _proposal_workstream_summary(
+        tab_summary = _proposal_pick_sentence(
+            item.get("objective", ""),
+            fallback=source_card.get("summary", "") or source_card.get("detail", "") or item.get("name", ""),
+            max_len=74,
+        ) or _proposal_workstream_summary(
             item.get("name", ""),
             item.get("objective", ""),
             fallback=source_card.get("summary", "") or source_card.get("detail", ""),
-            max_len=92,
+            max_len=74,
         )
+        raw_actions = _solution_unique_compact_texts(item.get("key_actions", []), limit=1, max_len=56)
+        raw_deliverables = _solution_unique_compact_texts(item.get("deliverables", []), limit=1, max_len=56)
+        raw_signals = _solution_unique_compact_texts(item.get("acceptance_signals", []), limit=1, max_len=48)
+        capability_candidates = []
+        if raw_actions:
+            action_text = raw_actions[0]
+            action_title = _proposal_pick_heading(action_text, fallback=tab_headline, max_len=22)
+            action_desc = _proposal_pick_sentence(action_text, fallback=item.get("objective", "") or tab_summary, max_len=68)
+            if _proposal_text_fingerprint(action_title) == _proposal_text_fingerprint(action_desc):
+                action_desc = _proposal_pick_sentence(item.get("objective", ""), fallback=tab_summary, max_len=68)
+            capability_candidates.append({
+                "title": action_title,
+                "desc": action_desc,
+                "tag": "关键动作",
+            })
+        if raw_deliverables:
+            deliverable_text = raw_deliverables[0]
+            deliverable_desc = _proposal_pick_sentence(deliverable_text, fallback="先把交付物做成可评审结果。", max_len=68)
+            capability_candidates.append({
+                "title": _proposal_deliverable_label(deliverable_text, max_len=20) or _proposal_pick_heading(deliverable_text, fallback=tab_label, max_len=20),
+                "desc": deliverable_desc,
+                "tag": "交付物",
+            })
+        if raw_signals:
+            signal_text = raw_signals[0]
+            capability_candidates.append({
+                "title": _proposal_acceptance_signal_value(signal_text, max_len=22) or _proposal_pick_heading(signal_text, fallback="首轮验收信号", max_len=22),
+                "desc": _proposal_acceptance_signal_note(signal_text, max_len=40) or _proposal_pick_sentence(signal_text, fallback="作为首轮试点的验收信号。", max_len=68),
+                "tag": "验收信号",
+            })
+        capabilities = []
+        capability_seen = set()
+        for card in capability_candidates:
+            title = clean_solution_text(card.get("title", ""), max_len=22)
+            desc = clean_solution_text(card.get("desc", ""), max_len=68)
+            key = _proposal_text_fingerprint(f"{title} {desc}")
+            if not title or not desc or not key or key in capability_seen:
+                continue
+            capability_seen.add(key)
+            capabilities.append({
+                "title": title,
+                "desc": desc,
+                "tag": clean_solution_text(card.get("tag", ""), max_len=12) or "关键动作",
+            })
+            if len(capabilities) >= 2:
+                break
         solution_tabs.append({
             "id": clean_solution_text(f"workstream-{index + 1}", max_len=24) or f"workstream-{index+1}",
             "label": tab_label,
-            "tag": clean_solution_text(item.get("timeline", ""), max_len=18) or "工作流",
+            "tag": clean_solution_text(item.get("timeline", ""), max_len=14) or "工作流",
             "headline": tab_headline,
             "summary": tab_summary,
-            "owner": _proposal_owner_label(item.get("owner_role", ""), max_len=20),
-            "dependencies": _proposal_dependency_labels(item.get("dependencies", []), limit=2, max_len=18),
-            "deliverables": _proposal_deliverable_labels(item.get("deliverables", []), limit=2, max_len=18),
-            "capabilities": [
-                card for card in [
-                    {
-                        "title": _proposal_workstream_headline(tab_label, cap, fallback=tab_headline, max_len=18),
-                        "desc": _proposal_workstream_summary(tab_label, cap, fallback=tab_summary, max_len=72),
-                        "tag": "关键动作",
-                    }
-                    for cap in _solution_unique_compact_texts(item.get("key_actions", []), limit=3, max_len=56)
-                ] if card.get("title")
-            ],
+            "owner": _proposal_owner_label(item.get("owner_role", ""), max_len=16),
+            "dependencies": _proposal_dependency_labels(item.get("dependencies", []), limit=1, max_len=16),
+            "deliverables": _proposal_deliverable_labels(item.get("deliverables", []), limit=1, max_len=16),
+            "capabilities": capabilities,
             "metrics": [
                 {
                     "metric": clean_solution_text(f"验收信号 {metric_index + 1:02d}", max_len=18),
@@ -28002,13 +28194,39 @@ def build_solution_decision_brief_v1(
     boundaries = brief.get("risks_and_boundaries", []) if isinstance(brief.get("risks_and_boundaries", []), list) else []
     context = brief.get("context", {}) if isinstance(brief.get("context", {}), dict) else {}
     thesis = brief.get("thesis", {}) if isinstance(brief.get("thesis", {}), dict) else {}
+    audience_key = clean_solution_text((audience_profile or {}).get("key", ""), max_len=24) or "decision_maker"
+    insight_line = _proposal_build_insight_line(
+        context.get("core_conflicts", []) if isinstance(context.get("core_conflicts", []), list) else [],
+        recommended_option if isinstance(recommended_option, dict) else {},
+        why_now=thesis.get("why_now", ""),
+        boundaries=boundaries,
+        audience_key=audience_key,
+        max_len=120,
+    )
+    final_recommendation = {
+        "headline": clean_solution_text(closing.get("headline", ""), max_len=120),
+        "decision": clean_solution_text(closing.get("decision", ""), max_len=120),
+        "boundary": clean_solution_text(closing.get("boundary", ""), max_len=120),
+        "evidence_refs": _proposal_unique_refs(closing, limit=8),
+    }
+    trust_signals = _proposal_build_trust_signals(
+        recommended_option if isinstance(recommended_option, dict) else {},
+        options,
+        workstreams,
+        roadmap,
+        value_points,
+        final_recommendation,
+        max_items=3,
+        max_len=52,
+    )
     return {
         "version": "decision_v1",
         "topic": clean_solution_text(normalized.get("topic", ""), max_len=64) or clean_solution_text(brief.get("meta", {}).get("topic", ""), max_len=64),
         "audience_profile": copy.deepcopy(audience_profile if isinstance(audience_profile, dict) else {}),
         "one_thesis": clean_solution_text(closing.get("headline", ""), max_len=120) or clean_solution_text(thesis.get("headline", ""), max_len=120) or clean_solution_text(overview.get("title", ""), max_len=120),
         "why_now": clean_solution_text(thesis.get("why_now", ""), max_len=160) or clean_solution_text(overview.get("judgement", ""), max_len=160),
-        "insight_line": clean_solution_text(comparison_render.get("judgement", ""), max_len=120),
+        "insight_line": insight_line or clean_solution_text(comparison_render.get("judgement", ""), max_len=120),
+        "trust_signals": trust_signals,
         "core_conflicts": _proposal_compact_sentences(context.get("core_conflicts", []) or overview.get("proofPoints", []), max_items=3, max_len=88),
         "alternatives": copy.deepcopy(options[:3]),
         "chosen_path": {
@@ -28038,12 +28256,7 @@ def build_solution_decision_brief_v1(
                 if isinstance(item, dict) and clean_solution_text(item.get("tag", ""), max_len=16).lower() in {"risk", "边界"}
             ][:SOLUTION_DECISION_CONTENT_LIMITS["value"]["boundary_cards"]]),
         },
-        "final_recommendation": {
-            "headline": clean_solution_text(closing.get("headline", ""), max_len=120),
-            "decision": clean_solution_text(closing.get("decision", ""), max_len=120),
-            "boundary": clean_solution_text(closing.get("boundary", ""), max_len=120),
-            "evidence_refs": _proposal_unique_refs(closing, limit=8),
-        },
+        "final_recommendation": final_recommendation,
     }
 
 
@@ -28069,8 +28282,8 @@ def build_solution_content_priority_plan_v1(decision_brief: dict) -> dict:
         "version": "decision_v1",
         "chapters": {
             "overview": {
-                "primary": ["总判断", "为什么现在做", "关键指标"],
-                "secondary": ["证明点", "受众标签"],
+                "primary": ["总判断", "核心洞察", "关键指标"],
+                "secondary": ["可信信号", "证明点", "受众标签"],
                 "evidence": _proposal_unique_refs([brief.get("chosen_path", {}), brief.get("final_recommendation", {})], limit=8),
                 "hidden": [],
                 "budgets": copy.deepcopy(SOLUTION_DECISION_CONTENT_LIMITS["overview"]),
@@ -28129,38 +28342,187 @@ def build_solution_page_copy_v1(
     comparison = render_model.get("comparison", {}) if isinstance(render_model.get("comparison", {}), dict) else {}
     delivery_support = brief.get("delivery_support", {}) if isinstance(brief.get("delivery_support", {}), dict) else {}
     blueprint = delivery_support.get("blueprint", {}) if isinstance(delivery_support.get("blueprint", {}), dict) else {}
+    chosen_path = brief.get("chosen_path", {}) if isinstance(brief.get("chosen_path", {}), dict) else {}
+    focus = _proposal_pick_focus_label(chosen_path.get("name", ""), chosen_path.get("positioning", ""), max_len=18) or "关键路径"
+    alternatives = brief.get("alternatives", []) if isinstance(brief.get("alternatives", []), list) else []
+    urgency_refs = _proposal_unique_refs([brief.get("core_conflicts", []), chosen_path, brief.get("final_recommendation", {})], limit=8)
+    urgency_conflicts = _proposal_compact_sentences(brief.get("core_conflicts", []), max_items=3, max_len=88)
+    used_primary_copy = set()
+
+    def unique_copy(*candidates, max_len: int = 120) -> str:
+        return _proposal_pick_unique_copy(list(candidates), used_primary_copy, max_len=max_len)
+
+    overview_title = unique_copy(
+        _proposal_pick_heading(overview.get("title", ""), brief.get("one_thesis", ""), max_len=32),
+        _proposal_pick_heading(brief.get("one_thesis", ""), "", max_len=32),
+        f"先定清「{focus}」的试点判断",
+        max_len=32,
+    )
+    overview_judgement = unique_copy(
+        clean_solution_text(brief.get("one_thesis", ""), max_len=160),
+        clean_solution_text(overview.get("judgement", ""), max_len=160),
+        f"当前更适合先围绕「{focus}」完成首轮试点判断。",
+        max_len=160,
+    )
+    urgency_title = unique_copy(
+        f"为什么现在要先锁定「{focus}」",
+        f"不先锁定「{focus}」，投入会更散",
+        "为什么这件事必须现在定",
+        max_len=28,
+    )
+    urgency_summary = clean_solution_text(brief.get("why_now", ""), max_len=140)
+    urgency_judgement = unique_copy(
+        f"如果试点边界不先压清，后续协同和投入只会继续放大。",
+        urgency_summary,
+        max_len=140,
+    )
+    comparison_title = unique_copy(
+        f"推荐路径：{focus}优先",
+        f"为什么选「{focus}」这条路",
+        "路径取舍：先试点再扩张",
+        max_len=30,
+    )
+    comparison_judgement = unique_copy(
+        clean_solution_text(comparison.get("judgement", ""), max_len=84),
+        _proposal_comparison_judgement(
+            comparison.get("judgement", ""),
+            focus=focus,
+            boundary=_proposal_boundary_label(brief.get("boundaries", []), max_items=2, max_len=18),
+            audience_key=clean_solution_text(audience_profile.get("key", ""), max_len=24) or "decision_maker",
+            max_len=84,
+        ),
+        max_len=84,
+    )
+    urgency_cards = [
+        {
+            "title": "结构性矛盾",
+            "desc": clean_solution_text((urgency_conflicts[:1] or [brief.get("why_now", "")])[0], max_len=96),
+            "tag": "结构性矛盾",
+            "meta": _proposal_meta_label(urgency_refs[:2], max_len=24),
+            "variant": "structural",
+            "evidenceRefs": urgency_refs[:4],
+        },
+        {
+            "title": "窗口正在出现",
+            "desc": clean_solution_text(brief.get("why_now", ""), max_len=96) or clean_solution_text(f"关键入口、边界和试点条件已经足够清楚，适合先围绕「{focus}」做第一阶段判断。", max_len=96),
+            "tag": "当前窗口",
+            "meta": clean_solution_text((brief.get("audience_profile", {}) or {}).get("label", ""), max_len=24),
+            "variant": "window",
+            "evidenceRefs": urgency_refs[:4],
+        },
+        {
+            "title": "延迟代价更高",
+            "desc": clean_solution_text(
+                f"如果现在不先把「{focus}」收口成首轮闭环，后续投入只会继续分散并放大协同成本。",
+                max_len=96,
+            ),
+            "tag": "延迟代价",
+            "meta": _proposal_meta_label((brief.get("boundaries", []) if isinstance(brief.get("boundaries", []), list) else [])[:2], max_len=24),
+            "variant": "cost",
+            "evidenceRefs": urgency_refs[:4],
+        },
+    ]
+    workstream_items = []
+    for item in (delivery_support.get("workstreams", []) if isinstance(delivery_support.get("workstreams", []), list) else [])[:SOLUTION_DECISION_CONTENT_LIMITS["delivery"]["workstreams"]]:
+        if not isinstance(item, dict):
+            continue
+        workstream_items.append({
+            **copy.deepcopy(item),
+            "capabilities": copy.deepcopy((item.get("capabilities", []) if isinstance(item.get("capabilities", []), list) else [])[:3]),
+            "metrics": copy.deepcopy((item.get("metrics", []) if isinstance(item.get("metrics", []), list) else [])[:2]),
+            "summary": clean_solution_text(item.get("summary", ""), max_len=140),
+        })
+    left = comparison.get("left", {}) if isinstance(comparison.get("left", {}), dict) else {}
+    tertiary = comparison.get("tertiary", {}) if isinstance(comparison.get("tertiary", {}), dict) else {}
+    rejection_reason = unique_copy(
+        clean_solution_text(
+            f"保守路径的问题在于它{clean_solution_text(((left.get('cons', []) or ['只能换来方向判断'])[0]), max_len=18) or '只能换来方向判断'}；当前也不适合直接走「{clean_solution_text(tertiary.get('name', ''), max_len=18) or '激进路径'}」这类全量展开路线。",
+            max_len=140,
+        ),
+        clean_solution_text(comparison.get("summary", ""), max_len=140),
+        f"先做方向判断解释不了核心问题，直接全量铺开又会把投入、协同和返工同步放大。",
+        max_len=140,
+    )
+    delivery_title = unique_copy(
+        "把关键路径压成执行链",
+        f"怎么把「{focus}」真正落下去",
+        "落地路径：先跑试点再扩张",
+        max_len=28,
+    )
+    delivery_summary = unique_copy(
+        "主页面只保留关键工作流、阶段路线和验收信号，保证一眼就能看懂怎么推进。",
+        f"围绕「{focus}」只展示最关键的执行链，避免把方案写成动作堆料。",
+        max_len=140,
+    )
+    delivery_judgement = unique_copy(
+        "真正的落地不是模块越多越好，而是每个工作流都能直接进入执行和验收。",
+        max_len=140,
+    )
+    value_title = unique_copy(
+        "值不值得做，只看这几个结果",
+        "价值判断：结果、前提、边界要同时成立",
+        max_len=28,
+    )
+    value_summary = unique_copy(
+        "把结果、适配性和边界放在一起看，管理层才能判断这件事该批、该收缩还是该暂缓。",
+        max_len=140,
+    )
+    value_judgement = unique_copy(
+        "如果结果、前提和边界不能同时说清，这页就还不算方案，只算信息整理。",
+        max_len=140,
+    )
+    boundary_label = _proposal_boundary_label(brief.get("boundaries", []), max_items=2, max_len=18)
+    risk_label = _proposal_risk_label(
+        ((brief.get("boundaries", []) or [{}])[0] or {}).get("title", "") if isinstance(brief.get("boundaries", []), list) else "",
+        ((brief.get("boundaries", []) or [{}])[0] or {}).get("detail", "") if isinstance(brief.get("boundaries", []), list) else "",
+        max_len=18,
+    )
+    closing_headline = unique_copy(
+        clean_solution_text((closing_block or {}).get("headline", ""), max_len=96),
+        f"当前更适合先完成「{focus}」首轮试点，再决定是否扩大投入。",
+        max_len=96,
+    )
+    closing_decision = unique_copy(
+        clean_solution_text((closing_block or {}).get("decision", ""), max_len=96),
+        f"当前建议先批准「{focus}」首轮试点，并冻结第二阶段投入边界。",
+        max_len=96,
+    )
+    closing_boundary = unique_copy(
+        clean_solution_text((closing_block or {}).get("boundary", ""), max_len=110),
+        _proposal_boundary_sentence(
+            boundary_label,
+            risk_label=risk_label,
+            audience_key=clean_solution_text(audience_profile.get("key", ""), max_len=24) or "decision_maker",
+            max_len=110,
+        ),
+        max_len=110,
+    )
     return {
         "version": "decision_v1",
         "overview": {
             "eyebrow": clean_solution_text(overview.get("eyebrow", ""), max_len=24) or "方案判断",
-            "title": clean_solution_text(overview.get("title", ""), max_len=96),
+            "title": overview_title,
             "subtitle": clean_solution_text(overview.get("subtitle", ""), max_len=180),
-            "judgement": clean_solution_text(brief.get("one_thesis", ""), max_len=180) or clean_solution_text(overview.get("judgement", ""), max_len=180),
+            "judgement": overview_judgement,
+            "insightLine": clean_solution_text(brief.get("insight_line", ""), max_len=120),
+            "trustSignals": _proposal_compact_sentences(brief.get("trust_signals", []), max_items=3, max_len=56),
             "proofPoints": _proposal_compact_sentences(overview.get("proofPoints", []), max_items=SOLUTION_DECISION_CONTENT_LIMITS["overview"]["proof_points"], max_len=88),
             "metrics": copy.deepcopy((overview.get("metrics", []) if isinstance(overview.get("metrics", []), list) else [])[:SOLUTION_DECISION_CONTENT_LIMITS["overview"]["metrics"]]),
             "track": copy.deepcopy((overview.get("track", []) if isinstance(overview.get("track", []), list) else [])[:3]),
+            "audience": copy.deepcopy(audience_profile if isinstance(audience_profile, dict) else {}),
         },
         "urgency": {
             "eyebrow": "为什么现在做",
-            "title": clean_solution_text(f"现在先把「{_proposal_focus_label((brief.get('chosen_path', {}) or {}).get('name', ''), max_len=18) or '关键路径'}」做透，才不会把后续投入做散", max_len=88),
-            "summary": clean_solution_text(brief.get("why_now", ""), max_len=180),
-            "judgement": clean_solution_text(brief.get("insight_line", ""), max_len=160) or clean_solution_text(brief.get("why_now", ""), max_len=160),
-            "cards": [
-                {
-                    "title": clean_solution_text(item, max_len=32),
-                    "desc": clean_solution_text(item, max_len=96),
-                    "tag": f"矛盾 {index + 1:02d}",
-                    "meta": "",
-                    "evidenceRefs": _proposal_unique_refs(item, limit=4),
-                }
-                for index, item in enumerate(_proposal_compact_sentences(brief.get("core_conflicts", []), max_items=SOLUTION_DECISION_CONTENT_LIMITS["urgency"]["cards"], max_len=88))
-            ],
+            "title": urgency_title,
+            "summary": urgency_summary,
+            "judgement": urgency_judgement,
+            "cards": urgency_cards[:SOLUTION_DECISION_CONTENT_LIMITS["urgency"]["cards"]],
         },
         "comparison": {
             "eyebrow": clean_solution_text(comparison.get("eyebrow", ""), max_len=24) or "路径取舍",
-            "title": clean_solution_text(comparison.get("title", ""), max_len=88),
-            "summary": clean_solution_text(comparison.get("summary", ""), max_len=180),
-            "judgement": clean_solution_text(comparison.get("judgement", ""), max_len=180),
+            "title": comparison_title,
+            "summary": rejection_reason,
+            "judgement": comparison_judgement,
             "left": copy.deepcopy(comparison.get("left", {})),
             "right": copy.deepcopy(comparison.get("right", {})),
             "tertiary": copy.deepcopy(comparison.get("tertiary", {})),
@@ -28169,9 +28531,9 @@ def build_solution_page_copy_v1(
         },
         "delivery": {
             "eyebrow": "落地路径",
-            "title": clean_solution_text("先把关键路径跑通，再按阶段扩大范围", max_len=88),
-            "summary": clean_solution_text("主页面只保留最关键的 3 个工作流和 3 个阶段，确保一眼就能看懂怎么推进。", max_len=180),
-            "judgement": clean_solution_text("真正的方案不是模块越多越好，而是每个工作流都能直接进入执行和验收。", max_len=180),
+            "title": delivery_title,
+            "summary": delivery_summary,
+            "judgement": delivery_judgement,
             "blueprint": {
                 "eyebrow": clean_solution_text(blueprint.get("eyebrow", ""), max_len=24) or "推荐蓝图",
                 "title": clean_solution_text(blueprint.get("title", ""), max_len=88),
@@ -28180,15 +28542,15 @@ def build_solution_page_copy_v1(
                 "cards": copy.deepcopy((blueprint.get("cards", []) if isinstance(blueprint.get("cards", []), list) else [])[:SOLUTION_DECISION_CONTENT_LIMITS["delivery"]["blueprint_cards"]]),
                 "figure": copy.deepcopy(blueprint.get("figure", {}) if isinstance(blueprint.get("figure", {}), dict) else {}),
             },
-            "workstreams": copy.deepcopy((delivery_support.get("workstreams", []) if isinstance(delivery_support.get("workstreams", []), list) else [])[:SOLUTION_DECISION_CONTENT_LIMITS["delivery"]["workstreams"]]),
+            "workstreams": workstream_items,
             "phases": copy.deepcopy((delivery_support.get("phases", []) if isinstance(delivery_support.get("phases", []), list) else [])[:SOLUTION_DECISION_CONTENT_LIMITS["delivery"]["phases"]]),
             "evidenceRefs": _proposal_unique_refs([brief.get("workstreams", []), brief.get("roadmap", [])], limit=8),
         },
         "value": {
             "eyebrow": "价值判断",
-            "title": clean_solution_text("值不值得做，关键看这 3 到 4 个结果能不能成立", max_len=88),
-            "summary": clean_solution_text("把收益、适配性和边界放在一起看，管理层才能判断这件事是该批、该收缩还是该暂缓。", max_len=180),
-            "judgement": clean_solution_text("如果价值结果和成立前提不能同时说清，这页就还不算方案，只算信息整理。", max_len=180),
+            "title": value_title,
+            "summary": value_summary,
+            "judgement": value_judgement,
             "metrics": copy.deepcopy((brief.get("value_support", {}) or {}).get("metrics", [])[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["metrics"]] if isinstance(brief.get("value_support", {}), dict) else []),
             "board": copy.deepcopy(value_board if isinstance(value_board, dict) else {}),
             "fitCards": copy.deepcopy((brief.get("value_support", {}) or {}).get("fit_cards", [])[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["fit_cards"]] if isinstance(brief.get("value_support", {}), dict) else []),
@@ -28198,9 +28560,9 @@ def build_solution_page_copy_v1(
         "closing": {
             "eyebrow": "决策收束",
             "title": "最终建议",
-            "headline": clean_solution_text((closing_block or {}).get("headline", ""), max_len=120),
-            "decision": clean_solution_text((closing_block or {}).get("decision", ""), max_len=120),
-            "boundary": clean_solution_text((closing_block or {}).get("boundary", ""), max_len=120),
+            "headline": closing_headline,
+            "decision": closing_decision,
+            "boundary": closing_boundary,
             "evidenceRefs": _proposal_unique_refs(closing_block, limit=8),
         },
         "summaryCard": copy.deepcopy(summary_card if isinstance(summary_card, dict) else {}),
@@ -29980,7 +30342,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "id": "why_now",
             "nav_label": "为什么现在做",
             "eyebrow": "业务矛盾与现实约束",
-            "title": clean_solution_text(f"为什么当前先围绕「{comparison_focus}」推进", max_len=72),
+            "title": clean_solution_text(f"为什么现在要先锁定「{comparison_focus}」", max_len=42) or "为什么现在要先锁定关键路径",
             "judgement": clean_solution_text(
                 thesis.get("why_now", "") or f"当前真正需要优先解决的是「{context.get('pain_point', '核心议题')}」，而不是继续堆积更多未组织的信息。",
                 max_len=140,
@@ -30010,7 +30372,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "id": "comparison",
             "nav_label": "路径对比",
             "eyebrow": "方案取舍",
-            "title": clean_solution_text(f"为什么当前先做「{comparison_focus}」", max_len=42) or "为什么当前先做关键能力",
+            "title": clean_solution_text(f"为什么选「{comparison_focus}」这条路", max_len=42) or "为什么选这条路径",
             "judgement": clean_solution_text(f"当前阶段更应该先把「{comparison_focus}」打成底座，再决定第二阶段扩张范围。", max_len=88) or "先做可验证的推荐路径，再决定是否扩大投入，比一开始追求全量能力更稳健。",
             "summary": clean_solution_text(f"先用单点试点验证「{comparison_focus}」的真实价值、协同方式和治理边界，再按阶段扩到更大范围。", max_len=100) or "方案必须展示取舍逻辑，而不是只有单一路径。这样决策者才能理解为什么现在推荐这样推进。",
             "layout": "dual_comparison",

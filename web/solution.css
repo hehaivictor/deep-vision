@@ -157,6 +157,7 @@ a {
 .proposal-tab-panel-tag,
 .proposal-capability-tag,
 .proposal-fit-tag,
+.proposal-urgency-tag,
 .proposal-track-label,
 .proposal-knowledge-card-label,
 .proposal-analogy-label,
@@ -178,6 +179,11 @@ a {
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
+    white-space: nowrap;
+    width: max-content;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .solution-state-title {
@@ -493,6 +499,8 @@ a {
     font-size: clamp(2.4rem, 4vw, 4.9rem);
     line-height: 0.98;
     letter-spacing: -0.05em;
+    text-wrap: balance;
+    max-inline-size: min(12ch, 100%);
 }
 
 .proposal-section-summary,
@@ -573,6 +581,52 @@ a {
     max-width: 40rem;
     padding-left: 18px;
     border-left-width: 3px;
+}
+
+.proposal-trust-signals {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.proposal-trust-signal {
+    display: inline-flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 0 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(140, 230, 189, 0.18);
+    background: rgba(140, 230, 189, 0.08);
+    color: #d8fff0;
+    font-size: 0.82rem;
+    line-height: 1.35;
+}
+
+.proposal-insight-line {
+    display: grid;
+    gap: 10px;
+    padding: 18px 20px;
+    border-radius: var(--solution-radius-lg);
+    border: 1px solid rgba(215, 164, 74, 0.2);
+    background:
+        radial-gradient(circle at top left, rgba(215, 164, 74, 0.12), transparent 42%),
+        rgba(25, 19, 11, 0.68);
+}
+
+.proposal-insight-kicker {
+    color: #f0d094;
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+}
+
+.proposal-insight-text {
+    margin: 0;
+    color: #fff4df;
+    font-size: 1rem;
+    line-height: 1.72;
+    max-width: 39rem;
 }
 
 .proposal-proof-list {
@@ -823,7 +877,7 @@ a {
 
 .proposal-comparison-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(220px, 0.46fr) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 0.56fr) minmax(0, 1fr);
     gap: 18px;
     align-items: stretch;
 }
@@ -961,15 +1015,30 @@ a {
     line-height: 1.26;
     letter-spacing: -0.03em;
     color: var(--solution-text);
-    max-width: 13ch;
+    max-inline-size: min(11ch, 100%);
+    text-wrap: balance;
 }
 
 .proposal-comparison-center-note {
+    display: grid;
+    gap: 8px;
     color: var(--solution-text-soft);
     line-height: 1.66;
     max-width: 22rem;
     border-top: 1px solid rgba(255, 255, 255, 0.06);
     padding-top: 15px;
+}
+
+.proposal-comparison-center-note p {
+    margin: 0;
+}
+
+.proposal-comparison-center-note-label {
+    color: rgba(191, 238, 255, 0.72);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
 }
 
 .proposal-comparison-tertiary {
@@ -1126,6 +1195,74 @@ a {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px;
+}
+
+.proposal-urgency-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.proposal-urgency-card {
+    position: relative;
+    overflow: hidden;
+    display: grid;
+    gap: 14px;
+    padding: 22px;
+    border-radius: var(--solution-radius-lg);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background:
+        linear-gradient(145deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02)),
+        rgba(7, 18, 34, 0.78);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.proposal-urgency-card:last-child {
+    grid-column: 1 / -1;
+}
+
+.proposal-urgency-card.is-window {
+    background:
+        radial-gradient(circle at top right, rgba(140, 230, 189, 0.1), transparent 32%),
+        rgba(11, 26, 23, 0.82);
+}
+
+.proposal-urgency-card.is-cost {
+    background:
+        radial-gradient(circle at top left, rgba(255, 143, 143, 0.08), transparent 32%),
+        rgba(31, 14, 21, 0.84);
+}
+
+.proposal-urgency-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+}
+
+.proposal-urgency-meta {
+    color: rgba(191, 238, 255, 0.72);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.proposal-urgency-title {
+    margin: 0;
+    font-size: 1.08rem;
+    line-height: 1.4;
+}
+
+.proposal-urgency-desc {
+    margin: 0;
+    color: var(--solution-text-soft);
+    line-height: 1.74;
+    max-width: 44rem;
 }
 
 .proposal-case-card,
@@ -1318,6 +1455,10 @@ a {
 }
 
 .proposal-tab-button {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
     min-height: 48px;
     padding: 0 18px;
     border-radius: 999px;
@@ -1325,6 +1466,27 @@ a {
     background: rgba(255, 255, 255, 0.03);
     color: var(--solution-text-dim);
     font-weight: 700;
+    min-width: 0;
+    max-width: 18rem;
+    text-align: left;
+    gap: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.proposal-tab-button span,
+.proposal-tab-button small {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.proposal-tab-button small {
+    font-size: 0.72rem;
+    color: var(--solution-text-dim);
 }
 
 .proposal-tab-button:hover,
@@ -1365,12 +1527,14 @@ a {
     align-items: flex-start;
     justify-content: space-between;
     gap: 20px;
+    min-width: 0;
 }
 
 .proposal-tab-panel-head > div:first-child {
     display: grid;
     gap: 10px;
     max-width: 40rem;
+    min-width: 0;
 }
 
 .proposal-tab-panel-summary {
@@ -1383,7 +1547,8 @@ a {
     gap: 10px;
     flex-wrap: wrap;
     align-content: flex-start;
-    max-width: 22rem;
+    max-width: 20rem;
+    min-width: 0;
 }
 
 .proposal-meta-pill,
@@ -1397,10 +1562,15 @@ a {
     border: 1px solid rgba(255, 255, 255, 0.08);
     color: var(--solution-text-soft);
     font-size: 0.86rem;
+    white-space: nowrap;
+    width: max-content;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .proposal-capability-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .proposal-capability-card {
@@ -1857,6 +2027,27 @@ a {
     margin-top: 18px;
 }
 
+.proposal-urgency-card.is-structural {
+    border-color: rgba(96, 213, 255, 0.16);
+    background:
+        radial-gradient(circle at top left, rgba(96, 213, 255, 0.08), transparent 40%),
+        rgba(7, 18, 34, 0.82);
+}
+
+.proposal-urgency-card.is-window {
+    border-color: rgba(140, 230, 189, 0.18);
+    background:
+        radial-gradient(circle at top left, rgba(140, 230, 189, 0.08), transparent 40%),
+        rgba(10, 24, 22, 0.82);
+}
+
+.proposal-urgency-card.is-cost {
+    border-color: rgba(255, 143, 143, 0.18);
+    background:
+        radial-gradient(circle at top left, rgba(255, 143, 143, 0.08), transparent 40%),
+        rgba(34, 16, 20, 0.82);
+}
+
 .proposal-fit-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -1929,6 +2120,28 @@ a {
     height: 200px;
     background: radial-gradient(circle, rgba(215, 164, 74, 0.12), transparent 70%);
     pointer-events: none;
+}
+
+.proposal-closing-headline-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.proposal-closing-status {
+    display: inline-flex;
+    align-items: center;
+    min-height: 30px;
+    padding: 0 12px;
+    border-radius: 999px;
+    background: rgba(215, 164, 74, 0.14);
+    border: 1px solid rgba(215, 164, 74, 0.2);
+    color: #ffe4ba;
+    font-size: 0.76rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
 }
 
 .proposal-closing-lead {
@@ -2276,7 +2489,8 @@ body.is-evidence-open {
     .proposal-comparison-matrix-cells,
     .proposal-value-board-grid,
     .proposal-value-grid,
-    .proposal-fit-grid {
+    .proposal-fit-grid,
+    .proposal-urgency-grid {
         grid-template-columns: 1fr;
     }
 
@@ -2355,6 +2569,7 @@ body.is-evidence-open {
     .proposal-section-title,
     .proposal-hero-title {
         font-size: clamp(2rem, 11vw, 3rem);
+        max-inline-size: none;
     }
 
     .proposal-hero-grid {
@@ -2467,6 +2682,10 @@ body.is-evidence-open {
         min-height: 34px;
         padding: 0 12px;
         font-size: 0.82rem;
+    }
+
+    .proposal-urgency-card:last-child {
+        grid-column: auto;
     }
 
     .proposal-tab-metrics {

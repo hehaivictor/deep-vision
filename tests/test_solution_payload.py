@@ -506,7 +506,14 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertEqual(narrative_outline.get('version'), 'decision_v1')
         self.assertEqual([item.get('id') for item in proposal_page.get('nav_items', [])], ['overview', 'urgency', 'comparison', 'delivery', 'value', 'closing'])
         self.assertEqual([item.get('id') for item in (narrative_outline.get('chapters', []) or [])], ['overview', 'urgency', 'comparison', 'delivery', 'value', 'closing'])
+        self.assertTrue(decision_brief.get('insight_line'))
+        self.assertGreaterEqual(len(decision_brief.get('trust_signals', [])), 2)
         self.assertTrue(page_copy.get('overview', {}).get('title'))
+        self.assertTrue(page_copy.get('overview', {}).get('insightLine'))
+        self.assertGreaterEqual(len(page_copy.get('overview', {}).get('trustSignals', [])), 2)
+        self.assertEqual((((page_copy.get('urgency', {}) or {}).get('cards') or [])[0] or {}).get('tag'), '结构性矛盾')
+        self.assertEqual((((page_copy.get('urgency', {}) or {}).get('cards') or [None, None])[1] or {}).get('tag'), '当前窗口')
+        self.assertEqual((((page_copy.get('urgency', {}) or {}).get('cards') or [None, None, None])[2] or {}).get('tag'), '延迟代价')
         self.assertIn('derived', proposal_support)
         self.assertTrue((proposal_support.get('derived', {}) or {}).get('workstream_cards'))
         self.assertTrue((proposal_support.get('derived', {}) or {}).get('milestones'))
@@ -519,7 +526,10 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertTrue(summary_card.get('title'))
         self.assertGreaterEqual(len(summary_card.get('bullets', [])), 2)
         self.assertEqual(render_model.get('mode'), 'decision_v1')
+        self.assertTrue(render_model.get('overview', {}).get('insightLine'))
+        self.assertGreaterEqual(len(render_model.get('overview', {}).get('trustSignals', [])), 2)
         self.assertTrue(render_model.get('closing', {}).get('headline'))
+        self.assertIn('建议', render_model.get('closing', {}).get('decision', ''))
         self.assertTrue(render_model.get('summaryCard', {}).get('title'))
         self.assertEqual((render_model.get('navItems', []) or [])[-1].get('id'), 'closing')
         self.assertTrue(render_model.get('urgency', {}).get('cards'))
@@ -587,6 +597,7 @@ class SolutionPayloadTests(unittest.TestCase):
         proposal_page = self.server.build_solution_proposal_page(snapshot, proposal_brief, chapter_copy)
         chapters = {item.get('id'): item for item in chapter_copy.get('chapters', []) if isinstance(item, dict)}
         render_model = proposal_page.get('render_model', {}) if isinstance(proposal_page, dict) else {}
+        decision_brief = proposal_page.get('decision_brief', {}) if isinstance(proposal_page, dict) else {}
         delivery_render = render_model.get('delivery', {}) or {}
         comparison_render = render_model.get('comparison', {}) or {}
         value_render = render_model.get('value', {}) or {}
@@ -599,7 +610,9 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertIn('人才短缺、算力受限和历史迁移压力', proposal_brief.get('thesis', {}).get('why_now', ''))
         self.assertIn('分层架构', proposal_brief.get('recommended_solution', {}).get('architecture_statement', ''))
         self.assertIn('接口治理', proposal_brief.get('recommended_solution', {}).get('architecture_statement', ''))
-        self.assertEqual((chapters.get('comparison') or {}).get('title'), '为什么当前先做「AI工程底座」')
+        self.assertIn('AI工程底座', decision_brief.get('insight_line', ''))
+        self.assertGreaterEqual(len(decision_brief.get('trust_signals', [])), 2)
+        self.assertEqual((chapters.get('comparison') or {}).get('title'), '为什么选「AI工程底座」这条路')
         self.assertIn('AI工程底座', (chapters.get('comparison') or {}).get('judgement', ''))
         self.assertIn('难以直接形成可评审方案', ((((chapters.get('comparison') or {}).get('cards') or [])[0]) or {}).get('desc', ''))
         self.assertIn('更适合：', ((((chapters.get('comparison') or {}).get('cards') or [None, None])[1]) or {}).get('meta', ''))
@@ -625,10 +638,20 @@ class SolutionPayloadTests(unittest.TestCase):
         left_option = comparison_render.get('left', {}) or {}
         right_option = comparison_render.get('right', {}) or {}
         boundary_cards = value_render.get('boundaryCards', []) or []
+        self.assertEqual((render_model.get('overview', {}) or {}).get('title'), '为什么当前先做「AI工程底座」')
+        self.assertEqual((render_model.get('urgency', {}) or {}).get('title'), '为什么现在要先锁定「AI工程底座」')
+        self.assertEqual(comparison_render.get('title'), '为什么选「AI工程底座」这条路')
         self.assertEqual(comparison_render.get('judgement'), '先把「AI工程底座」试点跑通，再判断第二阶段投入，边界先锁定在「迁移复杂、算力受限」')
-        self.assertEqual((tabs[0] if len(tabs) > 0 else {}).get('headline'), '跑通「AI工程底座」')
-        self.assertEqual((tabs[1] if len(tabs) > 1 else {}).get('headline'), '拉通「分层架构」')
-        self.assertEqual((tabs[2] if len(tabs) > 2 else {}).get('headline'), '把「接口治理」前置')
+        self.assertIn('AI工程底座', (render_model.get('overview', {}) or {}).get('insightLine', ''))
+        self.assertGreaterEqual(len((render_model.get('overview', {}) or {}).get('trustSignals', [])), 2)
+        self.assertEqual((tabs[0] if len(tabs) > 0 else {}).get('headline'), 'AI工程底座优先建设')
+        self.assertEqual((tabs[1] if len(tabs) > 1 else {}).get('headline'), '分层架构')
+        self.assertEqual((tabs[2] if len(tabs) > 2 else {}).get('headline'), '接口治理')
+        self.assertEqual(len((tabs[0] if len(tabs) > 0 else {}).get('capabilities', [])), 2)
+        self.assertNotEqual(
+            (((tabs[0] if len(tabs) > 0 else {}).get('capabilities') or [None])[0] or {}).get('desc'),
+            (((tabs[0] if len(tabs) > 0 else {}).get('capabilities') or [None])[0] or {}).get('title'),
+        )
         self.assertEqual((left_option.get('pros', []) or [None])[0], '启动最快')
         self.assertEqual((left_option.get('pros', []) or [None, None])[1], '适合早期探索')
         self.assertEqual((left_option.get('cons', []) or [None])[0], '难解释核心问题')
@@ -650,6 +673,9 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertIn('先补培训和研究侧补位', (((boundary_cards or [])[0]) or {}).get('desc', ''))
         self.assertIn('先设接口评审和协作门禁', (((boundary_cards or [None, None])[1]) or {}).get('desc', ''))
         self.assertNotIn('MLOps/LLMOps', json.dumps(value_render.get('fitCards', []), ensure_ascii=False))
+        self.assertIn('批准', (render_model.get('closing', {}) or {}).get('decision', ''))
+        self.assertNotEqual((render_model.get('closing', {}) or {}).get('headline'), comparison_render.get('judgement'))
+        self.assertNotEqual((render_model.get('closing', {}) or {}).get('decision'), comparison_render.get('judgement'))
 
     def test_ai_prompts_include_sample_style_guidance(self):
         prompt_payload = {
@@ -1029,7 +1055,7 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertNotIn('MLOps/LLMOps', proposal_brief.get('thesis', {}).get('headline', ''))
         self.assertNotIn('OpenAPI/gRPC', proposal_brief.get('recommended_solution', {}).get('architecture_statement', ''))
         self.assertEqual((chapters.get('hero') or {}).get('title'), '为什么当前先做「AI工程底座」')
-        self.assertEqual((chapters.get('comparison') or {}).get('title'), '为什么当前先做「AI工程底座」')
+        self.assertEqual((chapters.get('comparison') or {}).get('title'), '为什么选「AI工程底座」这条路')
         self.assertEqual((chapters.get('blueprint') or {}).get('title'), '推荐蓝图：先稳住「AI工程底座」，再拉通「分层架构」')
         self.assertEqual((chapters.get('integration') or {}).get('title'), '把「AI工程底座」接进系统闭环')
         self.assertEqual((chapters.get('value_fit') or {}).get('title'), '为什么这条路径更适合当前团队进入试点决策阶段')
@@ -1063,7 +1089,7 @@ class SolutionPayloadTests(unittest.TestCase):
 
         final_chapters = {item.get('id'): item for item in (payload.get("chapter_copy", {}) or {}).get("chapters", []) if isinstance(item, dict)}
         self.assertEqual(payload.get("proposal_brief", {}).get("thesis", {}).get("headline"), "为什么当前先做「AI工程底座」")
-        self.assertEqual((final_chapters.get("comparison") or {}).get("title"), "为什么当前先做「AI工程底座」")
+        self.assertEqual((final_chapters.get("comparison") or {}).get("title"), "为什么选「AI工程底座」这条路")
         self.assertEqual((final_chapters.get("blueprint") or {}).get("title"), "推荐蓝图：先稳住「AI工程底座」，再拉通「分层架构」")
         self.assertEqual((final_chapters.get("integration") or {}).get("title"), "把「AI工程底座」接进系统闭环")
         self.assertEqual((final_chapters.get("value_fit") or {}).get("title"), "为什么这条路径更适合当前团队进入试点决策阶段")
