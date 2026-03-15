@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "3796792",
+  "committedAt": "2026-03-15T12:53:00+08:00",
+  "versionType": "patch",
+  "title": "修复方案页渲染回归",
+  "changes": [
+    "修复边界卡片回退时丢失详情文案",
+    "修正指标去重逻辑以保留同值异指标",
+    "恢复方案页通用徽章样式并补充回归测试"
+  ],
+  "changedFiles": [
+    "tests/test_solution_payload.py",
+    "web/server.py",
+    "web/solution.css",
+    "web/solution.html",
+    "web/solution.js"
+  ]
+}

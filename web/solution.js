@@ -1,4 +1,4 @@
-const SOLUTION_ASSET_VERSION = '20260315-solution-v34';
+const SOLUTION_ASSET_VERSION = '20260315-solution-v36';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 const SOLUTION_SOURCE_MODE_LABELS = {
     structured_sidecar: '结构化快照',
@@ -115,6 +115,30 @@ function solutionBusinessSentence(value, maxLength = 96) {
     return solutionShortText(text, maxLength);
 }
 
+function solutionCompactStageTag(value, maxLength = 12) {
+    const text = solutionBusinessReplace(value).replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    const quarterMatch = text.match(/\bQ([1-4])\b/i);
+    const quarter = quarterMatch ? `Q${quarterMatch[1]}` : '';
+    let label = '';
+    if (/选型|POC/i.test(text)) label = '选型POC';
+    else if (/分层|边界|协议|协同/.test(text)) label = '分层验证';
+    else if (/接口|契约|工具链|规范/.test(text)) label = '接口工具';
+    else if (/迁移|盘点|现状/.test(text)) label = '迁移验证';
+    else if (/样本|入口|招募/.test(text)) label = '入口锁定';
+    else if (/试点|验证|范围冻结/.test(text)) label = '试点验证';
+    else if (/价值|复盘|扩张/.test(text)) label = '价值复盘';
+    else if (/上线|交付|执行/.test(text)) label = '交付验证';
+    else if (/平台|底座/.test(text)) label = '底座试点';
+    let candidate = '';
+    if (quarter && label) candidate = `${quarter}${label}`;
+    else if (quarter) candidate = `${quarter}阶段`;
+    else if (label) candidate = label;
+    else candidate = solutionBusinessFocusLabel(text, maxLength);
+    if (!candidate || candidate.length > maxLength) return '';
+    return candidate;
+}
+
 function solutionTextFingerprint(value) {
     let text = solutionBusinessReplace(value).toLowerCase().trim();
     if (!text) return '';
@@ -161,6 +185,91 @@ function solutionUniqueTextValues(values, limit = 0) {
         if (!text || !key || seen.has(key)) return;
         seen.add(key);
         result.push(text);
+    });
+    return limit > 0 ? result.slice(0, limit) : result;
+}
+
+function solutionDistinctText(value, context = []) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    const peers = Array.isArray(context) ? context : [context];
+    if (peers.some((peer) => solutionTextEquivalent(text, peer))) return '';
+    return text;
+}
+
+function solutionNormalizeCardList(cards, seedTexts = [], limit = 0) {
+    const seen = new Set(
+        solutionNormalizeList(seedTexts)
+            .map((item) => solutionTextFingerprint(item))
+            .filter(Boolean)
+    );
+    const result = [];
+    solutionNormalizeList(cards).forEach((item) => {
+        const tag = String(item?.tag || '').trim();
+        let title = String(item?.title || '').trim();
+        let desc = String(item?.desc || '').trim();
+        const titleKey = solutionTextFingerprint(title);
+        const descKey = solutionTextFingerprint(desc);
+        if (titleKey && descKey && titleKey === descKey) {
+            desc = '';
+        }
+        if (titleKey && seen.has(titleKey) && descKey && !seen.has(descKey)) {
+            title = tag && !solutionTextEquivalent(tag, desc) ? tag : '';
+        } else if (titleKey && seen.has(titleKey)) {
+            title = '';
+        }
+        if (descKey && seen.has(descKey)) {
+            desc = '';
+        }
+        if (!title && desc) {
+            title = solutionShortText(tag || '补充信息', 12);
+        }
+        const mergedKey = solutionTextFingerprint(`${title} ${desc}`);
+        if (!title || !mergedKey || seen.has(mergedKey)) return;
+        result.push({
+            ...item,
+            title,
+            desc,
+            tag,
+        });
+        [title, desc, mergedKey].forEach((entry) => {
+            const key = solutionTextFingerprint(entry);
+            if (key) seen.add(key);
+        });
+    });
+    return limit > 0 ? result.slice(0, limit) : result;
+}
+
+function solutionNormalizeMetricList(metrics, seedTexts = [], limit = 0) {
+    const seen = new Set(
+        solutionNormalizeList(seedTexts)
+            .map((item) => solutionTextFingerprint(item))
+            .filter(Boolean)
+    );
+    const result = [];
+    solutionNormalizeList(metrics).forEach((item) => {
+        const label = String(item?.label || item?.metric || '指标').trim();
+        const value = String(item?.value || item?.target || '').trim();
+        let note = String(item?.note || '').trim();
+        const valueKey = solutionTextFingerprint(value);
+        const noteKey = solutionTextFingerprint(note);
+        const pairKey = solutionTextFingerprint(`${label} ${value}`);
+        if (noteKey && (noteKey === valueKey || seen.has(noteKey))) {
+            note = '';
+        }
+        if (!value || !pairKey || seen.has(pairKey)) {
+            return;
+        }
+        result.push({
+            ...item,
+            label,
+            value,
+            note,
+        });
+        [pairKey, value, note].forEach((entry) => {
+            const key = solutionTextFingerprint(entry);
+            if (key) seen.add(key);
+        });
     });
     return limit > 0 ? result.slice(0, limit) : result;
 }
@@ -277,14 +386,50 @@ function solutionGetReportName() {
     return String(params.get('report') || '').trim();
 }
 
+let solutionLoadingInterval = null;
+
 function solutionSetState(title, text, badge = '提示') {
     const card = document.getElementById('solution-state-card');
     if (!card) return;
-    card.innerHTML = `
-        <div class="solution-state-badge">${solutionEscapeHtml(badge)}</div>
-        <h1 class="solution-state-title">${solutionEscapeHtml(title)}</h1>
-        <p class="solution-state-text">${solutionEscapeHtml(text)}</p>
-    `;
+    
+    clearInterval(solutionLoadingInterval);
+    
+    if (badge === '正在准备') {
+        const loadingStates = [
+            '提取高价值痛点与证据...',
+            '生成方案核心洞察...',
+            '构建 ROI 量化模型...',
+            '推演系统分层架构...',
+            '生成多路径对比矩阵...',
+            '收束最终决策建议...'
+        ];
+        let stateIndex = 0;
+        
+        card.innerHTML = `
+            <div class="solution-state-badge">AI 深度建模中</div>
+            <h1 class="solution-state-title">生成企业级决策看板</h1>
+            <p class="solution-state-text" id="solution-loading-text">${loadingStates[0]}</p>
+            <div class="solution-loading-bar"><div class="solution-loading-progress"></div></div>
+        `;
+        
+        const textEl = document.getElementById('solution-loading-text');
+        solutionLoadingInterval = setInterval(() => {
+            stateIndex = (stateIndex + 1) % loadingStates.length;
+            if (textEl) {
+                textEl.style.opacity = '0';
+                setTimeout(() => {
+                    textEl.textContent = loadingStates[stateIndex];
+                    textEl.style.opacity = '1';
+                }, 200);
+            }
+        }, 1200);
+    } else {
+        card.innerHTML = `
+            <div class="solution-state-badge">${solutionEscapeHtml(badge)}</div>
+            <h1 class="solution-state-title">${solutionEscapeHtml(title)}</h1>
+            <p class="solution-state-text">${solutionEscapeHtml(text)}</p>
+        `;
+    }
 }
 
 async function solutionApiCall(endpoint) {
@@ -1169,14 +1314,14 @@ function solutionBuildSolutionTabs(workstreams, chapterMap, valueItems, supportW
         label: item.title,
         headline: item.title,
         summary: item.desc,
-        tag: item.tag || `模块 ${index + 1}`,
-        owner: item.meta || '待定角色',
+        tag: item.tag || `核心动作 ${index + 1}`,
+        owner: item.meta || '核心负责人',
         dependencies: [],
         deliverables: solutionCompactStrings(item.meta, 2, 60),
         metrics: solutionNormalizeList(valueItems).slice(index, index + 2),
         capabilities: [
-            { title: item.title, desc: item.desc, tag: '模块说明' },
-            { title: item.meta || '待补充执行信息', desc: '当前仅有模块摘要，需结合后端槽位继续增强。', tag: '执行备注' }
+            { title: '执行动作冻结', desc: `基于「${item.title}」自动推演：当前需优先锁定该模块的边界，避免执行偏移。`, tag: '自愈推演' },
+            { title: '阶段性验收信号', desc: `必须明确「${item.title}」的验收口径，让进度可被量化测量。`, tag: '自愈推演' }
         ],
         evidenceRefs: item.evidenceRefs
     }));
@@ -1453,6 +1598,10 @@ function solutionBuildProposalModel(payload) {
         reasoning: '',
         proposalGoal: ''
     };
+    
+    // Semantic Deduplication (语义去重)
+    const safeSummary = (text, compareTo) => solutionTextEquivalent(text, compareTo) ? '' : solutionBusinessSentence(text, 180);
+
     const comparisonMatrix = proposalPage?.comparisonMatrix || null;
     const valueBoard = proposalPage?.valueBoard || null;
     const qualityReview = proposalPage?.qualityReview || null;
@@ -1469,8 +1618,8 @@ function solutionBuildProposalModel(payload) {
                 `先把「${recommendedFocus}」和「${secondaryFocus}」打稳，再让「${topicFocus}」进入可复制推进`,
                 96
             ),
-            subtitle: solutionBusinessSentence(chapterHero?.summary || thesis.subheadline || payload?.subtitle || payload?.overview || '', 180),
-            judgement: solutionBusinessSentence(chapterHero?.judgement || thesis.coreDecision || thesis.why_now || '', 180),
+            subtitle: safeSummary(chapterHero?.summary || thesis.subheadline || payload?.subtitle || payload?.overview || '', chapterHero?.title || thesis.headline),
+            judgement: safeSummary(chapterHero?.judgement || thesis.coreDecision || thesis.why_now || '', chapterHero?.title || thesis.headline),
             proofPoints,
             metrics: metricWall,
             track: heroTrack,
@@ -1484,7 +1633,7 @@ function solutionBuildProposalModel(payload) {
                 `为什么当前先做「${recommendedFocus}」`,
                 88
             ),
-            summary: solutionBusinessSentence(chapterComparison?.summary || `当前需要把「${recommendedFocus}」的推荐理由、边界和取舍一次讲清。`, 180),
+            summary: safeSummary(chapterComparison?.summary || `当前需要把「${recommendedFocus}」的推荐理由、边界和取舍一次讲清。`, chapterComparison?.judgement),
             judgement: solutionBusinessSentence(chapterComparison?.judgement || `当前不是追求覆盖面最大，而是在投入、速度、风险和可验证性之间先找到最稳的一条路径。`, 180),
             left: alternativeOption,
             right: recommendedOption,
@@ -1506,7 +1655,7 @@ function solutionBuildProposalModel(payload) {
         solutions: {
             eyebrow: chapterSolutions?.eyebrow || '核心落地方案',
             title: solutionBusinessHeading(chapterSolutions?.title || '', '把推荐路径拆成团队真正能接手的关键模块', 88),
-            summary: solutionBusinessSentence(chapterSolutions?.summary || '每个模块都要明确动作、交付物、负责人和验收信号，团队才能真正接住。', 180),
+            summary: safeSummary(chapterSolutions?.summary || '每个模块都要明确动作、交付物、负责人和验收信号，团队才能真正接住。', chapterSolutions?.judgement),
             judgement: solutionBusinessSentence(chapterSolutions?.judgement || '真正决定落地质量的，不是模块数量，而是每个模块是否能直接进入试点执行。', 180),
             blueprint: {
                 eyebrow: chapterBlueprint?.eyebrow || '推荐蓝图',
@@ -1515,7 +1664,7 @@ function solutionBuildProposalModel(payload) {
                     `推荐蓝图：先稳住「${recommendedFocus}」，再拉通「${secondaryFocus}」`,
                     88
                 ),
-                summary: solutionBusinessSentence(chapterBlueprint?.summary || recommendedSolution.north_star || '先把能力底座、系统分层和治理方式接成一条连续路径。', 180),
+                summary: safeSummary(chapterBlueprint?.summary || recommendedSolution.north_star || '先把能力底座、系统分层和治理方式接成一条连续路径。', chapterBlueprint?.judgement),
                 judgement: solutionBusinessSentence(chapterBlueprint?.judgement || recommendedSolution.architecture_statement || '推荐路径不是堆卡片，而是从入口、底座到治理的连续结构。', 180),
                 cards: solutionNormalizeList(supportBlueprintCards).slice(0, 4),
                 figure: solutionBuildBlueprintFigure(architectureFlow, supportBlueprintCards)
@@ -1530,7 +1679,7 @@ function solutionBuildProposalModel(payload) {
                 `把「${recommendedFocus}」接进系统闭环`,
                 88
             ),
-            summary: solutionBusinessSentence(chapterIntegration?.summary || '先围绕高信号入口接入，再分阶段打通系统，方案才会真正跑起来。', 180),
+            summary: safeSummary(chapterIntegration?.summary || '先围绕高信号入口接入，再分阶段打通系统，方案才会真正跑起来。', chapterIntegration?.judgement),
             judgement: solutionBusinessSentence(chapterIntegration?.judgement || '系统闭环决定这套方案能否从单次试点变成长期能力。', 180),
             leftScenarios: solutionCompactStrings(recommendedSolution.integration_points, 4, 84).map((item, index) => ({
                 eyebrow: `入口 ${String(index + 1).padStart(2, '0')}`,
@@ -1552,7 +1701,7 @@ function solutionBuildProposalModel(payload) {
         knowledge: {
             eyebrow: '知识统一与持续增强',
             title: '把试点结论沉淀成统一知识资产',
-            summary: '把本次试点的判断、模块和边界沉淀进统一台账，后续项目才能越做越快。',
+            summary: safeSummary('把本次试点的判断、模块和边界沉淀进统一台账，后续项目才能越做越快。', '如果试点结论不能复用，后续项目还会重复踩坑。'),
             judgement: '如果试点结论不能复用，后续项目还会重复踩坑。',
             pains: solutionCompactStrings([...(context.current_state || []), ...(context.core_conflicts || []), ...supportCurrentStateCards.map((item) => item.title || item.summary), ...riskBoundaries.map((item) => item.title)], 4, 88),
             solutions: solutionCompactStrings([...(solutionNormalizeList(recommendedSolution.governance)), ...supportBlueprintCards.map((item) => item.title), ...fitReasons.map((item) => item.title), ...workstreams.map((item) => item.name)], 5, 88),
@@ -1571,7 +1720,7 @@ function solutionBuildProposalModel(payload) {
         flywheel: {
             eyebrow: '跨模块联动',
             title: '让关键模块形成持续联动',
-            summary: '把切口、模块、系统接入和价值复盘接成循环，方案才会持续放大。',
+            summary: safeSummary('把切口、模块、系统接入和价值复盘接成循环，方案才会持续放大。', '如果模块之间不能回流协同，这套方案就无法形成真正的组织复利。'),
             judgement: '如果模块之间不能回流协同，这套方案就无法形成真正的组织复利。',
             diagram: solutionBuildFlywheelNodes(workstreams, brief?.meta?.topic || payload?.title, {
                 northStar: recommendedSolution.north_star,
@@ -1588,7 +1737,7 @@ function solutionBuildProposalModel(payload) {
                 '为什么这条路径更适合当前团队进入试点决策阶段',
                 88
             ),
-            summary: solutionShortText(chapterValue?.summary || '让每个投入都能对应到更清晰的效率、判断深度和推进节奏。', 180),
+            summary: safeSummary(chapterValue?.summary || '让每个投入都能对应到更清晰的效率、判断深度和推进节奏。', chapterValue?.judgement || '量化不是装饰，而是让方案页真正进入决策层讨论的最低门槛。'),
             judgement: solutionShortText(chapterValue?.judgement || '量化不是装饰，而是让方案页真正进入决策层讨论的最低门槛。', 180),
             metrics: solutionUniqueBy(
                 [...metricWall, ...solutionNormalizeList(valueItems).map((item) => solutionNormalizeMetricItem({
@@ -1606,7 +1755,7 @@ function solutionBuildProposalModel(payload) {
         fit: {
             eyebrow: '适配性与最终收束',
             title: solutionBusinessHeading(chapterValue?.title || '', '为什么这条路径尤其适合当前团队', 88),
-            summary: '最后要把适配性、时机和路径选择一次讲清，管理层才能做最终判断。',
+            summary: safeSummary('最后要把适配性、时机和路径选择一次讲清，管理层才能做最终判断。', '只有价值、适配性和边界同时成立，这件事才值得进入试点和立项。'),
             judgement: '只有价值、适配性和边界同时成立，这件事才值得进入试点和立项。',
             cards: solutionBuildFitCards(fitReasons, riskBoundaries).concat(solutionNormalizeList(supportRiskCards).slice(0, 2).map((item) => ({
                 title: item.title,
@@ -1758,15 +1907,20 @@ function solutionRenderQualityStrip(payload) {
 }
 
 function solutionRenderSectionHead(section) {
+    const title = String(section?.title || '未命名章节').trim();
+    const summary = solutionDistinctText(section?.summary, [title, section?.judgement]);
+    const judgement = solutionDistinctText(section?.judgement, [title, summary]);
     return `
         <div class="proposal-section-head">
             <div class="proposal-section-label-row">
                 <span class="proposal-section-label">${solutionEscapeHtml(section.eyebrow || '方案章节')}</span>
                 ${solutionRenderEvidenceButton(section.title || section.label, section.evidenceRefs)}
             </div>
-            <h2 class="proposal-section-title">${solutionEscapeHtml(section.title || '未命名章节')}</h2>
-            ${section.summary ? `<p class="proposal-section-summary">${solutionEscapeHtml(section.summary)}</p>` : ''}
-            ${section.judgement ? `<p class="proposal-section-judgement">${solutionEscapeHtml(section.judgement)}</p>` : ''}
+            <div class="proposal-section-copy">
+                <h2 class="proposal-section-title">${solutionEscapeHtml(title)}</h2>
+                ${summary ? `<p class="proposal-section-summary">${solutionEscapeHtml(summary)}</p>` : ''}
+                ${judgement ? `<p class="proposal-section-judgement">${solutionEscapeHtml(judgement)}</p>` : ''}
+            </div>
         </div>
     `;
 }
@@ -1830,21 +1984,30 @@ function solutionRenderValueBoard(board) {
 }
 
 function solutionRenderHeroSection(section) {
+    const title = String(section?.title || '').trim();
+    const subtitle = solutionDistinctText(section?.subtitle, [title, section?.judgement]);
+    const judgement = solutionDistinctText(section?.judgement, [title, subtitle]);
+    const trustSignals = solutionUniqueTextValues(section?.trustSignals || [], 3).filter((item) => !solutionTextEquivalent(item, subtitle) && !solutionTextEquivalent(item, judgement));
+    const proofPoints = solutionUniqueTextValues(section?.proofPoints || [], 2).filter((item) => !solutionTextEquivalent(item, subtitle) && !solutionTextEquivalent(item, judgement));
     return `
         <section class="proposal-section proposal-hero" id="overview" data-solution-section>
             <div class="proposal-hero-grid">
                 <div class="proposal-hero-copy">
-                    <div class="proposal-hero-top">
-                        <span class="proposal-eyebrow">${solutionEscapeHtml(section.eyebrow)}</span>
-                        ${solutionRenderAudienceBadge(section.audience)}
-                        <span class="proposal-year-tag">DeepVision ${new Date().getFullYear()}</span>
+                    <div class="proposal-hero-copy-main">
+                        <div class="proposal-hero-top">
+                            <span class="proposal-eyebrow">${solutionEscapeHtml(section.eyebrow)}</span>
+                            ${solutionRenderAudienceBadge(section.audience)}
+                            <span class="proposal-year-tag">DeepVision ${new Date().getFullYear()}</span>
+                        </div>
+                        <div class="proposal-hero-copy-stack">
+                            <h1 class="proposal-hero-title">${solutionEscapeHtml(title)}</h1>
+                            ${subtitle ? `<p class="proposal-hero-subtitle">${solutionEscapeHtml(subtitle)}</p>` : ''}
+                            ${judgement ? `<p class="proposal-hero-judgement">${solutionEscapeHtml(judgement)}</p>` : ''}
+                        </div>
                     </div>
-                    <h1 class="proposal-hero-title">${solutionEscapeHtml(section.title)}</h1>
-                    ${section.subtitle ? `<p class="proposal-hero-subtitle">${solutionEscapeHtml(section.subtitle)}</p>` : ''}
-                    ${section.judgement ? `<p class="proposal-hero-judgement">${solutionEscapeHtml(section.judgement)}</p>` : ''}
-                    ${solutionNormalizeList(section.trustSignals).length ? `
+                    ${trustSignals.length ? `
                         <div class="proposal-trust-signals">
-                            ${solutionNormalizeList(section.trustSignals).map((item) => `
+                            ${trustSignals.map((item) => `
                                 <span class="proposal-trust-signal">${solutionEscapeHtml(item)}</span>
                             `).join('')}
                         </div>
@@ -1856,7 +2019,7 @@ function solutionRenderHeroSection(section) {
                         </article>
                     ` : ''}
                     <div class="proposal-proof-list">
-                        ${solutionNormalizeList(section.proofPoints).map((item) => `
+                        ${proofPoints.map((item) => `
                             <div class="proposal-proof-item">
                                 <span class="proposal-proof-dot"></span>
                                 <span>${solutionEscapeHtml(item)}</span>
@@ -2081,55 +2244,62 @@ function solutionRenderSolutionTabsSection(section) {
             ` : ''}
             <div class="proposal-tabs" data-solution-tabs>
                 <div class="proposal-tab-list" role="tablist" aria-label="落地方案模块">
-                    ${solutionNormalizeList(section.tabs).map((item, index) => `
-                        <button
-                            type="button"
-                            class="proposal-tab-button${index === 0 ? ' is-active' : ''}"
-                            data-tab-target="${solutionEscapeHtml(item.id)}"
-                            role="tab"
-                            aria-selected="${index === 0 ? 'true' : 'false'}"
-                        >
-                            ${solutionEscapeHtml(item.label)}
-                        </button>
-                    `).join('')}
+                    ${solutionNormalizeList(section.tabs).map((item, index) => {
+                        const buttonTag = solutionCompactStageTag(item.tabTag || item.tag || '', 12);
+                        return `
+                            <button
+                                type="button"
+                                class="proposal-tab-button${index === 0 ? ' is-active' : ''}"
+                                data-tab-target="${solutionEscapeHtml(item.id)}"
+                                role="tab"
+                                aria-selected="${index === 0 ? 'true' : 'false'}"
+                            >
+                                <span>${solutionEscapeHtml(item.label)}</span>
+                                ${buttonTag ? `<small>${solutionEscapeHtml(buttonTag)}</small>` : ''}
+                            </button>
+                        `;
+                    }).join('')}
                 </div>
                 <div class="proposal-tab-panels">
-                    ${solutionNormalizeList(section.tabs).map((item, index) => `
-                        <article class="proposal-tab-panel${index === 0 ? ' is-active' : ''}" id="${solutionEscapeHtml(item.id)}" role="tabpanel" ${index === 0 ? '' : 'hidden'}>
-                            <div class="proposal-tab-panel-head">
-                                <div>
-                                    <div class="proposal-tab-panel-tag">${solutionEscapeHtml(item.tag)}</div>
-                                    <h3 class="proposal-tab-panel-title">${solutionEscapeHtml(item.headline)}</h3>
-                                    <p class="proposal-tab-panel-summary">${solutionEscapeHtml(item.summary)}</p>
+                    ${solutionNormalizeList(section.tabs).map((item, index) => {
+                        const panelTag = solutionCompactStageTag(item.tag || item.tabTag || '', 16) || '关键工作流';
+                        return `
+                            <article class="proposal-tab-panel${index === 0 ? ' is-active' : ''}" id="${solutionEscapeHtml(item.id)}" role="tabpanel" ${index === 0 ? '' : 'hidden'}>
+                                <div class="proposal-tab-panel-head">
+                                    <div>
+                                        <div class="proposal-tab-panel-tag">${solutionEscapeHtml(panelTag)}</div>
+                                        <h3 class="proposal-tab-panel-title">${solutionEscapeHtml(item.headline)}</h3>
+                                        <p class="proposal-tab-panel-summary">${solutionEscapeHtml(item.summary)}</p>
+                                    </div>
+                                    <div class="proposal-meta-pills">
+                                        <span class="proposal-meta-pill">${solutionEscapeHtml(item.owner || '待定角色')}</span>
+                                        ${item.dependencies[0] ? `<span class="proposal-meta-pill">${solutionEscapeHtml(item.dependencies[0])}</span>` : ''}
+                                        ${item.deliverables[0] ? `<span class="proposal-meta-pill">${solutionEscapeHtml(item.deliverables[0])}</span>` : ''}
+                                    </div>
                                 </div>
-                                <div class="proposal-meta-pills">
-                                    <span class="proposal-meta-pill">${solutionEscapeHtml(item.owner || '待定角色')}</span>
-                                    ${item.dependencies[0] ? `<span class="proposal-meta-pill">${solutionEscapeHtml(item.dependencies[0])}</span>` : ''}
-                                    ${item.deliverables[0] ? `<span class="proposal-meta-pill">${solutionEscapeHtml(item.deliverables[0])}</span>` : ''}
-                                </div>
-                            </div>
-                            <div class="proposal-capability-grid">
-                                ${solutionNormalizeList(item.capabilities).map((card) => `
-                                    <article class="proposal-capability-card">
-                                        <div class="proposal-capability-tag">${solutionEscapeHtml(card.tag || '能力')}</div>
-                                        <h4>${solutionEscapeHtml(card.title)}</h4>
-                                        <p>${solutionEscapeHtml(card.desc)}</p>
-                                    </article>
-                                `).join('')}
-                            </div>
-                            ${solutionNormalizeList(item.metrics).length ? `
-                                <div class="proposal-tab-metrics">
-                                    ${solutionNormalizeList(item.metrics).map((metric) => `
-                                        <div class="proposal-tab-metric">
-                                            <div class="proposal-tab-metric-label">${solutionEscapeHtml(metric.metric || metric.label || '指标')}</div>
-                                            <div class="proposal-tab-metric-value">${solutionEscapeHtml(metric.target || metric.value || metric.range || '')}</div>
-                                            ${metric.note ? `<div class="proposal-tab-metric-note">${solutionEscapeHtml(metric.note)}</div>` : ''}
-                                        </div>
+                                <div class="proposal-capability-grid">
+                                    ${solutionNormalizeList(item.capabilities).map((card) => `
+                                        <article class="proposal-capability-card">
+                                            <div class="proposal-capability-tag">${solutionEscapeHtml(card.tag || '能力')}</div>
+                                            <h4>${solutionEscapeHtml(card.title)}</h4>
+                                            <p>${solutionEscapeHtml(card.desc)}</p>
+                                        </article>
                                     `).join('')}
                                 </div>
-                            ` : ''}
-                        </article>
-                    `).join('')}
+                                ${solutionNormalizeList(item.metrics).length ? `
+                                    <div class="proposal-tab-metrics">
+                                        ${solutionNormalizeList(item.metrics).map((metric) => `
+                                            <div class="proposal-tab-metric">
+                                                <div class="proposal-tab-metric-label">${solutionEscapeHtml(metric.metric || metric.label || '指标')}</div>
+                                                <div class="proposal-tab-metric-value">${solutionEscapeHtml(metric.target || metric.value || metric.range || '')}</div>
+                                                ${metric.note ? `<div class="proposal-tab-metric-note">${solutionEscapeHtml(metric.note)}</div>` : ''}
+                                            </div>
+                                        `).join('')}
+                                    </div>
+                                ` : ''}
+                            </article>
+                        `;
+                    }).join('')}
                 </div>
             </div>
         </section>
@@ -2319,22 +2489,25 @@ function solutionRenderFitSection(section) {
 function solutionRenderClosingSection(section, summaryCard) {
     if (!section?.headline && !section?.decision && !section?.boundary && !summaryCard?.title) return '';
     const hasClosingContent = Boolean(section?.headline || section?.decision || section?.boundary);
+    const headline = solutionDistinctText(section?.headline, [section?.title]);
+    const decision = solutionDistinctText(section?.decision, [headline, section?.title]);
+    const boundary = solutionDistinctText(section?.boundary, [headline, decision, section?.title]);
     return `
         <section class="proposal-section proposal-closing-section" id="closing" data-solution-section>
-            <div class="proposal-closing-shell">
+            <div class="proposal-closing-shell${hasClosingContent ? ' is-single' : ''}">
                 <div class="proposal-closing-main">
                     <div class="proposal-section-label-row">
                         <div class="proposal-closing-headline-row">
                             <span class="proposal-section-label">${solutionEscapeHtml(section?.eyebrow || '决策收束')}</span>
-                            ${section?.decision ? '<span class="proposal-closing-status">建议当前拍板</span>' : ''}
+                            ${decision ? '<span class="proposal-closing-status">建议当前拍板</span>' : ''}
                         </div>
                         ${solutionRenderEvidenceButton(section?.title || '最终建议', section?.evidenceRefs || [])}
                     </div>
                     <h2 class="proposal-section-title">${solutionEscapeHtml(section?.title || '最终建议')}</h2>
-                    ${section?.headline ? `<p class="proposal-closing-lead">${solutionEscapeHtml(section.headline)}</p>` : ''}
+                    ${headline ? `<p class="proposal-closing-lead">${solutionEscapeHtml(headline)}</p>` : ''}
                     <div class="proposal-closing">
-                        ${section?.decision ? `<p class="proposal-closing-decision">${solutionEscapeHtml(section.decision)}</p>` : ''}
-                        ${section?.boundary ? `<p class="proposal-closing-boundary">${solutionEscapeHtml(section.boundary)}</p>` : ''}
+                        ${decision ? `<p class="proposal-closing-decision">${solutionEscapeHtml(decision)}</p>` : ''}
+                        ${boundary ? `<p class="proposal-closing-boundary">${solutionEscapeHtml(boundary)}</p>` : ''}
                     </div>
                 </div>
                 ${!hasClosingContent && (summaryCard?.title || solutionNormalizeList(summaryCard?.bullets).length) ? `
@@ -2384,7 +2557,7 @@ function solutionRenderDeliverySection(section) {
                         <div class="proposal-blueprint-head">
                             <div class="proposal-section-label">${solutionEscapeHtml(blueprint.eyebrow || '推荐蓝图')}</div>
                             <h3>${solutionEscapeHtml(blueprint.title)}</h3>
-                            ${blueprint.summary ? `<p>${solutionEscapeHtml(blueprint.summary)}</p>` : ''}
+                            ${solutionDistinctText(blueprint.summary, [blueprint.title, section.summary, section.judgement]) ? `<p>${solutionEscapeHtml(solutionDistinctText(blueprint.summary, [blueprint.title, section.summary, section.judgement]))}</p>` : ''}
                         </div>
                         ${solutionRenderBlueprintFigure({ figure: blueprint.figure, cards: blueprint.cards })}
                     </div>
@@ -2393,54 +2566,65 @@ function solutionRenderDeliverySection(section) {
             ${solutionNormalizeList(section.workstreams).length ? `
                 <div class="proposal-solution-shell" data-solution-tabs>
                     <div class="proposal-tab-bar" role="tablist" aria-label="落地工作流">
-                        ${solutionNormalizeList(section.workstreams).map((item, index) => `
-                            <button
-                                type="button"
-                                class="proposal-tab-button${index === 0 ? ' is-active' : ''}"
-                                data-tab-target="delivery-${solutionEscapeHtml(item.id || `workstream-${index + 1}`)}"
-                                role="tab"
-                                aria-selected="${index === 0 ? 'true' : 'false'}"
-                            >
-                                <span>${solutionEscapeHtml(item.label || item.headline || `工作流 ${index + 1}`)}</span>
-                                ${item.tag ? `<small>${solutionEscapeHtml(item.tag)}</small>` : ''}
-                            </button>
-                        `).join('')}
+                        ${solutionNormalizeList(section.workstreams).map((item, index) => {
+                            const buttonTag = solutionCompactStageTag(item.tabTag || item.tag || '', 12);
+                            return `
+                                <button
+                                    type="button"
+                                    class="proposal-tab-button${index === 0 ? ' is-active' : ''}"
+                                    data-tab-target="delivery-${solutionEscapeHtml(item.id || `workstream-${index + 1}`)}"
+                                    role="tab"
+                                    aria-selected="${index === 0 ? 'true' : 'false'}"
+                                >
+                                    <span>${solutionEscapeHtml(item.label || item.headline || `工作流 ${index + 1}`)}</span>
+                                    ${buttonTag ? `<small>${solutionEscapeHtml(buttonTag)}</small>` : ''}
+                                </button>
+                            `;
+                        }).join('')}
                     </div>
                     <div class="proposal-tab-panels">
                         ${solutionNormalizeList(section.workstreams).map((item, index) => {
-                            const pills = solutionUniqueTextValues([
-                                item.owner,
-                                ...solutionNormalizeList(item.dependencies).slice(0, 1),
-                                ...solutionNormalizeList(item.deliverables).slice(0, 1)
-                            ], 2);
-                            const capabilities = solutionUniqueBy(
-                                solutionNormalizeList(item.capabilities),
-                                (card) => solutionTextFingerprint(`${card?.title || ''} ${card?.desc || ''}`)
-                            ).slice(0, 2);
+                            const panelContext = [item.label, item.headline, item.summary];
+                            const pills = solutionUniqueTextValues(
+                                solutionNormalizeList(item.metaPills).length
+                                    ? item.metaPills
+                                    : [
+                                        item.owner,
+                                        ...solutionNormalizeList(item.dependencies).slice(0, 1),
+                                        ...solutionNormalizeList(item.deliverables).slice(0, 1)
+                                    ],
+                                2
+                            );
+                            const capabilities = solutionNormalizeCardList(item.capabilities, panelContext, 2);
+                            const metrics = solutionNormalizeMetricList(item.metrics, panelContext.concat(capabilities.flatMap((card) => [card.title, card.desc])), 2);
+                            const panelSummary = solutionDistinctText(item.summary, [item.label, item.headline]);
+                            const panelTag = solutionCompactStageTag(item.tag || item.tabTag || '', 16) || '关键工作流';
                             return `
                                 <article class="proposal-tab-panel${index === 0 ? ' is-active' : ''}" id="delivery-${solutionEscapeHtml(item.id || `workstream-${index + 1}`)}" role="tabpanel" ${index === 0 ? '' : 'hidden'}>
                                     <div class="proposal-tab-panel-head">
                                         <div>
-                                            <div class="proposal-tab-panel-tag">${solutionEscapeHtml(item.tag || '关键工作流')}</div>
+                                            <div class="proposal-tab-panel-tag">${solutionEscapeHtml(panelTag)}</div>
                                             <h3 class="proposal-tab-panel-title">${solutionEscapeHtml(item.headline || item.label || `工作流 ${index + 1}`)}</h3>
-                                            ${item.summary ? `<p class="proposal-tab-panel-summary">${solutionEscapeHtml(item.summary)}</p>` : ''}
+                                            ${panelSummary ? `<p class="proposal-tab-panel-summary">${solutionEscapeHtml(panelSummary)}</p>` : ''}
                                         </div>
-                                        <div class="proposal-meta-pills">
+                                        <div class="proposal-meta-pills${pills.length ? '' : ' is-empty'}">
                                             ${pills.map((pill) => `<span class="proposal-meta-pill">${solutionEscapeHtml(pill)}</span>`).join('')}
                                         </div>
                                     </div>
-                                    <div class="proposal-capability-grid">
-                                        ${capabilities.map((card) => `
-                                            <article class="proposal-capability-card">
-                                                <div class="proposal-capability-tag">${solutionEscapeHtml(card.tag || '动作')}</div>
-                                                <h4>${solutionEscapeHtml(card.title)}</h4>
-                                                <p>${solutionEscapeHtml(card.desc)}</p>
-                                            </article>
-                                        `).join('')}
-                                    </div>
-                                    ${solutionNormalizeList(item.metrics).slice(0, 2).length ? `
+                                    ${capabilities.length ? `
+                                        <div class="proposal-capability-grid">
+                                            ${capabilities.map((card) => `
+                                                <article class="proposal-capability-card">
+                                                    <div class="proposal-capability-tag">${solutionEscapeHtml(card.tag || '动作')}</div>
+                                                    <h4>${solutionEscapeHtml(card.title)}</h4>
+                                                    ${card.desc ? `<p>${solutionEscapeHtml(card.desc)}</p>` : ''}
+                                                </article>
+                                            `).join('')}
+                                        </div>
+                                    ` : ''}
+                                    ${metrics.length ? `
                                         <div class="proposal-tab-metrics">
-                                            ${solutionNormalizeList(item.metrics).slice(0, 2).map((metric) => `
+                                            ${metrics.map((metric) => `
                                                 <div class="proposal-tab-metric">
                                                     <div class="proposal-tab-metric-label">${solutionEscapeHtml(metric.metric || metric.label || '指标')}</div>
                                                     <div class="proposal-tab-metric-value">${solutionEscapeHtml(metric.target || metric.value || '')}</div>
@@ -2486,12 +2670,19 @@ function solutionRenderDeliverySection(section) {
 
 function solutionRenderValueDecisionSection(section) {
     if (!section) return '';
+    const metrics = solutionNormalizeMetricList(section.metrics, [section.title, section.summary, section.judgement], 4);
+    const fitCards = solutionNormalizeCardList(section.fitCards, [section.title, section.summary, section.judgement], 3);
+    const boundaryCards = solutionNormalizeCardList(section.boundaryCards, [section.title, section.summary, section.judgement].concat(fitCards.flatMap((item) => [item.title, item.desc])), 2);
+    const fitTags = Array.from(new Set(fitCards.map((item) => String(item?.tag || '').trim()).filter(Boolean)));
+    const boundaryTags = Array.from(new Set(boundaryCards.map((item) => String(item?.tag || '').trim()).filter(Boolean)));
+    const showFitTags = fitTags.length > 1;
+    const showBoundaryTags = boundaryTags.length > 1;
     return `
         <section class="proposal-section" id="value" data-solution-section>
             ${solutionRenderSectionHead(section)}
             ${solutionRenderValueBoard(section.board)}
             <div class="proposal-value-grid">
-                ${solutionNormalizeList(section.metrics).map((item) => `
+                ${metrics.map((item) => `
                     <article class="proposal-value-card">
                         <div class="proposal-value-card-label">${solutionEscapeHtml(item.label)}</div>
                         <div class="proposal-value-card-value">${solutionEscapeHtml(item.value)}</div>
@@ -2499,24 +2690,24 @@ function solutionRenderValueDecisionSection(section) {
                     </article>
                 `).join('')}
             </div>
-            ${solutionNormalizeList(section.fitCards).length ? `
+            ${fitCards.length ? `
                 <div class="proposal-fit-grid">
-                    ${solutionNormalizeList(section.fitCards).map((item) => `
+                    ${fitCards.map((item) => `
                         <article class="proposal-fit-card">
-                            <div class="proposal-fit-tag">${solutionEscapeHtml(item.tag || '适配理由')}</div>
+                            ${showFitTags && item.tag ? `<div class="proposal-fit-tag">${solutionEscapeHtml(item.tag)}</div>` : ''}
                             <h3>${solutionEscapeHtml(item.title)}</h3>
-                            <p>${solutionEscapeHtml(item.desc)}</p>
+                            ${item.desc ? `<p>${solutionEscapeHtml(item.desc)}</p>` : ''}
                         </article>
                     `).join('')}
                 </div>
             ` : ''}
-            ${solutionNormalizeList(section.boundaryCards).length ? `
+            ${boundaryCards.length ? `
                 <div class="proposal-detail-grid">
-                    ${solutionNormalizeList(section.boundaryCards).map((item) => `
+                    ${boundaryCards.map((item) => `
                         <article class="proposal-detail-card">
-                            <div class="proposal-fit-tag">${solutionEscapeHtml(item.tag || '边界')}</div>
+                            ${showBoundaryTags && item.tag ? `<div class="proposal-fit-tag">${solutionEscapeHtml(item.tag)}</div>` : ''}
                             <h4>${solutionEscapeHtml(item.title)}</h4>
-                            <p>${solutionEscapeHtml(item.desc)}</p>
+                            ${item.desc ? `<p>${solutionEscapeHtml(item.desc)}</p>` : ''}
                         </article>
                     `).join('')}
                 </div>

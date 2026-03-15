@@ -677,6 +677,99 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertNotEqual((render_model.get('closing', {}) or {}).get('headline'), comparison_render.get('judgement'))
         self.assertNotEqual((render_model.get('closing', {}) or {}).get('decision'), comparison_render.get('judgement'))
 
+    def test_page_copy_v1_dedupes_delivery_and_value_content(self):
+        decision_brief = {
+            'core_conflicts': ['MVP验证期核心开发时间被反馈处理大量占用'],
+            'why_now': '当前需要先锁定高信号试点范围，再决定是否扩大投入。',
+            'chosen_path': {'name': '私有渠道优先切口', 'positioning': '先用私有渠道冻结边界'},
+            'delivery_support': {
+                'workstreams': [
+                    {
+                        'label': '完成数据辅助决策场景详细需求文档，Q2完成校准',
+                        'headline': 'PRD文档',
+                        'summary': 'PRD文档',
+                        'owner': '产品经理',
+                        'dependencies': ['PRD文档'],
+                        'deliverables': ['PRD文档'],
+                        'capabilities': [
+                            {'tag': '关键动作', 'title': 'PRD文档', 'desc': 'PRD文档'},
+                            {'tag': '交付物', 'title': 'PRD文档', 'desc': 'PRD文档'},
+                        ],
+                        'metrics': [
+                            {'metric': 'PRD文档', 'target': 'PRD文档', 'note': 'PRD文档'},
+                            {'metric': 'PRD文档', 'target': 'PRD文档', 'note': 'PRD文档'},
+                        ],
+                    }
+                ],
+                'phases': [],
+            },
+            'value_support': {
+                'metrics': [
+                    {'metric': '用户二次投诉率', 'target': '<5%', 'note': '前提：紧急退出机制有效运行'},
+                    {'metric': '用户二次投诉率', 'target': '<5%', 'note': '前提：紧急退出机制有效运行'},
+                ],
+                'fit_cards': [
+                    {'tag': '适配理由', 'title': '窗口期匹配', 'desc': '窗口期匹配'},
+                    {'tag': '适配理由', 'title': '窗口期匹配', 'desc': '窗口期匹配'},
+                ],
+                'boundary_cards': [
+                    {'tag': '边界', 'title': '样本偏差风险', 'desc': '先优先锁定真实样本入口'},
+                    {'tag': '边界', 'title': '二次创伤边界', 'desc': '先优先锁定真实场景触发'},
+                ],
+            },
+            'boundaries': [{'title': '样本偏差风险', 'detail': '先优先锁定真实样本入口'}],
+        }
+        page_copy = self.server.build_solution_page_copy_v1(
+            decision_brief,
+            {'overview': {'title': '为什么现在做', 'metrics': []}, 'comparison': {}},
+            {},
+            {},
+            {'headline': '先锁定试点边界', 'decision': '当前建议先批准首轮试点', 'boundary': '样本边界需要前置锁定'},
+            {},
+            {'key': 'decision_maker', 'label': '决策层视角'},
+        )
+
+        workstream = (((page_copy.get('delivery', {}) or {}).get('workstreams', []) or [{}])[0]) or {}
+        value = page_copy.get('value', {}) or {}
+        self.assertNotEqual(workstream.get('summary'), workstream.get('headline'))
+        self.assertLessEqual(len(workstream.get('metaPills', []) or []), 2)
+        self.assertLessEqual(len(workstream.get('capabilities', []) or []), 2)
+        self.assertEqual(len(workstream.get('metrics', []) or []), 1)
+        self.assertLessEqual(len(workstream.get('tabTag', '') or ''), 12)
+        self.assertNotIn('...', workstream.get('tabTag', '') or '')
+        self.assertNotIn('...', workstream.get('tag', '') or '')
+        self.assertFalse(any(
+            (item or {}).get('title') == (item or {}).get('desc')
+            for item in (workstream.get('capabilities', []) or [])
+        ))
+        self.assertEqual((value.get('metrics', []) or [{}])[0].get('target'), '<5%')
+        self.assertEqual(len(value.get('metrics', []) or []), 1)
+        self.assertEqual(len(value.get('fitCards', []) or []), 1)
+        self.assertTrue(all(not item.get('tag') for item in (value.get('boundaryCards', []) or [])))
+
+    def test_page_copy_v1_preserves_boundary_detail_from_boundaries_fallback(self):
+        decision_brief = {
+            'core_conflicts': ['高风险样本入口仍不稳定'],
+            'why_now': '当前需要先锁定边界，再决定是否扩大范围。',
+            'chosen_path': {'name': '高信号试点切口', 'positioning': '先冻结高风险入口'},
+            'delivery_support': {'workstreams': [], 'phases': []},
+            'value_support': {'metrics': [], 'fit_cards': []},
+            'boundaries': [{'title': '样本偏差风险', 'detail': '先优先锁定真实样本入口'}],
+        }
+        page_copy = self.server.build_solution_page_copy_v1(
+            decision_brief,
+            {'overview': {'title': '为什么现在做', 'metrics': []}, 'comparison': {}},
+            {},
+            {},
+            {'headline': '先锁定试点边界', 'decision': '当前建议先批准首轮试点', 'boundary': '样本边界需要前置锁定'},
+            {},
+            {'key': 'decision_maker', 'label': '决策层视角'},
+        )
+
+        boundary = ((((page_copy.get('value', {}) or {}).get('boundaryCards', []) or [{}])[0])) or {}
+        self.assertEqual(boundary.get('title'), '样本偏差风险')
+        self.assertEqual(boundary.get('desc'), '先优先锁定真实样本入口')
+
     def test_ai_prompts_include_sample_style_guidance(self):
         prompt_payload = {
             "meta": {"topic": "AI 智能体建设"},

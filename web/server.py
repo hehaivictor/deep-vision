@@ -25714,6 +25714,136 @@ def _proposal_pick_unique_copy(candidates, seen: set[str], max_len: int = 120) -
     return fallback
 
 
+def _proposal_text_equivalent(left, right) -> bool:
+    left_key = _proposal_text_fingerprint(left)
+    right_key = _proposal_text_fingerprint(right)
+    return bool(left_key and right_key and left_key == right_key)
+
+
+def _proposal_distinct_copy(value, context=None, max_len: int = 120) -> str:
+    text = clean_solution_text(value, max_len=max_len)
+    if not text:
+        return ""
+    peers = context if isinstance(context, list) else [context]
+    for peer in peers:
+        if _proposal_text_equivalent(text, peer):
+            return ""
+    return text
+
+
+def _proposal_dedupe_string_list(values, context=None, limit: int = 0, max_len: int = 64) -> list[str]:
+    items = values if isinstance(values, list) else [values]
+    seen = {
+        _proposal_text_fingerprint(item)
+        for item in (context if isinstance(context, list) else [context])
+        if _proposal_text_fingerprint(item)
+    }
+    result = []
+    for item in items:
+        text = clean_solution_text(item, max_len=max_len)
+        key = _proposal_text_fingerprint(text)
+        if not text or not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+        if limit > 0 and len(result) >= limit:
+            break
+    return result
+
+
+def _proposal_normalize_metric_entries(metrics, context=None, limit: int = 0) -> list[dict]:
+    seen = {
+        _proposal_text_fingerprint(item)
+        for item in (context if isinstance(context, list) else [context])
+        if _proposal_text_fingerprint(item)
+    }
+    result = []
+    for item in (metrics if isinstance(metrics, list) else [metrics]):
+        if not isinstance(item, dict):
+            continue
+        label = clean_solution_text(item.get("label", "") or item.get("metric", "") or "指标", max_len=20)
+        value = clean_solution_text(item.get("value", "") or item.get("target", ""), max_len=40)
+        note = clean_solution_text(item.get("note", ""), max_len=48)
+        value_key = _proposal_text_fingerprint(value)
+        note_key = _proposal_text_fingerprint(note)
+        pair_key = _proposal_text_fingerprint(f"{label} {value}")
+        if note_key and (note_key == value_key or note_key in seen):
+            note = ""
+        if not value or not pair_key or pair_key in seen:
+            continue
+        seen.add(pair_key)
+        if value_key:
+            seen.add(value_key)
+        if note_key and note:
+            seen.add(note_key)
+        result.append({
+            "metric": label,
+            "target": value,
+            "note": note,
+        })
+        if limit > 0 and len(result) >= limit:
+            break
+    return result
+
+
+def _proposal_normalize_card_entries(cards, context=None, limit: int = 0, title_max_len: int = 28, desc_max_len: int = 88) -> list[dict]:
+    seen = {
+        _proposal_text_fingerprint(item)
+        for item in (context if isinstance(context, list) else [context])
+        if _proposal_text_fingerprint(item)
+    }
+    result = []
+    for item in (cards if isinstance(cards, list) else [cards]):
+        if not isinstance(item, dict):
+            continue
+        tag = clean_solution_text(item.get("tag", ""), max_len=16)
+        title = clean_solution_text(item.get("title", ""), max_len=title_max_len)
+        desc = clean_solution_text(
+            item.get("desc", "") or item.get("detail", "") or item.get("description", "") or item.get("summary", ""),
+            max_len=desc_max_len,
+        )
+        meta = clean_solution_text(item.get("meta", ""), max_len=48)
+        title_key = _proposal_text_fingerprint(title)
+        desc_key = _proposal_text_fingerprint(desc)
+        if title_key and desc_key and title_key == desc_key:
+            desc = ""
+            desc_key = ""
+        if title_key and title_key in seen:
+            if desc_key and desc_key not in seen and tag and not _proposal_text_equivalent(tag, desc):
+                title = tag
+                title_key = _proposal_text_fingerprint(title)
+                tag = ""
+            else:
+                title = ""
+                title_key = ""
+        if desc_key and desc_key in seen:
+            desc = ""
+            desc_key = ""
+        if tag and title and _proposal_text_equivalent(tag, title):
+            tag = ""
+        if not title and desc:
+            title = clean_solution_text(tag or "补充信息", max_len=title_max_len)
+            title_key = _proposal_text_fingerprint(title)
+            tag = ""
+        merged_key = _proposal_text_fingerprint(f"{title} {desc}")
+        if not title or not merged_key or merged_key in seen:
+            continue
+        seen.add(merged_key)
+        if title_key:
+            seen.add(title_key)
+        if desc_key:
+            seen.add(desc_key)
+        result.append({
+            "title": title,
+            "desc": desc,
+            "tag": tag,
+            "meta": meta,
+        })
+        if limit > 0 and len(result) >= limit:
+            break
+    return result
+
+
 SOLUTION_PROPOSAL_INTERNAL_TERMS = (
     "proposal_brief",
     "chapter_copy",
@@ -25956,6 +26086,70 @@ def _proposal_workstream_summary(name: str, objective: str = "", fallback: str =
     else:
         text = f"围绕「{focus}」形成首轮可交付动作，再按阶段继续推进。"
     return clean_solution_text(text, max_len=max_len) or _proposal_pick_sentence(objective, fallback, max_len=max_len)
+
+
+def _proposal_workstream_stage_tag(*values, max_len: int = 12) -> str:
+    raw = " ".join(
+        clean_solution_text(item, max_len=120)
+        for item in values
+        if clean_solution_text(item, max_len=120)
+    )
+    raw = clean_solution_text(raw, max_len=0)
+    if not raw:
+        return ""
+    quarter_match = re.search(r"\bQ([1-4])\b", raw, flags=re.IGNORECASE)
+    quarter = f"Q{quarter_match.group(1)}" if quarter_match else ""
+    label = ""
+    if any(token in raw for token in ("选型", "POC")):
+        label = "选型POC"
+    elif any(token in raw for token in ("分层", "边界", "协议", "协同")):
+        label = "分层验证"
+    elif any(token in raw for token in ("接口", "契约", "工具链", "规范")):
+        label = "接口工具"
+    elif any(token in raw for token in ("迁移", "盘点", "现状")):
+        label = "迁移验证"
+    elif any(token in raw for token in ("样本", "入口", "招募")):
+        label = "入口锁定"
+    elif any(token in raw for token in ("试点", "验证", "范围冻结")):
+        label = "试点验证"
+    elif any(token in raw for token in ("价值", "复盘", "扩张")):
+        label = "价值复盘"
+    elif any(token in raw for token in ("上线", "交付", "执行")):
+        label = "交付验证"
+    elif any(token in raw for token in ("平台", "底座")):
+        label = "底座试点"
+    if quarter and label:
+        candidate = f"{quarter}{label}"
+    elif quarter:
+        candidate = f"{quarter}阶段"
+    elif label:
+        candidate = label
+    else:
+        candidate = _proposal_focus_label(raw, max_len=max_len)
+    candidate = clean_solution_text(candidate, max_len=0)
+    if not candidate or len(candidate) > max_len:
+        return ""
+    return candidate
+
+
+def _proposal_workstream_panel_tag(*values, max_len: int = 16) -> str:
+    compact_tag = _proposal_workstream_stage_tag(*values, max_len=min(max_len, 14))
+    if compact_tag:
+        return compact_tag
+    raw = " ".join(
+        clean_solution_text(item, max_len=120)
+        for item in values
+        if clean_solution_text(item, max_len=120)
+    )
+    raw = clean_solution_text(raw, max_len=0)
+    if not raw:
+        return ""
+    if any(token in raw for token in ("试点", "范围冻结", "验证")):
+        return clean_solution_text("试点执行", max_len=max_len)
+    if any(token in raw for token in ("价值", "复盘", "扩张")):
+        return clean_solution_text("阶段复盘", max_len=max_len)
+    focus = _proposal_focus_label(raw, max_len=max_len)
+    return focus if focus and len(focus) <= max_len else ""
 
 
 def _proposal_risk_action_label(text: str, fallback: str = "", max_len: int = 20) -> str:
@@ -28426,11 +28620,80 @@ def build_solution_page_copy_v1(
     for item in (delivery_support.get("workstreams", []) if isinstance(delivery_support.get("workstreams", []), list) else [])[:SOLUTION_DECISION_CONTENT_LIMITS["delivery"]["workstreams"]]:
         if not isinstance(item, dict):
             continue
+        headline = clean_solution_text(item.get("headline", ""), max_len=28) or clean_solution_text(item.get("label", ""), max_len=28) or f"关键工作流 {len(workstream_items) + 1}"
+        label = _proposal_focus_label(item.get("label", ""), max_len=16) or _proposal_focus_label(headline, max_len=16) or clean_solution_text(item.get("tag", ""), max_len=16) or f"工作流 {len(workstream_items) + 1}"
+        summary = _proposal_distinct_copy(item.get("summary", ""), [headline, label], max_len=110)
+        tab_tag = _proposal_workstream_stage_tag(
+            item.get("tag", ""),
+            item.get("timeline", ""),
+            item.get("headline", ""),
+            item.get("summary", ""),
+            item.get("label", ""),
+            max_len=12,
+        )
+        panel_tag = _proposal_workstream_panel_tag(
+            item.get("tag", ""),
+            item.get("timeline", ""),
+            item.get("headline", ""),
+            item.get("summary", ""),
+            item.get("label", ""),
+            max_len=16,
+        ) or "关键工作流"
+        pills = _proposal_dedupe_string_list(
+            [
+                item.get("owner", ""),
+                *((item.get("dependencies", []) if isinstance(item.get("dependencies", []), list) else [])[:1]),
+                *((item.get("deliverables", []) if isinstance(item.get("deliverables", []), list) else [])[:1]),
+            ],
+            context=[headline, label, summary],
+            limit=2,
+            max_len=20,
+        )
+        capabilities = _proposal_normalize_card_entries(
+            item.get("capabilities", []) if isinstance(item.get("capabilities", []), list) else [],
+            context=[headline, label, summary] + pills,
+            limit=2,
+            title_max_len=22,
+            desc_max_len=72,
+        )
+        if not capabilities:
+            fallback_cards = [
+                {
+                    "tag": "关键动作",
+                    "title": clean_solution_text(((item.get("deliverables", []) if isinstance(item.get("deliverables", []), list) else [""])[0]), max_len=22),
+                    "desc": _proposal_distinct_copy(summary, [headline], max_len=72),
+                },
+                {
+                    "tag": "验收信号",
+                    "title": clean_solution_text(((item.get("dependencies", []) if isinstance(item.get("dependencies", []), list) else [""])[0]), max_len=22),
+                    "desc": clean_solution_text(((item.get("metrics", []) if isinstance(item.get("metrics", []), list) and item.get("metrics") else [{}])[0] or {}).get("note", ""), max_len=72),
+                },
+            ]
+            capabilities = _proposal_normalize_card_entries(
+                fallback_cards,
+                context=[headline, label, summary] + pills,
+                limit=2,
+                title_max_len=22,
+                desc_max_len=72,
+            )
+        metrics = _proposal_normalize_metric_entries(
+            item.get("metrics", []) if isinstance(item.get("metrics", []), list) else [],
+            context=[headline, label, summary] + pills + [card.get("title", "") for card in capabilities] + [card.get("desc", "") for card in capabilities],
+            limit=2,
+        )
         workstream_items.append({
             **copy.deepcopy(item),
-            "capabilities": copy.deepcopy((item.get("capabilities", []) if isinstance(item.get("capabilities", []), list) else [])[:3]),
-            "metrics": copy.deepcopy((item.get("metrics", []) if isinstance(item.get("metrics", []), list) else [])[:2]),
-            "summary": clean_solution_text(item.get("summary", ""), max_len=140),
+            "label": label,
+            "tabTag": tab_tag,
+            "tag": panel_tag,
+            "headline": headline,
+            "summary": summary,
+            "owner": clean_solution_text(item.get("owner", ""), max_len=20),
+            "dependencies": copy.deepcopy((item.get("dependencies", []) if isinstance(item.get("dependencies", []), list) else [])[:1]),
+            "deliverables": copy.deepcopy((item.get("deliverables", []) if isinstance(item.get("deliverables", []), list) else [])[:1]),
+            "capabilities": capabilities,
+            "metrics": metrics,
+            "metaPills": pills,
         })
     left = comparison.get("left", {}) if isinstance(comparison.get("left", {}), dict) else {}
     tertiary = comparison.get("tertiary", {}) if isinstance(comparison.get("tertiary", {}), dict) else {}
@@ -28471,6 +28734,39 @@ def build_solution_page_copy_v1(
         "如果结果、前提和边界不能同时说清，这页就还不算方案，只算信息整理。",
         max_len=140,
     )
+    value_metrics = _proposal_normalize_metric_entries(
+        ((brief.get("value_support", {}) or {}).get("metrics", []) if isinstance(brief.get("value_support", {}), dict) else []),
+        context=[value_title, value_summary, value_judgement],
+        limit=SOLUTION_DECISION_CONTENT_LIMITS["value"]["metrics"],
+    )
+    fit_cards = _proposal_normalize_card_entries(
+        ((brief.get("value_support", {}) or {}).get("fit_cards", []) if isinstance(brief.get("value_support", {}), dict) else []),
+        context=[value_title, value_summary, value_judgement] + [metric.get("value", "") for metric in value_metrics],
+        limit=SOLUTION_DECISION_CONTENT_LIMITS["value"]["fit_cards"],
+        title_max_len=24,
+        desc_max_len=88,
+    )
+    fit_cards = [
+        {
+            **item,
+            "tag": "" if clean_solution_text(item.get("tag", ""), max_len=16) == "适配理由" else item.get("tag", ""),
+        }
+        for item in fit_cards
+    ]
+    boundary_cards = _proposal_normalize_card_entries(
+        (((brief.get("value_support", {}) or {}).get("boundary_cards", []) if isinstance(brief.get("value_support", {}), dict) and (brief.get("value_support", {}) or {}).get("boundary_cards") else (brief.get("boundaries", []) if isinstance(brief.get("boundaries", []), list) else []))),
+        context=[value_title, value_summary, value_judgement] + [metric.get("value", "") for metric in value_metrics] + [card.get("title", "") for card in fit_cards] + [card.get("desc", "") for card in fit_cards],
+        limit=SOLUTION_DECISION_CONTENT_LIMITS["value"]["boundary_cards"],
+        title_max_len=24,
+        desc_max_len=88,
+    )
+    boundary_cards = [
+        {
+            **item,
+            "tag": "" if clean_solution_text(item.get("tag", ""), max_len=16) in {"边界", "风险边界", "risk"} else item.get("tag", ""),
+        }
+        for item in boundary_cards
+    ]
     boundary_label = _proposal_boundary_label(brief.get("boundaries", []), max_items=2, max_len=18)
     risk_label = _proposal_risk_label(
         ((brief.get("boundaries", []) or [{}])[0] or {}).get("title", "") if isinstance(brief.get("boundaries", []), list) else "",
@@ -28478,16 +28774,24 @@ def build_solution_page_copy_v1(
         max_len=18,
     )
     closing_headline = unique_copy(
-        clean_solution_text((closing_block or {}).get("headline", ""), max_len=96),
+        clean_solution_text((closing_block or {}).get("headline", ""), max_len=88),
         f"当前更适合先完成「{focus}」首轮试点，再决定是否扩大投入。",
-        max_len=96,
+        max_len=88,
     )
-    closing_decision = unique_copy(
+    closing_decision = _proposal_distinct_copy(
+        clean_solution_text((closing_block or {}).get("decision", ""), max_len=96),
+        [closing_headline, comparison_judgement, comparison_title],
+        max_len=96,
+    ) or unique_copy(
         clean_solution_text((closing_block or {}).get("decision", ""), max_len=96),
         f"当前建议先批准「{focus}」首轮试点，并冻结第二阶段投入边界。",
         max_len=96,
     )
-    closing_boundary = unique_copy(
+    closing_boundary = _proposal_distinct_copy(
+        clean_solution_text((closing_block or {}).get("boundary", ""), max_len=110),
+        [closing_headline, closing_decision, comparison_judgement, comparison_title],
+        max_len=110,
+    ) or unique_copy(
         clean_solution_text((closing_block or {}).get("boundary", ""), max_len=110),
         _proposal_boundary_sentence(
             boundary_label,
@@ -28502,7 +28806,7 @@ def build_solution_page_copy_v1(
         "overview": {
             "eyebrow": clean_solution_text(overview.get("eyebrow", ""), max_len=24) or "方案判断",
             "title": overview_title,
-            "subtitle": clean_solution_text(overview.get("subtitle", ""), max_len=180),
+            "subtitle": _proposal_distinct_copy(overview.get("subtitle", ""), [overview_title, overview_judgement], max_len=160),
             "judgement": overview_judgement,
             "insightLine": clean_solution_text(brief.get("insight_line", ""), max_len=120),
             "trustSignals": _proposal_compact_sentences(brief.get("trust_signals", []), max_items=3, max_len=56),
@@ -28551,10 +28855,10 @@ def build_solution_page_copy_v1(
             "title": value_title,
             "summary": value_summary,
             "judgement": value_judgement,
-            "metrics": copy.deepcopy((brief.get("value_support", {}) or {}).get("metrics", [])[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["metrics"]] if isinstance(brief.get("value_support", {}), dict) else []),
+            "metrics": value_metrics,
             "board": copy.deepcopy(value_board if isinstance(value_board, dict) else {}),
-            "fitCards": copy.deepcopy((brief.get("value_support", {}) or {}).get("fit_cards", [])[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["fit_cards"]] if isinstance(brief.get("value_support", {}), dict) else []),
-            "boundaryCards": copy.deepcopy(((brief.get("value_support", {}) or {}).get("boundary_cards", [])[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["boundary_cards"]] if isinstance(brief.get("value_support", {}), dict) and (brief.get("value_support", {}) or {}).get("boundary_cards") else (brief.get("boundaries", []) if isinstance(brief.get("boundaries", []), list) else [])[:SOLUTION_DECISION_CONTENT_LIMITS["value"]["boundary_cards"]])),
+            "fitCards": fit_cards,
+            "boundaryCards": boundary_cards,
             "evidenceRefs": _proposal_unique_refs([brief.get("value_points", []), brief.get("fit_reasons", []), brief.get("boundaries", [])], limit=8),
         },
         "closing": {
