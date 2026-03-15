@@ -738,6 +738,7 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertLessEqual(len(workstream.get('tabTag', '') or ''), 12)
         self.assertNotIn('...', workstream.get('tabTag', '') or '')
         self.assertNotIn('...', workstream.get('tag', '') or '')
+        self.assertNotIn('关键工作流', workstream.get('tag', '') or '')
         self.assertFalse(any(
             (item or {}).get('title') == (item or {}).get('desc')
             for item in (workstream.get('capabilities', []) or [])
@@ -746,6 +747,20 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertEqual(len(value.get('metrics', []) or []), 1)
         self.assertEqual(len(value.get('fitCards', []) or []), 1)
         self.assertTrue(all(not item.get('tag') for item in (value.get('boundaryCards', []) or [])))
+
+    def test_workstream_tags_do_not_fallback_to_incomplete_sentences(self):
+        stage_tag = self.server._proposal_workstream_stage_tag(
+            'T+3天基于用户行为信号的访',
+            '基于用户行为信号的访谈时机预测',
+            max_len=12,
+        )
+        panel_tag = self.server._proposal_workstream_panel_tag(
+            'T+5天高仿真模拟器+录屏回',
+            '高仿真模拟器+录屏回溯双模式',
+            max_len=16,
+        )
+        self.assertEqual(stage_tag, '')
+        self.assertEqual(panel_tag, '')
 
     def test_page_copy_v1_preserves_boundary_detail_from_boundaries_fallback(self):
         decision_brief = {
@@ -781,6 +796,152 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertIn('研发学习成本高', label)
         self.assertNotIn('[{', label)
         self.assertNotIn('TITLE', label.upper())
+
+    def test_proposal_business_sentence_cleans_report_fragments_and_stringified_objects(self):
+        dirty_sentence = "要解决「交易支付环节风控体验研究」，但仍受「3.4.1资源分配策略|约束维度|具体限制|应对策略|:----」限制"
+        dirty_structured = "[{'TITLE':'研发学习成本高','DETAIL':'真实被拦截用户招募困难、样本偏差高、通过多渠道...'}]"
+
+        cleaned_sentence = self.server._proposal_business_sentence(dirty_sentence, max_len=120)
+        cleaned_structured = self.server._proposal_business_sentence(dirty_structured, max_len=120)
+        boundary_label = self.server._proposal_boundary_label(dirty_structured, max_items=2, max_len=16)
+
+        self.assertNotIn('3.4.1', cleaned_sentence)
+        self.assertNotIn('|', cleaned_sentence)
+        self.assertNotIn('应对策略', cleaned_sentence)
+        self.assertNotIn('[{', cleaned_structured)
+        self.assertNotIn('TITLE', cleaned_structured.upper())
+        self.assertIn('研发学习成本高', cleaned_structured)
+        self.assertEqual(boundary_label, '研发学习成本高')
+
+    def test_page_copy_v1_cleans_urgency_fragments_and_boundary_meta(self):
+        decision_brief = {
+            'core_conflicts': ['要解决「交易支付环节风控体验研究」，但仍受「3.4.1资源分配策略|约束维度|具体限制|应对策略|:----」限制'],
+            'why_now': '当前需要先锁定边界，再决定是否扩大范围。',
+            'chosen_path': {'name': '高信号试点切口', 'positioning': '先冻结高风险入口'},
+            'delivery_support': {'workstreams': [], 'phases': []},
+            'value_support': {'metrics': [], 'fit_cards': []},
+            'boundaries': ["[{'TITLE':'研发学习成本高','DETAIL':'真实被拦截用户招募困难、样本偏差高、通过多渠道...'}]"],
+        }
+        page_copy = self.server.build_solution_page_copy_v1(
+            decision_brief,
+            {'overview': {'title': '为什么现在做', 'metrics': []}, 'comparison': {}},
+            {},
+            {},
+            {'headline': '先锁定试点边界', 'decision': '当前建议先批准首轮试点', 'boundary': '样本边界需要前置锁定'},
+            {},
+            {'key': 'decision_maker', 'label': '决策层视角'},
+        )
+
+        urgency_cards = ((page_copy.get('urgency', {}) or {}).get('cards', []) or [])
+        structural = (urgency_cards[0] if len(urgency_cards) > 0 else {}) or {}
+        delay = (urgency_cards[2] if len(urgency_cards) > 2 else {}) or {}
+
+        self.assertNotIn('3.4.1', structural.get('desc', ''))
+        self.assertNotIn('|', structural.get('desc', ''))
+        self.assertNotIn('应对策略', structural.get('desc', ''))
+        self.assertNotIn('[{', delay.get('meta', ''))
+        self.assertNotIn('TITLE', delay.get('meta', '').upper())
+        self.assertEqual(delay.get('meta'), '研发学习成本高')
+
+    def test_page_copy_v1_prefers_compact_titles_for_long_focus_labels(self):
+        decision_brief = {
+            'one_thesis': '为什么现在要先锁定「验证微信群/企业微信私有数据接入技术可行性」',
+            'why_now': '当前需要先锁定试点边界，再决定是否扩大投入。',
+            'core_conflicts': ['当前团队同时承受协同、资源和历史包袱压力。'],
+            'chosen_path': {
+                'name': '验证微信群/企业微信私有数据接入技术可行性',
+                'positioning': '先验证企业微信私有数据接入可行性',
+            },
+            'delivery_support': {'workstreams': [], 'phases': []},
+            'value_support': {'metrics': [], 'fit_cards': []},
+            'boundaries': [{'title': '资源受限', 'detail': '需要先锁定样本和边界'}],
+        }
+        page_copy = self.server.build_solution_page_copy_v1(
+            decision_brief,
+            {'overview': {'title': '为什么现在要先锁定「验证微信群/企业微信私有数据接入技术可行性」', 'metrics': []}, 'comparison': {}},
+            {},
+            {},
+            {'headline': '当前更适合围绕「微信私域接入」完成首轮闭环', 'decision': '先批准首轮试点', 'boundary': '资源受限需要先锁定'},
+            {},
+            {'key': 'decision_maker', 'label': '决策层视角'},
+        )
+
+        overview = page_copy.get('overview', {}) or {}
+        comparison = page_copy.get('comparison', {}) or {}
+        delivery = page_copy.get('delivery', {}) or {}
+        value = page_copy.get('value', {}) or {}
+        closing = page_copy.get('closing', {}) or {}
+
+        self.assertEqual(overview.get('title'), '为什么先做「微信私域接入」')
+        self.assertNotIn('技术可行性', overview.get('title', ''))
+        self.assertNotIn('...', overview.get('title', ''))
+        self.assertLessEqual(len(overview.get('title', '')), 20)
+        self.assertLessEqual(len(comparison.get('title', '')), 18)
+        self.assertLessEqual(len(delivery.get('title', '')), 18)
+        self.assertLessEqual(len(value.get('title', '')), 18)
+        self.assertLessEqual(len(closing.get('headline', '')), 20)
+
+    def test_solution_page_copy_main_fields_do_not_include_ellipsis(self):
+        decision_brief = {
+            'one_thesis': '推荐路径：验证微信群/企业微信私有数据接入技术可行性优先',
+            'why_now': '当前需要先验证微信群/企业微信私有数据接入技术可行性，再决定是否扩大投入。',
+            'core_conflicts': ['当前团队同时承受人才短缺、算力受限和历史迁移压力。'],
+            'chosen_path': {
+                'name': '验证微信群/企业微信私有数据接入技术可行性优先路径',
+                'positioning': '围绕验证微信群/企业微信私有数据接入技术可行性先做首轮试点，再按阶段验证扩张边界',
+                'decision': 'recommended',
+            },
+            'alternatives': [
+                {
+                    'name': '保守路径',
+                    'positioning': '先做方向判断，暂不进入完整方案评审',
+                    'decision': 'alternative',
+                },
+                {
+                    'name': '验证微信群/企业微信私有数据接入技术可行性优先路径',
+                    'positioning': '围绕验证微信群/企业微信私有数据接入技术可行性先做首轮试点，再按阶段验证扩张边界',
+                    'decision': 'recommended',
+                    'fit_for': '目标明确，准备进入试点评审的团队',
+                },
+            ],
+            'delivery_support': {
+                'workstreams': [
+                    {
+                        'name': '验证微信群/企业微信私有数据接入技术可行性',
+                        'objective': '先验证微信群/企业微信私有数据接入技术可行性，再决定是否扩大投入',
+                        'key_actions': ['验证微信群/企业微信私有数据接入技术可行性'],
+                        'deliverables': ['验证微信群/企业微信私有数据接入技术可行性说明'],
+                        'acceptance_signals': ['验证微信群/企业微信私有数据接入技术可行性完成'],
+                    }
+                ],
+                'phases': [],
+            },
+            'value_support': {'metrics': [], 'fit_cards': []},
+            'boundaries': [{'title': '资源受限', 'detail': '需要先锁定样本和边界'}],
+        }
+        page_copy = self.server.build_solution_page_copy_v1(
+            decision_brief,
+            {'overview': {'title': '推荐路径：验证微信群/企业微信私有数据接入技术可行性优先', 'metrics': []}, 'comparison': {}},
+            {},
+            {},
+            {'headline': '先围绕微信私域接入完成首轮闭环，再决定是否扩大投入', 'decision': '先批准首轮试点', 'boundary': '资源受限需要先锁定'},
+            {},
+            {'key': 'decision_maker', 'label': '决策层视角'},
+        )
+
+        overview = page_copy.get('overview', {}) or {}
+        comparison = page_copy.get('comparison', {}) or {}
+        delivery = page_copy.get('delivery', {}) or {}
+        closing = page_copy.get('closing', {}) or {}
+        workstream = (((delivery.get('workstreams', []) or [{}])[0])) or {}
+
+        self.assertNotIn('...', overview.get('title', ''))
+        self.assertNotIn('...', comparison.get('title', ''))
+        self.assertNotIn('...', ((comparison.get('right', {}) or {}).get('title', '')))
+        self.assertNotIn('...', ((comparison.get('right', {}) or {}).get('desc', '')))
+        self.assertNotIn('...', workstream.get('tabTag', '') or '')
+        self.assertNotIn('...', workstream.get('tag', '') or '')
+        self.assertNotIn('...', closing.get('headline', ''))
 
     def test_ai_prompts_include_sample_style_guidance(self):
         prompt_payload = {

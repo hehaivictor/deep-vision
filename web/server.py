@@ -17,6 +17,7 @@ Deep Vision Web Server - AI 驱动版本
 import base64
 import copy
 import atexit
+import ast
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
@@ -23701,7 +23702,7 @@ def clean_solution_text(value: object, max_len: int = 0) -> str:
     text = text.replace("**", "").replace("__", "").replace("`", "")
     text = re.sub(r"\s+", " ", text).strip(" \t\r\n-—|:：；;，。,.")
     if max_len and len(text) > max_len:
-        text = text[:max_len].rstrip("，。,.;；：:!?？！ ") + "..."
+        text = text[:max_len].rstrip("，。,.;；：:!?？！ ")
     return text
 
 
@@ -23807,7 +23808,7 @@ def compact_solution_term(value: object, max_len: int = 0) -> str:
             text = tail
 
     if max_len and len(text) > max_len:
-        text = text[:max_len].rstrip("，。,.;；：:!?？！ ") + "..."
+        text = text[:max_len].rstrip("，。,.;；：:!?？！ ")
     return text or clean_solution_text(value, max_len=max_len)
 
 
@@ -25641,7 +25642,7 @@ def _proposal_compact_sentences(values, max_items: int = 4, max_len: int = 120) 
         else:
             texts = [value]
         for raw_text in texts:
-            text = clean_solution_text(raw_text, max_len=max_len)
+            text = _proposal_business_sentence(raw_text, max_len=max_len) or clean_solution_text(raw_text, max_len=max_len)
             if not text:
                 continue
             key = re.sub(r"\s+", "", text.lower())
@@ -25879,6 +25880,14 @@ _PROPOSAL_FOCUS_REPLACEMENTS = (
     ("混合云架构", "混合云能力"),
     ("混合云资源调度能力", "混合云能力"),
     ("企业微信 + ERP/CRM 全面打通", "系统打通"),
+    ("验证微信群/企业微信私有数据接入技术可行性", "微信私域接入"),
+    ("微信群/企业微信私有数据接入技术可行性", "微信私域接入"),
+    ("微信群/企业微信私有数据接入", "微信私域接入"),
+    ("企业微信私有数据接入技术可行性", "微信私域接入"),
+    ("企业微信私有数据接入", "微信私域接入"),
+    ("自动抓取应用商店、社交媒体、微信群等多源反馈", "多源反馈采集"),
+    ("自动抓取应用商店、社交媒体、微信群等多源", "多源反馈采集"),
+    ("数据辅助决策场景详细需求文档", "数据决策方案"),
 )
 
 _PROPOSAL_SENTENCE_REPLACEMENTS = (
@@ -25929,9 +25938,16 @@ def _proposal_focus_label(value: str, max_len: int = 18) -> str:
         text = quoted.group(1)
     for source, target in _PROPOSAL_FOCUS_REPLACEMENTS:
         text = text.replace(source, target)
+    if "私有数据接入" in text:
+        text = "微信私域接入"
+    elif "应用商店" in text and ("微信群" in text or "社交媒体" in text):
+        text = "多源反馈采集"
+    elif "内容核查" in text and ("准确率" in text or "评估" in text):
+        text = "内容核查"
     text = re.sub(r"（[^）]{0,24}）", "", text)
     text = re.sub(r"\([^)]{0,24}\)", "", text)
-    text = re.sub(r"(优先建设路径|优先路径|优先建设|建设路径|落地方案|落地|方案|路径|工作流|模块)$", "", text).strip("「」 ")
+    text = re.sub(r"^(验证|完成|确认|设计|建立|搭建|推进|评估|调研|自动抓取|抓取|锁定|围绕|优先)\s*", "", text)
+    text = re.sub(r"(技术可行性|可行性评估|可行性|详细需求文档|需求文档|文档|准确率评估|评估模块|优先建设路径|优先路径|优先建设|建设路径|落地方案|落地|方案|路径|工作流|模块)$", "", text).strip("「」 ")
     text = re.sub(r"\s+", "", text)
     return clean_solution_text(text, max_len=max_len)
 
@@ -25942,8 +25958,13 @@ def _proposal_topic_label(value, max_len: int = 18) -> str:
         return ""
     for source, target in _PROPOSAL_FOCUS_REPLACEMENTS:
         text = text.replace(source, target)
+    if "私有数据接入" in text:
+        text = "微信私域接入"
+    elif "应用商店" in text and ("微信群" in text or "社交媒体" in text):
+        text = "多源反馈采集"
     text = text.replace("交互式访谈", "").replace("深度访谈", "")
-    text = re.sub(r"(需求调研|调研报告|访谈报告|报告|摘要|方案)$", "", text).strip("「」 ")
+    text = re.sub(r"^(验证|完成|确认|设计|建立|搭建|推进|评估|调研|自动抓取|抓取)\s*", "", text)
+    text = re.sub(r"(需求调研|调研报告|访谈报告|报告|摘要|方案|技术可行性|可行性评估|可行性|详细需求文档|需求文档|文档|准确率评估)$", "", text).strip("「」 ")
     text = re.sub(r"\s+", "", text)
     if "智能体" in text and "建设" not in text:
         if "AI智能体" in text:
@@ -25956,8 +25977,60 @@ def _proposal_topic_label(value, max_len: int = 18) -> str:
 
 
 def _proposal_boundary_label(value, max_items: int = 3, max_len: int = 28) -> str:
-    raw_values = value if isinstance(value, list) else [value]
-    text = clean_solution_text("；".join([clean_solution_text(item, max_len=160) for item in raw_values if clean_solution_text(item, max_len=160)]), max_len=240)
+    parsed = _proposal_parse_structured_string(value) if isinstance(value, str) else None
+    raw_values = parsed if isinstance(parsed, list) else ([parsed] if isinstance(parsed, dict) else (value if isinstance(value, list) else [value]))
+    structured_labels = []
+    serialized = []
+    for item in raw_values:
+        nested = _proposal_parse_structured_string(item) if isinstance(item, str) else None
+        if isinstance(nested, dict):
+            item = nested
+        elif isinstance(nested, list):
+            for nested_item in nested[:max_items]:
+                if isinstance(nested_item, dict):
+                    preferred = clean_solution_text(
+                        _proposal_mapping_value(nested_item, "title", "headline", "label", "name"),
+                        max_len=48,
+                    )
+                    if preferred:
+                        structured_labels.append(preferred)
+                    joined = "；".join(
+                        clean_solution_text(_proposal_mapping_value(nested_item, key), max_len=120)
+                        for key in ("title", "headline", "label", "name", "detail", "desc", "description", "metric", "value")
+                        if clean_solution_text(_proposal_mapping_value(nested_item, key), max_len=120)
+                    )
+                    if joined:
+                        serialized.append(joined)
+            continue
+        if isinstance(item, dict):
+            preferred = clean_solution_text(
+                _proposal_mapping_value(item, "title", "headline", "label", "name"),
+                max_len=48,
+            )
+            if preferred:
+                structured_labels.append(preferred)
+            joined = "；".join(
+                clean_solution_text(_proposal_mapping_value(item, key), max_len=120)
+                for key in ("title", "headline", "label", "name", "detail", "desc", "description", "metric", "value")
+                if clean_solution_text(_proposal_mapping_value(item, key), max_len=120)
+            )
+            if joined:
+                serialized.append(joined)
+            continue
+        cleaned = clean_solution_text(item, max_len=160)
+        if cleaned:
+            serialized.append(cleaned)
+    if structured_labels:
+        labels = []
+        for item in structured_labels:
+            label = _proposal_risk_label(item, "", max_len=10) or clean_solution_text(item, max_len=10)
+            if label and label not in labels:
+                labels.append(label)
+            if len(labels) >= max_items:
+                break
+        if labels:
+            return clean_solution_text("、".join(labels), max_len=max_len) or "边界条件"
+    text = clean_solution_text("；".join(serialized), max_len=240)
     if not text:
         return "边界条件"
     parts = [item.strip("，。、；; ") for item in re.split(r"[；;]", text) if item.strip("，。、；; ")]
@@ -26125,7 +26198,7 @@ def _proposal_workstream_stage_tag(*values, max_len: int = 12) -> str:
     elif label:
         candidate = label
     else:
-        candidate = _proposal_focus_label(raw, max_len=max_len)
+        candidate = ""
     candidate = clean_solution_text(candidate, max_len=0)
     if not candidate or len(candidate) > max_len:
         return ""
@@ -26148,8 +26221,15 @@ def _proposal_workstream_panel_tag(*values, max_len: int = 16) -> str:
         return clean_solution_text("试点执行", max_len=max_len)
     if any(token in raw for token in ("价值", "复盘", "扩张")):
         return clean_solution_text("阶段复盘", max_len=max_len)
-    focus = _proposal_focus_label(raw, max_len=max_len)
-    return focus if focus and len(focus) <= max_len else ""
+    if any(token in raw for token in ("交付", "上线", "执行")):
+        return clean_solution_text("交付验证", max_len=max_len)
+    if any(token in raw for token in ("接口", "契约", "工具链", "规范")):
+        return clean_solution_text("接口工具", max_len=max_len)
+    if any(token in raw for token in ("样本", "入口", "招募")):
+        return clean_solution_text("入口锁定", max_len=max_len)
+    if any(token in raw for token in ("平台", "底座")):
+        return clean_solution_text("底座试点", max_len=max_len)
+    return ""
 
 
 def _proposal_risk_action_label(text: str, fallback: str = "", max_len: int = 20) -> str:
@@ -26525,7 +26605,55 @@ def _proposal_stage_label(values) -> str:
     return "当前阶段"
 
 
+def _proposal_parse_structured_string(value):
+    text = str(value or "").strip()
+    if not text or text[:1] not in "[{":
+        return None
+    lowered = text.lower()
+    if not any(token in lowered for token in ("title", "detail", "desc", "description", "label", "name", "headline", "metric", "value")):
+        return None
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(text)
+        except Exception:
+            continue
+        if isinstance(parsed, (dict, list)):
+            return parsed
+    return None
+
+
+def _proposal_mapping_value(mapping, *keys):
+    if not isinstance(mapping, dict):
+        return ""
+    normalized = {str(key).lower(): value for key, value in mapping.items()}
+    for key in keys:
+        value = normalized.get(str(key).lower())
+        if value not in (None, ""):
+            return value
+    return ""
+
+
 def _proposal_business_sentence(value, max_len: int = 100) -> str:
+    parsed = _proposal_parse_structured_string(value) if isinstance(value, str) else None
+    if isinstance(parsed, dict):
+        value = "；".join(
+            clean_solution_text(_proposal_mapping_value(parsed, key), max_len=max_len * 2)
+            for key in ("title", "headline", "label", "name", "detail", "desc", "description", "metric", "value")
+            if clean_solution_text(_proposal_mapping_value(parsed, key), max_len=max_len * 2)
+        )
+    elif isinstance(parsed, list):
+        value = "；".join(
+            clean_solution_text(
+                " ".join(
+                    clean_solution_text(_proposal_mapping_value(item, key), max_len=max_len)
+                    for key in ("title", "headline", "label", "name", "detail", "desc", "description", "metric", "value")
+                    if clean_solution_text(_proposal_mapping_value(item, key), max_len=max_len)
+                ),
+                max_len=max_len * 2,
+            )
+            for item in parsed[:3]
+            if isinstance(item, dict)
+        )
     text = clean_solution_text(value, max_len=max_len * 4)
     if not text:
         return ""
@@ -26535,8 +26663,18 @@ def _proposal_business_sentence(value, max_len: int = 100) -> str:
         text = text.replace(source, target)
     text = re.sub(r"证据\s*Q[\d、, ]+", "", text)
     text = re.sub(r"Q\d+(?:、Q\d+)*", "", text)
+    text = re.sub(r"\b\d+(?:\.\d+){1,4}(?=[^\d]|$)", "", text)
+    text = re.sub(r"\|[-:：…。．\s]+\|?", "", text)
+    text = re.sub(r"[|｜]+", "，", text)
+    text = re.sub(r"[‘’“”\"'`]+", "", text)
+    text = re.sub(r"(具体限制|应对策略|约束维度|风险维度|策略维度)", "", text)
+    text = re.sub(r"[\[\]\{\}]", "", text)
+    text = re.sub(r"\b(?:title|detail|desc|description|metric|value|label|name|headline)\b\s*[:：]", "", text, flags=re.IGNORECASE)
     text = re.sub(r"[·•]+", "，", text)
+    text = re.sub(r"[：:]-{2,}", "，", text)
+    text = re.sub(r"[…]{2,}", "，", text)
     text = re.sub(r"\s+", "", text)
+    text = re.sub(r"，{2,}", "，", text)
     text = text.strip("，。；; ")
     return clean_solution_text(text, max_len=max_len)
 
@@ -26675,6 +26813,37 @@ def _proposal_pick_focus_label(value, fallback="", max_len: int = 18) -> str:
     if _proposal_has_hard_technical_terms(raw) and fallback_text:
         return fallback_text
     return candidate or fallback_text
+
+
+def _proposal_compact_heading(value, fallback="", focus_fallback="", max_len: int = 28, mode: str = "generic") -> str:
+    raw = clean_solution_text(value, max_len=max_len * 6)
+    fallback_raw = clean_solution_text(fallback, max_len=max_len * 4)
+    focus = (
+        _proposal_pick_focus_label(raw, "", max_len=min(18, max_len))
+        or _proposal_pick_focus_label(focus_fallback, "", max_len=min(18, max_len))
+        or _proposal_topic_label(raw, max_len=min(18, max_len))
+        or _proposal_topic_label(fallback_raw, max_len=min(18, max_len))
+    )
+    fallback_short = _proposal_pick_heading(fallback_raw, "", max_len=max_len)
+    direct = _proposal_pick_heading(raw, fallback_short, max_len=max_len)
+    raw_is_noisy = any(token in raw for token in ("技术可行性", "详细需求文档", "需求文档", "准确率评估", "可行性评估"))
+    if direct and len(direct) <= max_len and "..." not in direct and not raw_is_noisy and not any(token in direct for token in ("技术可行性", "详细需求文档", "准确率评估")):
+        return direct
+    if focus:
+        templates = {
+            "hero": [f"为什么先做「{focus}」", f"先锁定「{focus}」", f"「{focus}」优先路径"],
+            "urgency": [f"为什么现在先锁定「{focus}」", f"不先锁定「{focus}」，投入会更散"],
+            "comparison": [f"为什么选「{focus}」这条路", f"「{focus}」优先路径"],
+            "delivery": [f"怎么把「{focus}」真正落下去", f"先把「{focus}」压成执行链"],
+            "value": [f"为什么「{focus}」值得先做", "值不值得做，只看这几个结果"],
+            "closing": [f"先围绕「{focus}」完成首轮闭环", f"先把「{focus}」做成可执行闭环"],
+            "generic": [f"为什么先做「{focus}」", f"先锁定「{focus}」"],
+        }
+        for candidate in templates.get(mode, templates["generic"]):
+            text = clean_solution_text(candidate, max_len=max_len)
+            if text and len(text) <= max_len:
+                return text
+    return fallback_short or clean_solution_text(raw, max_len=max_len)
 
 
 def _proposal_pick_metric_label(value, fallback="关键指标", max_len: int = 18) -> str:
@@ -27060,12 +27229,15 @@ def _finalize_solution_payload_for_delivery(payload: dict, snapshot: dict, sourc
 def _proposal_meta_label(value, max_len: int = 32) -> str:
     def collect_parts(raw) -> list[str]:
         if isinstance(raw, str):
+            parsed = _proposal_parse_structured_string(raw)
+            if parsed is not None:
+                return collect_parts(parsed)
             text = clean_solution_text(raw, max_len=max_len * 3)
             return [text] if text else []
         if isinstance(raw, dict):
             parts: list[str] = []
             for key in ("title", "label", "name", "headline", "tag", "detail", "desc", "description", "metric", "value"):
-                part = clean_solution_text(raw.get(key, ""), max_len=max_len * 2)
+                part = clean_solution_text(_proposal_mapping_value(raw, key), max_len=max_len * 2)
                 if part:
                     parts.append(part)
             return parts[:3]
@@ -27621,32 +27793,32 @@ def build_solution_headline_candidates(context: dict, audience_profile: dict, pr
     boundary = clean_solution_text(boundary_label, max_len=24)
     candidate_defs = [
         ("decision", f"为什么当前先做「{focus}」"),
-        ("outcome", f"围绕「{focus}」把「{topic}」推进到首轮试点"),
-        ("constraint", f"在「{boundary or pain_point}」约束下，优先锁定「{focus}」"),
-        ("roadmap", f"先完成「{focus}」试点，再决定「{topic}」扩张范围"),
-        ("vision", f"让「{topic}」从单次判断走向可复用闭环"),
-        ("opportunity", f"把「{focus}」做成「{topic}」的能力入口"),
+        ("outcome", f"先把「{focus}」做成首轮试点"),
+        ("constraint", f"在「{boundary or pain_point}」前提下，先锁定「{focus}」"),
+        ("roadmap", f"先完成「{focus}」，再决定是否扩张"),
+        ("vision", f"让「{focus}」进入可复用闭环"),
+        ("opportunity", f"把「{focus}」做成能力入口"),
     ]
     if audience_key == "execution":
         candidate_defs = [
-            ("roadmap", f"先锁定「{focus}」，再推进首轮试点执行"),
-            ("constraint", f"围绕「{focus}」冻结依赖、边界和交付节奏"),
+            ("roadmap", f"先锁定「{focus}」，再推进首轮试点"),
+            ("constraint", f"围绕「{focus}」冻结依赖和边界"),
             ("decision", f"当前先做「{focus}」而不是扩大全量范围"),
-            ("outcome", f"把「{focus}」接成可交付的首轮闭环"),
-            ("vision", f"让「{topic}」进入可执行试点"),
-            ("opportunity", f"从「{focus}」切入，先完成首轮交付验证"),
+            ("outcome", f"把「{focus}」接成首轮闭环"),
+            ("vision", f"让「{focus}」进入可执行试点"),
+            ("opportunity", f"从「{focus}」切入，先完成首轮验证"),
         ]
     elif audience_key == "manager":
         candidate_defs = [
-            ("decision", f"先围绕「{focus}」统一推进节奏，再决定扩张"),
-            ("roadmap", f"把「{focus}」做成第一阶段共识，再扩到「{topic}」"),
-            ("constraint", f"在「{boundary or pain_point}」前提下，优先锁定「{focus}」"),
-            ("outcome", f"围绕「{focus}」形成可协同的首轮闭环"),
-            ("vision", f"让「{topic}」从分散推进转向统一路径"),
+            ("decision", f"先围绕「{focus}」统一节奏"),
+            ("roadmap", f"把「{focus}」做成第一阶段共识"),
+            ("constraint", f"在「{boundary or pain_point}」前提下，先锁定「{focus}」"),
+            ("outcome", f"围绕「{focus}」形成首轮闭环"),
+            ("vision", f"让「{focus}」从分散推进转向统一路径"),
             ("opportunity", f"从「{focus}」进入，先把试点节奏跑顺"),
         ]
     if secondary:
-        candidate_defs.append(("pair", f"把「{focus}」与「{secondary}」接成首轮闭环"))
+        candidate_defs.append(("pair", f"把「{focus}」和「{secondary}」接成闭环"))
     candidates = []
     seen = set()
     for mode, text in candidate_defs:
@@ -28569,10 +28741,10 @@ def build_solution_page_copy_v1(
         return _proposal_pick_unique_copy(list(candidates), used_primary_copy, max_len=max_len)
 
     overview_title = unique_copy(
-        _proposal_pick_heading(overview.get("title", ""), brief.get("one_thesis", ""), max_len=32),
-        _proposal_pick_heading(brief.get("one_thesis", ""), "", max_len=32),
-        f"先定清「{focus}」的试点判断",
-        max_len=32,
+        _proposal_compact_heading(overview.get("title", ""), brief.get("one_thesis", ""), focus_fallback=focus, max_len=20, mode="hero"),
+        _proposal_compact_heading(brief.get("one_thesis", ""), "", focus_fallback=focus, max_len=20, mode="hero"),
+        f"为什么先做「{focus}」",
+        max_len=20,
     )
     overview_judgement = unique_copy(
         clean_solution_text(brief.get("one_thesis", ""), max_len=160),
@@ -28581,10 +28753,10 @@ def build_solution_page_copy_v1(
         max_len=160,
     )
     urgency_title = unique_copy(
-        f"为什么现在要先锁定「{focus}」",
-        f"不先锁定「{focus}」，投入会更散",
-        "为什么这件事必须现在定",
-        max_len=28,
+        _proposal_compact_heading(f"为什么现在要先锁定「{focus}」", "", focus_fallback=focus, max_len=18, mode="urgency"),
+        _proposal_compact_heading(f"不先锁定「{focus}」，投入会更散", "", focus_fallback=focus, max_len=18, mode="urgency"),
+        "为什么现在做",
+        max_len=18,
     )
     urgency_summary = clean_solution_text(brief.get("why_now", ""), max_len=140)
     urgency_judgement = unique_copy(
@@ -28593,10 +28765,10 @@ def build_solution_page_copy_v1(
         max_len=140,
     )
     comparison_title = unique_copy(
-        f"推荐路径：{focus}优先",
-        f"为什么选「{focus}」这条路",
-        "路径取舍：先试点再扩张",
-        max_len=30,
+        _proposal_compact_heading(f"推荐路径：{focus}优先", "", focus_fallback=focus, max_len=18, mode="comparison"),
+        _proposal_compact_heading(f"为什么选「{focus}」这条路", "", focus_fallback=focus, max_len=18, mode="comparison"),
+        "为什么选这条路",
+        max_len=18,
     )
     comparison_judgement = unique_copy(
         clean_solution_text(comparison.get("judgement", ""), max_len=84),
@@ -28612,7 +28784,8 @@ def build_solution_page_copy_v1(
     urgency_cards = [
         {
             "title": "结构性矛盾",
-            "desc": clean_solution_text((urgency_conflicts[:1] or [brief.get("why_now", "")])[0], max_len=96),
+            "desc": _proposal_business_sentence((urgency_conflicts[:1] or [brief.get("why_now", "")])[0], max_len=96)
+            or clean_solution_text((urgency_conflicts[:1] or [brief.get("why_now", "")])[0], max_len=96),
             "tag": "结构性矛盾",
             "meta": _proposal_meta_label(urgency_refs[:2], max_len=24),
             "variant": "structural",
@@ -28633,7 +28806,7 @@ def build_solution_page_copy_v1(
                 max_len=96,
             ),
             "tag": "延迟代价",
-            "meta": _proposal_meta_label((brief.get("boundaries", []) if isinstance(brief.get("boundaries", []), list) else [])[:2], max_len=24),
+            "meta": _proposal_boundary_label((brief.get("boundaries", []) if isinstance(brief.get("boundaries", []), list) else [])[:2], max_items=2, max_len=16),
             "variant": "cost",
             "evidenceRefs": urgency_refs[:4],
         },
@@ -28660,7 +28833,7 @@ def build_solution_page_copy_v1(
             item.get("summary", ""),
             item.get("label", ""),
             max_len=16,
-        ) or "关键工作流"
+        )
         pills = _proposal_dedupe_string_list(
             [
                 item.get("owner", ""),
@@ -28679,16 +28852,20 @@ def build_solution_page_copy_v1(
             desc_max_len=72,
         )
         if not capabilities:
+            deliverables = item.get("deliverables", []) if isinstance(item.get("deliverables", []), list) else []
+            dependencies = item.get("dependencies", []) if isinstance(item.get("dependencies", []), list) else []
+            metrics_source = item.get("metrics", []) if isinstance(item.get("metrics", []), list) else []
+            first_metric = (metrics_source[0] if metrics_source else {}) or {}
             fallback_cards = [
                 {
                     "tag": "关键动作",
-                    "title": clean_solution_text(((item.get("deliverables", []) if isinstance(item.get("deliverables", []), list) else [""])[0]), max_len=22),
+                    "title": clean_solution_text((deliverables[0] if deliverables else ""), max_len=22),
                     "desc": _proposal_distinct_copy(summary, [headline], max_len=72),
                 },
                 {
                     "tag": "验收信号",
-                    "title": clean_solution_text(((item.get("dependencies", []) if isinstance(item.get("dependencies", []), list) else [""])[0]), max_len=22),
-                    "desc": clean_solution_text(((item.get("metrics", []) if isinstance(item.get("metrics", []), list) and item.get("metrics") else [{}])[0] or {}).get("note", ""), max_len=72),
+                    "title": clean_solution_text((dependencies[0] if dependencies else ""), max_len=22),
+                    "desc": clean_solution_text(first_metric.get("note", ""), max_len=72),
                 },
             ]
             capabilities = _proposal_normalize_card_entries(
@@ -28729,10 +28906,10 @@ def build_solution_page_copy_v1(
         max_len=140,
     )
     delivery_title = unique_copy(
-        "把关键路径压成执行链",
-        f"怎么把「{focus}」真正落下去",
-        "落地路径：先跑试点再扩张",
-        max_len=28,
+        _proposal_compact_heading("把关键路径压成执行链", "", focus_fallback=focus, max_len=18, mode="delivery"),
+        _proposal_compact_heading(f"怎么把「{focus}」真正落下去", "", focus_fallback=focus, max_len=18, mode="delivery"),
+        "怎么落地",
+        max_len=18,
     )
     delivery_summary = unique_copy(
         "主页面只保留关键工作流、阶段路线和验收信号，保证一眼就能看懂怎么推进。",
@@ -28744,9 +28921,10 @@ def build_solution_page_copy_v1(
         max_len=140,
     )
     value_title = unique_copy(
-        "值不值得做，只看这几个结果",
-        "价值判断：结果、前提、边界要同时成立",
-        max_len=28,
+        _proposal_compact_heading("值不值得做，只看这几个结果", "", focus_fallback=focus, max_len=18, mode="value"),
+        _proposal_compact_heading("价值判断：结果、前提、边界要同时成立", "", focus_fallback=focus, max_len=18, mode="value"),
+        "值不值得做",
+        max_len=18,
     )
     value_summary = unique_copy(
         "把结果、适配性和边界放在一起看，管理层才能判断这件事该批、该收缩还是该暂缓。",
@@ -28790,15 +28968,18 @@ def build_solution_page_copy_v1(
         for item in boundary_cards
     ]
     boundary_label = _proposal_boundary_label(brief.get("boundaries", []), max_items=2, max_len=18)
+    first_boundary = {}
+    if isinstance(brief.get("boundaries", []), list) and brief.get("boundaries", []):
+        first_boundary = (brief.get("boundaries", [])[0] or {}) if isinstance((brief.get("boundaries", [])[0] or {}), dict) else {}
     risk_label = _proposal_risk_label(
-        ((brief.get("boundaries", []) or [{}])[0] or {}).get("title", "") if isinstance(brief.get("boundaries", []), list) else "",
-        ((brief.get("boundaries", []) or [{}])[0] or {}).get("detail", "") if isinstance(brief.get("boundaries", []), list) else "",
+        first_boundary.get("title", ""),
+        first_boundary.get("detail", ""),
         max_len=18,
     )
     closing_headline = unique_copy(
-        clean_solution_text((closing_block or {}).get("headline", ""), max_len=88),
-        f"当前更适合先完成「{focus}」首轮试点，再决定是否扩大投入。",
-        max_len=88,
+        _proposal_compact_heading(clean_solution_text((closing_block or {}).get("headline", ""), max_len=88), "", focus_fallback=focus, max_len=20, mode="closing"),
+        _proposal_compact_heading(f"当前更适合先完成「{focus}」首轮试点，再决定是否扩大投入。", "", focus_fallback=focus, max_len=20, mode="closing"),
+        max_len=20,
     )
     closing_decision = _proposal_distinct_copy(
         clean_solution_text((closing_block or {}).get("decision", ""), max_len=96),
