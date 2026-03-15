@@ -1821,11 +1821,8 @@ function solutionRenderTopbar(model, payload) {
             </div>
             <nav class="solution-nav" aria-label="方案章节导航">
                 ${renderButtons(model.navItems)}
+                <button type="button" class="solution-nav-button is-conclusion" data-scroll-target="${solutionEscapeHtml(finalTarget)}">查看结论</button>
             </nav>
-            <div class="solution-topbar-actions">
-                ${solutionRenderAudienceBadge(model.overview?.audience)}
-                <button type="button" class="solution-topbar-action" data-scroll-target="${solutionEscapeHtml(finalTarget)}">查看结论</button>
-            </div>
         </div>
     `;
     mobileNav.hidden = false;
@@ -3020,6 +3017,84 @@ function solutionBindScrollSpy() {
     if (sections[0]) setActive(sections[0].id);
 }
 
+/* =========================================================================
+   PRO MAX+ UX: V2 Micro-Interactions (CountUp & Spotlight)
+   ========================================================================= */
+
+function solutionRegisterCountUp() {
+    if (typeof IntersectionObserver === 'undefined') return;
+    const targets = Array.from(document.querySelectorAll('.proposal-metric-value, .proposal-value-card-value'));
+    if (!targets.length) return;
+
+    // A lightweight easing function (easeOutExpo)
+    const easeOutExpo = (t) => (t === 1 ? 1 : 1 - Math.pow(2, -10 * t));
+
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+            if (entry.isIntersecting) {
+                const el = entry.target;
+                const originalText = el.textContent.trim();
+                // Simple regex to extract numbers, optionally with decimals, commas, or 'K/M/B' suffixes
+                const match = originalText.match(/^([^\d]*)?([\d,.]+)([kKmMbB%+\-]?.*)$/);
+                
+                if (match && !el.hasAttribute('data-counted')) {
+                    el.setAttribute('data-counted', 'true');
+                    const prefix = match[1] || '';
+                    const numStr = match[2].replace(/,/g, '');
+                    const suffix = match[3] || '';
+                    const targetNum = parseFloat(numStr);
+                    
+                    if (!isNaN(targetNum)) {
+                        const isInteger = numStr.indexOf('.') === -1;
+                        let startTimestamp = null;
+                        const duration = 1800; // 1.8s
+                        
+                        const step = (timestamp) => {
+                            if (!startTimestamp) startTimestamp = timestamp;
+                            const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+                            const currentNum = targetNum * easeOutExpo(progress);
+                            
+                            // Format back with commas if needed
+                            const formattedNum = isInteger 
+                                ? Math.floor(currentNum).toLocaleString() 
+                                : currentNum.toFixed(1);
+                                
+                            el.textContent = `${prefix}${formattedNum}${suffix}`;
+                            
+                            if (progress < 1) {
+                                window.requestAnimationFrame(step);
+                            } else {
+                                el.textContent = originalText; // Ensure exact final value
+                            }
+                        };
+                        window.requestAnimationFrame(step);
+                    }
+                }
+                // Stop observing once triggered
+                observer.unobserve(el);
+            }
+        });
+    }, {
+        threshold: 0.1,
+        rootMargin: '0px 0px -10% 0px'
+    });
+
+    targets.forEach((target) => observer.observe(target));
+}
+
+function solutionRegisterSpotlight() {
+    const cards = document.querySelectorAll('.proposal-metric-card, .proposal-value-card, .proposal-track-card, .proposal-case-card, .proposal-fit-card');
+    cards.forEach(card => {
+        card.addEventListener('mousemove', e => {
+            const rect = card.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            card.style.setProperty('--mouse-x', `${x}px`);
+            card.style.setProperty('--mouse-y', `${y}px`);
+        });
+    });
+}
+
 function solutionRegisterReveals() {
     const sections = Array.from(document.querySelectorAll('[data-solution-section]'));
     if (!sections.length || typeof IntersectionObserver === 'undefined') {
@@ -3066,6 +3141,8 @@ function solutionRender(payload) {
     solutionBindTabs();
     solutionBindTogglePanels();
     solutionBindScrollSpy();
+    solutionRegisterCountUp();
+    solutionRegisterSpotlight();
     solutionRegisterReveals();
 }
 
