@@ -310,6 +310,18 @@ a {
     z-index: 40;
 }
 
+.solution-topbar::before {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: calc(var(--solution-top-offset) + 80px); /* 覆盖整个顶部到导航条下沿 */
+    background: linear-gradient(180deg, rgba(5, 16, 28, 1) 0%, rgba(5, 16, 28, 0.95) 40%, rgba(5, 16, 28, 0) 100%);
+    pointer-events: none;
+    z-index: -1;
+}
+
 .solution-topbar-inner {
     display: flex;
     justify-content: space-between;
@@ -3354,6 +3366,7 @@ body.is-evidence-open {
     flex-direction: column;
     gap: 16px;
     padding-right: 4px;
+    z-index: 39;
 }
 
 .solution-toc-header {
