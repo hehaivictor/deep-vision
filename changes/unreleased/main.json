@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "fe420b4",
+  "committedAt": "2026-03-16T17:21:19+08:00",
+  "versionType": "patch",
+  "title": "优化登录与报告详情首屏体验",
+  "changes": [
+    "修复微信昵称展示与首页页脚文案",
+    "重构方案页目录与核心模块排版样式"
+  ],
+  "changedFiles": [
+    "web/app.js",
+    "web/index.html",
+    "web/solution.css",
+    "web/solution.html",
+    "web/solution.js",
+    "web/styles.css"
+  ]
+}

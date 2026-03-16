@@ -692,10 +692,85 @@
 
 /* 报告详情页：帮助页同源阅读壳层 */
 .dv-report-detail-layout {
+    position: relative;
     display: grid;
     grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
     gap: 24px;
     align-items: start;
+}
+
+.dv-report-detail-layout.is-enhancing > :not(.dv-report-detail-loading) {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.dv-report-detail-loading {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    pointer-events: none;
+}
+
+.dv-report-detail-loading-card {
+    width: min(100%, 760px);
+    margin-top: 4px;
+    padding: 22px 24px;
+    border-radius: 16px;
+    border: 1px solid #e2e8f0;
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 18px 40px rgba(15, 23, 42, 0.06);
+    display: grid;
+    gap: 14px;
+}
+
+.dv-report-detail-loading-bar,
+.dv-report-detail-loading-grid span {
+    display: block;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #e2e8f0 0%, #f8fafc 50%, #e2e8f0 100%);
+    background-size: 200% 100%;
+    animation: dv-report-loading-sheen 1.2s ease-in-out infinite;
+}
+
+.dv-report-detail-loading-bar {
+    height: 14px;
+}
+
+.dv-report-detail-loading-bar.is-wide {
+    width: min(68%, 420px);
+}
+
+.dv-report-detail-loading-bar.is-mid {
+    width: min(42%, 260px);
+    height: 12px;
+}
+
+.dv-report-detail-loading-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.dv-report-detail-loading-grid span {
+    height: 42px;
+}
+
+.dv-report-detail-loading-copy {
+    color: #64748b;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+@keyframes dv-report-loading-sheen {
+    0% {
+        background-position: 200% 0;
+    }
+    100% {
+        background-position: -200% 0;
+    }
 }
 
 .dv-report-sidebar {
@@ -1144,6 +1219,7 @@
 }
 
 .dv-report-body-shell {
+    min-height: 220px;
     padding: 20px 24px 28px;
 }
 
@@ -1489,6 +1565,22 @@ html[data-theme="dark"] .dv-report-mobile-nav-card {
     box-shadow: 0 16px 36px rgba(2, 6, 23, 0.36);
 }
 
+html[data-theme="dark"] .dv-report-detail-loading-card {
+    border-color: rgba(148, 163, 184, 0.24);
+    background: rgba(15, 23, 42, 0.94);
+    box-shadow: 0 20px 42px rgba(2, 6, 23, 0.42);
+}
+
+html[data-theme="dark"] .dv-report-detail-loading-bar,
+html[data-theme="dark"] .dv-report-detail-loading-grid span {
+    background: linear-gradient(90deg, rgba(51, 65, 85, 0.92) 0%, rgba(71, 85, 105, 0.58) 50%, rgba(51, 65, 85, 0.92) 100%);
+    background-size: 200% 100%;
+}
+
+html[data-theme="dark"] .dv-report-detail-loading-copy {
+    color: #cbd5e1;
+}
+
 html[data-theme="dark"] .dv-report-title,
 html[data-theme="dark"] .dv-report-mobile-nav-current,
 html[data-theme="dark"] .dv-report-fact-item dd,
@@ -1673,6 +1765,15 @@ html[data-theme="dark"] .dv-report-markdown-body :is(h2, h3).is-highlighted {
 
     .dv-report-body-shell {
         padding: 16px;
+    }
+
+    .dv-report-detail-loading-card {
+        width: 100%;
+        padding: 18px 16px;
+    }
+
+    .dv-report-detail-loading-grid {
+        grid-template-columns: 1fr;
     }
 
     .dv-report-table-affordance {

@@ -360,6 +360,7 @@ function deepVision() {
             actionItems: [],
             mobileNavOpen: false
         },
+        reportDetailEnhancing: false,
         reportDetailEnhanceTimer: null,
         reportDetailObserver: null,
         reportDetailSectionRegistry: [],
@@ -2790,6 +2791,7 @@ function deepVision() {
             this.reportDetailSectionRegistry = [];
             if (resetModel) {
                 this.reportDetailModel = this.createEmptyReportDetailModel();
+                this.reportDetailEnhancing = false;
             } else if (this.reportDetailModel) {
                 this.reportDetailModel.mobileNavOpen = false;
             }
@@ -2797,6 +2799,7 @@ function deepVision() {
 
         closeSelectedReportDetail() {
             this.cleanupReportDetailEnhancements();
+            this.reportDetailEnhancing = false;
             this.selectedReport = null;
             this.reportContent = '';
             this.selectedReportMeta = this.createEmptySelectedReportMeta();
@@ -2807,13 +2810,17 @@ function deepVision() {
         },
 
         scheduleReportDetailEnhancement() {
-            if (!this.selectedReport || !this.reportContent) return;
+            if (!this.selectedReport || !this.reportContent) {
+                this.reportDetailEnhancing = false;
+                return;
+            }
 
+            this.reportDetailEnhancing = true;
             this.cleanupReportDetailEnhancements({ resetModel: false });
             this.reportDetailEnhanceTimer = window.setTimeout(() => {
                 this.reportDetailEnhanceTimer = null;
                 this.onReportRendered();
-            }, 140);
+            }, 0);
         },
 
         goToReportSection(sectionId) {
@@ -4840,6 +4847,7 @@ function deepVision() {
             try {
                 this.cleanupReportDetailEnhancements();
                 this.stopPresentationPolling();
+                this.reportDetailEnhancing = true;
                 const data = await this.apiCall(`/reports/${encodeURIComponent(filename)}`);
                 this.reportContent = data.content;
                 this.selectedReport = filename;
@@ -4847,6 +4855,7 @@ function deepVision() {
                 this.$nextTick(() => this.scheduleReportDetailEnhancement());
                 await this.fetchPresentationStatus();
             } catch (error) {
+                this.reportDetailEnhancing = false;
                 this.showToast('加载报告失败', 'error');
             }
         },
@@ -5671,12 +5680,19 @@ function deepVision() {
         // 当报告内容渲染完成后调用（由 x-effect 触发）
         onReportRendered() {
             const reportElement = this.$refs?.reportMarkdown || document.querySelector('.dv-report-markdown-body');
-            if (!reportElement) return;
+            if (!reportElement) {
+                this.reportDetailEnhancing = false;
+                return;
+            }
 
-            this.cleanupReportDetailEnhancements({ resetModel: false });
-            this.renderMermaidCharts();
-            this.injectReportSummaryAndToc(reportElement);
-            this.enhanceReportTables(reportElement);
+            try {
+                this.cleanupReportDetailEnhancements({ resetModel: false });
+                this.renderMermaidCharts();
+                this.injectReportSummaryAndToc(reportElement);
+                this.enhanceReportTables(reportElement);
+            } finally {
+                this.reportDetailEnhancing = false;
+            }
         },
 
         enhanceReportTables(reportElement) {

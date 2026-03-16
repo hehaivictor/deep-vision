@@ -1,4 +1,4 @@
-const SOLUTION_ASSET_VERSION = '20260316-solution-v52';
+const SOLUTION_ASSET_VERSION = '20260316-solution-v59';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 const SOLUTION_SOURCE_MODE_LABELS = {
     structured_sidecar: '结构化快照',
@@ -2144,9 +2144,11 @@ function solutionRenderComparisonSection(section) {
             ${solutionRenderSectionHead(section)}
             <div class="proposal-comparison-grid">
                 ${solutionRenderOptionCard(section.left, 'contrast')}
-                <div class="proposal-comparison-center">
-                    <div class="proposal-comparison-center-label">推荐结论</div>
-                    <div class="proposal-comparison-center-value">${solutionEscapeHtml(section.judgement)}</div>
+                <div class="proposal-comparison-center${summary ? ' has-note' : ''}">
+                    <div class="proposal-comparison-center-main">
+                        <div class="proposal-comparison-center-label">推荐结论</div>
+                        <div class="proposal-comparison-center-value">${solutionEscapeHtml(section.judgement)}</div>
+                    </div>
                     ${summary ? `
                         <div class="proposal-comparison-center-note">
                             <div class="proposal-comparison-center-note-label">为什么不是别的路径</div>
@@ -2884,6 +2886,15 @@ function solutionCloseEvidenceDrawer() {
     document.body.classList.remove('is-evidence-open');
 }
 
+function solutionSyncActiveScrollTargets(targetId = '') {
+    const normalizedId = String(targetId || '').trim();
+    if (!normalizedId) return;
+    document.querySelectorAll('[data-scroll-target]').forEach((button) => {
+        const isActive = (button.getAttribute('data-scroll-target') || '').trim() === normalizedId;
+        button.classList.toggle('is-active', isActive);
+    });
+}
+
 function solutionBindEvidenceDrawer() {
     document.querySelectorAll('[data-evidence-title]').forEach((button) => {
         button.addEventListener('click', () => {
@@ -2937,6 +2948,7 @@ function solutionBindScrollTargets() {
             const targetId = button.getAttribute('data-scroll-target') || '';
             const target = document.getElementById(targetId);
             if (!target) return;
+            solutionSyncActiveScrollTargets(targetId);
             target.scrollIntoView({ behavior: 'smooth', block: 'start' });
         });
     });
@@ -2995,6 +3007,18 @@ function solutionRenderTOC() {
     }).join('');
 }
 
+function solutionUpdateTocLinkLayout() {
+    const links = Array.from(document.querySelectorAll('.solution-toc-link'));
+    if (!links.length) return;
+    links.forEach((link) => {
+        link.classList.remove('is-single-line');
+        link.classList.add('is-measuring');
+        const fitsSingleLine = link.scrollWidth <= link.clientWidth + 1;
+        link.classList.remove('is-measuring');
+        link.classList.toggle('is-single-line', fitsSingleLine);
+    });
+}
+
 function solutionBindScrollSpy() {
     if (typeof IntersectionObserver === 'undefined') return;
     const topButtons = Array.from(document.querySelectorAll('.solution-topbar .solution-nav-button[data-scroll-target]'));
@@ -3005,11 +3029,35 @@ function solutionBindScrollSpy() {
     if (!buttonGroups.length || !sections.length) return;
 
     const setActive = (id) => {
-        buttonGroups.forEach((group) => {
-            group.forEach((button) => {
-                const isActive = button.getAttribute('data-scroll-target') === id;
-                button.classList.toggle('is-active', isActive);
-            });
+        solutionSyncActiveScrollTargets(id);
+    };
+
+    const resolveActiveSectionId = () => {
+        if (!sections.length) return '';
+        const scrollRoot = document.documentElement;
+        const viewportHeight = window.innerHeight || scrollRoot.clientHeight || 0;
+        const scrollBottom = window.scrollY + viewportHeight;
+        if (scrollBottom >= scrollRoot.scrollHeight - 8) {
+            return sections[sections.length - 1].id;
+        }
+
+        const anchorY = Math.max(96, viewportHeight * 0.24);
+        let activeId = sections[0].id;
+        sections.forEach((section) => {
+            if (section.getBoundingClientRect().top <= anchorY) {
+                activeId = section.id;
+            }
+        });
+        return activeId;
+    };
+
+    let scrollSpyRaf = 0;
+    const syncFromScroll = () => {
+        if (scrollSpyRaf) return;
+        scrollSpyRaf = window.requestAnimationFrame(() => {
+            scrollSpyRaf = 0;
+            const activeId = resolveActiveSectionId();
+            if (activeId) setActive(activeId);
         });
     };
 
@@ -3025,7 +3073,10 @@ function solutionBindScrollSpy() {
     });
 
     sections.forEach((section) => observer.observe(section));
-    if (sections[0]) setActive(sections[0].id);
+    window.addEventListener('scroll', syncFromScroll, { passive: true });
+    window.addEventListener('resize', syncFromScroll, { passive: true });
+    const initialId = resolveActiveSectionId() || sections[0]?.id || '';
+    if (initialId) setActive(initialId);
 }
 
 /* =========================================================================
@@ -3147,6 +3198,7 @@ function solutionRender(payload) {
     state.hidden = true;
     shell.hidden = false;
     solutionRenderTOC();
+    solutionUpdateTocLinkLayout();
     solutionBindEvidenceDrawer();
     solutionBindScrollTargets();
     solutionBindTabs();
@@ -3155,6 +3207,12 @@ function solutionRender(payload) {
     solutionRegisterCountUp();
     solutionRegisterSpotlight();
     solutionRegisterReveals();
+    window.addEventListener('resize', solutionUpdateTocLinkLayout, { passive: true });
+    if (document.fonts?.ready) {
+        document.fonts.ready.then(() => {
+            solutionUpdateTocLinkLayout();
+        }).catch(() => {});
+    }
 }
 
 async function initSolutionPage() {

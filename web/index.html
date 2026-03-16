@@ -218,7 +218,7 @@
         .wave-dots span:nth-child(5) { animation-delay: 0.4s; }
         .wave-dots span:nth-child(6) { animation-delay: 0.5s; }
     </style>
-    <link rel="stylesheet" href="styles.css?v=20260313-report-detail-v25">
+    <link rel="stylesheet" href="styles.css?v=20260316-report-detail-v26">
     <!-- Markdown 渲染 - 本地化 -->
     <script src="vendor/js/marked.min.js"></script>
     <!-- Mermaid 图表渲染 - 本地化 -->
@@ -2423,7 +2423,22 @@
 
                     <!-- 报告详情 -->
                     <template x-if="selectedReport">
-                        <section class="dv-report-detail-layout" x-ref="reportDetailView">
+                        <section class="dv-report-detail-layout"
+                                 :class="{ 'is-enhancing': reportDetailEnhancing }"
+                                 :aria-busy="reportDetailEnhancing ? 'true' : 'false'"
+                                 x-ref="reportDetailView">
+                            <div class="dv-report-detail-loading" x-show="reportDetailEnhancing" x-cloak aria-hidden="true">
+                                <div class="dv-report-detail-loading-card">
+                                    <div class="dv-report-detail-loading-bar is-wide"></div>
+                                    <div class="dv-report-detail-loading-bar is-mid"></div>
+                                    <div class="dv-report-detail-loading-grid">
+                                        <span></span>
+                                        <span></span>
+                                        <span></span>
+                                    </div>
+                                    <div class="dv-report-detail-loading-copy">正在整理报告详情布局...</div>
+                                </div>
+                            </div>
                             <aside class="dv-report-sidebar" x-show="reportDetailModel.sections.length > 0">
                                 <div class="dv-report-sidebar-card">
                                     <h4>目录</h4>
@@ -4172,6 +4187,6 @@
 
     <!-- 前端配置文件 -->
     <script src="site-config.js"></script>
-    <script src="app.js?v=20260313-report-detail-v23"></script>
+    <script src="app.js?v=20260316-report-detail-v26"></script>
 </body>
 </html>
