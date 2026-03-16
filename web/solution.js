@@ -1,4 +1,4 @@
-const SOLUTION_ASSET_VERSION = '20260316-solution-v51';
+const SOLUTION_ASSET_VERSION = '20260316-solution-v52';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 const SOLUTION_SOURCE_MODE_LABELS = {
     structured_sidecar: '结构化快照',
@@ -1974,7 +1974,7 @@ function solutionRenderValueBoard(board) {
             </div>
             <div class="proposal-value-board-grid ${solutionGridCountClass(items)}">
                 ${items.map((item) => `
-                    <article class="proposal-value-board-card">
+                    <article class="proposal-value-board-card ${solutionMetricValueWrapClass(item.value)}">
                         <div class="proposal-value-board-label">${solutionEscapeHtml(item.label)}</div>
                         <div class="proposal-value-board-value">${solutionEscapeHtml(item.value)}</div>
                         ${item.delta ? `<div class="proposal-value-board-delta">${solutionEscapeHtml(item.delta)}</div>` : ''}
@@ -2428,7 +2428,7 @@ function solutionRenderValueSection(section) {
             ${solutionRenderValueBoard(section.board)}
             <div class="proposal-value-grid">
                 ${solutionNormalizeList(section.metrics).map((item) => `
-                    <article class="proposal-value-card">
+                    <article class="proposal-value-card ${solutionMetricValueWrapClass(item.value)}">
                         <div class="proposal-value-card-label">${solutionEscapeHtml(item.label)}</div>
                         <div class="proposal-value-card-value">${solutionEscapeHtml(item.value)}</div>
                         ${item.note ? `<div class="proposal-value-card-note">${solutionEscapeHtml(item.note)}</div>` : ''}
@@ -2664,7 +2664,7 @@ function solutionRenderValueDecisionSection(section) {
             ${solutionRenderValueBoard(section.board)}
             <div class="proposal-value-grid ${solutionGridCountClass(metrics)}">
                 ${metrics.map((item) => `
-                    <article class="proposal-value-card">
+                    <article class="proposal-value-card ${solutionMetricValueWrapClass(item.value)}">
                         <div class="proposal-value-card-label">${solutionEscapeHtml(item.label)}</div>
                         <div class="proposal-value-card-value">${solutionEscapeHtml(item.value)}</div>
                         ${item.note ? `<div class="proposal-value-card-note">${solutionEscapeHtml(item.note)}</div>` : ''}

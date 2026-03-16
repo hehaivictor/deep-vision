@@ -2383,6 +2383,15 @@ a {
     max-width: 16ch;
 }
 
+.proposal-value-board-card.is-single-line .proposal-value-board-value {
+    font-size: clamp(1.12rem, 1.7vw, 1.38rem);
+    white-space: nowrap;
+    text-wrap: nowrap;
+    word-break: keep-all;
+    line-break: strict;
+    max-width: none;
+}
+
 .proposal-value-board-delta {
     color: #f0d094;
     font-size: 0.88rem;
@@ -2435,6 +2444,15 @@ a {
     line-height: 0.95;
     letter-spacing: -0.04em;
     max-width: 8ch;
+}
+
+.proposal-value-card.is-single-line .proposal-value-card-value {
+    font-size: clamp(1.62rem, 2.45vw, 2.36rem);
+    white-space: nowrap;
+    text-wrap: nowrap;
+    word-break: keep-all;
+    line-break: strict;
+    max-width: none;
 }
 
 .proposal-detail-grid {
@@ -3109,6 +3127,14 @@ body.is-evidence-open {
         font-size: clamp(1.5rem, 6.9vw, 1.96rem);
     }
 
+    .proposal-value-card.is-single-line .proposal-value-card-value {
+        font-size: clamp(1.48rem, 6.3vw, 2rem);
+    }
+
+    .proposal-value-board-card.is-single-line .proposal-value-board-value {
+        font-size: clamp(1.04rem, 4.8vw, 1.26rem);
+    }
+
     .proposal-metric-card.is-featured.is-numeric .proposal-metric-value {
         font-size: clamp(2rem, 9vw, 2.55rem);
     }
@@ -3417,6 +3443,13 @@ body.is-evidence-open {
     .proposal-metric-card.is-single-line .proposal-metric-value {
         white-space: nowrap;
         text-wrap: nowrap;
+    }
+
+    .proposal-value-card.is-single-line .proposal-value-card-value,
+    .proposal-value-board-card.is-single-line .proposal-value-board-value {
+        white-space: nowrap;
+        text-wrap: nowrap;
+        max-width: none;
     }
 }
 
