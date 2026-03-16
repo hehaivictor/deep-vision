@@ -2,6 +2,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -443,6 +444,94 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertTrue(payload.get('quality_signals', {}).get('degraded_reasons'))
         self.assertGreaterEqual(len(payload.get('sections', [])), 1)
         self.assertIn('真实信息摘要', payload.get('title', ''))
+
+    def test_structured_sidecar_reuses_cached_payload_when_snapshot_unchanged(self):
+        report_name = 'cache-sidecar.md'
+        snapshot = self._build_snapshot(
+            report_name,
+            topic='缓存命中方案',
+            scenario_name='用户反馈闭环',
+            overview='当前需要先统一反馈标签，再把分发与复盘接成闭环。',
+            needs=[{'priority': 'P0', 'name': '归因口径统一', 'description': '先冻结高频标签。', 'evidence_refs': ['Q1']}],
+            solutions=[{'title': '建立统一标签词典', 'description': '所有高频反馈都走统一标签。', 'owner': '产品', 'timeline': '第1周', 'metric': '标签一致率 > 90%', 'evidence_refs': ['Q2']}],
+            actions=[{'action': '完成标签词典评审', 'owner': '产品+运营', 'timeline': '本周', 'metric': '评审通过', 'evidence_refs': ['Q3']}],
+        )
+        self.server.write_solution_sidecar(report_name, snapshot)
+        cache_path = self.server.get_solution_payload_cache_path(report_name)
+
+        with patch.object(self.server, '_build_solution_payload_from_snapshot', wraps=self.server._build_solution_payload_from_snapshot) as mocked_builder:
+            first_payload = self.server.build_solution_payload_from_report(report_name, '# 占位报告')
+            second_payload = self.server.build_solution_payload_from_report(report_name, '# 占位报告')
+
+        self.assertEqual(mocked_builder.call_count, 1)
+        self.assertTrue(cache_path.exists())
+        self.assertEqual(first_payload.get('title'), second_payload.get('title'))
+        self.assertEqual(first_payload.get('decision_summary'), second_payload.get('decision_summary'))
+
+    def test_structured_sidecar_cache_invalidates_after_snapshot_refresh(self):
+        report_name = 'cache-refresh-sidecar.md'
+        initial_snapshot = self._build_snapshot(
+            report_name,
+            topic='缓存刷新前方案',
+            scenario_name='用户反馈闭环',
+            overview='初始方案先聚焦反馈标签统一和责任分发。',
+            needs=[{'priority': 'P0', 'name': '初始问题定义', 'description': '先统一问题标签。', 'evidence_refs': ['Q1']}],
+            solutions=[{'title': '初始方案模块', 'description': '先完成标签词典。', 'owner': '产品', 'timeline': '第1周', 'metric': '规则评审完成', 'evidence_refs': ['Q2']}],
+            actions=[{'action': '完成初始评审', 'owner': '产品', 'timeline': '本周', 'metric': '评审通过', 'evidence_refs': ['Q3']}],
+        )
+        refreshed_snapshot = self._build_snapshot(
+            report_name,
+            topic='缓存刷新后方案',
+            scenario_name='用户反馈闭环',
+            overview='刷新后的方案需要把升级链路、SLA 和复盘指标一起锁定。',
+            needs=[{'priority': 'P0', 'name': '升级链路统一', 'description': '先统一升级触发条件。', 'evidence_refs': ['Q4']}],
+            solutions=[{'title': '刷新后方案模块', 'description': '新增 SLA 看板与升级链路治理。', 'owner': '运营', 'timeline': '第2周', 'metric': '超时率 < 10%', 'evidence_refs': ['Q5']}],
+            actions=[{'action': '上线 SLA 试点', 'owner': '运营', 'timeline': '下周', 'metric': '看板可追踪', 'evidence_refs': ['Q6']}],
+        )
+        cache_path = self.server.get_solution_payload_cache_path(report_name)
+
+        self.server.write_solution_sidecar(report_name, initial_snapshot)
+        initial_payload = self.server.build_solution_payload_from_report(report_name, '# 占位报告')
+        self.assertTrue(cache_path.exists())
+        self.assertIn('初始方案先聚焦', initial_payload.get('overview', ''))
+
+        self.server.write_solution_sidecar(report_name, refreshed_snapshot)
+        self.assertFalse(cache_path.exists())
+
+        with patch.object(self.server, '_build_solution_payload_from_snapshot', wraps=self.server._build_solution_payload_from_snapshot) as mocked_builder:
+            refreshed_payload = self.server.build_solution_payload_from_report(report_name, '# 占位报告')
+
+        self.assertEqual(mocked_builder.call_count, 1)
+        self.assertTrue(cache_path.exists())
+        self.assertIn('刷新后的方案需要把升级链路', refreshed_payload.get('overview', ''))
+        self.assertIn('缓存刷新后方案', refreshed_payload.get('title', ''))
+
+    def test_schedule_solution_payload_prewarm_builds_cache_async(self):
+        report_name = 'async-prewarm-sidecar.md'
+        snapshot = self._build_snapshot(
+            report_name,
+            topic='异步预热方案',
+            scenario_name='用户反馈闭环',
+            overview='生成报告后应异步把方案缓存热起来，避免首次查看再次触发完整编排。',
+            needs=[{'priority': 'P0', 'name': '首次查看等待过长', 'description': '用户不希望每次重新生成方案。', 'evidence_refs': ['Q1']}],
+            solutions=[{'title': '报告完成后预热方案缓存', 'description': '报告保存后在后台生成完整方案 payload。', 'owner': '后端', 'timeline': '立即', 'metric': '首次查看命中缓存', 'evidence_refs': ['Q2']}],
+            actions=[{'action': '完成方案缓存预热', 'owner': '后端', 'timeline': '立即', 'metric': '缓存文件生成', 'evidence_refs': ['Q3']}],
+        )
+        self.server.write_solution_sidecar(report_name, snapshot)
+        cache_path = self.server.get_solution_payload_cache_path(report_name)
+
+        scheduled = self.server.schedule_solution_payload_prewarm(report_name, '# 占位报告')
+        self.assertTrue(scheduled)
+
+        deadline = time.time() + 3.0
+        while time.time() < deadline and not cache_path.exists():
+            time.sleep(0.05)
+
+        self.assertTrue(cache_path.exists())
+        cached_payload = json.loads(cache_path.read_text(encoding='utf-8'))
+        self.assertEqual(cached_payload.get('cache_version'), self.server.SOLUTION_PAYLOAD_CACHE_VERSION)
+        self.assertEqual(cached_payload.get('source_mode'), 'structured_sidecar')
+        self.assertEqual((cached_payload.get('payload', {}) or {}).get('report_name'), report_name)
 
     def test_structured_sidecar_builds_proposal_brief_and_chapter_copy(self):
         payload = self._write_structured_sidecar(

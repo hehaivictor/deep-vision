@@ -2468,6 +2468,14 @@ report_generation_executor = ThreadPoolExecutor(
     max_workers=REPORT_GENERATION_MAX_WORKERS,
     thread_name_prefix="report-generator",
 )
+SOLUTION_PAYLOAD_PREWARM_ENABLED = _cfg_bool("SOLUTION_PAYLOAD_PREWARM_ENABLED", True)
+SOLUTION_PAYLOAD_PREWARM_MAX_WORKERS = max(1, min(_cfg_int("SOLUTION_PAYLOAD_PREWARM_MAX_WORKERS", 2), 4))
+solution_payload_prewarm_jobs = {}  # { report_name: Future }
+solution_payload_prewarm_jobs_lock = threading.Lock()
+solution_payload_prewarm_executor = ThreadPoolExecutor(
+    max_workers=SOLUTION_PAYLOAD_PREWARM_MAX_WORKERS,
+    thread_name_prefix="solution-prewarm",
+)
 
 REPORT_GENERATION_STAGES = {
     "queued": {"index": 0, "progress": 5, "message": "已提交请求，准备生成报告..."},
@@ -5472,6 +5480,56 @@ def clear_report_generation_status(session_id: str):
     with report_generation_status_lock:
         report_generation_status.pop(session_id, None)
     cleanup_report_generation_worker(session_id)
+
+
+def _cleanup_solution_payload_prewarm_job(report_name: str, future: Optional[Future] = None) -> None:
+    normalized = normalize_solution_report_filename(report_name)
+    if not normalized:
+        return
+    with solution_payload_prewarm_jobs_lock:
+        current = solution_payload_prewarm_jobs.get(normalized)
+        if future is not None and current is not future:
+            return
+        solution_payload_prewarm_jobs.pop(normalized, None)
+
+
+def schedule_solution_payload_prewarm(report_name: str, report_content: str = "") -> bool:
+    normalized = normalize_solution_report_filename(report_name)
+    if not SOLUTION_PAYLOAD_PREWARM_ENABLED or not normalized:
+        return False
+
+    with solution_payload_prewarm_jobs_lock:
+        existing = solution_payload_prewarm_jobs.get(normalized)
+        if isinstance(existing, Future) and not existing.done():
+            return False
+        if existing is not None:
+            solution_payload_prewarm_jobs.pop(normalized, None)
+
+    future_holder = {}
+
+    def do_prewarm():
+        try:
+            effective_content = str(report_content or "")
+            if not effective_content.strip():
+                report_file = REPORTS_DIR / normalized
+                if not report_file.exists() or not report_file.is_file():
+                    return
+                effective_content = report_file.read_text(encoding="utf-8")
+            if not effective_content.strip():
+                return
+            build_solution_payload_from_report(normalized, effective_content)
+            if ENABLE_DEBUG_LOG:
+                print(f"✅ 方案缓存预热完成: report={normalized}")
+        except Exception as exc:
+            print(f"⚠️ 方案缓存预热失败: report={normalized}, error={exc}")
+        finally:
+            _cleanup_solution_payload_prewarm_job(normalized, future_holder.get("future"))
+
+    future = solution_payload_prewarm_executor.submit(do_prewarm)
+    future_holder["future"] = future
+    with solution_payload_prewarm_jobs_lock:
+        solution_payload_prewarm_jobs[normalized] = future
+    return True
 
 
 # ============ 预生成缓存函数 ============
@@ -22326,6 +22384,7 @@ def run_report_generation_job(
                 "error": "",
                 "completed_at": get_utc_now(),
             })
+            schedule_solution_payload_prewarm(filename, report_content)
             return True
 
         # 检查是否有 Claude API
@@ -22619,6 +22678,7 @@ def run_report_generation_job(
                     "error": "",
                     "completed_at": get_utc_now(),
                 })
+                schedule_solution_payload_prewarm(filename, report_content)
                 return
 
         # 回退到简单报告生成
@@ -22640,6 +22700,7 @@ def run_report_generation_job(
             "error": "",
             "completed_at": get_utc_now(),
         })
+        schedule_solution_payload_prewarm(filename, report_content)
     except Exception as exc:
         error_detail = str(exc)[:200] or "未知错误"
         update_report_generation_status(session_id, "failed", message=f"报告生成失败：{error_detail}", active=False)
@@ -24798,7 +24859,9 @@ def build_legacy_solution_payload_from_report(report_name: str, report_content: 
 
 
 SOLUTION_SIDECAR_SUFFIX = ".solution.json"
+SOLUTION_PAYLOAD_CACHE_SUFFIX = ".solution.payload.json"
 SOLUTION_SNAPSHOT_VERSION = "solution_snapshot_v1"
+SOLUTION_PAYLOAD_CACHE_VERSION = "solution_payload_cache_v20260316"
 SOLUTION_SIMILARITY_LOOKBACK = 8
 SOLUTION_STRICT_FALLBACK_RATIO_THRESHOLD = 0.45
 SOLUTION_RELAXED_FALLBACK_RATIO_THRESHOLD = 0.58
@@ -24892,6 +24955,12 @@ def get_solution_sidecar_path(report_name: str) -> Path:
     return REPORTS_DIR / f"{safe_name}{SOLUTION_SIDECAR_SUFFIX}"
 
 
+def get_solution_payload_cache_path(report_name: str) -> Path:
+    normalized = normalize_solution_report_filename(report_name)
+    safe_name = Path(str(normalized or "report.md")).name or "report.md"
+    return REPORTS_DIR / f"{safe_name}{SOLUTION_PAYLOAD_CACHE_SUFFIX}"
+
+
 def read_solution_sidecar(report_name: str) -> dict:
     path = get_solution_sidecar_path(report_name)
     if not path.exists() or not path.is_file():
@@ -24910,16 +24979,100 @@ def write_solution_sidecar(report_name: str, snapshot: dict) -> None:
     payload["version"] = SOLUTION_SNAPSHOT_VERSION
     payload["report_name"] = report_name
     path = get_solution_sidecar_path(report_name)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_text_atomic(path, json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    delete_solution_payload_cache(report_name)
 
 
-def delete_solution_sidecar(report_name: str) -> None:
-    path = get_solution_sidecar_path(report_name)
+def _solution_payload_cache_source_hash(
+    report_name: str,
+    *,
+    source_mode: str,
+    snapshot: Optional[dict] = None,
+    report_content: str = "",
+) -> str:
+    normalized_report_name = normalize_solution_report_filename(report_name)
+    if isinstance(snapshot, dict) and snapshot:
+        cache_source = copy.deepcopy(_normalize_solution_snapshot(snapshot))
+        if isinstance(cache_source, dict):
+            cache_source.pop("solution_snapshot", None)
+    else:
+        cache_source = {
+            "report_name": normalized_report_name,
+            "report_content": normalize_report_time_fields(str(report_content or "")),
+        }
+    digest_payload = {
+        "cache_version": SOLUTION_PAYLOAD_CACHE_VERSION,
+        "source_mode": str(source_mode or "").strip(),
+        "source": cache_source,
+    }
+    return hashlib.sha1(
+        json.dumps(digest_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def read_solution_payload_cache(
+    report_name: str,
+    *,
+    expected_source_mode: str,
+    expected_source_hash: str,
+) -> dict:
+    path = get_solution_payload_cache_path(report_name)
+    if not path.exists() or not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    if str(payload.get("cache_version") or "") != SOLUTION_PAYLOAD_CACHE_VERSION:
+        return {}
+    if str(payload.get("source_mode") or "") != str(expected_source_mode or ""):
+        return {}
+    if str(payload.get("source_hash") or "") != str(expected_source_hash or ""):
+        return {}
+    cached_payload = payload.get("payload", {})
+    return copy.deepcopy(cached_payload) if isinstance(cached_payload, dict) else {}
+
+
+def write_solution_payload_cache(
+    report_name: str,
+    payload: dict,
+    *,
+    source_mode: str,
+    source_hash: str,
+) -> None:
+    if not isinstance(payload, dict) or not payload:
+        return
+    cache_payload = {
+        "cache_version": SOLUTION_PAYLOAD_CACHE_VERSION,
+        "report_name": normalize_solution_report_filename(report_name),
+        "source_mode": str(source_mode or "").strip(),
+        "source_hash": str(source_hash or "").strip(),
+        "generated_at": get_utc_now(),
+        "payload": copy.deepcopy(payload),
+    }
+    path = get_solution_payload_cache_path(report_name)
+    _write_text_atomic(path, json.dumps(cache_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def delete_solution_payload_cache(report_name: str) -> None:
+    path = get_solution_payload_cache_path(report_name)
     try:
         if path.exists():
             path.unlink()
     except Exception:
         return
+
+
+def delete_solution_sidecar(report_name: str) -> None:
+    try:
+        path = get_solution_sidecar_path(report_name)
+        if path.exists():
+            path.unlink()
+    except Exception:
+        pass
+    delete_solution_payload_cache(report_name)
 
 
 def _solution_report_title_from_content(report_content: str) -> str:
@@ -32168,18 +32321,77 @@ def _build_payload_from_legacy_solution(legacy_payload: dict) -> dict:
 
 
 def build_solution_payload_from_report(report_name: str, report_content: str) -> dict:
-    sidecar = read_solution_sidecar(report_name)
-    if sidecar:
-        payload = _build_solution_payload_from_snapshot(sidecar, source_mode="structured_sidecar")
-        return _finalize_solution_payload_for_delivery(payload, sidecar, source_mode="structured_sidecar")
+    lock_key = normalize_solution_report_filename(report_name) or str(report_name or "report.md")
+    with named_file_lock("solution-payload", lock_key):
+        sidecar = read_solution_sidecar(report_name)
+        if sidecar:
+            source_hash = _solution_payload_cache_source_hash(
+                report_name,
+                source_mode="structured_sidecar",
+                snapshot=sidecar,
+            )
+            cached_payload = read_solution_payload_cache(
+                report_name,
+                expected_source_mode="structured_sidecar",
+                expected_source_hash=source_hash,
+            )
+            if cached_payload:
+                return cached_payload
+            payload = _build_solution_payload_from_snapshot(sidecar, source_mode="structured_sidecar")
+            finalized_payload = _finalize_solution_payload_for_delivery(payload, sidecar, source_mode="structured_sidecar")
+            write_solution_payload_cache(
+                report_name,
+                finalized_payload,
+                source_mode="structured_sidecar",
+                source_hash=source_hash,
+            )
+            return finalized_payload
 
-    markdown_snapshot = build_solution_snapshot_from_markdown_report(report_name, report_content)
-    if markdown_snapshot:
-        payload = _build_solution_payload_from_snapshot(markdown_snapshot, source_mode="legacy_markdown")
-        return _finalize_solution_payload_for_delivery(payload, markdown_snapshot, source_mode="legacy_markdown")
+        markdown_snapshot = build_solution_snapshot_from_markdown_report(report_name, report_content)
+        if markdown_snapshot:
+            source_hash = _solution_payload_cache_source_hash(
+                report_name,
+                source_mode="legacy_markdown_snapshot",
+                snapshot=markdown_snapshot,
+            )
+            cached_payload = read_solution_payload_cache(
+                report_name,
+                expected_source_mode="legacy_markdown_snapshot",
+                expected_source_hash=source_hash,
+            )
+            if cached_payload:
+                return cached_payload
+            payload = _build_solution_payload_from_snapshot(markdown_snapshot, source_mode="legacy_markdown")
+            finalized_payload = _finalize_solution_payload_for_delivery(payload, markdown_snapshot, source_mode="legacy_markdown")
+            write_solution_payload_cache(
+                report_name,
+                finalized_payload,
+                source_mode="legacy_markdown_snapshot",
+                source_hash=source_hash,
+            )
+            return finalized_payload
 
-    legacy_payload = build_legacy_solution_payload_from_report(report_name, report_content)
-    return _build_payload_from_legacy_solution(legacy_payload)
+        source_hash = _solution_payload_cache_source_hash(
+            report_name,
+            source_mode="legacy_fallback",
+            report_content=report_content,
+        )
+        cached_payload = read_solution_payload_cache(
+            report_name,
+            expected_source_mode="legacy_fallback",
+            expected_source_hash=source_hash,
+        )
+        if cached_payload:
+            return cached_payload
+        legacy_payload = build_legacy_solution_payload_from_report(report_name, report_content)
+        finalized_payload = _build_payload_from_legacy_solution(legacy_payload)
+        write_solution_payload_cache(
+            report_name,
+            finalized_payload,
+            source_mode="legacy_fallback",
+            source_hash=source_hash,
+        )
+        return finalized_payload
 
 
 @app.route('/api/reports', methods=['GET'])
