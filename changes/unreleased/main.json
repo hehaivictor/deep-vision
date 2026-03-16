@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "f561a9d",
+  "committedAt": "2026-03-16T19:04:01+08:00",
+  "versionType": "patch",
+  "title": "添加解答区滚动边距调整",
+  "changes": [
+    "前端：围绕“添加解答区滚动边距调整”更新界面交互与展示逻辑。"
+  ],
+  "changedFiles": [
+    "web/solution.css"
+  ]
+}

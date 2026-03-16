@@ -600,6 +600,10 @@ a {
     pointer-events: none;
 }
 
+[data-solution-section] {
+    scroll-margin-top: calc(var(--solution-top-offset) + 80px);
+}
+
 [data-solution-section].is-visible {
     opacity: 1;
     transform: translateY(0);
