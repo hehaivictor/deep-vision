@@ -1,4 +1,4 @@
-const SOLUTION_ASSET_VERSION = '20260315-solution-v50';
+const SOLUTION_ASSET_VERSION = '20260316-solution-v51';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 const SOLUTION_SOURCE_MODE_LABELS = {
     structured_sidecar: '结构化快照',
@@ -1996,6 +1996,16 @@ function solutionMetricValueToneClass(value) {
     return shortNumeric ? 'is-numeric' : 'is-phrase';
 }
 
+function solutionMetricValueWrapClass(value) {
+    const text = String(value || '').trim();
+    if (!text || /\n/.test(text)) return '';
+    const compact = text.replace(/\s+/g, '');
+    const asciiWeight = (compact.match(/[A-Za-z0-9<>=%＋+\-_/.:]/g) || []).length;
+    const cjkWeight = Math.max(0, compact.length - asciiWeight);
+    const visualWeight = asciiWeight * 0.55 + cjkWeight;
+    return visualWeight <= 10.2 ? 'is-single-line' : '';
+}
+
 function solutionRenderHeroSection(section) {
     const title = String(section?.title || '').trim();
     const subtitle = solutionDistinctText(section?.subtitle, [title, section?.judgement]);
@@ -2057,8 +2067,9 @@ function solutionRenderHeroSection(section) {
                                         ? 'is-featured'
                                         : 'is-supporting';
                             const toneClass = solutionMetricValueToneClass(item.value);
+                            const wrapClass = solutionMetricValueWrapClass(item.value);
                             return `
-                            <article class="proposal-metric-card ${roleClass} ${toneClass}">
+                            <article class="proposal-metric-card ${roleClass} ${toneClass} ${wrapClass}">
                                 <div class="proposal-metric-label">${solutionEscapeHtml(item.label)}</div>
                                 <div class="proposal-metric-value">${solutionEscapeHtml(item.value)}</div>
                                 ${item.delta ? `<div class="proposal-metric-delta">${solutionEscapeHtml(item.delta)}</div>` : ''}
@@ -2794,7 +2805,7 @@ function solutionRenderDegradedExperience(payload) {
                 <div class="proposal-hero-side">
                     <div class="proposal-metric-wall proposal-metric-wall--count-${solutionNormalizeList(payload?.metrics || hero?.metrics || []).slice(0, 4).length}">
                         ${solutionNormalizeList(hero?.metrics).map((item) => `
-                            <article class="proposal-metric-card">
+                            <article class="proposal-metric-card ${solutionMetricValueWrapClass(item?.value)}">
                                 <div class="proposal-metric-label">${solutionEscapeHtml(item?.label || '指标')}</div>
                                 <div class="proposal-metric-value">${solutionEscapeHtml(item?.value || '-')}</div>
                                 ${item?.note ? `<div class="proposal-metric-note">${solutionEscapeHtml(item.note)}</div>` : ''}
