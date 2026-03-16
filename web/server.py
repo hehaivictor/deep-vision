@@ -4398,19 +4398,79 @@ def verify_sms_code(phone: str, scene: str, code: str, consume: bool = True) -> 
     return True, ""
 
 
+_WECHAT_MOJIBAKE_MARKERS = (
+    "Ã", "Â", "ä", "å", "æ", "ç", "è", "é", "ê", "ë", "ì", "í", "î", "ï",
+    "ð", "ñ", "ò", "ó", "ô", "õ", "ö", "ø", "ù", "ú", "û", "ü", "ý", "þ",
+    "ÿ", "œ", "š", "Ÿ", "€", "¢", "£", "¥", "¿", "½", "¼", "¾",
+)
+
+
+def _decode_json_response_utf8_preferred(response) -> object:
+    raw_content = getattr(response, "content", b"")
+    if isinstance(raw_content, (bytes, bytearray)) and raw_content:
+        for encoding in ("utf-8", "utf-8-sig"):
+            try:
+                return json.loads(bytes(raw_content).decode(encoding))
+            except Exception:
+                continue
+
+    try:
+        if not getattr(response, "encoding", None):
+            response.encoding = "utf-8"
+    except Exception:
+        pass
+    return response.json()
+
+
+def _wechat_mojibake_score(text: str) -> int:
+    content = str(text or "")
+    if not content:
+        return 0
+
+    score = 0
+    score += content.count("\ufffd") * 6
+    score += content.count("ï¿½") * 6
+    score += sum(content.count(marker) for marker in _WECHAT_MOJIBAKE_MARKERS)
+    score += sum(2 for ch in content if 0x80 <= ord(ch) <= 0x9F)
+    return score
+
+
+def normalize_wechat_nickname(raw_nickname: object) -> str:
+    nickname = html.unescape(str(raw_nickname or "").strip())
+    if not nickname:
+        return ""
+
+    candidate = nickname
+    for _ in range(2):
+        if _wechat_mojibake_score(candidate) <= 0:
+            break
+        try:
+            repaired = candidate.encode("latin-1").decode("utf-8").strip()
+        except UnicodeError:
+            break
+        if not repaired or repaired == candidate:
+            break
+        if _wechat_mojibake_score(repaired) > _wechat_mojibake_score(candidate):
+            break
+        candidate = repaired
+    return candidate
+
+
 def build_user_payload(row: sqlite3.Row) -> dict:
     user_id = int(row["id"])
     wechat_identity = query_wechat_identity_by_user_id(user_id)
     email = row["email"] or ""
     phone = row["phone"] or ""
+    wechat_nickname = normalize_wechat_nickname((wechat_identity or {}).get("nickname") or "")
+    display_account = wechat_nickname or phone or ("微信用户" if wechat_identity else "")
     return {
         "id": user_id,
         "email": email,
         "phone": phone,
-        "account": phone or "",
+        "account": display_account,
         "created_at": row["created_at"],
         "wechat_bound": bool(wechat_identity),
-        "wechat_nickname": str((wechat_identity or {}).get("nickname") or "").strip(),
+        "wechat_nickname": wechat_nickname,
         "wechat_avatar_url": str((wechat_identity or {}).get("avatar_url") or "").strip(),
         "is_wechat_shadow_account": bool(email.endswith("@wechat.local") and not phone),
     }
@@ -4555,7 +4615,7 @@ def exchange_wechat_code_for_token(code: str) -> tuple[Optional[dict], str]:
             timeout=WECHAT_OAUTH_TIMEOUT,
         )
         response.raise_for_status()
-        payload = response.json()
+        payload = _decode_json_response_utf8_preferred(response)
     except Exception:
         return None, "微信授权服务异常"
 
@@ -4591,7 +4651,7 @@ def fetch_wechat_user_profile(access_token: str, openid: str) -> tuple[Optional[
             timeout=WECHAT_OAUTH_TIMEOUT,
         )
         response.raise_for_status()
-        payload = response.json()
+        payload = _decode_json_response_utf8_preferred(response)
     except Exception:
         return None, "微信用户信息服务异常"
 
@@ -4606,6 +4666,7 @@ def fetch_wechat_user_profile(access_token: str, openid: str) -> tuple[Optional[
             detail = f"{detail}{errmsg}"
         return None, f"拉取微信用户信息失败{detail}"
 
+    payload["nickname"] = normalize_wechat_nickname(payload.get("nickname", ""))
     return payload, ""
 
 
@@ -4619,7 +4680,7 @@ def resolve_user_for_wechat_identity(
     app_id_value = str(app_id or "").strip()
     openid_value = str(openid or "").strip()
     unionid_value = str(unionid or "").strip()
-    nickname_value = str(nickname or "").strip()
+    nickname_value = normalize_wechat_nickname(nickname)
     avatar_url_value = str(avatar_url or "").strip()
     if not app_id_value or not openid_value:
         return None
@@ -4829,7 +4890,7 @@ def bind_wechat_identity_to_user(
     app_id_value = str(app_id or "").strip()
     openid_value = str(openid or "").strip()
     unionid_value = str(unionid or "").strip()
-    nickname_value = str(nickname or "").strip()
+    nickname_value = normalize_wechat_nickname(nickname)
     avatar_url_value = str(avatar_url or "").strip()
 
     if not app_id_value or not openid_value:

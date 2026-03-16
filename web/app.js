@@ -524,8 +524,10 @@ function deepVision() {
             this.loadAuthAccountHistory();
             this.readAuthRedirectResult();
             this.registerDialogFocusWatchers();
-            await this.loadVersionInfo();
-            await this.checkServerStatus();
+            await Promise.all([
+                this.loadVersionInfo(),
+                this.checkServerStatus()
+            ]);
             await this.checkAuthStatus();
 
             if (!this.authReady) {
@@ -535,18 +537,11 @@ function deepVision() {
                 return;
             }
 
-            this.consumeAuthRedirectToast();
-            await this.loadScenarios();
-            await this.loadSessions();
-            await this.loadReports();
-            await this.consumeInitialEntryRoute();
-            this.startQuoteRotation();
-
-            // 检查是否首次访问，跳转产品介绍页
-            this.checkFirstVisit();
-            this.initGuide();
-
             this.authChecking = false;
+            this.consumeAuthRedirectToast();
+            this.bootstrapAuthenticatedApp().catch((error) => {
+                console.error('登录后初始化失败:', error);
+            });
 
             // 初始化虚拟列表
             this.$nextTick(() => {
@@ -767,6 +762,21 @@ function deepVision() {
                 this.showToast(toastMessage, toastType);
             }
             this.$nextTick(() => this.focusAuthAccountInput());
+        },
+
+        async bootstrapAuthenticatedApp() {
+            this.startQuoteRotation();
+
+            // 检查是否首次访问，跳转产品介绍页
+            this.checkFirstVisit();
+            this.initGuide();
+
+            await Promise.all([
+                this.loadScenarios(),
+                this.loadSessions(),
+                this.loadReports()
+            ]);
+            await this.consumeInitialEntryRoute();
         },
 
         focusAuthAccountInput() {
@@ -1070,12 +1080,9 @@ function deepVision() {
                 this.restoreThemeAfterAuth();
                 this.showToast(result?.created ? '注册成功，已自动登录' : '登录成功', 'success');
 
-                await this.loadScenarios();
-                await this.loadSessions();
-                await this.loadReports();
-                this.startQuoteRotation();
-                this.checkFirstVisit();
-                this.initGuide();
+                this.bootstrapAuthenticatedApp().catch((error) => {
+                    console.error('登录后初始化失败:', error);
+                });
             } catch (error) {
                 this.showToast(error?.message || '登录失败，请重试', 'error');
             } finally {

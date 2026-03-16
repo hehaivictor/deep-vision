@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "0d031ea",
+  "committedAt": "2026-03-16T15:23:09+08:00",
+  "versionType": "patch",
+  "title": "优化登录后首屏加载响应",
+  "changes": [
+    "修复微信昵称乱码并优先展示微信昵称账号",
+    "调整首页页脚版权文案并隐藏版本号",
+    "补充微信登录昵称展示回归测试"
+  ],
+  "changedFiles": [
+    "tests/test_api_comprehensive.py",
+    "web/app.js",
+    "web/index.html",
+    "web/server.py"
+  ]
+}

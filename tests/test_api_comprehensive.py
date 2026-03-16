@@ -351,6 +351,103 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.server.exchange_wechat_code_for_token = old_exchange
             self.server.fetch_wechat_user_profile = old_profile
 
+    def test_wechat_auth_normalizes_nickname_and_prefers_nickname_account(self):
+        old_enabled = self.server.WECHAT_LOGIN_ENABLED
+        old_app_id = self.server.WECHAT_APP_ID
+        old_secret = self.server.WECHAT_APP_SECRET
+        old_redirect = self.server.WECHAT_REDIRECT_URI
+        old_scope = self.server.WECHAT_OAUTH_SCOPE
+        old_exchange = self.server.exchange_wechat_code_for_token
+        old_profile = self.server.fetch_wechat_user_profile
+        try:
+            self.server.WECHAT_LOGIN_ENABLED = True
+            self.server.WECHAT_APP_ID = "wx-test-app"
+            self.server.WECHAT_APP_SECRET = "wx-test-secret"
+            self.server.WECHAT_REDIRECT_URI = "http://localhost:5001/api/auth/wechat/callback"
+            self.server.WECHAT_OAUTH_SCOPE = "snsapi_login"
+
+            def _fake_exchange(_code):
+                return {
+                    "access_token": "mock-token",
+                    "openid": "mock-openid-b",
+                    "unionid": "mock-unionid-b",
+                }, ""
+
+            def _fake_profile(_token, _openid):
+                return {
+                    "nickname": "ä½ å¥½ Victor",
+                    "headimgurl": "https://example.com/avatar-b.png",
+                    "unionid": "mock-unionid-b",
+                }, ""
+
+            self.server.exchange_wechat_code_for_token = _fake_exchange
+            self.server.fetch_wechat_user_profile = _fake_profile
+
+            start_resp = self.client.get("/api/auth/wechat/start?return_to=/")
+            self.assertEqual(start_resp.status_code, 302)
+
+            with self.client.session_transaction() as sess:
+                oauth_state = sess.get("wechat_oauth_state")
+
+            callback_resp = self.client.get(f"/api/auth/wechat/callback?code=mock-code&state={oauth_state}")
+            self.assertEqual(callback_resp.status_code, 302)
+            self.assertIn("auth_result=wechat_success", callback_resp.headers.get("Location", ""))
+
+            me_resp = self.client.get("/api/auth/me")
+            self.assertEqual(me_resp.status_code, 200)
+            payload = me_resp.get_json().get("user", {})
+            self.assertEqual(payload.get("wechat_nickname"), "你好 Victor")
+            self.assertEqual(payload.get("account"), "你好 Victor")
+
+            identity = self.server.query_wechat_identity_by_user_id(int(payload["id"]))
+            self.assertIsNotNone(identity)
+            self.assertEqual(identity.get("nickname"), "你好 Victor")
+        finally:
+            self.server.WECHAT_LOGIN_ENABLED = old_enabled
+            self.server.WECHAT_APP_ID = old_app_id
+            self.server.WECHAT_APP_SECRET = old_secret
+            self.server.WECHAT_REDIRECT_URI = old_redirect
+            self.server.WECHAT_OAUTH_SCOPE = old_scope
+            self.server.exchange_wechat_code_for_token = old_exchange
+            self.server.fetch_wechat_user_profile = old_profile
+
+    def test_auth_me_repairs_garbled_wechat_nickname_for_existing_identity(self):
+        now_iso = datetime.utcnow().isoformat()
+        with self.server.get_auth_db_connection() as conn:
+            created = conn.execute(
+                """
+                INSERT INTO users (email, phone, password_hash, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("wx_existing_case@wechat.local", None, "test-hash", now_iso, now_iso),
+            )
+            user_id = int(created.lastrowid)
+            conn.execute(
+                """
+                INSERT INTO wechat_identities
+                (user_id, app_id, openid, unionid, nickname, avatar_url, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    "wx-test-app",
+                    "mock-openid-existing",
+                    "mock-unionid-existing",
+                    "ä½ å¥½ Victor",
+                    "https://example.com/avatar-existing.png",
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            conn.commit()
+
+        self._set_authenticated_client(self.client, {"id": user_id})
+        me_resp = self.client.get("/api/auth/me")
+        self.assertEqual(me_resp.status_code, 200)
+        payload = me_resp.get_json().get("user", {})
+        self.assertEqual(payload.get("wechat_nickname"), "你好 Victor")
+        self.assertEqual(payload.get("account"), "你好 Victor")
+
     def test_wechat_callback_rejects_invalid_state(self):
         old_enabled = self.server.WECHAT_LOGIN_ENABLED
         old_app_id = self.server.WECHAT_APP_ID
