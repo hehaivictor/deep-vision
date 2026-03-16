@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
+import secrets
 import shutil
 
 
@@ -471,7 +472,12 @@ class ScenarioLoader:
         """
         # 确保有ID
         if "id" not in scenario:
-            scenario["id"] = f"custom-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            while True:
+                scenario_id = f"custom-{datetime.now().strftime('%Y%m%d%H%M%S')}-{secrets.token_hex(3)}"
+                file_path = self.custom_dir / f"{scenario_id}.json"
+                if scenario_id not in self._cache and not file_path.exists():
+                    scenario["id"] = scenario_id
+                    break
 
         scenario_id = scenario["id"]
         scenario["builtin"] = False

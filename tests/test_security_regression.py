@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import types
 import unittest
 import uuid
@@ -118,6 +119,8 @@ class SecurityRegressionTests(unittest.TestCase):
 
     def setUp(self):
         self.client = self.server.app.test_client()
+        self.server.SMS_SEND_COOLDOWN_SECONDS = 0
+        self.server.SMS_TEST_CODE = ""
 
     def _register_user(self, client=None):
         target_client = client or self.client
@@ -174,6 +177,65 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertNotIn("model", payload)
         self.assertNotIn("question_model", payload)
         self.assertNotIn("report_model", payload)
+
+    def test_sms_send_code_cooldown_is_not_bypassed_by_parallel_requests(self):
+        phone = f"1{uuid.uuid4().int % 10**10:010d}"
+        self.server.SMS_SEND_COOLDOWN_SECONDS = 120
+        results = []
+        errors = []
+        barrier = threading.Barrier(8)
+        result_lock = threading.Lock()
+
+        def worker(index):
+            try:
+                barrier.wait(timeout=1.0)
+                result = self.server.issue_sms_code(phone, "login", request_ip=f"ip-{index}")
+                with result_lock:
+                    results.append(result)
+            except Exception as exc:
+                with result_lock:
+                    errors.append(str(exc))
+
+        threads = [threading.Thread(target=worker, args=(idx,)) for idx in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertFalse(errors, errors)
+        success_count = sum(1 for ok, _msg, _payload in results if ok)
+        self.assertEqual(1, success_count, results)
+
+    def test_sms_code_can_only_be_consumed_once_under_parallel_verify(self):
+        phone = f"1{uuid.uuid4().int % 10**10:010d}"
+        self.server.SMS_TEST_CODE = "246810"
+        ok, error_message, _payload = self.server.issue_sms_code(phone, "login", request_ip="seed-ip")
+        self.assertTrue(ok, error_message)
+
+        results = []
+        errors = []
+        barrier = threading.Barrier(12)
+        result_lock = threading.Lock()
+
+        def worker():
+            try:
+                barrier.wait(timeout=1.0)
+                result = self.server.verify_sms_code(phone, "login", "246810", consume=True)
+                with result_lock:
+                    results.append(result)
+            except Exception as exc:
+                with result_lock:
+                    errors.append(str(exc))
+
+        threads = [threading.Thread(target=worker) for _ in range(12)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertFalse(errors, errors)
+        success_count = sum(1 for ok, _message in results if ok)
+        self.assertEqual(1, success_count, results)
 
     def test_report_solution_endpoint_requires_auth(self):
         response = self.client.get('/api/reports/security-solution.md/solution')

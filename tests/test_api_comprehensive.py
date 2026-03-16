@@ -190,6 +190,11 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(login_resp.status_code, 200, login_resp.get_data(as_text=True))
         return login_resp.get_json()["user"]
 
+    def _set_authenticated_client(self, client, user):
+        with client.session_transaction() as sess:
+            sess["user_id"] = int(user["id"])
+            sess["auth_instance_id"] = str(self.server.get_auth_instance_id() or "")
+
     def _create_session(self, topic="综合测试会话", description="测试描述"):
         response = self.client.post(
             "/api/sessions",
@@ -404,12 +409,16 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(get_deleted.status_code, 404)
 
     def test_create_session_falls_back_when_scenario_dimensions_malformed(self):
-        self._register()
+        user = self._register()
         broken_scenario_id = "custom-broken"
         self.server.scenario_loader._cache[broken_scenario_id] = {
             "id": broken_scenario_id,
             "name": "异常场景",
             "description": "历史脏数据",
+            "builtin": False,
+            "custom": True,
+            "owner_user_id": int(user["id"]),
+            self.server.INSTANCE_SCOPE_FIELD: "",
             "dimensions": [
                 "invalid-dimension",
                 {"name": "缺少ID"},
@@ -817,6 +826,52 @@ class ComprehensiveApiTests(unittest.TestCase):
         get_after_delete = self.client.get(f"/api/scenarios/{scenario_id}")
         self.assertEqual(get_after_delete.status_code, 404)
 
+    def test_custom_scenario_is_owner_scoped(self):
+        owner = self._register()
+        create_resp = self.client.post(
+            "/api/scenarios/custom",
+            json={
+                "name": "私有场景",
+                "description": "仅限创建者可见",
+                "dimensions": [
+                    {"name": "维度A", "description": "描述A", "key_aspects": ["x", "y"]},
+                ],
+            },
+        )
+        self.assertEqual(create_resp.status_code, 200, create_resp.get_data(as_text=True))
+        payload = create_resp.get_json() or {}
+        scenario_id = payload.get("scenario_id")
+        self.assertTrue(scenario_id)
+
+        owner_list = self.client.get("/api/scenarios")
+        self.assertEqual(owner_list.status_code, 200)
+        self.assertTrue(any(item.get("id") == scenario_id for item in (owner_list.get_json() or [])))
+
+        anonymous_client = self.server.app.test_client()
+        anonymous_list = anonymous_client.get("/api/scenarios")
+        self.assertEqual(anonymous_list.status_code, 200)
+        self.assertFalse(any(item.get("id") == scenario_id for item in (anonymous_list.get_json() or [])))
+        anonymous_detail = anonymous_client.get(f"/api/scenarios/{scenario_id}")
+        self.assertEqual(anonymous_detail.status_code, 404)
+
+        other_client = self.server.app.test_client()
+        self._register(client=other_client)
+        other_detail = other_client.get(f"/api/scenarios/{scenario_id}")
+        self.assertEqual(other_detail.status_code, 404)
+        other_delete = other_client.delete(f"/api/scenarios/custom/{scenario_id}")
+        self.assertEqual(other_delete.status_code, 404)
+        other_session = other_client.post(
+            "/api/sessions",
+            json={"topic": "越权使用场景", "scenario_id": scenario_id},
+        )
+        self.assertEqual(other_session.status_code, 404)
+
+        owner_detail = self.client.get(f"/api/scenarios/{scenario_id}")
+        self.assertEqual(owner_detail.status_code, 200)
+        owner_payload = owner_detail.get_json() or {}
+        self.assertNotIn("owner_user_id", owner_payload)
+        self.assertNotIn(self.server.INSTANCE_SCOPE_FIELD, owner_payload)
+
     def test_custom_scenario_create_with_custom_report_schema(self):
         self._register()
         create_resp = self.client.post(
@@ -879,6 +934,71 @@ class ComprehensiveApiTests(unittest.TestCase):
 
         delete_resp = self.client.delete(f"/api/scenarios/custom/{scenario_id}")
         self.assertEqual(delete_resp.status_code, 200)
+
+    def test_submit_answer_preserves_both_logs_under_concurrent_requests(self):
+        owner = self._register()
+        payload = self._create_session(topic="并发提交测试")
+        session_id = payload["session_id"]
+        dimension = next(iter(payload.get("dimensions", {}).keys()))
+
+        client_a = self.server.app.test_client()
+        client_b = self.server.app.test_client()
+        self._set_authenticated_client(client_a, owner)
+        self._set_authenticated_client(client_b, owner)
+
+        original_evaluate_answer_depth = self.server.evaluate_answer_depth
+        barrier = threading.Barrier(2)
+
+        def delayed_evaluate_answer_depth(*args, **kwargs):
+            try:
+                barrier.wait(timeout=0.2)
+            except threading.BrokenBarrierError:
+                pass
+            return original_evaluate_answer_depth(*args, **kwargs)
+
+        responses = []
+        errors = []
+        responses_lock = threading.Lock()
+        self.server.evaluate_answer_depth = delayed_evaluate_answer_depth
+        try:
+            def submit(client, label):
+                try:
+                    response = client.post(
+                        f"/api/sessions/{session_id}/submit-answer",
+                        json={
+                            "question": f"问题-{label}",
+                            "answer": f"回答-{label}",
+                            "dimension": dimension,
+                            "options": ["A", "B"],
+                            "is_follow_up": False,
+                        },
+                    )
+                    with responses_lock:
+                        responses.append((response.status_code, response.get_json() or {}))
+                except Exception as exc:
+                    with responses_lock:
+                        errors.append(str(exc))
+
+            threads = [
+                threading.Thread(target=submit, args=(client_a, "A")),
+                threading.Thread(target=submit, args=(client_b, "B")),
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        finally:
+            self.server.evaluate_answer_depth = original_evaluate_answer_depth
+
+        self.assertFalse(errors, errors)
+        self.assertEqual([200, 200], sorted(status for status, _payload in responses))
+
+        final_resp = self.client.get(f"/api/sessions/{session_id}")
+        self.assertEqual(final_resp.status_code, 200, final_resp.get_data(as_text=True))
+        final_payload = final_resp.get_json() or {}
+        interview_log = final_payload.get("interview_log", [])
+        self.assertEqual(2, len(interview_log), interview_log)
+        self.assertEqual({"回答-A", "回答-B"}, {item.get("answer") for item in interview_log})
 
     def test_custom_scenario_create_with_solution_dsl(self):
         self._register()

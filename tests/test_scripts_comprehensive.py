@@ -9,6 +9,7 @@ from scripts import convert_doc
 from scripts import migrate_session_evidence_annotations
 from scripts import replay_preflight_diagnostics
 from scripts import report_generator
+from scripts import scenario_loader
 from scripts import session_manager
 
 
@@ -375,6 +376,27 @@ class ComprehensiveScriptTests(unittest.TestCase):
             )
             self.assertEqual(completed.returncode, 0, f"command failed: {' '.join(cmd)}")
             self.assertIn("usage", completed.stdout.lower())
+
+    def test_scenario_loader_generates_unique_ids_within_same_second(self):
+        custom_dir = self.sandbox_root / "scenario-loader" / "custom"
+        builtin_dir = ROOT_DIR / "resources" / "scenarios" / "builtin"
+        loader = scenario_loader.ScenarioLoader(builtin_dir=builtin_dir, custom_dir=custom_dir)
+
+        fixed_now = scenario_loader.datetime(2026, 3, 16, 2, 5, 0)
+        with patch.object(scenario_loader, "datetime") as mock_datetime:
+            mock_datetime.now.return_value = fixed_now
+            scenario_id_a = loader.save_custom_scenario({
+                "name": "场景A",
+                "dimensions": [{"id": "d1", "name": "维度1"}],
+            })
+            scenario_id_b = loader.save_custom_scenario({
+                "name": "场景B",
+                "dimensions": [{"id": "d1", "name": "维度1"}],
+            })
+
+        self.assertNotEqual(scenario_id_a, scenario_id_b)
+        self.assertTrue((custom_dir / f"{scenario_id_a}.json").exists())
+        self.assertTrue((custom_dir / f"{scenario_id_b}.json").exists())
 
 
 if __name__ == "__main__":

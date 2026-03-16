@@ -46,6 +46,11 @@ from werkzeug.security import generate_password_hash
 from werkzeug.serving import WSGIRequestHandler
 from werkzeug.utils import secure_filename
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
 
 def _parse_env_assignment(line: str) -> Optional[tuple[str, str]]:
     text = str(line or "").strip()
@@ -1794,6 +1799,8 @@ WECHAT_OAUTH_TIMEOUT = _cfg_float("WECHAT_OAUTH_TIMEOUT", 8.0)
 WECHAT_OAUTH_TIMEOUT = max(3.0, min(WECHAT_OAUTH_TIMEOUT, 30.0))
 WECHAT_OAUTH_STATE_TTL_SECONDS = _cfg_int("WECHAT_OAUTH_STATE_TTL_SECONDS", 300)
 WECHAT_OAUTH_STATE_TTL_SECONDS = max(60, min(WECHAT_OAUTH_STATE_TTL_SECONDS, 1800))
+DOCUMENT_CONVERT_TIMEOUT_SECONDS = _cfg_int("DOCUMENT_CONVERT_TIMEOUT_SECONDS", 60)
+DOCUMENT_CONVERT_TIMEOUT_SECONDS = max(10, min(DOCUMENT_CONVERT_TIMEOUT_SECONDS, 300))
 
 # 智能文档摘要配置
 ENABLE_SMART_SUMMARY = _cfg_bool("ENABLE_SMART_SUMMARY", True)
@@ -2066,6 +2073,75 @@ ALLOWED_STATIC_EXTENSIONS = {
     ".ico", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
     ".woff", ".woff2", ".ttf", ".eot",
 }
+
+named_lock_registry = {}
+named_lock_registry_guard = threading.Lock()
+
+
+def _normalize_named_lock_token(raw_value: object) -> str:
+    text = str(raw_value or "").strip()
+    if not text:
+        return hashlib.sha1(b"empty").hexdigest()[:12]
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+    safe_name = secure_filename(text)[:96]
+    if safe_name:
+        return f"{safe_name}-{digest}"
+    return digest
+
+
+def _get_named_local_lock(lock_name: str) -> threading.RLock:
+    key = str(lock_name or "").strip() or "default"
+    with named_lock_registry_guard:
+        lock = named_lock_registry.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            named_lock_registry[key] = lock
+    return lock
+
+
+def _get_named_lock_file(category: str, key: object) -> Path:
+    category_name = secure_filename(str(category or "").strip()) or "general"
+    token = _normalize_named_lock_token(key)
+    lock_dir = DATA_DIR / ".locks" / category_name
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    return lock_dir / f"{token}.lock"
+
+
+@contextmanager
+def named_file_lock(category: str, key: object):
+    local_name = f"{category}:{key}"
+    local_lock = _get_named_local_lock(local_name)
+    local_lock.acquire()
+    file_handle = None
+    try:
+        lock_file = _get_named_lock_file(category, key)
+        file_handle = lock_file.open("a+")
+        if fcntl is not None:
+            fcntl.flock(file_handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        if file_handle is not None:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(file_handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                file_handle.close()
+        local_lock.release()
+
+
+@contextmanager
+def locked_session_for_user(session_id: str, user_id: int, include_missing: bool = False):
+    with named_file_lock("sessions", session_id):
+        yield load_session_for_user(session_id, user_id, include_missing=include_missing)
+
+
+def with_session_write_lock(func):
+    @wraps(func)
+    def wrapper(session_id, *args, **kwargs):
+        with named_file_lock("sessions", session_id):
+            return func(session_id, *args, **kwargs)
+
+    return wrapper
 
 
 def _resolve_runtime_path(raw_path: str, default_path: Path) -> Path:
@@ -3568,8 +3644,21 @@ def _upsert_session_index_record(record: dict) -> None:
         )
 
 
+def _write_text_atomic(file_path: Path, content: str, encoding: str = "utf-8") -> None:
+    target = Path(file_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target.with_name(f".{target.name}.{secrets.token_hex(6)}.tmp")
+    try:
+        temp_path.write_text(content, encoding=encoding)
+        os.replace(temp_path, target)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+
 def save_session_json_and_sync(session_file: Path, session_data: dict) -> None:
-    session_file.write_text(
+    _write_text_atomic(
+        session_file,
         json.dumps(session_data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
@@ -4182,53 +4271,55 @@ def issue_sms_code(phone: str, scene: str, request_ip: str = "") -> tuple[bool, 
         return False, "请输入有效的手机号（中国大陆 11 位）", None
 
     scene_value = normalize_sms_scene(scene)
-    now = datetime.now(timezone.utc)
+    lock_key = f"{normalized_phone}:{scene_value}"
+    with named_file_lock("sms", lock_key):
+        now = datetime.now(timezone.utc)
 
-    with get_auth_db_connection() as conn:
-        latest = _latest_sms_record(conn, normalized_phone, scene_value)
-        if latest:
-            latest_created_at = _parse_iso_datetime(latest["created_at"])
-            if latest_created_at:
-                elapsed = (now - latest_created_at).total_seconds()
-                if elapsed < SMS_SEND_COOLDOWN_SECONDS:
-                    retry_after = int(max(1, SMS_SEND_COOLDOWN_SECONDS - elapsed))
-                    return False, f"请求过于频繁，请 {retry_after}s 后重试", {
-                        "retry_after": retry_after,
-                        "cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
-                    }
+        with get_auth_db_connection() as conn:
+            latest = _latest_sms_record(conn, normalized_phone, scene_value)
+            if latest:
+                latest_created_at = _parse_iso_datetime(latest["created_at"])
+                if latest_created_at:
+                    elapsed = (now - latest_created_at).total_seconds()
+                    if elapsed < SMS_SEND_COOLDOWN_SECONDS:
+                        retry_after = int(max(1, SMS_SEND_COOLDOWN_SECONDS - elapsed))
+                        return False, f"请求过于频繁，请 {retry_after}s 后重试", {
+                            "retry_after": retry_after,
+                            "cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
+                        }
 
-        sent_today = _count_sms_sent_today(conn, normalized_phone, scene_value)
-        if sent_today >= SMS_MAX_SEND_PER_PHONE_PER_DAY:
-            return False, "今日验证码发送次数已达上限，请明日再试", {
-                "retry_after": 86400,
-                "cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
-            }
+            sent_today = _count_sms_sent_today(conn, normalized_phone, scene_value)
+            if sent_today >= SMS_MAX_SEND_PER_PHONE_PER_DAY:
+                return False, "今日验证码发送次数已达上限，请明日再试", {
+                    "retry_after": 86400,
+                    "cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
+                }
 
-    code = resolve_sms_code_for_issue()
-    sent_ok, send_error = dispatch_sms_code(normalized_phone, code, scene_value)
-    if not sent_ok:
-        return False, send_error or "验证码发送失败，请稍后重试", None
+        code = resolve_sms_code_for_issue()
+        sent_ok, send_error = dispatch_sms_code(normalized_phone, code, scene_value)
+        if not sent_ok:
+            return False, send_error or "验证码发送失败，请稍后重试", None
 
-    created_at = now.isoformat()
-    expires_at = (now + timedelta(seconds=SMS_CODE_TTL_SECONDS)).isoformat()
-    with get_auth_db_connection() as conn:
-        conn.execute(
-            """
-            INSERT INTO auth_sms_codes
-            (phone, scene, code_hash, request_ip, created_at, expires_at, consumed_at, attempts, max_attempts)
-            VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?)
-            """,
-            (
-                normalized_phone,
-                scene_value,
-                hash_sms_code(normalized_phone, scene_value, code),
-                str(request_ip or "").strip(),
-                created_at,
-                expires_at,
-                SMS_MAX_VERIFY_ATTEMPTS,
-            ),
-        )
-        conn.commit()
+        created_at = now.isoformat()
+        expires_at = (now + timedelta(seconds=SMS_CODE_TTL_SECONDS)).isoformat()
+        with get_auth_db_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO auth_sms_codes
+                (phone, scene, code_hash, request_ip, created_at, expires_at, consumed_at, attempts, max_attempts)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?)
+                """,
+                (
+                    normalized_phone,
+                    scene_value,
+                    hash_sms_code(normalized_phone, scene_value, code),
+                    str(request_ip or "").strip(),
+                    created_at,
+                    expires_at,
+                    SMS_MAX_VERIFY_ATTEMPTS,
+                ),
+            )
+            conn.commit()
 
     payload = {
         "cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
@@ -4251,49 +4342,51 @@ def verify_sms_code(phone: str, scene: str, code: str, consume: bool = True) -> 
     if not re.fullmatch(r"\d{4,8}", code_text):
         return False, "请输入有效验证码"
 
-    now = datetime.now(timezone.utc)
-    with get_auth_db_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT id, code_hash, expires_at, consumed_at, attempts, max_attempts
-            FROM auth_sms_codes
-            WHERE phone = ? AND scene = ?
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (normalized_phone, scene_value),
-        ).fetchone()
-        if not row:
-            return False, "请先获取验证码"
+    lock_key = f"{normalized_phone}:{scene_value}"
+    with named_file_lock("sms", lock_key):
+        now = datetime.now(timezone.utc)
+        with get_auth_db_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, code_hash, expires_at, consumed_at, attempts, max_attempts
+                FROM auth_sms_codes
+                WHERE phone = ? AND scene = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (normalized_phone, scene_value),
+            ).fetchone()
+            if not row:
+                return False, "请先获取验证码"
 
-        expires_at = _parse_iso_datetime(row["expires_at"])
-        if not expires_at or now > expires_at:
-            return False, "验证码已过期，请重新获取"
+            expires_at = _parse_iso_datetime(row["expires_at"])
+            if not expires_at or now > expires_at:
+                return False, "验证码已过期，请重新获取"
 
-        if row["consumed_at"]:
-            return False, "验证码已失效，请重新获取"
+            if row["consumed_at"]:
+                return False, "验证码已失效，请重新获取"
 
-        attempts = int(row["attempts"] or 0)
-        max_attempts = int(row["max_attempts"] or SMS_MAX_VERIFY_ATTEMPTS)
-        if attempts >= max_attempts:
-            return False, "验证码错误次数过多，请重新获取"
+            attempts = int(row["attempts"] or 0)
+            max_attempts = int(row["max_attempts"] or SMS_MAX_VERIFY_ATTEMPTS)
+            if attempts >= max_attempts:
+                return False, "验证码错误次数过多，请重新获取"
 
-        expected_hash = str(row["code_hash"] or "")
-        provided_hash = hash_sms_code(normalized_phone, scene_value, code_text)
-        if expected_hash != provided_hash:
-            conn.execute(
-                "UPDATE auth_sms_codes SET attempts = attempts + 1 WHERE id = ?",
-                (int(row["id"]),),
-            )
-            conn.commit()
-            return False, "验证码错误"
+            expected_hash = str(row["code_hash"] or "")
+            provided_hash = hash_sms_code(normalized_phone, scene_value, code_text)
+            if expected_hash != provided_hash:
+                conn.execute(
+                    "UPDATE auth_sms_codes SET attempts = attempts + 1 WHERE id = ?",
+                    (int(row["id"]),),
+                )
+                conn.commit()
+                return False, "验证码错误"
 
-        if consume:
-            conn.execute(
-                "UPDATE auth_sms_codes SET consumed_at = ? WHERE id = ?",
-                (now.isoformat(), int(row["id"])),
-            )
-            conn.commit()
+            if consume:
+                conn.execute(
+                    "UPDATE auth_sms_codes SET consumed_at = ? WHERE id = ?",
+                    (now.isoformat(), int(row["id"])),
+                )
+                conn.commit()
     return True, ""
 
 
@@ -8827,33 +8920,34 @@ def update_context_summary(session_id: str) -> None:
     if not summary_text:
         return
 
-    # 写回前重新读取最新会话，避免异步线程覆盖新回答
-    latest_session = safe_load_session(session_file)
-    if not isinstance(latest_session, dict):
-        return
+    # 写回前重新读取最新会话，避免异步线程覆盖新回答。
+    with named_file_lock("sessions", session_id):
+        latest_session = safe_load_session(session_file)
+        if not isinstance(latest_session, dict):
+            return
 
-    latest_logs = latest_session.get("interview_log", [])
-    latest_history_count = len(latest_logs) - CONTEXT_WINDOW_SIZE
-    if latest_history_count <= 0:
-        return
+        latest_logs = latest_session.get("interview_log", [])
+        latest_history_count = len(latest_logs) - CONTEXT_WINDOW_SIZE
+        if latest_history_count <= 0:
+            return
 
-    # 生成期间若有新回答，改用最新快照做本地摘要，避免写入过期内容
-    if len(latest_logs) != len(interview_log):
-        summary_text = _generate_simple_summary(latest_logs[:latest_history_count], latest_session)
-        history_count = latest_history_count
-    else:
-        history_count = min(history_count, latest_history_count)
+        # 生成期间若有新回答，改用最新快照做本地摘要，避免写入过期内容
+        if len(latest_logs) != len(interview_log):
+            summary_text = _generate_simple_summary(latest_logs[:latest_history_count], latest_session)
+            history_count = latest_history_count
+        else:
+            history_count = min(history_count, latest_history_count)
 
-    latest_cached = latest_session.get("context_summary", {})
-    if latest_cached.get("log_count", 0) >= history_count:
-        return
+        latest_cached = latest_session.get("context_summary", {})
+        if latest_cached.get("log_count", 0) >= history_count:
+            return
 
-    latest_session["context_summary"] = {
-        "text": summary_text,
-        "log_count": history_count,
-        "updated_at": get_utc_now()
-    }
-    save_session_json_and_sync(session_file, latest_session)
+        latest_session["context_summary"] = {
+            "text": summary_text,
+            "log_count": history_count,
+            "updated_at": get_utc_now()
+        }
+        save_session_json_and_sync(session_file, latest_session)
     if ENABLE_DEBUG_LOG:
         print(f"📝 已更新上下文摘要: session={session_id}, 覆盖={history_count}条")
 
@@ -17495,10 +17589,129 @@ def preview_report_template_schema():
 
 # ============ 场景 API ============
 
+def _normalize_user_id_for_scenarios(raw_user_id: object) -> Optional[int]:
+    try:
+        user_id = int(raw_user_id)
+    except (TypeError, ValueError):
+        return None
+    return user_id if user_id > 0 else None
+
+
+def _scenario_owner_user_id(scenario: dict) -> int:
+    if not isinstance(scenario, dict):
+        return 0
+    try:
+        return int(scenario.get("owner_user_id") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _is_scenario_accessible_to_user(
+    scenario: dict,
+    user_id: Optional[int] = None,
+    expected_scope: Optional[str] = None,
+) -> bool:
+    if not isinstance(scenario, dict):
+        return False
+    if bool(scenario.get("builtin", False)):
+        return True
+
+    user_id_int = _normalize_user_id_for_scenarios(user_id)
+    if user_id_int is None:
+        return False
+
+    owner_user_id = _scenario_owner_user_id(scenario)
+    if owner_user_id <= 0 or owner_user_id != user_id_int:
+        return False
+
+    return is_instance_scope_visible(scenario.get(INSTANCE_SCOPE_FIELD), expected_scope=expected_scope)
+
+
+def get_accessible_scenarios_for_user(user_id: Optional[int] = None) -> list[dict]:
+    expected_scope = get_active_instance_scope_key()
+    scenarios = scenario_loader.get_all_scenarios()
+    return [
+        scenario
+        for scenario in scenarios
+        if _is_scenario_accessible_to_user(scenario, user_id=user_id, expected_scope=expected_scope)
+    ]
+
+
+def get_accessible_scenario_or_none(scenario_id: str, user_id: Optional[int] = None) -> Optional[dict]:
+    scenario = scenario_loader.get_scenario(scenario_id)
+    if not _is_scenario_accessible_to_user(
+        scenario,
+        user_id=user_id,
+        expected_scope=get_active_instance_scope_key(),
+    ):
+        return None
+    return scenario
+
+
+def strip_internal_scenario_fields(scenario: dict) -> dict:
+    payload = copy.deepcopy(scenario or {})
+    payload.pop("owner_user_id", None)
+    payload.pop(INSTANCE_SCOPE_FIELD, None)
+    meta = payload.get("meta")
+    if isinstance(meta, dict):
+        meta.pop("owner_user_id", None)
+        meta.pop(INSTANCE_SCOPE_FIELD, None)
+    return payload
+
+
+def match_accessible_scenarios_by_keywords(topic: str, scenarios: list[dict]) -> dict:
+    topic_lower = str(topic or "").lower()
+    scores = {}
+
+    for scenario in scenarios:
+        if not isinstance(scenario, dict):
+            continue
+        scenario_id = str(scenario.get("id") or "").strip()
+        if not scenario_id:
+            continue
+        for keyword in scenario.get("keywords", []) or []:
+            keyword_lower = str(keyword or "").strip().lower()
+            if keyword_lower and keyword_lower in topic_lower:
+                scores[scenario_id] = scores.get(scenario_id, 0) + 1
+
+    if not scores:
+        default_scenario = next((item for item in scenarios if item.get("id") == "product-requirement"), None)
+        if not default_scenario and scenarios:
+            default_scenario = scenarios[0]
+        fallback_id = str((default_scenario or {}).get("id") or "product-requirement")
+        return {
+            "scenario_id": fallback_id,
+            "confidence": 0.3,
+            "matched_keywords": [],
+            "alternatives": [],
+        }
+
+    sorted_scenarios = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    best_id, best_score = sorted_scenarios[0]
+    scenario = next((item for item in scenarios if item.get("id") == best_id), {})
+    total_keywords = len(scenario.get("keywords", []) or [])
+    confidence = min(0.9, 0.4 + (best_score / max(total_keywords, 1)) * 0.5)
+    matched_keywords = [
+        keyword
+        for keyword in scenario.get("keywords", []) or []
+        if str(keyword or "").strip().lower() in topic_lower
+    ]
+    alternatives = [
+        {"scenario_id": scenario_id, "score": score}
+        for scenario_id, score in sorted_scenarios[1:4]
+    ]
+    return {
+        "scenario_id": best_id,
+        "confidence": round(confidence, 2),
+        "matched_keywords": matched_keywords,
+        "alternatives": alternatives,
+    }
+
+
 @app.route('/api/scenarios', methods=['GET'])
 def list_scenarios():
     """获取所有场景列表"""
-    scenarios = scenario_loader.get_all_scenarios()
+    scenarios = get_accessible_scenarios_for_user(get_current_user_id_or_none())
     # 返回简化的场景信息
     return jsonify([
         {
@@ -17538,10 +17751,10 @@ def list_scenarios():
 @app.route('/api/scenarios/<scenario_id>', methods=['GET'])
 def get_scenario(scenario_id):
     """获取场景详情"""
-    scenario = scenario_loader.get_scenario(scenario_id)
+    scenario = get_accessible_scenario_or_none(scenario_id, get_current_user_id_or_none())
     if not scenario:
         return jsonify({"error": "场景不存在"}), 404
-    payload = copy.deepcopy(scenario)
+    payload = strip_internal_scenario_fields(scenario)
     payload["compiled_solution_schema"] = get_scenario_solution_compiled_schema(payload)
     meta = payload.get("meta", {}) if isinstance(payload.get("meta", {}), dict) else {}
     meta.setdefault("source", "builtin" if payload.get("builtin", True) else "user_defined")
@@ -17680,6 +17893,10 @@ def generate_scenario_with_ai():
 @app.route('/api/scenarios/custom', methods=['POST'])
 def create_custom_scenario():
     """创建自定义场景"""
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
     data = request.get_json()
     if not data:
         return jsonify({"error": "无效的请求数据"}), 400
@@ -17745,6 +17962,8 @@ def create_custom_scenario():
         "description": data.get("description", "").strip(),
         "icon": data.get("icon", "clipboard-list"),
         "dimensions": dimensions,
+        "owner_user_id": int(user_id),
+        INSTANCE_SCOPE_FIELD: get_active_instance_scope_key(),
         "report": normalized_report,
         "meta": {
             "source": "user_defined",
@@ -17757,7 +17976,7 @@ def create_custom_scenario():
 
     scenario_id = scenario_loader.save_custom_scenario(scenario)
     saved_scenario = scenario_loader.get_scenario(scenario_id) or {}
-    response_scenario = copy.deepcopy(saved_scenario)
+    response_scenario = strip_internal_scenario_fields(saved_scenario)
     response_scenario["compiled_solution_schema"] = get_scenario_solution_compiled_schema(response_scenario)
     meta = response_scenario.get("meta", {}) if isinstance(response_scenario.get("meta", {}), dict) else {}
     meta.setdefault("source", "user_defined")
@@ -17775,6 +17994,14 @@ def delete_custom_scenario(scenario_id):
     """删除自定义场景"""
     if not scenario_id.startswith("custom-"):
         return jsonify({"error": "只能删除自定义场景"}), 400
+
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    scenario = get_accessible_scenario_or_none(scenario_id, user_id)
+    if not scenario or scenario.get("builtin", False):
+        return jsonify({"error": "场景不存在或无法删除"}), 404
 
     success = scenario_loader.delete_custom_scenario(scenario_id)
     if not success:
@@ -17795,8 +18022,14 @@ def recognize_scenario():
     if not topic:
         return jsonify({"error": "主题不能为空"}), 400
 
-    # 构建场景摘要供 AI 判断
-    all_scenarios = scenario_loader.get_all_scenarios()
+    # 仅在当前用户可访问的场景中做识别，避免泄露他人的自定义场景。
+    user_id = get_current_user_id_or_none()
+    all_scenarios = get_accessible_scenarios_for_user(user_id)
+    if not all_scenarios:
+        fallback_scenario = scenario_loader.get_default_scenario()
+        if isinstance(fallback_scenario, dict):
+            all_scenarios = [fallback_scenario]
+
     scenario_list_text = "\n".join(
         f"- id: {s['id']}, 名称: {s['name']}, 说明: {s.get('description', '')}"
         for s in all_scenarios
@@ -17873,12 +18106,14 @@ def recognize_scenario():
         reason = ai_result.get("reason", "")
     else:
         # 回退：关键词匹配
-        kw_result = scenario_loader.match_by_keywords(topic)
+        kw_result = match_accessible_scenarios_by_keywords(topic, all_scenarios)
         best_id = kw_result["scenario_id"]
         confidence = kw_result["confidence"]
         reason = ""
 
-    recommended_scenario = scenario_loader.get_scenario(best_id)
+    recommended_scenario = get_accessible_scenario_or_none(best_id, user_id)
+    if not recommended_scenario and all_scenarios:
+        recommended_scenario = next((item for item in all_scenarios if item.get("id") == best_id), all_scenarios[0])
 
     return jsonify({
         "recommended": {
@@ -18546,7 +18781,7 @@ def create_session():
     topic = data.get("topic", "未命名访谈")
     description = data.get("description")  # 获取可选的主题描述
     interview_mode = data.get("interview_mode", DEFAULT_INTERVIEW_MODE)  # 获取访谈模式
-    scenario_id = data.get("scenario_id")  # 获取场景ID
+    requested_scenario_id = str(data.get("scenario_id") or "").strip()  # 获取场景ID
 
     # 验证 topic
     if not isinstance(topic, str) or not topic.strip():
@@ -18563,12 +18798,16 @@ def create_session():
         interview_mode = DEFAULT_INTERVIEW_MODE
 
     # 加载场景配置（如果未指定，使用默认场景）
-    if not scenario_id:
-        scenario_id = "product-requirement"
+    scenario_id = requested_scenario_id or "product-requirement"
 
-    scenario_config = scenario_loader.get_scenario(scenario_id)
-    if not isinstance(scenario_config, dict):
-        scenario_config = scenario_loader.get_default_scenario()
+    if requested_scenario_id:
+        scenario_config = get_accessible_scenario_or_none(scenario_id, user_id)
+        if not isinstance(scenario_config, dict):
+            return jsonify({"error": "场景不存在"}), 404
+    else:
+        scenario_config = get_accessible_scenario_or_none(scenario_id, user_id)
+        if not isinstance(scenario_config, dict):
+            scenario_config = scenario_loader.get_default_scenario()
 
     scenario_config = dict(scenario_config or {})
     scenario_id = str(scenario_config.get("id") or "product-requirement")
@@ -18679,28 +18918,29 @@ def update_session(session_id):
     if not user_id:
         return jsonify({"error": "请先登录"}), 401
 
-    loaded = load_session_for_user(session_id, user_id)
-    if len(loaded) == 3:
-        _file, error_msg, status_code = loaded
-        return jsonify({"error": error_msg}), status_code
-
     updates = request.get_json()
-    session_file, session = loaded
 
     if not isinstance(updates, dict):
         return jsonify({"error": "无效的请求数据"}), 400
 
-    # 定义允许更新的字段白名单
-    UPDATABLE_FIELDS = {"description", "topic", "status"}
+    with locked_session_for_user(session_id, user_id) as loaded:
+        if len(loaded) == 3:
+            _file, error_msg, status_code = loaded
+            return jsonify({"error": error_msg}), status_code
 
-    for key, value in updates.items():
-        if key != "session_id" and key in UPDATABLE_FIELDS:
-            session[key] = value
+        session_file, session = loaded
 
-    session["updated_at"] = get_utc_now()
-    save_session_json_and_sync(session_file, session)
+        # 定义允许更新的字段白名单
+        UPDATABLE_FIELDS = {"description", "topic", "status"}
 
-    return jsonify(session)
+        for key, value in updates.items():
+            if key != "session_id" and key in UPDATABLE_FIELDS:
+                session[key] = value
+
+        session["updated_at"] = get_utc_now()
+        save_session_json_and_sync(session_file, session)
+
+        return jsonify(session)
 
 
 @app.route('/api/sessions/<session_id>', methods=['DELETE'])
@@ -18710,14 +18950,15 @@ def delete_session(session_id):
     if not user_id:
         return jsonify({"error": "请先登录"}), 401
 
-    loaded = load_session_for_user(session_id, user_id, include_missing=True)
-    session_file, _session, state = loaded
+    session_file_name = ""
+    with locked_session_for_user(session_id, user_id, include_missing=True) as loaded:
+        session_file, _session, state = loaded
 
-    if state != "ok" or session_file is None:
-        return jsonify({"error": "会话不存在"}), 404
+        if state != "ok" or session_file is None:
+            return jsonify({"error": "会话不存在"}), 404
 
-    session_file_name = session_file.name
-    session_file.unlink()
+        session_file_name = session_file.name
+        session_file.unlink()
     remove_session_index_record(session_id=session_id, file_name=session_file_name)
 
     # ========== 步骤7: 清理缓存和状态 ==========
@@ -18750,38 +18991,40 @@ def batch_delete_sessions():
     deleted_reports = set()
 
     for session_id in session_ids:
-        session_file = SESSIONS_DIR / f"{session_id}.json"
-        if not session_file.exists():
-            missing_sessions.append(session_id)
-            continue
-
-        session = safe_load_session(session_file)
-        if session is None:
-            skipped_sessions.append({"session_id": session_id, "reason": "会话数据损坏"})
-            continue
-
-        if not ensure_session_owner(session, user_id):
-            missing_sessions.append(session_id)
-            continue
-
-        if skip_in_progress:
-            effective_status = get_effective_session_status(session)
-            if effective_status == "in_progress":
-                skipped_sessions.append({"session_id": session_id, "reason": "会话进行中，已按设置跳过"})
-                continue
-
-        if delete_reports:
-            linked_reports = get_bound_reports_for_session(session)
-            for report_name in linked_reports:
-                report_file = REPORTS_DIR / report_name
-                if report_file.exists():
-                    mark_report_as_deleted(report_name)
-                    delete_solution_sidecar(report_name)
-                    deleted_reports.add(report_name)
-
         try:
-            session_file_name = session_file.name
-            session_file.unlink()
+            with named_file_lock("sessions", session_id):
+                session_file = SESSIONS_DIR / f"{session_id}.json"
+                if not session_file.exists():
+                    missing_sessions.append(session_id)
+                    continue
+
+                session = safe_load_session(session_file)
+                if session is None:
+                    skipped_sessions.append({"session_id": session_id, "reason": "会话数据损坏"})
+                    continue
+
+                if not ensure_session_owner(session, user_id):
+                    missing_sessions.append(session_id)
+                    continue
+
+                if skip_in_progress:
+                    effective_status = get_effective_session_status(session)
+                    if effective_status == "in_progress":
+                        skipped_sessions.append({"session_id": session_id, "reason": "会话进行中，已按设置跳过"})
+                        continue
+
+                if delete_reports:
+                    linked_reports = get_bound_reports_for_session(session)
+                    for report_name in linked_reports:
+                        report_file = REPORTS_DIR / report_name
+                        if report_file.exists():
+                            mark_report_as_deleted(report_name)
+                            delete_solution_sidecar(report_name)
+                            deleted_reports.add(report_name)
+
+                session_file_name = session_file.name
+                session_file.unlink()
+
             remove_session_index_record(session_id=session_id, file_name=session_file_name)
             invalidate_prefetch(session_id)
             _clear_first_question_prefetch_priority(session_id)
@@ -20388,15 +20631,21 @@ def get_next_question(session_id):
 
     completion = evaluate_dimension_completion_v2(session, dimension)
     if completion.get("can_complete"):
-        # 自动完成需持久化，否则后续读取会出现覆盖率回退
-        dim_state = session.setdefault("dimensions", {}).setdefault(dimension, {})
-        dim_state["coverage"] = 100
-        dim_state["auto_completed"] = True
-        dim_state["completion_reason"] = completion.get("reason") or "quality_gate_passed"
-        dim_state["quality_warning"] = bool(completion.get("quality_warning", False))
+        # 自动完成写回时重新锁定并读取最新会话，避免覆盖并发写入。
+        with locked_session_for_user(session_id, user_id) as latest_loaded:
+            if len(latest_loaded) == 3:
+                _file, error_msg, status_code = latest_loaded
+                return jsonify({"error": error_msg}), status_code
 
-        session["updated_at"] = get_utc_now()
-        save_session_json_and_sync(session_file, session)
+            latest_session_file, latest_session = latest_loaded
+            latest_dim_state = latest_session.setdefault("dimensions", {}).setdefault(dimension, {})
+            latest_dim_state["coverage"] = 100
+            latest_dim_state["auto_completed"] = True
+            latest_dim_state["completion_reason"] = completion.get("reason") or "quality_gate_passed"
+            latest_dim_state["quality_warning"] = bool(completion.get("quality_warning", False))
+            latest_session["updated_at"] = get_utc_now()
+            save_session_json_and_sync(latest_session_file, latest_session)
+            session = latest_session
 
         dim_follow_ups = len([log for log in all_dim_logs if log.get("is_follow_up", False)])
         snapshot = completion.get("snapshot", {})
@@ -20789,6 +21038,7 @@ def extract_other_resolution(log: dict, option_list: list[str]) -> Optional[dict
 
 
 @app.route('/api/sessions/<session_id>/submit-answer', methods=['POST'])
+@with_session_write_lock
 def submit_answer(session_id):
     """提交回答"""
     user_id = get_current_user_id_or_none()
@@ -21022,6 +21272,7 @@ def submit_answer(session_id):
 
 
 @app.route('/api/sessions/<session_id>/undo-answer', methods=['POST'])
+@with_session_write_lock
 def undo_answer(session_id):
     """撤销最后一个回答"""
     user_id = get_current_user_id_or_none()
@@ -21061,6 +21312,7 @@ def undo_answer(session_id):
 
 
 @app.route('/api/sessions/<session_id>/skip-follow-up', methods=['POST'])
+@with_session_write_lock
 def skip_follow_up(session_id):
     """
     用户主动跳过当前问题的追问
@@ -21110,6 +21362,7 @@ def skip_follow_up(session_id):
 
 
 @app.route('/api/sessions/<session_id>/complete-dimension', methods=['POST'])
+@with_session_write_lock
 def complete_dimension(session_id):
     """
     用户主动完成当前维度
@@ -21242,7 +21495,10 @@ def upload_document(session_id):
                 try:
                     result = subprocess.run(
                         ["uv", "run", str(convert_script), "convert", str(filepath)],
-                        capture_output=True, text=True, cwd=str(SKILL_DIR)
+                        capture_output=True,
+                        text=True,
+                        cwd=str(SKILL_DIR),
+                        timeout=DOCUMENT_CONVERT_TIMEOUT_SECONDS,
                     )
                     if result.returncode == 0:
                         converted_file = CONVERTED_DIR / f"{filepath.stem}.md"
@@ -21253,6 +21509,8 @@ def upload_document(session_id):
                     else:
                         error_msg = result.stderr[:200] if result.stderr else "未知错误"
                         content = f"[{ext.upper()[1:]} 解析失败: {error_msg}]"
+                except subprocess.TimeoutExpired:
+                    content = f"[{ext.upper()[1:]} 解析失败: 转换超时（>{DOCUMENT_CONVERT_TIMEOUT_SECONDS}s）]"
                 except Exception as e:
                     print(f"转换文档失败: {e}")
                     content = f"[{ext.upper()[1:]} 解析失败: {str(e)[:200]}]"
@@ -21266,18 +21524,23 @@ def upload_document(session_id):
     if not content or not content.strip():
         return jsonify({"error": "文件解析后内容为空"}), 400
 
-    # 更新会话
-    # 数据迁移：兼容旧会话
-    session = migrate_session_docs(session)
-    session["reference_materials"].append({
-        "name": filename,
-        "type": ext,
-        "content": content[:10000],  # 限制长度
-        "source": "upload",  # 用户上传
-        "uploaded_at": get_utc_now()
-    })
-    session["updated_at"] = get_utc_now()
-    save_session_json_and_sync(session_file, session)
+    # 读取内容完成后再短暂加锁写回，避免文档转换阻塞整个会话。
+    with locked_session_for_user(session_id, user_id) as latest_loaded:
+        if len(latest_loaded) == 3:
+            _file, error_msg, status_code = latest_loaded
+            return jsonify({"error": error_msg}), status_code
+
+        latest_session_file, latest_session = latest_loaded
+        latest_session = migrate_session_docs(latest_session)
+        latest_session["reference_materials"].append({
+            "name": filename,
+            "type": ext,
+            "content": content[:10000],  # 限制长度
+            "source": "upload",  # 用户上传
+            "uploaded_at": get_utc_now()
+        })
+        latest_session["updated_at"] = get_utc_now()
+        save_session_json_and_sync(latest_session_file, latest_session)
 
     return jsonify({
         "success": True,
@@ -21287,6 +21550,7 @@ def upload_document(session_id):
 
 
 @app.route('/api/sessions/<session_id>/documents/<path:doc_name>', methods=['DELETE'])
+@with_session_write_lock
 def delete_document(session_id, doc_name):
     """删除参考资料（软删除）"""
     # 路径遍历防护
@@ -21332,6 +21596,7 @@ def delete_document(session_id, doc_name):
 # ============ 重新访谈 API ============
 
 @app.route('/api/sessions/<session_id>/restart-interview', methods=['POST'])
+@with_session_write_lock
 def restart_interview(session_id):
     """重新访谈：将当前访谈记录保存为参考资料，然后重置访谈状态"""
     user_id = get_current_user_id_or_none()
@@ -21929,25 +22194,26 @@ def run_report_generation_job(
             unmark_report_as_deleted(filename)
             set_report_owner_id(filename, user_id)
 
-            latest_session = safe_load_session(session_file)
-            if isinstance(latest_session, dict) and ensure_session_owner(latest_session, user_id):
-                latest_session["status"] = "completed"
-                latest_session["updated_at"] = get_utc_now()
-                report_updated_at = get_utc_now()
-                latest_session["current_report_name"] = filename
-                latest_session["current_report_path"] = str(report_file)
-                latest_session["current_report_updated_at"] = report_updated_at
-                latest_session["last_report_name"] = filename
-                if isinstance(quality_meta, dict):
-                    latest_session["last_report_quality_meta"] = quality_meta
-                if isinstance(session.get("last_report_v3_debug"), dict):
-                    latest_session["last_report_v3_debug"] = session["last_report_v3_debug"]
-                save_session_json_and_sync(session_file, latest_session)
+            with named_file_lock("sessions", session_id):
+                latest_session = safe_load_session(session_file)
+                if isinstance(latest_session, dict) and ensure_session_owner(latest_session, user_id):
+                    latest_session["status"] = "completed"
+                    latest_session["updated_at"] = get_utc_now()
+                    report_updated_at = get_utc_now()
+                    latest_session["current_report_name"] = filename
+                    latest_session["current_report_path"] = str(report_file)
+                    latest_session["current_report_updated_at"] = report_updated_at
+                    latest_session["last_report_name"] = filename
+                    if isinstance(quality_meta, dict):
+                        latest_session["last_report_quality_meta"] = quality_meta
+                    if isinstance(session.get("last_report_v3_debug"), dict):
+                        latest_session["last_report_v3_debug"] = session["last_report_v3_debug"]
+                    save_session_json_and_sync(session_file, latest_session)
 
-                session["current_report_name"] = filename
-                session["current_report_path"] = str(report_file)
-                session["current_report_updated_at"] = latest_session["current_report_updated_at"]
-                session["last_report_name"] = filename
+                    session["current_report_name"] = filename
+                    session["current_report_path"] = str(report_file)
+                    session["current_report_updated_at"] = latest_session["current_report_updated_at"]
+                    session["last_report_name"] = filename
 
             return report_file, filename
 
