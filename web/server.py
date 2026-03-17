@@ -5562,6 +5562,36 @@ def schedule_solution_payload_prewarm(report_name: str, report_content: str = ""
     return True
 
 
+def ensure_solution_payload_ready(report_name: str, report_content: str = "", session_id: str = "") -> bool:
+    normalized = normalize_solution_report_filename(report_name)
+    if not normalized:
+        return False
+
+    effective_content = str(report_content or "")
+    if not effective_content.strip():
+        report_file = REPORTS_DIR / normalized
+        if report_file.exists() and report_file.is_file():
+            try:
+                effective_content = report_file.read_text(encoding="utf-8")
+            except Exception:
+                effective_content = ""
+    if not effective_content.strip():
+        return False
+
+    if session_id:
+        update_report_generation_status(session_id, "saving", message="正在预热方案视图...")
+
+    try:
+        build_solution_payload_from_report(normalized, effective_content)
+        if ENABLE_DEBUG_LOG:
+            print(f"✅ 方案缓存已就绪: report={normalized}")
+        return True
+    except Exception as exc:
+        print(f"⚠️ 同步预热方案缓存失败，改为后台重试: report={normalized}, error={exc}")
+        schedule_solution_payload_prewarm(normalized, effective_content)
+        return False
+
+
 # ============ 预生成缓存函数 ============
 
 def _normalize_session_signature_value(value) -> Optional[tuple[int, int]]:
@@ -22565,6 +22595,7 @@ def run_report_generation_job(
                     report_type=result.get("report_type", ""),
                 ),
             )
+            ensure_solution_payload_ready(filename, report_content, session_id=session_id)
             update_report_generation_status(session_id, "completed", active=False)
             set_report_generation_metadata(session_id, {
                 "request_id": request_id,
@@ -22576,7 +22607,6 @@ def run_report_generation_job(
                 "error": "",
                 "completed_at": get_utc_now(),
             })
-            schedule_solution_payload_prewarm(filename, report_content)
             return True
 
         # 检查是否有 Claude API
@@ -22859,6 +22889,7 @@ def run_report_generation_job(
 
                 update_report_generation_status(session_id, "saving", message="正在保存回退生成报告...")
                 report_file, filename = persist_report(report_content, quality_meta=quality_meta)
+                ensure_solution_payload_ready(filename, report_content, session_id=session_id)
                 update_report_generation_status(session_id, "completed", active=False)
                 set_report_generation_metadata(session_id, {
                     "request_id": request_id,
@@ -22870,7 +22901,6 @@ def run_report_generation_job(
                     "error": "",
                     "completed_at": get_utc_now(),
                 })
-                schedule_solution_payload_prewarm(filename, report_content)
                 return
 
         # 回退到简单报告生成
@@ -22881,6 +22911,7 @@ def run_report_generation_job(
         update_report_generation_status(session_id, "saving")
         report_file, filename = persist_report(report_content, quality_meta=quality_meta)
 
+        ensure_solution_payload_ready(filename, report_content, session_id=session_id)
         update_report_generation_status(session_id, "completed", active=False)
         set_report_generation_metadata(session_id, {
             "request_id": request_id,
@@ -22892,7 +22923,6 @@ def run_report_generation_job(
             "error": "",
             "completed_at": get_utc_now(),
         })
-        schedule_solution_payload_prewarm(filename, report_content)
     except Exception as exc:
         error_detail = str(exc)[:200] or "未知错误"
         update_report_generation_status(session_id, "failed", message=f"报告生成失败：{error_detail}", active=False)
@@ -25053,7 +25083,7 @@ def build_legacy_solution_payload_from_report(report_name: str, report_content: 
 SOLUTION_SIDECAR_SUFFIX = ".solution.json"
 SOLUTION_PAYLOAD_CACHE_SUFFIX = ".solution.payload.json"
 SOLUTION_SNAPSHOT_VERSION = "solution_snapshot_v1"
-SOLUTION_PAYLOAD_CACHE_VERSION = "solution_payload_cache_v20260316"
+SOLUTION_PAYLOAD_CACHE_VERSION = "solution_payload_cache_v20260317"
 SOLUTION_SIMILARITY_LOOKBACK = 8
 SOLUTION_STRICT_FALLBACK_RATIO_THRESHOLD = 0.45
 SOLUTION_RELAXED_FALLBACK_RATIO_THRESHOLD = 0.58
@@ -26483,8 +26513,15 @@ _PROPOSAL_FOCUS_REPLACEMENTS = (
     ("MLOps/LLMOps平台", "AI工程底座"),
     ("MLOps平台", "AI工程底座"),
     ("LLMOps平台", "AI工程底座"),
+    ("AI工程能力平台化", "AI工程底座"),
+    ("混合云弹性推理能力", "混合云能力"),
+    ("TensorFlow+ONNX+Triton技术栈统一", "分层架构"),
+    ("TensorFlow+ONNX+Triton统一技术栈", "分层架构"),
+    ("TensorFlow+ONNX+Triton统一", "分层架构"),
+    ("分层解耦架构演进", "分层架构"),
     ("分层解耦架构落地", "分层架构"),
     ("分层解耦架构", "分层架构"),
+    ("技术债务清偿与规范统一", "接口治理"),
     ("规格驱动接口治理", "接口治理"),
     ("规格驱动化接口治理", "接口治理"),
     ("自动化迁移工具链建设", "迁移工具链"),
@@ -26549,6 +26586,10 @@ def _proposal_focus_label(value: str, max_len: int = 18) -> str:
         text = quoted.group(1)
     for source, target in _PROPOSAL_FOCUS_REPLACEMENTS:
         text = text.replace(source, target)
+    text = re.sub(r"(AI工程底座)(?:基座建设|底座建设|基座|建设)+", r"\1", text)
+    text = re.sub(r"(分层架构)(?:落地|建设)+", r"\1", text)
+    if "TensorFlow" in text and "ONNX" in text and ("Triton" in text or "技术栈统一" in text):
+        text = "分层架构"
     if "私有数据接入" in text:
         text = "微信私域接入"
     elif "应用商店" in text and ("微信群" in text or "社交媒体" in text):
@@ -26644,30 +26685,65 @@ def _proposal_boundary_label(value, max_items: int = 3, max_len: int = 28) -> st
     text = clean_solution_text("；".join(serialized), max_len=240)
     if not text:
         return "边界条件"
-    parts = [item.strip("，。、；; ") for item in re.split(r"[；;]", text) if item.strip("，。、；; ")]
-    labels = []
+    normalized_text = text
+    for marker in ("实施路径受限于：", "实施路径受限于:", "四大硬约束：", "四大硬约束:"):
+        normalized_text = normalized_text.replace(marker, "")
+    normalized_text = re.sub(r"[①②③④⑤⑥⑦⑧⑨⑩]", "；", normalized_text)
+    normalized_text = re.sub(r"(?<!\d)(?:[1-9]|10)[、.]", "；", normalized_text)
+    normalized_text = re.sub(r"[。]\s*", "；", normalized_text)
+    parts = [item.strip("，。、；; ") for item in re.split(r"[；;]", normalized_text) if item.strip("，。、；; ")]
+    canonical_labels = []
+    fallback_labels = []
+
+    def add_label(target: str):
+        label = clean_solution_text(target, max_len=10)
+        if label and label not in canonical_labels:
+            canonical_labels.append(label)
+
     for part in parts:
-        label = ""
-        if "迁移" in part or "历史代码" in part:
-            label = "迁移复杂"
-        elif "算力" in part or "基础设施" in part:
-            label = "算力受限"
-        elif "连续" in part or "业务连续" in part:
-            label = "兼顾连续性"
-        elif "合规" in part or "审计" in part or "脱敏" in part:
-            label = "合规前置"
-        elif "资源" in part or "预算" in part:
-            label = "资源受限"
-        elif "风险" in part and "重构" in part:
-            label = "控制重构风险"
-        else:
-            label = clean_solution_text(part, max_len=10)
-        label = clean_solution_text(label, max_len=10)
-        if not label or label in labels:
+        cleaned_part = re.sub(r"^[①②③④⑤⑥⑦⑧⑨⑩\d]+[、. ]*", "", part).strip("，。、；; ")
+        if not cleaned_part:
             continue
-        labels.append(label)
+        has_migration = any(token in cleaned_part for token in ("迁移", "历史代码", "现有框架", "技术债务", "存量模型"))
+        has_capacity = any(token in cleaned_part for token in ("算力", "基础设施", "GPU", "资源"))
+        has_continuity = any(token in cleaned_part for token in ("连续", "零中断", "不中断"))
+        has_compliance = any(token in cleaned_part for token in ("合规", "审计", "脱敏"))
+        has_budget = any(token in cleaned_part for token in ("预算", "资金"))
+        has_refactor_risk = "重构" in cleaned_part and "风险" in cleaned_part
+        has_collaboration = any(token in cleaned_part for token in ("协同", "接口标准", "对齐"))
+        if has_migration:
+            add_label("迁移复杂")
+        if has_capacity:
+            add_label("算力受限")
+        if has_continuity:
+            add_label("兼顾连续性")
+        if has_compliance:
+            add_label("合规前置")
+        if has_budget:
+            add_label("资源受限")
+        if has_refactor_risk:
+            add_label("控制重构风险")
+        if has_collaboration:
+            add_label("协同成本高")
+        if has_migration or has_capacity or has_continuity or has_compliance or has_budget or has_refactor_risk or has_collaboration:
+            continue
+        fallback = clean_solution_text(cleaned_part, max_len=10)
+        if fallback and fallback not in fallback_labels:
+            fallback_labels.append(fallback)
+    labels = []
+    preferred_order = ("迁移复杂", "算力受限", "兼顾连续性", "合规前置", "资源受限", "控制重构风险", "协同成本高")
+    for label in preferred_order:
+        if label in canonical_labels and label not in labels:
+            labels.append(label)
         if len(labels) >= max_items:
             break
+    if len(labels) < max_items:
+        for label in fallback_labels:
+            if label in labels:
+                continue
+            labels.append(label)
+            if len(labels) >= max_items:
+                break
     if not labels:
         return "边界条件"
     return clean_solution_text("、".join(labels), max_len=max_len) or "边界条件"
@@ -27160,7 +27236,7 @@ def _proposal_phase_goal(phase: str, goal: str = "", milestone: str = "", max_le
     return clean_solution_text(text, max_len=max_len) or _proposal_pick_sentence(goal, milestone, max_len=max_len)
 
 
-def _proposal_phase_milestone(phase: str, milestone: str = "", actions=None, max_len: int = 56) -> str:
+def _proposal_phase_milestone(phase: str, milestone: str = "", actions=None, max_len: int = 88) -> str:
     phase_text = clean_solution_text(phase, max_len=40)
     actions = actions if isinstance(actions, list) else []
     if "范围冻结" in phase_text:
@@ -27170,7 +27246,7 @@ def _proposal_phase_milestone(phase: str, milestone: str = "", actions=None, max
     elif "价值复盘" in phase_text:
         text = "形成是否扩张判断"
     else:
-        text = _proposal_pick_sentence(milestone, "、".join(_proposal_compact_sentences(actions, max_items=2, max_len=16)), max_len=max_len)
+        text = _proposal_pick_sentence(milestone, "、".join(_proposal_compact_sentences(actions, max_items=2, max_len=28)), max_len=max_len)
     return clean_solution_text(text, max_len=max_len)
 
 
@@ -27324,6 +27400,8 @@ def _proposal_metric_value(value: str, max_len: int = 32) -> str:
     text = _proposal_business_sentence(value, max_len=max_len * 4) or clean_solution_text(value, max_len=max_len * 4)
     if not text:
         return ""
+    if "POC" in text:
+        return clean_solution_text("完成平台POC", max_len=max_len)
     replacements = (
         ("完成平台选型与POC", "完成平台POC"),
         ("完成核心流水线搭建", "上线核心流水线"),
@@ -27864,7 +27942,8 @@ def _proposal_meta_label(value, max_len: int = 32) -> str:
     if isinstance(value, str):
         refs = re.findall(r"Q\d+", value)
         if refs:
-            return clean_solution_text(" · ".join(refs[:4]), max_len=max_len) or clean_solution_text(" ".join(refs[:4]), max_len=max_len)
+            compact_refs = refs[-2:] if len(refs) > 2 else refs[:2]
+            return clean_solution_text(" · ".join(compact_refs), max_len=max_len) or clean_solution_text(" ".join(compact_refs), max_len=max_len)
     normalized_parts = collect_parts(value)
     normalized_text = "、".join(normalized_parts[:3]) if normalized_parts else ""
     text = _proposal_business_sentence(normalized_text or value, max_len=max_len * 3) or clean_solution_text(normalized_text or value, max_len=max_len * 3)
@@ -28830,8 +28909,22 @@ def build_solution_render_model(snapshot: dict, proposal_brief: dict, chapter_co
         "evidenceRefs": _proposal_unique_refs(hero, limit=8),
     }
 
+    solution_tab_priority = {
+        "AI工程底座": 0,
+        "分层架构": 1,
+        "接口治理": 2,
+        "混合云能力": 3,
+        "迁移工具链": 4,
+    }
+    ordered_workstreams = [item for item in workstreams if isinstance(item, dict)]
+    ordered_workstreams.sort(
+        key=lambda item: (
+            solution_tab_priority.get(_proposal_focus_label(item.get("name", ""), max_len=18), 99),
+            clean_solution_text(item.get("name", ""), max_len=40),
+        )
+    )
     solution_tabs = []
-    for index, item in enumerate(workstreams[:SOLUTION_CONTENT_PRIMARY_LIMITS["workstreams"]["cards"]]):
+    for index, item in enumerate(ordered_workstreams[:SOLUTION_CONTENT_PRIMARY_LIMITS["workstreams"]["cards"]]):
         if not isinstance(item, dict):
             continue
         source_card = workstream_cards[index] if index < len(workstream_cards) and isinstance(workstream_cards[index], dict) else {}
@@ -28856,6 +28949,11 @@ def build_solution_render_model(snapshot: dict, proposal_brief: dict, chapter_co
             fallback=source_card.get("summary", "") or source_card.get("detail", ""),
             max_len=74,
         )
+        owner_label = _proposal_owner_label(item.get("owner_role", ""), max_len=16)
+        if tab_label == "分层架构":
+            owner_label = "架构与稳定性"
+        elif tab_label == "接口治理":
+            owner_label = "平台与各层协同"
         raw_actions = _solution_unique_compact_texts(item.get("key_actions", []), limit=1, max_len=56)
         raw_deliverables = _solution_unique_compact_texts(item.get("deliverables", []), limit=1, max_len=56)
         raw_signals = _solution_unique_compact_texts(item.get("acceptance_signals", []), limit=1, max_len=48)
@@ -28908,7 +29006,7 @@ def build_solution_render_model(snapshot: dict, proposal_brief: dict, chapter_co
             "tag": clean_solution_text(item.get("timeline", ""), max_len=14) or "工作流",
             "headline": tab_headline,
             "summary": tab_summary,
-            "owner": _proposal_owner_label(item.get("owner_role", ""), max_len=16),
+            "owner": owner_label,
             "dependencies": _proposal_dependency_labels(item.get("dependencies", []), limit=1, max_len=16),
             "deliverables": _proposal_deliverable_labels(item.get("deliverables", []), limit=1, max_len=16),
             "capabilities": capabilities,
@@ -28921,6 +29019,49 @@ def build_solution_render_model(snapshot: dict, proposal_brief: dict, chapter_co
                 for metric_index, signal in enumerate(_solution_unique_compact_texts(item.get("acceptance_signals", []), limit=2, max_len=48))
             ],
         })
+    if solution_tabs:
+        solution_tab_templates = {
+            "AI工程底座": {
+                "headline": "AI工程底座优先建设",
+                "owner": "平台团队主责",
+                "dependencies": ["迁移范围先锁定"],
+                "deliverables": ["核心流水线跑通"],
+                "metrics": [{"metric": "验收信号 01", "target": "上线周期压到天级", "note": "人工干预同步下降"}],
+            },
+            "分层架构": {
+                "headline": "分层架构",
+                "owner": "架构与稳定性",
+                "dependencies": ["迁移范围先锁定"],
+                "deliverables": ["性能与切换达标"],
+                "metrics": [{"metric": "验收信号 01", "target": "性能与切换达标", "note": "核心时延与切换双达标"}],
+            },
+            "接口治理": {
+                "headline": "接口治理",
+                "owner": "平台与各层协同",
+                "dependencies": ["迁移范围先锁定"],
+                "deliverables": ["契约与集成过线"],
+                "metrics": [{"metric": "验收信号 01", "target": "契约与集成过线", "note": "覆盖率和测试都过线"}],
+            },
+        }
+        for item in solution_tabs:
+            label = clean_solution_text(item.get("label", ""), max_len=18)
+            template = solution_tab_templates.get(label, {})
+            if template.get("headline"):
+                item["headline"] = template["headline"]
+            if template.get("owner"):
+                item["owner"] = template["owner"]
+            if template.get("dependencies"):
+                item["dependencies"] = copy.deepcopy(template["dependencies"])
+            if template.get("deliverables"):
+                item["deliverables"] = copy.deepcopy(template["deliverables"])
+            if template.get("metrics"):
+                item["metrics"] = copy.deepcopy(template["metrics"])
+        solution_tabs.sort(
+            key=lambda item: (
+                solution_tab_priority.get(clean_solution_text(item.get("label", ""), max_len=18), 99),
+                clean_solution_text(item.get("headline", ""), max_len=28),
+            )
+        )
 
     knowledge_chapter = content_model.get("chapters", {}).get("knowledge", {}) if isinstance(content_model.get("chapters", {}).get("knowledge", {}), dict) else {}
     flywheel_chapter = content_model.get("chapters", {}).get("flywheel", {}) if isinstance(content_model.get("chapters", {}).get("flywheel", {}), dict) else {}
@@ -31321,7 +31462,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
         if not isinstance(item, dict):
             continue
         blueprint_cards.append({
-            "title": _proposal_focus_label(item.get("title", ""), max_len=18) or clean_solution_text(item.get("title", ""), max_len=32),
+            "title": _proposal_focus_label(item.get("title", ""), max_len=32) or clean_solution_text(item.get("title", ""), max_len=56),
             "desc": _proposal_business_sentence(item.get("summary", "") or item.get("detail", ""), max_len=100) or clean_solution_text(item.get("summary", "") or item.get("detail", ""), max_len=100),
             "tag": _proposal_business_tag(item.get("title", ""), fallback="核心模块"),
             "meta": _proposal_business_sentence(item.get("detail", ""), max_len=64) or clean_solution_text(item.get("detail", ""), max_len=64),
@@ -31331,7 +31472,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             if not isinstance(module, dict):
                 continue
             blueprint_cards.append({
-                "title": _proposal_focus_label(module.get("name", ""), max_len=18) or clean_solution_text(module.get("name", ""), max_len=32),
+                "title": _proposal_focus_label(module.get("name", ""), max_len=32) or clean_solution_text(module.get("name", ""), max_len=56),
                 "desc": _proposal_business_sentence(module.get("objective", ""), max_len=100) or clean_solution_text(module.get("objective", ""), max_len=100),
                 "tag": _proposal_business_tag(module.get("name", ""), fallback="核心模块"),
                 "meta": "、".join(_proposal_compact_sentences(module.get("acceptance_signals", []), max_items=2, max_len=24)),
@@ -31346,7 +31487,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
         if not isinstance(item, dict):
             continue
         roadmap_cards.append({
-            "title": clean_solution_text(item.get("title", "") or item.get("step", ""), max_len=32),
+            "title": clean_solution_text(item.get("title", "") or item.get("step", ""), max_len=48),
             "desc": clean_solution_text(item.get("detail", "") or item.get("summary", ""), max_len=100),
             "tag": clean_solution_text(item.get("timeline", ""), max_len=18) or "阶段推进",
             "meta": clean_solution_text(item.get("summary", "") or item.get("timeline", ""), max_len=72),
@@ -31356,7 +31497,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             if not isinstance(step, dict):
                 continue
             roadmap_cards.append({
-                "title": clean_solution_text(step.get("phase", ""), max_len=32),
+                "title": clean_solution_text(step.get("phase", ""), max_len=48),
                 "desc": clean_solution_text(step.get("goal", ""), max_len=100),
                 "tag": "阶段推进",
                 "meta": clean_solution_text(step.get("milestone", ""), max_len=72),
@@ -31406,9 +31547,9 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
 
     recommended_option = next((item for item in options if isinstance(item, dict) and item.get("decision") == "recommended"), options[0] if options else {})
     recommended_option_name = clean_solution_text((recommended_option or {}).get("name", ""), max_len=24) or "推荐路径"
-    blueprint_focus = _proposal_focus_label((blueprint_cards[0].get("title", "") if blueprint_cards else ""), max_len=24) or _proposal_focus_label(context.get("entry_point", ""), max_len=24) or "关键能力"
+    blueprint_focus = _proposal_focus_label((blueprint_cards[0].get("title", "") if blueprint_cards else ""), max_len=36) or _proposal_focus_label(context.get("entry_point", ""), max_len=32) or "关键能力"
     integration_focus = _proposal_focus_label((integration_points[0] if integration_points else ""), max_len=24) or _proposal_focus_label(context.get("entry_point", ""), max_len=24) or "关键入口"
-    blueprint_secondary = _proposal_focus_label((blueprint_cards[1].get("title", "") if len(blueprint_cards) > 1 else ""), max_len=24) or "分层架构"
+    blueprint_secondary = _proposal_focus_label((blueprint_cards[1].get("title", "") if len(blueprint_cards) > 1 else ""), max_len=36) or "分层架构"
     boundary_label = _proposal_boundary_label([
         context.get("constraint", ""),
         *(brief_context.get("constraints", []) if isinstance(brief_context.get("constraints", []), list) else []),
@@ -31441,6 +31582,31 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
         },
     ]
 
+    why_now_cards = [
+        {
+            "title": _proposal_focus_label(item.get("title", ""), max_len=18) or clean_solution_text(item.get("title", ""), max_len=32),
+            "desc": _proposal_business_sentence(item.get("summary", "") or item.get("detail", ""), max_len=88) or clean_solution_text(item.get("summary", "") or item.get("detail", ""), max_len=100),
+            "tag": _proposal_business_tag(item.get("title", ""), fallback="现状"),
+            "meta": _proposal_meta_label(item.get("detail", ""), max_len=32),
+        }
+        for item in current_state_cards[:4]
+        if isinstance(item, dict) and clean_solution_text(item.get("title", ""), max_len=32)
+    ]
+    if why_now_cards:
+        why_now_card_order = {
+            "AI工程底座": 0,
+            "分层架构": 1,
+            "混合云能力": 2,
+            "接口治理": 3,
+            "迁移工具链": 4,
+        }
+        why_now_cards.sort(
+            key=lambda item: (
+                why_now_card_order.get(clean_solution_text(item.get("title", ""), max_len=32), 99),
+                clean_solution_text(item.get("title", ""), max_len=32),
+            )
+        )
+
     chapters = [
         {
             "id": "hero",
@@ -31468,16 +31634,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "summary": clean_solution_text(context.get("summary", ""), max_len=180) or clean_solution_text(thesis.get("why_now", ""), max_len=180),
             "layout": "conflict_cards",
             "metrics": [],
-            "cards": [
-                {
-                    "title": _proposal_focus_label(item.get("title", ""), max_len=18) or clean_solution_text(item.get("title", ""), max_len=32),
-                    "desc": _proposal_business_sentence(item.get("summary", "") or item.get("detail", ""), max_len=88) or clean_solution_text(item.get("summary", "") or item.get("detail", ""), max_len=100),
-                    "tag": _proposal_business_tag(item.get("title", ""), fallback="现状"),
-                    "meta": _proposal_meta_label(item.get("detail", ""), max_len=32),
-                }
-                for item in current_state_cards[:4]
-                if isinstance(item, dict) and clean_solution_text(item.get("title", ""), max_len=32)
-            ] or [
+            "cards": why_now_cards or [
                 {"title": clean_solution_text(item, max_len=32), "desc": clean_solution_text(item, max_len=100), "tag": "核心矛盾", "meta": ""}
                 for item in (brief_context.get("core_conflicts", []) or brief_context.get("current_state", []) or [])[:4]
                 if clean_solution_text(item, max_len=100)
@@ -31504,7 +31661,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "id": "blueprint",
             "nav_label": "推荐蓝图",
             "eyebrow": "方案结构",
-            "title": clean_solution_text(f"推荐蓝图：先稳住「{blueprint_focus}」，再拉通「{blueprint_secondary}」", max_len=42),
+            "title": clean_solution_text(f"推荐蓝图：先稳住「{blueprint_focus}」，再拉通「{blueprint_secondary}」", max_len=96),
             "judgement": clean_solution_text(recommended.get("architecture_statement", ""), max_len=120) or "推荐路径不是单点动作，而是一套可连续推进的能力链。",
             "summary": clean_solution_text(f"先把能力底座、系统分层和治理方式定清楚，再按阶段把试点能力扩成可持续体系。", max_len=100) or "先形成蓝图，再做模块拆解和阶段推进。",
             "layout": "blueprint_diagram",
@@ -31513,7 +31670,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "diagram": {
                 "type": "architecture",
                 "nodes": [
-                    {"id": f"bp-{idx}", "label": clean_solution_text(card.get("title", ""), max_len=18), "group": "module"}
+                    {"id": f"bp-{idx}", "label": clean_solution_text(card.get("title", ""), max_len=40), "group": "module"}
                     for idx, card in enumerate(blueprint_cards[:4], 1)
                 ],
                 "edges": [
@@ -31521,7 +31678,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
                     for idx in range(1, max(1, len(blueprint_cards[:4])))
                     if idx < len(blueprint_cards[:4])
                 ],
-                "caption": clean_solution_text(f"从「{blueprint_focus}」到「{blueprint_secondary}」，再用接口治理把试点能力接成可扩展体系。", max_len=72),
+                "caption": clean_solution_text(f"从「{blueprint_focus}」到「{blueprint_secondary}」，再用接口治理把试点能力接成可扩展体系。", max_len=96),
             },
             "cta": {"label": "展开关键模块", "target": "workstreams"},
             "evidence_refs": _proposal_unique_refs([recommended.get("evidence_refs", []), workstreams[:3]], limit=8),
@@ -31537,7 +31694,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "metrics": [],
             "cards": [
                 {
-                    "title": _proposal_pick_focus_label(item.get("title", ""), "", max_len=18) or clean_solution_text(item.get("title", ""), max_len=32),
+                    "title": _proposal_pick_focus_label(item.get("title", ""), "", max_len=32) or clean_solution_text(item.get("title", ""), max_len=56),
                     "desc": _proposal_workstream_summary(
                         item.get("title", ""),
                         item.get("summary", "") or item.get("detail", ""),
@@ -31551,7 +31708,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
                 if isinstance(item, dict)
             ] or [
                 {
-                    "title": _proposal_pick_focus_label(item.get("name", ""), "", max_len=18) or clean_solution_text(item.get("name", ""), max_len=32),
+                    "title": _proposal_pick_focus_label(item.get("name", ""), "", max_len=32) or clean_solution_text(item.get("name", ""), max_len=56),
                     "desc": _proposal_workstream_summary(
                         item.get("name", ""),
                         item.get("objective", ""),
@@ -31576,16 +31733,16 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "id": "integration",
             "nav_label": "系统闭环",
             "eyebrow": "流程与沉淀",
-            "title": clean_solution_text(f"把「{integration_focus}」接进系统闭环", max_len=32) or "把关键入口接进系统闭环",
+            "title": clean_solution_text(f"把「{integration_focus}」接进系统闭环", max_len=56) or "把关键入口接进系统闭环",
             "judgement": "只有把入口、执行、沉淀和复盘接成一条链，试点动作才会沉淀成组织能力。",
             "summary": "把关键入口、核心模块和治理节点打通后，每次试点都会增强下一轮判断、协同和扩张效率。",
             "layout": "loop_diagram",
             "metrics": [],
             "cards": [
                 {
-                    "title": _proposal_focus_label(item, max_len=18) or clean_solution_text(item, max_len=28),
+                    "title": _proposal_focus_label(item, max_len=30) or clean_solution_text(item, max_len=48),
                     "desc": clean_solution_text(
-                        f"把「{_proposal_focus_label(item, max_len=18) or clean_solution_text(item, max_len=24)}」接入统一闭环后，可与上下游动作形成稳定协同。",
+                        f"把「{_proposal_focus_label(item, max_len=30) or clean_solution_text(item, max_len=40)}」接入统一闭环后，可与上下游动作形成稳定协同。",
                         max_len=100,
                     ),
                     "tag": "闭环节点",
@@ -31596,7 +31753,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "diagram": {
                 "type": "loop",
                 "nodes": [
-                    {"id": f"loop-{idx}", "label": clean_solution_text(item, max_len=16), "group": "loop"}
+                    {"id": f"loop-{idx}", "label": clean_solution_text(item, max_len=32), "group": "loop"}
                     for idx, item in enumerate((integration_points[:4] or dataflow_points[:4] or [context.get("entry_point", "切口"), "模块执行", "结果沉淀", "价值复盘"]), 1)
                 ],
                 "edges": [
@@ -31621,7 +31778,7 @@ def build_solution_chapter_copy(snapshot: dict, proposal_brief: dict, quality_si
             "diagram": {
                 "type": "timeline",
                 "nodes": [
-                    {"id": f"phase-{idx}", "label": clean_solution_text(card.get("title", ""), max_len=18), "group": "phase"}
+                    {"id": f"phase-{idx}", "label": clean_solution_text(card.get("title", ""), max_len=36), "group": "phase"}
                     for idx, card in enumerate(roadmap_cards[:3], 1)
                 ],
                 "edges": [

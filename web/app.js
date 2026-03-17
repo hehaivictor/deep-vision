@@ -4865,7 +4865,7 @@ function deepVision() {
             if (!targetReport) return '';
             const params = new URLSearchParams();
             params.set('report', targetReport);
-            params.set('v', '20260310-solution-v16');
+            params.set('v', '20260317-solution-v63');
             return `solution.html?${params.toString()}`;
         },
 

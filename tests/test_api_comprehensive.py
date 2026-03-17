@@ -1294,6 +1294,11 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(status_payload.get("report_profile"), "quality")
         report_name = status_payload.get("report_name")
         self.assertTrue(report_name)
+        solution_cache_path = self.server.get_solution_payload_cache_path(report_name)
+        self.assertTrue(solution_cache_path.exists(), str(solution_cache_path))
+        solution_cache_payload = json.loads(solution_cache_path.read_text(encoding="utf-8"))
+        self.assertEqual(solution_cache_payload.get("report_name"), report_name)
+        self.assertEqual(solution_cache_payload.get("cache_version"), self.server.SOLUTION_PAYLOAD_CACHE_VERSION)
 
         reports_resp = self.client.get("/api/reports")
         self.assertEqual(reports_resp.status_code, 200)

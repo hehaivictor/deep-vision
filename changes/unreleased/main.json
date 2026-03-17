@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "132d231",
+  "committedAt": "2026-03-17T19:13:14+08:00",
+  "versionType": "patch",
+  "title": "修复方案预热与方案页截断问题",
+  "changes": [
+    "优化报告完成前的方案缓存预热时机，避免点击查看方案时长时间等待",
+    "收紧方案业务化标题与边界文案压缩规则，修复技术长词直出和工作流口径漂移",
+    "调整方案页流程图、标签与阶段里程碑的换行展示，减少长文本截断",
+    "补充方案缓存就绪与方案文案回归校验"
+  ],
+  "changedFiles": [
+    "tests/test_api_comprehensive.py",
+    "web/app.js",
+    "web/server.py",
+    "web/solution.css",
+    "web/solution.html",
+    "web/solution.js"
+  ]
+}

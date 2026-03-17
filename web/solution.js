@@ -1,4 +1,4 @@
-const SOLUTION_ASSET_VERSION = '20260317-solution-v61';
+const SOLUTION_ASSET_VERSION = '20260317-solution-v63';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 const SOLUTION_SOURCE_MODE_LABELS = {
     structured_sidecar: '结构化快照',
@@ -18,8 +18,15 @@ const SOLUTION_BUSINESS_FOCUS_REPLACEMENTS = [
     ['MLOps/LLMOps平台', 'AI工程底座'],
     ['MLOps平台', 'AI工程底座'],
     ['LLMOps平台', 'AI工程底座'],
+    ['AI工程能力平台化', 'AI工程底座'],
+    ['混合云弹性推理能力', '混合云能力'],
+    ['TensorFlow+ONNX+Triton技术栈统一', '分层架构'],
+    ['TensorFlow+ONNX+Triton统一技术栈', '分层架构'],
+    ['TensorFlow+ONNX+Triton统一', '分层架构'],
+    ['分层解耦架构演进', '分层架构'],
     ['分层解耦架构落地', '分层架构'],
     ['分层解耦架构', '分层架构'],
+    ['技术债务清偿与规范统一', '接口治理'],
     ['规格驱动接口治理', '接口治理'],
     ['规格驱动化接口治理', '接口治理'],
     ['自动化迁移工具链建设', '迁移工具链'],
@@ -107,6 +114,9 @@ function solutionBusinessFocusLabel(value, maxLength = 18) {
     if (!text) return '';
     const quoted = text.match(/[「"]([^」"]{2,24})[」"]/);
     if (quoted?.[1]) text = quoted[1];
+    if (text.includes('TensorFlow') && text.includes('ONNX') && (text.includes('Triton') || text.includes('技术栈统一'))) {
+        text = '分层架构';
+    }
     text = text.replace(/（[^）]{0,24}）/g, '').replace(/\([^)]{0,24}\)/g, '');
     text = text.replace(/^精准切入[「"]?/g, '');
     text = text.replace(/[」"]?的?闭环试点路径$/g, '');
@@ -996,13 +1006,13 @@ function solutionParseMermaidFlowchart(source) {
         if (nodeMap.has(nodeId)) {
             const existing = nodeMap.get(nodeId);
             if (label && (!existing.label || existing.label === existing.id)) {
-                existing.label = solutionShortText(label, 22) || existing.label;
+                existing.label = solutionShortText(label, 40) || existing.label;
             }
             return existing;
         }
         const node = {
             id: nodeId,
-            label: solutionShortText(label || nodeId, 22) || nodeId,
+            label: solutionShortText(label || nodeId, 40) || nodeId,
             groupId: null
         };
         nodeMap.set(nodeId, node);
@@ -1102,6 +1112,91 @@ function solutionBuildBlueprintFigure(parsedDiagram, blueprintCards) {
 
 /* ── SVG Flowchart Layout ── */
 
+function solutionFlowchartCharWeight(char) {
+    if (!char) return 0;
+    if (/\s/.test(char)) return 0.35;
+    if (/[A-Z]/.test(char)) return 0.78;
+    if (/[a-z0-9]/.test(char)) return 0.62;
+    if (/[+\-_/|&.:]/.test(char)) return 0.46;
+    return char.charCodeAt(0) > 127 ? 1.06 : 0.7;
+}
+
+function solutionFlowchartTokenWidth(token) {
+    return Array.from(String(token || '')).reduce((total, char) => total + solutionFlowchartCharWeight(char), 0);
+}
+
+function solutionWrapFlowchartToken(token, maxUnits) {
+    const text = String(token || '').trim();
+    if (!text) return [];
+    const chunks = [];
+    let current = '';
+    let width = 0;
+    Array.from(text).forEach((char) => {
+        const charWidth = solutionFlowchartCharWeight(char);
+        if (current && width + charWidth > maxUnits) {
+            chunks.push(current);
+            current = char;
+            width = charWidth;
+            return;
+        }
+        current += char;
+        width += charWidth;
+    });
+    if (current) chunks.push(current);
+    return chunks;
+}
+
+function solutionWrapFlowchartNodeLabel(label, maxUnits = 18, maxLines = 3) {
+    const raw = String(label || '').replace(/\s+/g, ' ').trim();
+    if (!raw) return [''];
+
+    const prepared = raw.replace(/([+/_|&-])/g, '$1 ');
+    const tokens = prepared.split(/\s+/).filter(Boolean);
+    const lines = [];
+    let current = '';
+    let currentWidth = 0;
+
+    const pushCurrent = () => {
+        if (!current) return;
+        lines.push(current.trim());
+        current = '';
+        currentWidth = 0;
+    };
+
+    tokens.forEach((token) => {
+        const tokenWidth = solutionFlowchartTokenWidth(token);
+        if (tokenWidth > maxUnits) {
+            pushCurrent();
+            solutionWrapFlowchartToken(token, maxUnits).forEach((chunk) => lines.push(chunk));
+            return;
+        }
+        const nextWidth = current ? currentWidth + 0.45 + tokenWidth : tokenWidth;
+        if (current && nextWidth > maxUnits) {
+            pushCurrent();
+        }
+        current = current ? `${current} ${token}` : token;
+        currentWidth = current === token ? tokenWidth : currentWidth + 0.45 + tokenWidth;
+    });
+    pushCurrent();
+
+    if (lines.length <= maxLines) return lines;
+    const prefix = lines.slice(0, Math.max(1, maxLines - 1));
+    const tail = lines.slice(maxLines - 1).join(' ');
+    return prefix.concat(solutionWrapFlowchartToken(tail, maxUnits + 2)).slice(0, maxLines);
+}
+
+function solutionRenderFlowchartNodeText(node) {
+    const lines = Array.isArray(node?.labelLines) && node.labelLines.length
+        ? node.labelLines
+        : [String(node?.label || '').trim()];
+    const lineHeight = 18;
+    const totalHeight = (lines.length - 1) * lineHeight;
+    const startY = (node.h / 2) - (totalHeight / 2) + 5;
+    return lines.map((line, index) => (
+        `<tspan x="${node.w / 2}" y="${startY + index * lineHeight}">${solutionEscapeHtml(line)}</tspan>`
+    )).join('');
+}
+
 function solutionLayoutFlowchart(figure) {
     const CONF = {
         nodeW: 168, nodeH: 56, nodeMinW: 120,
@@ -1121,9 +1216,13 @@ function solutionLayoutFlowchart(figure) {
     groups.forEach(function (g) {
         solutionNormalizeList(g.nodes).forEach(function (n) {
             var label = n.label || n.id;
-            var textW = estimateTextWidth(label);
-            var nodeW = Math.max(CONF.nodeMinW, Math.min(textW, 320));
-            var node = { id: n.id, label: label, groupId: g.id, groupLabel: g.label, x: 0, y: 0, w: nodeW, h: CONF.nodeH };
+            var labelLines = solutionWrapFlowchartNodeLabel(label, 18, 3);
+            var widestLine = labelLines.reduce(function (max, line) {
+                return Math.max(max, estimateTextWidth(line));
+            }, 0);
+            var nodeW = Math.max(CONF.nodeMinW, Math.min(widestLine + 28, 360));
+            var nodeH = Math.max(CONF.nodeH, 34 + labelLines.length * 18);
+            var node = { id: n.id, label: label, labelLines: labelLines, groupId: g.id, groupLabel: g.label, x: 0, y: 0, w: nodeW, h: nodeH };
             allNodes.push(node);
             nodeById.set(n.id, node);
         });
@@ -1167,48 +1266,61 @@ function solutionLayoutFlowchart(figure) {
         layers[rk].push(n);
     });
 
-    /* 坐标分配 — 支持变宽节点 */
+    /* 坐标分配 — 支持变宽高节点 */
     var totalW = 0, totalH = 0;
-    /* 先计算每层最大宽度，用于 LR 模式的 x 偏移 */
     var layerMaxW = {};
+    var layerMaxH = {};
     for (var rk = 0; rk <= maxRank; rk++) {
         var layer = layers[rk] || [];
         var maxW = 0;
-        layer.forEach(function (n) { if (n.w > maxW) maxW = n.w; });
-        layerMaxW[rk] = maxW;
+        var maxH = 0;
+        layer.forEach(function (n) {
+            if (n.w > maxW) maxW = n.w;
+            if (n.h > maxH) maxH = n.h;
+        });
+        layerMaxW[rk] = maxW || CONF.nodeW;
+        layerMaxH[rk] = maxH || CONF.nodeH;
     }
-    /* 计算 LR 模式下每层的 x 起点 */
+
     var layerX = {};
+    var layerY = {};
     var cx = CONF.pad;
+    var cy = CONF.pad;
     for (var rk = 0; rk <= maxRank; rk++) {
         layerX[rk] = cx;
+        layerY[rk] = cy;
         cx += layerMaxW[rk] + CONF.rankGap;
+        cy += layerMaxH[rk] + CONF.rankGap;
     }
+
     for (var rk = 0; rk <= maxRank; rk++) {
         var layer = layers[rk] || [];
-        layer.forEach(function (n, i) {
-            if (isLR) {
-                n.x = layerX[rk] + (layerMaxW[rk] - n.w) / 2;
-                n.y = CONF.pad + i * (CONF.nodeH + CONF.nodeGap);
-            } else {
-                n.x = CONF.pad + i * (n.w + CONF.nodeGap);
-                n.y = CONF.pad + rk * (CONF.nodeH + CONF.rankGap);
-            }
-        });
         if (isLR) {
-            var h = layer.length * CONF.nodeH + (layer.length - 1) * CONF.nodeGap;
-            if (h > totalH) totalH = h;
-        } else {
-            var layerSpan = 0;
-            layer.forEach(function (n) { layerSpan += n.w; });
-            layerSpan += (layer.length - 1) * CONF.nodeGap;
-            if (layerSpan > totalW) totalW = layerSpan;
+            var layerHeight = layer.reduce(function (sum, node) { return sum + node.h; }, 0) + Math.max(0, layer.length - 1) * CONF.nodeGap;
+            if (layerHeight > totalH) totalH = layerHeight;
+            var yCursor = CONF.pad;
+            layer.forEach(function (n) {
+                n.x = layerX[rk] + (layerMaxW[rk] - n.w) / 2;
+                n.y = yCursor;
+                yCursor += n.h + CONF.nodeGap;
+            });
+            continue;
         }
+
+        var layerWidth = layer.reduce(function (sum, node) { return sum + node.w; }, 0) + Math.max(0, layer.length - 1) * CONF.nodeGap;
+        if (layerWidth > totalW) totalW = layerWidth;
+        var xCursor = CONF.pad;
+        layer.forEach(function (n) {
+            n.x = xCursor;
+            n.y = layerY[rk] + (layerMaxH[rk] - n.h) / 2;
+            xCursor += n.w + CONF.nodeGap;
+        });
     }
+
     if (isLR) {
         totalW = cx - CONF.rankGap - CONF.pad;
     } else {
-        totalH = (maxRank + 1) * CONF.nodeH + maxRank * CONF.rankGap;
+        totalH = cy - CONF.rankGap - CONF.pad;
     }
     /* 为分组标签预留顶部空间，避免 group-bg 超出 viewBox */
     var groupTopPad = CONF.groupPadY + CONF.groupLabelH;
@@ -1221,13 +1333,21 @@ function solutionLayoutFlowchart(figure) {
         var layer2 = layers[rk2] || [];
         if (layer2.length < 2) continue;
         if (isLR) {
-            var span = (layer2.length - 1) * (CONF.nodeH + CONF.nodeGap);
+            var span = layer2.reduce(function (sum, node) { return sum + node.h; }, 0) + Math.max(0, layer2.length - 1) * CONF.nodeGap;
             var offset = (totalH - span) / 2;
-            layer2.forEach(function (n, i) { n.y = CONF.pad + offset + i * (CONF.nodeH + CONF.nodeGap); });
+            var centeredY = CONF.pad + offset;
+            layer2.forEach(function (n) {
+                n.y = centeredY;
+                centeredY += n.h + CONF.nodeGap;
+            });
         } else {
-            var span2 = (layer2.length - 1) * (CONF.nodeW + CONF.nodeGap);
+            var span2 = layer2.reduce(function (sum, node) { return sum + node.w; }, 0) + Math.max(0, layer2.length - 1) * CONF.nodeGap;
             var offset2 = (totalW - span2) / 2;
-            layer2.forEach(function (n, i) { n.x = CONF.pad + offset2 + i * (CONF.nodeW + CONF.nodeGap); });
+            var centeredX = CONF.pad + offset2;
+            layer2.forEach(function (n) {
+                n.x = centeredX;
+                centeredX += n.w + CONF.nodeGap;
+            });
         }
     }
 
@@ -1321,7 +1441,7 @@ function solutionRenderSvgFlowchart(figure) {
         var accent = RANK_ACCENTS[(n.rank || 0) % RANK_ACCENTS.length];
         return '<g class="flowchart-node" data-id="' + solutionEscapeHtml(n.id) + '" style="animation-delay:' + delay + 'ms" transform="translate(' + n.x + ',' + n.y + ')">'
             + '<rect rx="14" width="' + n.w + '" height="' + n.h + '" stroke="' + accent + '" stroke-width="1.5"/>'
-            + '<text x="' + (n.w / 2) + '" y="' + (n.h / 2) + '" text-anchor="middle" dominant-baseline="central">' + solutionEscapeHtml(n.label) + '</text>'
+            + '<text x="' + (n.w / 2) + '" text-anchor="middle">' + solutionRenderFlowchartNodeText(n) + '</text>'
             + '</g>';
     }).join('');
 
