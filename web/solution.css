@@ -1882,6 +1882,113 @@ a {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+/* ── SVG Flowchart ── */
+
+.proposal-flowchart-container {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: var(--solution-radius-lg);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(6, 15, 28, 0.6);
+    padding: 16px;
+}
+
+.proposal-flowchart-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    min-height: 200px;
+    max-height: 560px;
+}
+
+.flowchart-group-bg {
+    fill: rgba(96, 213, 255, 0.04);
+    stroke: rgba(96, 213, 255, 0.1);
+    stroke-width: 1;
+}
+
+.flowchart-group-label {
+    fill: #c4eeff;
+    font-size: 11px;
+    font-family: system-ui, -apple-system, sans-serif;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.flowchart-edge-path {
+    fill: none;
+    stroke: rgba(215, 164, 74, 0.5);
+    stroke-width: 1.5;
+    stroke-dasharray: 6 4;
+    animation: flowchartDashFlow 1.2s linear infinite;
+    transition: stroke-opacity 240ms ease;
+}
+
+.flowchart-edge-label {
+    fill: #f5d094;
+    font-size: 11px;
+    font-family: system-ui, -apple-system, sans-serif;
+}
+
+.flowchart-node rect {
+    fill: rgba(10, 23, 43, 0.82);
+    /* stroke 由 SVG inline 属性控制，支持 rank-based 颜色 */
+    transition: stroke 240ms ease, fill 240ms ease;
+}
+
+.flowchart-node text {
+    fill: #f4f7fb;
+    font-size: 13px;
+    font-family: system-ui, -apple-system, sans-serif;
+    font-weight: 500;
+    pointer-events: none;
+}
+
+.flowchart-node {
+    opacity: 0;
+    animation: flowchartNodeFadeIn 400ms ease forwards;
+    cursor: default;
+}
+
+@keyframes flowchartDashFlow {
+    to { stroke-dashoffset: -20; }
+}
+
+@keyframes flowchartNodeFadeIn {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+/* hover: highlight node + related edges, dim others */
+.proposal-flowchart-svg:has(.flowchart-node:hover) .flowchart-node:not(:hover) rect {
+    fill: rgba(10, 23, 43, 0.5);
+    stroke: rgba(132, 161, 199, 0.08);
+}
+
+.proposal-flowchart-svg:has(.flowchart-node:hover) .flowchart-node:not(:hover) text {
+    fill: rgba(244, 247, 251, 0.35);
+}
+
+.proposal-flowchart-svg:has(.flowchart-node:hover) .flowchart-edge-path {
+    stroke-opacity: 0.2;
+}
+
+.proposal-flowchart-svg:has(.flowchart-node:hover) .flowchart-edge-label {
+    fill-opacity: 0.2;
+}
+
+.flowchart-node:hover rect {
+    stroke: rgba(215, 164, 74, 0.6);
+    stroke-width: 1.5;
+    fill: rgba(18, 33, 58, 0.92);
+}
+
+.proposal-flowchart-svg:has(.flowchart-node:hover) .flowchart-group-bg {
+    fill-opacity: 0.3;
+}
+
 .proposal-tab-list {
     display: flex;
     flex-wrap: wrap;
@@ -2981,6 +3088,14 @@ body.is-evidence-open {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
+    .proposal-flowchart-container {
+        min-width: 480px;
+    }
+
+    .proposal-flowchart-svg {
+        max-height: 400px;
+    }
+
     .proposal-section-head,
     .proposal-section-copy,
     .proposal-hero-copy-main {
@@ -3738,6 +3853,38 @@ body.is-evidence-open {
         border-bottom: 2px solid #e5e7eb;
         padding: 0 0 32px 0 !important;
         margin-bottom: 32px;
+    }
+
+    .proposal-flowchart-container {
+        background: #f9fafb !important;
+        border: 1px solid #e5e7eb !important;
+    }
+
+    .flowchart-edge-path {
+        stroke: #9ca3af !important;
+        animation: none !important;
+    }
+
+    .flowchart-node rect {
+        fill: #ffffff !important;
+        stroke: #d1d5db !important;
+    }
+
+    .flowchart-node text {
+        fill: #111827 !important;
+    }
+
+    .flowchart-group-bg {
+        fill: #f3f4f6 !important;
+        stroke: #e5e7eb !important;
+    }
+
+    .flowchart-group-label {
+        fill: #6b7280 !important;
+    }
+
+    .flowchart-edge-label {
+        fill: #6b7280 !important;
     }
 
     .proposal-section-title,

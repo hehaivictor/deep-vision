@@ -1100,6 +1100,239 @@ function solutionBuildBlueprintFigure(parsedDiagram, blueprintCards) {
     };
 }
 
+/* ── SVG Flowchart Layout ── */
+
+function solutionLayoutFlowchart(figure) {
+    const CONF = {
+        nodeW: 168, nodeH: 56, nodeMinW: 120,
+        rankGap: 100, nodeGap: 32, pad: 48,
+        groupPadX: 20, groupPadY: 32, groupLabelH: 22
+    };
+    var estimateTextWidth = function (text) {
+        var len = 0;
+        for (var i = 0; i < text.length; i++) {
+            len += text.charCodeAt(i) > 127 ? 14 : 8;
+        }
+        return len + 32;
+    };
+    const allNodes = [];
+    const nodeById = new Map();
+    const groups = solutionNormalizeList(figure.groups);
+    groups.forEach(function (g) {
+        solutionNormalizeList(g.nodes).forEach(function (n) {
+            var label = n.label || n.id;
+            var textW = estimateTextWidth(label);
+            var nodeW = Math.max(CONF.nodeMinW, Math.min(textW, 320));
+            var node = { id: n.id, label: label, groupId: g.id, groupLabel: g.label, x: 0, y: 0, w: nodeW, h: CONF.nodeH };
+            allNodes.push(node);
+            nodeById.set(n.id, node);
+        });
+    });
+    if (!allNodes.length) return null;
+    var edges = solutionNormalizeList(figure.edges).filter(function (e) { return nodeById.has(e.from) && nodeById.has(e.to); });
+    var dir = String(figure.direction || 'TB').toUpperCase();
+    var isLR = dir === 'LR' || dir === 'RL';
+
+    /* 拓扑排序 */
+    var inDeg = new Map();
+    var adj = new Map();
+    allNodes.forEach(function (n) { inDeg.set(n.id, 0); adj.set(n.id, []); });
+    edges.forEach(function (e) {
+        adj.get(e.from).push(e.to);
+        inDeg.set(e.to, (inDeg.get(e.to) || 0) + 1);
+    });
+    var queue = [];
+    var rank = new Map();
+    inDeg.forEach(function (deg, id) { if (deg === 0) { queue.push(id); rank.set(id, 0); } });
+    var qi = 0;
+    while (qi < queue.length) {
+        var cur = queue[qi++];
+        var r = rank.get(cur);
+        (adj.get(cur) || []).forEach(function (next) {
+            rank.set(next, Math.max(rank.get(next) || 0, r + 1));
+            inDeg.set(next, inDeg.get(next) - 1);
+            if (inDeg.get(next) === 0) queue.push(next);
+        });
+    }
+    allNodes.forEach(function (n) { if (!rank.has(n.id)) rank.set(n.id, 0); });
+
+    /* 按 rank 分层 */
+    var maxRank = 0;
+    var layers = {};
+    allNodes.forEach(function (n) {
+        var rk = rank.get(n.id);
+        n.rank = rk;
+        if (rk > maxRank) maxRank = rk;
+        if (!layers[rk]) layers[rk] = [];
+        layers[rk].push(n);
+    });
+
+    /* 坐标分配 — 支持变宽节点 */
+    var totalW = 0, totalH = 0;
+    /* 先计算每层最大宽度，用于 LR 模式的 x 偏移 */
+    var layerMaxW = {};
+    for (var rk = 0; rk <= maxRank; rk++) {
+        var layer = layers[rk] || [];
+        var maxW = 0;
+        layer.forEach(function (n) { if (n.w > maxW) maxW = n.w; });
+        layerMaxW[rk] = maxW;
+    }
+    /* 计算 LR 模式下每层的 x 起点 */
+    var layerX = {};
+    var cx = CONF.pad;
+    for (var rk = 0; rk <= maxRank; rk++) {
+        layerX[rk] = cx;
+        cx += layerMaxW[rk] + CONF.rankGap;
+    }
+    for (var rk = 0; rk <= maxRank; rk++) {
+        var layer = layers[rk] || [];
+        layer.forEach(function (n, i) {
+            if (isLR) {
+                n.x = layerX[rk] + (layerMaxW[rk] - n.w) / 2;
+                n.y = CONF.pad + i * (CONF.nodeH + CONF.nodeGap);
+            } else {
+                n.x = CONF.pad + i * (n.w + CONF.nodeGap);
+                n.y = CONF.pad + rk * (CONF.nodeH + CONF.rankGap);
+            }
+        });
+        if (isLR) {
+            var h = layer.length * CONF.nodeH + (layer.length - 1) * CONF.nodeGap;
+            if (h > totalH) totalH = h;
+        } else {
+            var layerSpan = 0;
+            layer.forEach(function (n) { layerSpan += n.w; });
+            layerSpan += (layer.length - 1) * CONF.nodeGap;
+            if (layerSpan > totalW) totalW = layerSpan;
+        }
+    }
+    if (isLR) {
+        totalW = cx - CONF.rankGap - CONF.pad;
+    } else {
+        totalH = (maxRank + 1) * CONF.nodeH + maxRank * CONF.rankGap;
+    }
+    /* 为分组标签预留顶部空间，避免 group-bg 超出 viewBox */
+    var groupTopPad = CONF.groupPadY + CONF.groupLabelH;
+    allNodes.forEach(function (n) { n.y += groupTopPad; });
+    var vbW = totalW + CONF.pad * 2;
+    var vbH = totalH + CONF.pad * 2 + groupTopPad;
+
+    /* 居中对齐：同层节点居中 */
+    for (var rk2 = 0; rk2 <= maxRank; rk2++) {
+        var layer2 = layers[rk2] || [];
+        if (layer2.length < 2) continue;
+        if (isLR) {
+            var span = (layer2.length - 1) * (CONF.nodeH + CONF.nodeGap);
+            var offset = (totalH - span) / 2;
+            layer2.forEach(function (n, i) { n.y = CONF.pad + offset + i * (CONF.nodeH + CONF.nodeGap); });
+        } else {
+            var span2 = (layer2.length - 1) * (CONF.nodeW + CONF.nodeGap);
+            var offset2 = (totalW - span2) / 2;
+            layer2.forEach(function (n, i) { n.x = CONF.pad + offset2 + i * (CONF.nodeW + CONF.nodeGap); });
+        }
+    }
+
+    /* 分组包围盒 */
+    var groupBounds = [];
+    var groupNodeMap = new Map();
+    allNodes.forEach(function (n) {
+        if (!groupNodeMap.has(n.groupId)) groupNodeMap.set(n.groupId, { label: n.groupLabel, nodes: [] });
+        groupNodeMap.get(n.groupId).nodes.push(n);
+    });
+    groupNodeMap.forEach(function (g, gid) {
+        var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        g.nodes.forEach(function (n) {
+            if (n.x < minX) minX = n.x;
+            if (n.y < minY) minY = n.y;
+            if (n.x + n.w > maxX) maxX = n.x + n.w;
+            if (n.y + n.h > maxY) maxY = n.y + n.h;
+        });
+        groupBounds.push({
+            id: gid, label: g.label,
+            x: minX - CONF.groupPadX, y: minY - CONF.groupPadY - CONF.groupLabelH,
+            w: maxX - minX + CONF.groupPadX * 2, h: maxY - minY + CONF.groupPadY * 2 + CONF.groupLabelH
+        });
+    });
+
+    /* 边路径 */
+    var posEdges = edges.map(function (e) {
+        var fn = nodeById.get(e.from);
+        var tn = nodeById.get(e.to);
+        var sx, sy, tx, ty;
+        if (isLR) {
+            sx = fn.x + fn.w; sy = fn.y + fn.h / 2;
+            tx = tn.x;        ty = tn.y + tn.h / 2;
+        } else {
+            sx = fn.x + fn.w / 2; sy = fn.y + fn.h;
+            tx = tn.x + tn.w / 2; ty = tn.y;
+        }
+        var mx = (sx + tx) / 2, my = (sy + ty) / 2;
+        var path = isLR
+            ? 'M ' + sx + ',' + sy + ' C ' + mx + ',' + sy + ' ' + mx + ',' + ty + ' ' + tx + ',' + ty
+            : 'M ' + sx + ',' + sy + ' C ' + sx + ',' + my + ' ' + tx + ',' + my + ' ' + tx + ',' + ty;
+        return { from: e.from, to: e.to, label: e.label || '', path: path, mx: mx, my: my };
+    });
+
+    return { nodes: allNodes, edges: posEdges, groupBounds: groupBounds, viewBox: { w: vbW, h: vbH } };
+}
+
+function solutionRenderSvgFlowchart(figure) {
+    var layout = solutionLayoutFlowchart(figure);
+    if (!layout) return '';
+    var vb = layout.viewBox;
+
+    /* defs: arrow marker */
+    var defs = '<defs>'
+        + '<marker id="fc-arrow" viewBox="0 0 10 8" refX="9" refY="4" markerWidth="8" markerHeight="6" orient="auto-start-reverse">'
+        + '<path d="M 0 0 L 10 4 L 0 8 Z" fill="rgba(215,164,74,0.7)"/>'
+        + '</marker>'
+        + '</defs>';
+
+    /* group backgrounds */
+    var groupsSvg = layout.groupBounds.map(function (g) {
+        return '<rect class="flowchart-group-bg" x="' + g.x + '" y="' + g.y + '" width="' + g.w + '" height="' + g.h + '" rx="18"/>'
+            + '<text class="flowchart-group-label" x="' + (g.x + 12) + '" y="' + (g.y + 16) + '">' + solutionEscapeHtml(g.label) + '</text>';
+    }).join('');
+
+    /* edges */
+    var edgesSvg = layout.edges.map(function (e) {
+        var labelSvg = e.label
+            ? '<text class="flowchart-edge-label" x="' + e.mx + '" y="' + (e.my - 6) + '" text-anchor="middle">' + solutionEscapeHtml(e.label) + '</text>'
+            : '';
+        return '<g class="flowchart-edge" data-from="' + solutionEscapeHtml(e.from) + '" data-to="' + solutionEscapeHtml(e.to) + '">'
+            + '<path class="flowchart-edge-path" d="' + e.path + '" marker-end="url(#fc-arrow)"/>'
+            + labelSvg + '</g>';
+    }).join('');
+
+    /* rank-based accent colors — subtle, harmonious with dark theme */
+    var RANK_ACCENTS = [
+        'rgba(96,213,255,0.55)',   /* rank 0: sky blue */
+        'rgba(130,180,255,0.50)',  /* rank 1: periwinkle */
+        'rgba(167,139,250,0.50)', /* rank 2: violet */
+        'rgba(52,211,153,0.50)',  /* rank 3: emerald */
+        'rgba(251,191,36,0.50)',  /* rank 4: amber */
+        'rgba(251,113,133,0.45)', /* rank 5: rose */
+    ];
+    var nodeRankMap = new Map();
+    layout.nodes.forEach(function (n) { nodeRankMap.set(n.id, n.rank || 0); });
+
+    /* nodes with staggered animation delay */
+    var nodesSvg = layout.nodes.map(function (n, i) {
+        var delay = i * 80;
+        var accent = RANK_ACCENTS[(n.rank || 0) % RANK_ACCENTS.length];
+        return '<g class="flowchart-node" data-id="' + solutionEscapeHtml(n.id) + '" style="animation-delay:' + delay + 'ms" transform="translate(' + n.x + ',' + n.y + ')">'
+            + '<rect rx="14" width="' + n.w + '" height="' + n.h + '" stroke="' + accent + '" stroke-width="1.5"/>'
+            + '<text x="' + (n.w / 2) + '" y="' + (n.h / 2) + '" text-anchor="middle" dominant-baseline="central">' + solutionEscapeHtml(n.label) + '</text>'
+            + '</g>';
+    }).join('');
+
+    return '<div class="proposal-flowchart-container">'
+        + '<svg class="proposal-flowchart-svg" viewBox="0 0 ' + vb.w + ' ' + vb.h + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="流程图">'
+        + defs + '<g class="flowchart-groups">' + groupsSvg + '</g>'
+        + '<g class="flowchart-edges">' + edgesSvg + '</g>'
+        + '<g class="flowchart-nodes">' + nodesSvg + '</g>'
+        + '</svg></div>';
+}
+
 function solutionBuildComparisonDetailRows(compareRows, recommended, alternative) {
     const rows = solutionNormalizeList(compareRows).map((row) => ({
         dimension: solutionShortText(row.title || row.label || '关键维度', 28),
@@ -2185,8 +2418,32 @@ function solutionRenderComparisonSection(section) {
     `;
 }
 
+function solutionNormalizeFigureToGroups(figure) {
+    if (!figure || typeof figure !== 'object') return null;
+    if (Array.isArray(figure.groups) && figure.groups.length) return figure;
+    var nodes = solutionNormalizeList(figure.nodes);
+    var edges = solutionNormalizeList(figure.edges);
+    if (!nodes.length) return null;
+    var groupMap = {};
+    nodes.forEach(function (n) {
+        var gid = n.group || 'default';
+        var genericGroups = ['default', 'module', 'modules', 'node', 'nodes', 'step', 'steps', 'component', 'system'];
+        var groupLabel = genericGroups.indexOf(gid.toLowerCase()) >= 0 ? '' : gid;
+        if (!groupMap[gid]) groupMap[gid] = { id: gid, label: groupLabel, nodes: [] };
+        groupMap[gid].nodes.push({ id: n.id, label: n.label || n.id });
+    });
+    return {
+        type: figure.type || 'architecture',
+        groups: Object.values(groupMap),
+        edges: edges,
+        direction: figure.direction || 'LR',
+        caption: figure.caption || ''
+    };
+}
+
 function solutionRenderBlueprintFigure(blueprint) {
-    const figure = blueprint?.figure;
+    const rawFigure = blueprint?.figure;
+    const figure = solutionNormalizeFigureToGroups(rawFigure);
     const cards = solutionNormalizeList(blueprint?.cards);
     if (!figure?.groups?.length) {
         return cards.length ? `
@@ -2201,40 +2458,7 @@ function solutionRenderBlueprintFigure(blueprint) {
             </div>
         ` : '';
     }
-    const nodeLabelMap = new Map();
-    solutionNormalizeList(figure.groups).forEach((group) => {
-        solutionNormalizeList(group.nodes).forEach((node) => {
-            if (node?.id) nodeLabelMap.set(node.id, node.label || node.id);
-        });
-    });
-    return `
-        <div class="proposal-blueprint-shell">
-            <div class="proposal-blueprint-lanes">
-                ${solutionNormalizeList(figure.groups).map((group) => `
-                    <article class="proposal-blueprint-lane">
-                        <div class="proposal-blueprint-lane-label">${solutionEscapeHtml(group.label)}</div>
-                        <div class="proposal-blueprint-node-list">
-                            ${solutionNormalizeList(group.nodes).map((node) => `
-                                <div class="proposal-blueprint-node">${solutionEscapeHtml(node.label)}</div>
-                            `).join('')}
-                        </div>
-                    </article>
-                `).join('')}
-            </div>
-            ${solutionNormalizeList(figure.edges).length ? `
-                <div class="proposal-blueprint-flow-list">
-                    ${solutionNormalizeList(figure.edges).map((edge) => `
-                        <div class="proposal-blueprint-flow-item">
-                            <span>${solutionEscapeHtml(nodeLabelMap.get(edge.from) || edge.from)}</span>
-                            <span class="proposal-blueprint-flow-arrow">→</span>
-                            <span>${solutionEscapeHtml(nodeLabelMap.get(edge.to) || edge.to)}</span>
-                            ${edge.label ? `<span class="proposal-blueprint-flow-tag">${solutionEscapeHtml(edge.label)}</span>` : ''}
-                        </div>
-                    `).join('')}
-                </div>
-            ` : ''}
-        </div>
-    `;
+    return solutionRenderSvgFlowchart(figure);
 }
 
 function solutionRenderSolutionTabsSection(section) {

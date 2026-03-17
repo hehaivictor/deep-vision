@@ -1,134 +1,185 @@
 # DeepVision
 
-DeepVision 是一个面向需求访谈场景的 AI Web 应用，支持从访谈提问、回答沉淀到报告生成与导出的完整链路。
+DeepVision 是一个面向需求访谈、方案沉淀与交付输出的 AI Web 应用。系统覆盖「发起访谈 -> 沉淀记录 -> 生成报告 -> 派生方案页 -> 导出与分享」的完整链路，适合需求调研、售前咨询、业务诊断与方案澄清场景。
 
-当前版本：`2.7.0`（见 [web/version.json](web/version.json)）
+当前版本：`4.0.0`（`2026-03-17`，见 [web/version.json](web/version.json)）
 
 ## 核心能力
 
-- 账号体系：手机号验证码登录（`mock` / 京东云短信），支持微信扫码登录（可选）
-- 智能访谈：按场景驱动多维度提问，支持追问、进度推进、会话持久化
-- 场景管理：内置场景 + 自定义场景，兼容历史目录迁移
-- 报告生成：支持异步队列化生成、状态轮询、过载保护
-- 报告导出：支持 Markdown、DOCX、附录 PDF 导出
-- 并发优化：列表分页、ETag/304、429 快速失败、元数据索引回退机制
+- 智能访谈：按场景驱动问题生成，支持追问、进度推进、会话持久化
+- 资料输入：支持 `md`、`txt`、`pdf`、`docx`、`xlsx`、`pptx` 上传并转为可引用内容
+- 报告生成：异步队列化生成、状态轮询、质量门控、证据索引
+- 方案页输出：从报告派生结构化方案页，支持匿名只读分享链接
+- 导出能力：支持 Markdown、Word、PDF、附录 PDF
+- 鉴权能力：手机号验证码登录（`mock` / 京东云短信），支持可选微信扫码登录
+- 场景管理：内置场景 + 自定义场景，支持目录化加载
+- 稳定性优化：分页、ETag/304、429 快速失败、缓存与预热
 
-## 技术栈
+## 技术结构
 
-- 后端：Flask（单文件主服务 [web/server.py](web/server.py)）
-- 前端：原生 HTML/CSS/JS（`web/index.html` + `web/app.js`）
-- 运行方式：`uv run`（开发）/ Gunicorn（生产）
+- 后端：Flask 单文件主服务 [web/server.py](web/server.py)
+- 前端：原生 HTML / CSS / JavaScript，主入口为 [web/index.html](web/index.html) 与 [web/app.js](web/app.js)
+- 方案页：独立入口 [web/solution.html](web/solution.html)、[web/solution.js](web/solution.js)、[web/solution.css](web/solution.css)
+- 生产运行：Gunicorn + [web/wsgi.py](web/wsgi.py)
+- 依赖管理：使用 `uv run` 直接读取 [web/server.py](web/server.py) 顶部的 inline dependency metadata
 
-## 快速开始（开发）
+## 快速开始
 
-### 1) 准备环境
+### 1. 环境要求
 
 - Python `>= 3.10`
 - 安装 [uv](https://docs.astral.sh/uv/)
 
-### 2) 配置
+### 2. 准备配置
 
 ```bash
 cp web/.env.example web/.env
-# 或者：cp web/config.example.py web/config.py
 ```
 
-推荐优先使用 [web/.env.example](web/.env.example) 生成 `web/.env`；如果你更习惯 Python 配置文件，也可以使用 [web/config.example.py](web/config.example.py) 生成 `web/config.py`。
+如需使用 Python 配置文件兜底，也可以执行：
 
-- 两份示例文件现在都为“每项配置单独注释”的写法，可以直接按注释逐项填写。
-- 默认 `CONFIG_RESOLUTION_MODE=auto`：当 `web/.env` 中已有实际 AI 配置时，AI 运行参数优先使用 `.env`，不再回落到 `config.py`。
-- 部署环境建议把真实密钥、模型路由和超时参数统一放在 `web/.env` 或进程环境变量中，`web/config.py` 更适合作为本地开发兜底。
+```bash
+cp web/config.example.py web/config.py
+```
 
-### 3) 启动
+配置优先建议：
+
+- 优先把真实密钥、模型路由、超时和运行参数写入 `web/.env`
+- `web/config.py` 更适合本地开发兜底
+- 默认 `CONFIG_RESOLUTION_MODE=auto`
+
+可参考：
+
+- [web/.env.example](web/.env.example)
+- [web/config.example.py](web/config.example.py)
+- [web/CONFIG.md](web/CONFIG.md)
+- [docs/instance-scope.md](docs/instance-scope.md)
+
+### 3. 启动开发环境
 
 ```bash
 uv run web/server.py
 ```
 
-默认访问：`http://localhost:5001`
+默认访问地址：
+
+```text
+http://127.0.0.1:5001
+```
+
+说明：
+
+- 首次运行时，`uv` 会按 [web/server.py](web/server.py) 顶部声明自动准备依赖
+- 如果要显式指定环境文件，可使用 `DEEPVISION_ENV_FILE=/path/to/.env uv run web/server.py`
 
 ## 生产启动
 
-### 方式一：启动脚本
+### 方式一：使用脚本
 
 ```bash
 ./scripts/start-production.sh
 ```
 
-### 方式二：直接 Gunicorn
+### 方式二：直接运行 Gunicorn
 
 ```bash
 uv run --with gunicorn gunicorn -c web/gunicorn.conf.py web.wsgi:app
 ```
 
-注意：`GUNICORN_*` 运行参数由 [web/gunicorn.conf.py](web/gunicorn.conf.py) 从进程环境变量读取；如果只改 `web/config.py`，Gunicorn 参数不会生效。
+说明：
 
-可参考 Nginx 示例配置：
-[deploy/nginx/deepvision.conf.example](deploy/nginx/deepvision.conf.example)
+- Gunicorn 运行参数由 [web/gunicorn.conf.py](web/gunicorn.conf.py) 从进程环境变量读取
+- 如果只改 `web/config.py`，Gunicorn 相关参数不会自动生效
+- Nginx 示例配置见 [deploy/nginx/deepvision.conf.example](deploy/nginx/deepvision.conf.example)
 
 ## 关键配置项
 
-配置示例见 [web/.env.example](web/.env.example) 与 [web/config.example.py](web/config.example.py)。
+配置模板以 [web/.env.example](web/.env.example) 为准，常用项如下：
 
 - AI 与模型：
   - `ENABLE_AI`
-  - `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL`
+  - `ANTHROPIC_API_KEY`
+  - `ANTHROPIC_BASE_URL`
+  - `QUESTION_MODEL_NAME`
+  - `REPORT_MODEL_NAME`
+  - `REPORT_DRAFT_MODEL_NAME`
+  - `REPORT_REVIEW_MODEL_NAME`
+- 配置解析：
   - `CONFIG_RESOLUTION_MODE`
-  - `QUESTION_MODEL_NAME` / `REPORT_MODEL_NAME`
-  - `REPORT_DRAFT_MODEL_NAME` / `REPORT_REVIEW_MODEL_NAME`
-  - `SUMMARY_MODEL_NAME` / `SEARCH_DECISION_MODEL_NAME` / `ASSESSMENT_MODEL_NAME`
-  - `AI_CLIENT_EAGER_INIT` / `AI_CLIENT_INIT_CONNECTION_TEST`
-  - 推荐分工：问题=`minimax-2.5`，报告草案=`kimi-k2.5`，报告审稿=`glm-5`，摘要/搜索决策/评分=`glm-5`
+  - `DEEPVISION_ENV_FILE`
 - 鉴权：
   - `SECRET_KEY`
-  - `SMS_PROVIDER`（`mock`/`jdcloud`）
-  - `SMS_TEST_CODE`（仅测试环境）
-- 并发与性能：
-  - `LIST_API_DEFAULT_PAGE_SIZE` / `LIST_API_MAX_PAGE_SIZE`
-  - `SESSIONS_LIST_MAX_INFLIGHT` / `REPORTS_LIST_MAX_INFLIGHT`
-  - `REPORT_GENERATION_MAX_WORKERS` / `REPORT_GENERATION_MAX_PENDING`
-- 场景目录：
+  - `SMS_PROVIDER`
+  - `SMS_TEST_CODE`
+- 运行与性能：
+  - `LIST_API_DEFAULT_PAGE_SIZE`
+  - `LIST_API_MAX_PAGE_SIZE`
+  - `REPORT_GENERATION_MAX_WORKERS`
+  - `REPORT_GENERATION_MAX_PENDING`
+- 目录与隔离：
   - `BUILTIN_SCENARIOS_DIR`
   - `CUSTOM_SCENARIOS_DIR`
-- 多实例隔离：
-  - `INSTANCE_SCOPE_KEY`（规范见 [docs/instance-scope.md](docs/instance-scope.md)）
+  - `INSTANCE_SCOPE_KEY`
 
 ## 测试
 
+运行全量回归：
+
 ```bash
-python3 -m unittest tests.test_api_comprehensive
-python3 -m unittest tests.test_security_regression
-python3 -m unittest tests.test_scripts_comprehensive
+python3 -m unittest discover -s tests -p 'test_*.py'
 ```
+
+常见专项测试：
+
+- `python3 -m unittest tests.test_api_comprehensive`
+- `python3 -m unittest tests.test_security_regression`
+- `python3 -m unittest tests.test_solution_payload`
+- `python3 -m unittest tests.test_version_manager`
+- `python3 -m unittest tests.test_config_template_consistency`
 
 ## 目录结构
 
 ```text
 DeepVision/
-├── web/                 # 前后端主程序与静态资源
-├── changes/             # 待发布变更碎片（功能分支产出，主线自动聚合）
-├── scripts/             # 运维/迁移/压测等脚本
+├── web/                 # Web 服务、前端页面、静态资源与配置模板
 ├── resources/           # 内置场景资源
+├── scripts/             # 启动、迁移、压测、版本管理等脚本
 ├── tests/               # 回归测试
-├── deploy/              # 部署示例（Nginx）
-├── docs/                # 运维与配置文档
-└── data/                # 运行时数据目录（已忽略，不入库）
+├── docs/                # 配置、交付与专题文档
+├── deploy/              # 部署示例（如 Nginx）
+├── data/                # 运行期数据（会话、报告、摘要、鉴权、演示产物等）
+├── .githooks/           # 仓库内 Git Hook
+└── changes/             # 待发布变更碎片目录，首次生成碎片时自动创建
 ```
+
+`data/` 下常见子目录包括：
+
+- `data/sessions/`：访谈会话数据
+- `data/reports/`：生成后的 Markdown 报告与分享映射
+- `data/presentations/`：演示或导出相关产物
+- `data/summaries/`：文档摘要缓存
+- `data/auth/`：鉴权相关运行数据
 
 ## 常用脚本
 
-- [scripts/admin_migrate_ownership.py](scripts/admin_migrate_ownership.py)：账号归属迁移
+- [scripts/start-production.sh](scripts/start-production.sh)：Gunicorn 生产启动
+- [scripts/install-hooks.sh](scripts/install-hooks.sh)：启用仓库内 Git Hook
+- [scripts/version_manager.py](scripts/version_manager.py)：维护变更碎片与正式版本日志
 - [scripts/loadtest_list_endpoints.py](scripts/loadtest_list_endpoints.py)：列表接口压测
-- [scripts/version_manager.py](scripts/version_manager.py)：变更碎片与正式版本日志维护
-- [scripts/install-hooks.sh](scripts/install-hooks.sh)：安装仓库内 Git Hook，统一按钮提交与命令行提交后的变更碎片生成
+- [scripts/admin_migrate_ownership.py](scripts/admin_migrate_ownership.py)：账号归属迁移
+- [scripts/migrate_session_evidence_annotations.py](scripts/migrate_session_evidence_annotations.py)：历史数据迁移
+- [scripts/replay_preflight_diagnostics.py](scripts/replay_preflight_diagnostics.py)：预检诊断重放
 
-## 提交流程建议
+## 提交流程
 
-- 首次拉取仓库后执行 `./scripts/install-hooks.sh`，将 Git Hook 固定到仓库内的 `.githooks/`。
-- 功能分支提交后，`post-commit` 会自动根据当前分支相对主线的累计改动更新 `changes/unreleased/*.json` 变更碎片，不再直接抢占 `web/version.json` 里的正式版本号。
-- 提交信息如果本身规范，变更碎片会优先沿用提交标题与正文；如果标题较脏或正文缺失，则自动根据累计改动文件整理结构化说明。
-- PR 合入 `main` / `master` 后，GitHub Actions 会自动聚合所有待发布碎片，更新正式 `web/version.json`，再清理已消费的碎片文件。
-- 使用工作树批量交付总控时，项目级约定见 [docs/worktree-shipping.md](docs/worktree-shipping.md)。
-- 需要本地预览时，可执行：
-  - `python3 scripts/version_manager.py fragment --dry-run`
-  - `python3 scripts/version_manager.py release --dry-run`
+- 首次拉取仓库后建议执行 `./scripts/install-hooks.sh`
+- `post-commit` Hook 会调用 [scripts/version_manager.py](scripts/version_manager.py) 自动刷新 `changes/unreleased/*.json`
+- 正式版本号与历史日志维护在 [web/version.json](web/version.json)
+- 合入主分支后，GitHub Actions 会聚合待发布碎片并更新正式版本
+
+本地预览版本变更可执行：
+
+```bash
+python3 scripts/version_manager.py fragment --dry-run
+python3 scripts/version_manager.py release --dry-run
+```
