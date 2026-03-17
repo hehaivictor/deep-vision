@@ -77,6 +77,25 @@ class ConfigTemplateConsistencyTests(unittest.TestCase):
         )
         self.assertEqual(misplaced, [])
 
+    def test_config_example_covers_all_strategy_keys(self):
+        missing = sorted(
+            key
+            for key in self.server_keys
+            if not key.startswith("GUNICORN_")
+            if not self.server._is_env_managed_config_key(key)
+            if key not in self.config_example_keys
+        )
+        self.assertEqual(missing, [])
+
+    def test_env_example_covers_all_env_managed_keys(self):
+        missing = sorted(
+            key
+            for key in self.server_keys
+            if key.startswith("GUNICORN_") or self.server._is_env_managed_config_key(key)
+            if key not in self.env_example_keys
+        )
+        self.assertEqual(missing, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "c3a83da",
+  "committedAt": "2026-03-17T10:07:12+08:00",
+  "versionType": "patch",
+  "title": "补齐配置模板并修复短信登录前端异常",
+  "changes": [
+    "前端：围绕“补齐配置模板并修复短信登录前端异常”更新界面交互与展示逻辑。",
+    "后端：围绕“补齐配置模板并修复短信登录前端异常”更新接口与数据处理逻辑。",
+    "测试：围绕“补齐配置模板并修复短信登录前端异常”补充并校验相关回归用例。",
+    "资源：围绕“补齐配置模板并修复短信登录前端异常”同步内置资源与示例内容。"
+  ],
+  "changedFiles": [
+    "tests/test_config_template_consistency.py",
+    "web/.env.example",
+    "web/app.js",
+    "web/config.example.py",
+    "web/index.html",
+    "web/server.py"
+  ]
+}

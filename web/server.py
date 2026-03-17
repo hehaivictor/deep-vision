@@ -565,62 +565,20 @@ REPORT_DRAFT_USE_BEARER_AUTH = _cfg_bool("REPORT_DRAFT_USE_BEARER_AUTH", REPORT_
 REPORT_REVIEW_USE_BEARER_AUTH = _cfg_bool("REPORT_REVIEW_USE_BEARER_AUTH", REPORT_USE_BEARER_AUTH)
 
 # 网关路由配置：支持问题/报告分别使用不同 API Key 和 Base URL
-_cfg_question_api_key = _first_non_empty(
-    _cfg_text("QUESTION_API_KEY", ""),
-    _cfg_text("QUESTION_ANTHROPIC_API_KEY", ""),
-)
-_cfg_question_base_url = _first_non_empty(
-    _cfg_text("QUESTION_BASE_URL", ""),
-    _cfg_text("QUESTION_ANTHROPIC_BASE_URL", ""),
-)
-_cfg_report_api_key = _first_non_empty(
-    _cfg_text("REPORT_API_KEY", ""),
-    _cfg_text("REPORT_ANTHROPIC_API_KEY", ""),
-)
-_cfg_report_base_url = _first_non_empty(
-    _cfg_text("REPORT_BASE_URL", ""),
-    _cfg_text("REPORT_ANTHROPIC_BASE_URL", ""),
-)
-_cfg_report_draft_api_key = _first_non_empty(
-    _cfg_text("REPORT_DRAFT_API_KEY", ""),
-    _cfg_text("REPORT_DRAFT_ANTHROPIC_API_KEY", ""),
-)
-_cfg_report_draft_base_url = _first_non_empty(
-    _cfg_text("REPORT_DRAFT_BASE_URL", ""),
-    _cfg_text("REPORT_DRAFT_ANTHROPIC_BASE_URL", ""),
-)
-_cfg_report_review_api_key = _first_non_empty(
-    _cfg_text("REPORT_REVIEW_API_KEY", ""),
-    _cfg_text("REPORT_REVIEW_ANTHROPIC_API_KEY", ""),
-)
-_cfg_report_review_base_url = _first_non_empty(
-    _cfg_text("REPORT_REVIEW_BASE_URL", ""),
-    _cfg_text("REPORT_REVIEW_ANTHROPIC_BASE_URL", ""),
-)
-_cfg_summary_api_key = _first_non_empty(
-    _cfg_text("SUMMARY_API_KEY", ""),
-    _cfg_text("SUMMARY_ANTHROPIC_API_KEY", ""),
-)
-_cfg_summary_base_url = _first_non_empty(
-    _cfg_text("SUMMARY_BASE_URL", ""),
-    _cfg_text("SUMMARY_ANTHROPIC_BASE_URL", ""),
-)
-_cfg_search_decision_api_key = _first_non_empty(
-    _cfg_text("SEARCH_DECISION_API_KEY", ""),
-    _cfg_text("SEARCH_DECISION_ANTHROPIC_API_KEY", ""),
-)
-_cfg_search_decision_base_url = _first_non_empty(
-    _cfg_text("SEARCH_DECISION_BASE_URL", ""),
-    _cfg_text("SEARCH_DECISION_ANTHROPIC_BASE_URL", ""),
-)
-_cfg_assessment_api_key = _first_non_empty(
-    _cfg_text("ASSESSMENT_API_KEY", ""),
-    _cfg_text("ASSESSMENT_ANTHROPIC_API_KEY", ""),
-)
-_cfg_assessment_base_url = _first_non_empty(
-    _cfg_text("ASSESSMENT_BASE_URL", ""),
-    _cfg_text("ASSESSMENT_ANTHROPIC_BASE_URL", ""),
-)
+_cfg_question_api_key = _cfg_text("QUESTION_API_KEY", "")
+_cfg_question_base_url = _cfg_text("QUESTION_BASE_URL", "")
+_cfg_report_api_key = _cfg_text("REPORT_API_KEY", "")
+_cfg_report_base_url = _cfg_text("REPORT_BASE_URL", "")
+_cfg_report_draft_api_key = _cfg_text("REPORT_DRAFT_API_KEY", "")
+_cfg_report_draft_base_url = _cfg_text("REPORT_DRAFT_BASE_URL", "")
+_cfg_report_review_api_key = _cfg_text("REPORT_REVIEW_API_KEY", "")
+_cfg_report_review_base_url = _cfg_text("REPORT_REVIEW_BASE_URL", "")
+_cfg_summary_api_key = _cfg_text("SUMMARY_API_KEY", "")
+_cfg_summary_base_url = _cfg_text("SUMMARY_BASE_URL", "")
+_cfg_search_decision_api_key = _cfg_text("SEARCH_DECISION_API_KEY", "")
+_cfg_search_decision_base_url = _cfg_text("SEARCH_DECISION_BASE_URL", "")
+_cfg_assessment_api_key = _cfg_text("ASSESSMENT_API_KEY", "")
+_cfg_assessment_base_url = _cfg_text("ASSESSMENT_BASE_URL", "")
 
 QUESTION_API_KEY = _cfg_question_api_key or _cfg_text("ANTHROPIC_API_KEY", str(ANTHROPIC_API_KEY or "").strip())
 QUESTION_BASE_URL = _cfg_question_base_url or _cfg_text("ANTHROPIC_BASE_URL", str(ANTHROPIC_BASE_URL or "").strip())

@@ -2180,13 +2180,13 @@ function deepVision() {
 
         // ============ API 调用 ============
         async apiCall(endpoint, options = {}) {
+            const {
+                skipAuthRedirect = false,
+                expectedStatuses = [],
+                suppressErrorLog = false,
+                ...fetchOptions
+            } = options;
             try {
-                const {
-                    skipAuthRedirect = false,
-                    expectedStatuses = [],
-                    suppressErrorLog = false,
-                    ...fetchOptions
-                } = options;
                 const response = await fetch(`${API_BASE}${endpoint}`, {
                     headers: { 'Content-Type': 'application/json' },
                     ...fetchOptions

@@ -31,6 +31,13 @@ SEARCH_DECISION_MODEL_NAME = SUMMARY_MODEL_NAME
 # 作用：设置评分链路使用的模型名称。
 ASSESSMENT_MODEL_NAME = SEARCH_DECISION_MODEL_NAME
 
+# ============ AI 客户端初始化 ===========
+# 控制服务启动时是否预热客户端，以及是否额外做连通性探测。
+# 作用：控制服务启动时是否提前初始化各 lane 的 AI 客户端。
+AI_CLIENT_EAGER_INIT = False
+# 作用：控制预热 AI 客户端时是否额外发送探测请求验证连通性。
+AI_CLIENT_INIT_CONNECTION_TEST = False
+
 # ============ AI 通用运行默认值 ===========
 # 通用运行限制放在 config，必要时可由 env 临时覆盖。
 # 作用：设置通用 AI 调用的默认超时时间（秒）。
@@ -88,6 +95,16 @@ QUESTION_FAST_ADAPTIVE_MIN_SAMPLES = 8
 QUESTION_FAST_ADAPTIVE_MIN_HIT_RATE = 0.35
 # 作用：设置问题快档低命中率后进入冷却的持续时间（秒）。
 QUESTION_FAST_ADAPTIVE_COOLDOWN_SECONDS = 900.0
+# 作用：控制问题链路是否允许基于历史表现自动切换 lane。
+QUESTION_LANE_DYNAMIC_ENABLED = True
+# 作用：设置问题链路动态 lane 统计的窗口大小。
+QUESTION_LANE_STATS_WINDOW_SIZE = 24
+# 作用：设置问题链路动态 lane 生效前要求的最小样本数。
+QUESTION_LANE_STATS_MIN_SAMPLES = 6
+# 作用：设置问题链路切换时要求的最小成功率优势阈值。
+QUESTION_LANE_SWITCH_SUCCESS_MARGIN = 0.08
+# 作用：设置问题链路切换时允许接受的时延劣化比例上限。
+QUESTION_LANE_SWITCH_LATENCY_RATIO = 0.18
 # 作用：控制问题生成是否启用备用通道竞速。
 QUESTION_HEDGED_ENABLED = True
 # 作用：设置问题竞速启动备用通道前的等待时间（秒）。
@@ -152,6 +169,8 @@ REPORT_V3_DRAFT_MIN_FACTS_LIMIT = None
 REPORT_V3_DRAFT_RETRY_COUNT = None
 # 作用：设置报告草案阶段每轮重试前的退避等待时间（秒）。
 REPORT_V3_DRAFT_RETRY_BACKOFF_SECONDS = None
+# 作用：设置草案为空时是否立即失败；`None` 表示按档位默认。
+REPORT_V3_FAST_FAIL_ON_DRAFT_EMPTY = None
 # 作用：设置报告审稿阶段允许生成的最大 token 数。
 REPORT_V3_REVIEW_MAX_TOKENS = None
 # 作用：设置报告 V3 基础审稿轮数。
@@ -206,6 +225,24 @@ REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_ENABLED = True
 REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_MAX_ITEMS = 3
 # 作用：设置触发 unknown 自动补问的比例阈值。
 REPORT_V3_UNKNOWN_RATIO_TRIGGER = 0.65
+# 作用：控制报告 V3 是否在草案阶段先对证据做瘦身裁剪。
+REPORT_V3_EVIDENCE_SLIM_ENABLED = True
+# 作用：设置每个维度保留的证据条数上限。
+REPORT_V3_EVIDENCE_DIM_QUOTA = 6
+# 作用：控制证据列表是否按内容相似度做去重。
+REPORT_V3_EVIDENCE_DEDUP_ENABLED = True
+# 作用：设置证据进入报告主链路前要求的最低质量分数。
+REPORT_V3_EVIDENCE_MIN_QUALITY = 0.2
+# 作用：控制高优先级硬触发证据是否始终保留，不参与瘦身裁剪。
+REPORT_V3_EVIDENCE_KEEP_HARD_TRIGGERED = True
+# 作用：控制是否启用网关熔断保护，避免连续故障反复击穿同一 lane。
+GATEWAY_CIRCUIT_BREAKER_ENABLED = True
+# 作用：设置触发网关熔断所需的连续失败阈值。
+GATEWAY_CIRCUIT_FAIL_THRESHOLD = 2
+# 作用：设置网关熔断后的冷却时间（秒）。
+GATEWAY_CIRCUIT_COOLDOWN_SECONDS = 120.0
+# 作用：设置统计网关失败次数的时间窗口（秒）。
+GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = 180.0
 
 # ============ 缓存、预生成与异步调度 ===========
 # 统一放置缓存、后台预生成、摘要去抖和指标异步刷盘参数。
@@ -237,6 +274,8 @@ PREFETCH_QUESTION_SECONDARY_LANE = "summary"
 QUESTION_RESULT_CACHE_TTL_SECONDS = 180
 # 作用：设置问题结果幂等缓存允许保存的最大条目数。
 QUESTION_RESULT_CACHE_MAX_ENTRIES = 512
+# 作用：设置并发命中同一预生成问题时等待首个结果的最长时间（秒）。
+QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = 1.8
 # 作用：设置摘要异步更新的最小触发间隔（秒）。
 SUMMARY_UPDATE_DEBOUNCE_SECONDS = 60
 # 作用：设置搜索决策缓存的保留时长（秒）。
@@ -280,6 +319,15 @@ REPORT_GENERATION_MAX_WORKERS = 2
 REPORT_GENERATION_MAX_PENDING = 16
 # 作用：设置报告生成队列繁忙时建议的重试时间（秒）。
 REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS = 3
+# 作用：控制是否在后台预热报告方案 payload。
+SOLUTION_PAYLOAD_PREWARM_ENABLED = True
+# 作用：设置报告方案 payload 预热线程池的最大工作线程数。
+SOLUTION_PAYLOAD_PREWARM_MAX_WORKERS = 2
+
+# ============ 场景目录兼容默认值 ===========
+# 兼容旧版“单一场景根目录”配置；留空时按内置/自定义目录各自解析。
+# 作用：设置统一场景根目录，启用后会派生 builtin/custom 子目录。
+SCENARIOS_DIR = ""
 
 # ============ 功能默认值 ===========
 # 排查体验和交互策略时，先看这一组。
@@ -310,6 +358,11 @@ WECHAT_OAUTH_TIMEOUT = 8.0
 # 作用：设置微信登录 state 参数的有效期（秒）。
 WECHAT_OAUTH_STATE_TTL_SECONDS = 300
 
+# ============ 文档处理默认值 ===========
+# 文档导入、格式转换和解析超时放在这里。
+# 作用：设置文档转换或预处理链路的超时时间（秒）。
+DOCUMENT_CONVERT_TIMEOUT_SECONDS = 60
+
 # ============ 图片理解默认值 ===========
 # 模型选择和上传约束属于产品默认值，可按环境临时覆盖。
 # 作用：设置图片理解链路使用的视觉模型名称。
@@ -322,3 +375,7 @@ SUPPORTED_IMAGE_TYPES = [".jpg", ".jpeg", ".png", ".gif", ".webp"]
 # ============ Refly 工作流默认值 ===========
 # 作用：设置 Refly 工作流请求的超时时间（秒）。
 REFLY_TIMEOUT = 30
+# 作用：设置 Refly 工作流轮询的最长等待时间（秒）。
+REFLY_POLL_TIMEOUT = 600
+# 作用：设置 Refly 工作流轮询状态的时间间隔（秒）。
+REFLY_POLL_INTERVAL = 2.0
