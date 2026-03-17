@@ -96,6 +96,8 @@ class SecurityRegressionTests(unittest.TestCase):
         cls.server.DELETED_REPORTS_FILE = cls.server.REPORTS_DIR / ".deleted_reports.json"
         cls.server.DELETED_DOCS_FILE = cls.server.DATA_DIR / ".deleted_docs.json"
         cls.server.REPORT_OWNERS_FILE = cls.server.REPORTS_DIR / ".owners.json"
+        cls.server.REPORT_SCOPES_FILE = cls.server.REPORTS_DIR / ".scopes.json"
+        cls.server.REPORT_SOLUTION_SHARES_FILE = cls.server.REPORTS_DIR / ".solution_shares.json"
 
         for path in [
             cls.server.SESSIONS_DIR,
@@ -121,6 +123,12 @@ class SecurityRegressionTests(unittest.TestCase):
         self.client = self.server.app.test_client()
         self.server.SMS_SEND_COOLDOWN_SECONDS = 0
         self.server.SMS_TEST_CODE = ""
+        self.server.report_owners_cache["signature"] = None
+        self.server.report_owners_cache["data"] = {}
+        self.server.report_scopes_cache["signature"] = None
+        self.server.report_scopes_cache["data"] = {}
+        self.server.report_solution_shares_cache["signature"] = None
+        self.server.report_solution_shares_cache["data"] = {}
 
     def _register_user(self, client=None):
         target_client = client or self.client
@@ -282,6 +290,56 @@ class SecurityRegressionTests(unittest.TestCase):
         self._register_user(client=other_client)
         forbidden_resp = other_client.get(f'/api/reports/{report_name}/solution')
         self.assertEqual(forbidden_resp.status_code, 404)
+
+    def test_report_solution_share_link_requires_owner_and_allows_public_readonly_access(self):
+        owner_user = self._register_user()
+        report_name = 'security-share-report.md'
+        report_content = (
+            '# DeepVision 访谈报告\n\n'
+            '## 1. 访谈概述\n'
+            '- **访谈场景** - 技术方案研讨\n'
+            '- **核心问题** - 需要向外部伙伴共享最终方案页\n'
+            '- **关键触点** - 方案页外链\n\n'
+            '## 2. 需求摘要\n'
+            '### 客户需求\n'
+            '- **外部只读查看** - 链接打开后只能查看方案页内容。\n'
+            '### 业务流程\n'
+            '- **分享给合作方** - 无需登录也能打开。\n'
+            '### 技术约束\n'
+            '- **不能泄露账号态** - 外链不能回到主站登录后的内容。\n'
+            '### 项目约束\n'
+            '- **最小闭环** - 先支持匿名只读分享方案。\n'
+        )
+        report_file = self.server.REPORTS_DIR / report_name
+        report_file.write_text(report_content, encoding='utf-8')
+        self.server.set_report_owner_id(report_name, owner_user['id'])
+
+        other_client = self.server.app.test_client()
+        self._register_user(client=other_client)
+        forbidden_share_resp = other_client.post(f'/api/reports/{report_name}/solution/share')
+        self.assertEqual(forbidden_share_resp.status_code, 404)
+
+        share_resp = self.client.post(f'/api/reports/{report_name}/solution/share')
+        self.assertEqual(share_resp.status_code, 200, share_resp.get_data(as_text=True))
+        share_payload = share_resp.get_json() or {}
+        share_token = share_payload.get('share_token')
+        self.assertTrue(share_token)
+        self.assertIn('solution.html?share=', share_payload.get('share_url', ''))
+
+        public_client = self.server.app.test_client()
+        public_resp = public_client.get(f'/api/public/solutions/{share_token}')
+        self.assertEqual(public_resp.status_code, 200, public_resp.get_data(as_text=True))
+        public_payload = public_resp.get_json() or {}
+        self.assertEqual(public_payload.get('share_mode'), 'public')
+        self.assertEqual(public_payload.get('report_name'), '')
+        self.assertTrue(public_payload.get('title'))
+        self.assertTrue(public_payload.get('sections'))
+
+        invalid_resp = public_client.get('/api/public/solutions/invalid-token')
+        self.assertEqual(invalid_resp.status_code, 404)
+
+        raw_report_resp = public_client.get(f'/api/reports/{report_name}')
+        self.assertEqual(raw_report_resp.status_code, 401)
 
     def test_build_solution_payload_strips_html_from_new_fields(self):
         report_content = (

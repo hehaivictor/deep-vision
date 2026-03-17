@@ -1,4 +1,4 @@
-const SOLUTION_ASSET_VERSION = '20260316-solution-v59';
+const SOLUTION_ASSET_VERSION = '20260317-solution-v61';
 const SOLUTION_API_BASE = `${window.location.origin}/api`;
 const SOLUTION_SOURCE_MODE_LABELS = {
     structured_sidecar: '结构化快照',
@@ -393,6 +393,15 @@ function solutionGetReportName() {
     return String(params.get('report') || '').trim();
 }
 
+function solutionGetShareToken() {
+    const params = new URLSearchParams(window.location.search || '');
+    return String(params.get('share') || '').trim();
+}
+
+function solutionIsPublicShareMode() {
+    return !!solutionGetShareToken();
+}
+
 let solutionLoadingInterval = null;
 
 function solutionSetState(title, text, badge = '提示') {
@@ -439,12 +448,17 @@ function solutionSetState(title, text, badge = '提示') {
     }
 }
 
-async function solutionApiCall(endpoint) {
+async function solutionApiCall(endpoint, options = {}) {
     const separator = endpoint.includes('?') ? '&' : '?';
     const url = `${SOLUTION_API_BASE}${endpoint}${separator}v=${encodeURIComponent(SOLUTION_ASSET_VERSION)}&_=${Date.now()}`;
+    const headers = { ...(options.headers || {}) };
+    if (!(options.body instanceof FormData) && !headers['Content-Type']) {
+        headers['Content-Type'] = 'application/json';
+    }
     const response = await fetch(url, {
+        ...options,
         cache: 'no-store',
-        headers: { 'Content-Type': 'application/json' }
+        headers
     });
 
     let payload = null;
@@ -1810,12 +1824,15 @@ function solutionRenderTopbar(model, payload) {
         </button>
     `).join('');
     const finalTarget = model?.closing?.headline ? 'closing' : (model?.mode === 'decision_v1' ? 'value' : 'fit');
+    const kicker = payload?.share_mode === 'public'
+        ? '外部分享 · 只读方案'
+        : `企业决策提案 · ${solutionEscapeHtml(SOLUTION_SOURCE_MODE_LABELS[payload?.source_mode] || '方案')}`;
     topbar.innerHTML = `
         <div class="solution-topbar-inner">
             <div class="solution-brand">
                 <div class="solution-brand-mark">DV</div>
                 <div class="solution-brand-copy">
-                    <div class="solution-brand-kicker">企业决策提案 · ${solutionEscapeHtml(SOLUTION_SOURCE_MODE_LABELS[payload?.source_mode] || '方案')}</div>
+                    <div class="solution-brand-kicker">${kicker}</div>
                     <div class="solution-brand-title">${solutionEscapeHtml(model.brandTitle)}</div>
                 </div>
             </div>
@@ -2924,22 +2941,6 @@ function solutionBindEvidenceDrawer() {
         });
     }
 
-    // Pro Max UX: 悬浮操作按钮事件绑定
-    const shareBtn = document.getElementById('btn-share');
-    const exportBtn = document.getElementById('btn-export');
-    if (shareBtn) shareBtn.addEventListener('click', () => alert('方案链接已复制到剪贴板，可以分享给团队。'));
-    if (exportBtn) exportBtn.addEventListener('click', () => {
-        const originalHTML = exportBtn.innerHTML;
-        exportBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> 生成中...';
-        exportBtn.style.opacity = '0.7';
-        exportBtn.style.pointerEvents = 'none';
-        setTimeout(() => {
-            alert('PDF 方案正在生成，稍后将自动下载。');
-            exportBtn.innerHTML = originalHTML;
-            exportBtn.style.opacity = '1';
-            exportBtn.style.pointerEvents = 'auto';
-        }, 800);
-    });
 }
 
 function solutionBindScrollTargets() {
@@ -3197,6 +3198,10 @@ function solutionRender(payload) {
 
     state.hidden = true;
     shell.hidden = false;
+    const actionBar = document.getElementById('solution-action-bar');
+    if (actionBar) {
+        actionBar.hidden = solutionIsPublicShareMode();
+    }
     solutionRenderTOC();
     solutionUpdateTocLinkLayout();
     solutionBindEvidenceDrawer();
@@ -3207,6 +3212,7 @@ function solutionRender(payload) {
     solutionRegisterCountUp();
     solutionRegisterSpotlight();
     solutionRegisterReveals();
+    solutionBindActionBar();
     window.addEventListener('resize', solutionUpdateTocLinkLayout, { passive: true });
     if (document.fonts?.ready) {
         document.fonts.ready.then(() => {
@@ -3215,23 +3221,155 @@ function solutionRender(payload) {
     }
 }
 
+async function solutionCopyText(text) {
+    const value = String(text || '').trim();
+    if (!value) return false;
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(value);
+            return true;
+        }
+    } catch (error) {
+        // 剪贴板复制可能被浏览器权限策略拦截，回退为面板内手动复制
+    }
+    return false;
+}
+
+function solutionResetShareButton(button, html, disabled = false) {
+    if (!button) return;
+    button.innerHTML = html;
+    button.disabled = !!disabled;
+    button.style.opacity = disabled ? '0.72' : '1';
+    button.style.pointerEvents = disabled ? 'none' : 'auto';
+}
+
+function solutionHideSharePanel() {
+    const panel = document.getElementById('solution-share-panel');
+    if (!panel) return;
+    panel.hidden = true;
+}
+
+function solutionShowSharePanel(shareUrl, options = {}) {
+    const panel = document.getElementById('solution-share-panel');
+    const input = document.getElementById('solution-share-input');
+    const desc = document.getElementById('solution-share-desc');
+    const copyBtn = document.getElementById('btn-share-copy');
+    if (!panel || !input || !desc || !copyBtn) return;
+
+    const url = String(shareUrl || '').trim();
+    if (!url) return;
+
+    input.value = url;
+    desc.textContent = '该链接为匿名只读链接，打开后只展示方案页内容。';
+    copyBtn.textContent = options.copied ? '已复制链接' : '复制链接';
+    copyBtn.dataset.url = url;
+    panel.hidden = false;
+
+    window.requestAnimationFrame(() => {
+        input.focus({ preventScroll: true });
+        input.select();
+    });
+}
+
+function solutionBindSharePanel() {
+    const panel = document.getElementById('solution-share-panel');
+    const input = document.getElementById('solution-share-input');
+    const closeBtn = document.getElementById('btn-share-close');
+    const copyBtn = document.getElementById('btn-share-copy');
+    if (!panel || panel.dataset.bound === '1') return;
+    panel.dataset.bound = '1';
+
+    if (closeBtn) {
+        closeBtn.addEventListener('click', () => {
+            solutionHideSharePanel();
+        });
+    }
+
+    if (input) {
+        input.addEventListener('focus', () => {
+            input.select();
+        });
+        input.addEventListener('click', () => {
+            input.select();
+        });
+    }
+
+    if (copyBtn) {
+        copyBtn.addEventListener('click', async () => {
+            const url = String(copyBtn.dataset.url || '').trim();
+            if (!url) return;
+            const copied = await solutionCopyText(url);
+            copyBtn.textContent = copied ? '已复制链接' : '请手动复制';
+            if (!copied && input) {
+                input.focus({ preventScroll: true });
+                input.select();
+            }
+        });
+    }
+}
+
+function solutionBindActionBar() {
+    const shareBtn = document.getElementById('btn-share');
+    if (!shareBtn || solutionIsPublicShareMode()) return;
+    if (shareBtn.dataset.bound === '1') return;
+    shareBtn.dataset.bound = '1';
+    solutionBindSharePanel();
+
+    shareBtn.addEventListener('click', async () => {
+        const reportName = solutionGetReportName();
+        if (!reportName) return;
+        if (shareBtn.dataset.busy === '1') return;
+
+        const originalHTML = shareBtn.innerHTML;
+        shareBtn.dataset.busy = '1';
+        solutionResetShareButton(shareBtn, originalHTML, true);
+
+        try {
+            const result = await solutionApiCall(
+                `/reports/${encodeURIComponent(reportName)}/solution/share`,
+                { method: 'POST' }
+            );
+            const shareUrl = String(result?.share_url || '').trim();
+            if (!shareUrl) {
+                throw new Error('分享链接生成失败');
+            }
+
+            const copied = await solutionCopyText(shareUrl);
+            solutionShowSharePanel(shareUrl, { copied });
+        } catch (error) {
+            console.error('分享方案失败:', error);
+        } finally {
+            shareBtn.dataset.busy = '0';
+            solutionResetShareButton(shareBtn, originalHTML, false);
+        }
+    });
+}
+
 async function initSolutionPage() {
     const reportName = solutionGetReportName();
-    if (!reportName) {
+    const shareToken = solutionGetShareToken();
+    if (!reportName && !shareToken) {
         solutionSetState('缺少报告参数', '请从访谈报告详情页点击“查看方案”进入。', '参数错误');
         return;
     }
 
     try {
-        const payload = await solutionApiCall(`/reports/${encodeURIComponent(reportName)}/solution`);
+        const endpoint = shareToken
+            ? `/public/solutions/${encodeURIComponent(shareToken)}`
+            : `/reports/${encodeURIComponent(reportName)}/solution`;
+        const payload = await solutionApiCall(endpoint);
         solutionRender(payload);
     } catch (error) {
-        if (error.status === 401) {
+        if (error.status === 401 && !shareToken) {
             solutionSetState('登录已失效', '请先返回主站登录，再重新打开方案页。', '需要登录');
             return;
         }
         if (error.status === 404) {
-            solutionSetState('报告不存在', '当前报告不存在，或你没有权限查看对应方案。', '未找到');
+            solutionSetState(
+                shareToken ? '分享链接已失效' : '报告不存在',
+                shareToken ? '当前分享链接已失效，或对应方案已被移除。' : '当前报告不存在，或你没有权限查看对应方案。',
+                '未找到'
+            );
             return;
         }
         solutionSetState('方案加载失败', error.message || '暂时无法生成方案，请稍后重试。', '加载失败');

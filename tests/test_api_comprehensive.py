@@ -96,6 +96,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         cls.server.DELETED_DOCS_FILE = cls.server.DATA_DIR / ".deleted_docs.json"
         cls.server.REPORT_OWNERS_FILE = cls.server.REPORTS_DIR / ".owners.json"
         cls.server.REPORT_SCOPES_FILE = cls.server.REPORTS_DIR / ".scopes.json"
+        cls.server.REPORT_SOLUTION_SHARES_FILE = cls.server.REPORTS_DIR / ".solution_shares.json"
 
         for path in [
             cls.server.SESSIONS_DIR,
@@ -151,6 +152,8 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.server.report_owners_cache["data"] = {}
         self.server.report_scopes_cache["signature"] = None
         self.server.report_scopes_cache["data"] = {}
+        self.server.report_solution_shares_cache["signature"] = None
+        self.server.report_solution_shares_cache["data"] = {}
         self.server.session_list_cache.clear()
         self.server.INSTANCE_SCOPE_KEY = ""
         with self.server.report_generation_status_lock:
@@ -1343,6 +1346,22 @@ class ComprehensiveApiTests(unittest.TestCase):
             [section.get("id") for section in solution_payload.get("sections", [])],
         )
 
+        share_resp = self.client.post(f"/api/reports/{report_name}/solution/share")
+        self.assertEqual(share_resp.status_code, 200, share_resp.get_data(as_text=True))
+        share_payload = share_resp.get_json() or {}
+        share_token = share_payload.get("share_token")
+        self.assertTrue(share_token)
+        self.assertIn("solution.html?share=", share_payload.get("share_url", ""))
+
+        public_client = self.server.app.test_client()
+        public_solution_resp = public_client.get(f"/api/public/solutions/{quote(share_token)}")
+        self.assertEqual(public_solution_resp.status_code, 200, public_solution_resp.get_data(as_text=True))
+        public_solution_payload = public_solution_resp.get_json() or {}
+        self.assertEqual(public_solution_payload.get("share_mode"), "public")
+        self.assertEqual(public_solution_payload.get("report_name"), "")
+        self.assertEqual(public_solution_payload.get("title"), solution_payload.get("title"))
+        self.assertEqual(public_solution_payload.get("source_mode"), solution_payload.get("source_mode"))
+
         appendix_pdf_resp = self.client.get(f"/api/reports/{report_name}/appendix/pdf")
         self.assertEqual(appendix_pdf_resp.status_code, 200)
         self.assertEqual(appendix_pdf_resp.mimetype, "application/pdf")
@@ -1361,6 +1380,9 @@ class ComprehensiveApiTests(unittest.TestCase):
 
         delete_resp = self.client.delete(f"/api/reports/{report_name}")
         self.assertEqual(delete_resp.status_code, 200)
+
+        public_solution_after_delete = public_client.get(f"/api/public/solutions/{quote(share_token)}")
+        self.assertEqual(public_solution_after_delete.status_code, 404)
 
         list_after_delete = self.client.get("/api/reports")
         self.assertEqual(list_after_delete.status_code, 200)

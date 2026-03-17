@@ -3480,6 +3480,110 @@ body.is-evidence-open {
     box-shadow: 0 16px 30px rgba(191, 139, 46, 0.28);
 }
 
+.solution-share-panel {
+    position: fixed;
+    right: clamp(24px, 4vw, 48px);
+    bottom: calc(clamp(24px, 4vw, 48px) + 64px);
+    width: min(420px, calc(100vw - 32px));
+    padding: 20px;
+    border-radius: 24px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background:
+        radial-gradient(circle at top left, rgba(96, 213, 255, 0.12), transparent 42%),
+        linear-gradient(180deg, rgba(11, 23, 38, 0.96), rgba(8, 17, 30, 0.96));
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(18px);
+    z-index: 52;
+}
+
+.solution-share-panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.solution-share-panel-kicker {
+    font-size: 0.76rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(220, 180, 100, 0.9);
+}
+
+.solution-share-panel-title {
+    margin-top: 6px;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--solution-text);
+}
+
+.solution-share-panel-close {
+    appearance: none;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.04);
+    color: rgba(232, 240, 252, 0.72);
+    border-radius: 999px;
+    padding: 8px 12px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--solution-transition);
+}
+
+.solution-share-panel-close:hover {
+    color: var(--solution-text);
+    border-color: rgba(96, 213, 255, 0.28);
+    background: rgba(96, 213, 255, 0.08);
+}
+
+.solution-share-panel-desc {
+    margin: 14px 0 0;
+    color: rgba(232, 240, 252, 0.7);
+    font-size: 0.92rem;
+    line-height: 1.6;
+}
+
+.solution-share-field {
+    display: block;
+    margin-top: 18px;
+}
+
+.solution-share-field-label {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 0.82rem;
+    color: rgba(232, 240, 252, 0.62);
+}
+
+.solution-share-input {
+    width: 100%;
+    min-height: 52px;
+    padding: 0 16px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--solution-text);
+    font-size: 0.92rem;
+    line-height: 1.4;
+    outline: none;
+}
+
+.solution-share-input:focus {
+    border-color: rgba(96, 213, 255, 0.36);
+    box-shadow: 0 0 0 3px rgba(96, 213, 255, 0.08);
+}
+
+.solution-share-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 16px;
+}
+
+.solution-share-actions .solution-action-btn {
+    flex: 1 1 0;
+    justify-content: center;
+}
+
 /* =========================================================================
    PRO MAX UX: Responsive Layout & Grid Fixes
    ========================================================================= */
@@ -3495,6 +3599,10 @@ body.is-evidence-open {
         flex-direction: row;
         right: clamp(16px, 3vw, 24px);
         bottom: clamp(16px, 3vw, 24px);
+    }
+    .solution-share-panel {
+        right: clamp(16px, 3vw, 24px);
+        bottom: calc(clamp(16px, 3vw, 24px) + 64px);
     }
 }
 
@@ -3519,6 +3627,17 @@ body.is-evidence-open {
 }
 
 @media (max-width: 640px) {
+    .solution-share-panel {
+        left: 16px;
+        right: 16px;
+        bottom: calc(16px + 64px);
+        width: auto;
+        padding: 18px;
+        border-radius: 20px;
+    }
+    .solution-share-actions {
+        flex-direction: column;
+    }
     .proposal-case-grid[class],
     .proposal-capability-grid[class],
     .proposal-detail-grid[class],

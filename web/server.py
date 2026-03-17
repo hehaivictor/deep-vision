@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote, unquote, urlparse, parse_qsl, urlencode, urlunparse
 
-from flask import Flask, jsonify, request, send_from_directory, redirect, session, send_file, make_response
+from flask import Flask, jsonify, request, send_from_directory, redirect, session, send_file, make_response, url_for
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash
 from werkzeug.serving import WSGIRequestHandler
@@ -2027,8 +2027,10 @@ DELETED_REPORTS_FILE = REPORTS_DIR / ".deleted_reports.json"
 DELETED_DOCS_FILE = DATA_DIR / ".deleted_docs.json"  # 软删除记录文件
 REPORT_OWNERS_FILE = REPORTS_DIR / ".owners.json"
 REPORT_SCOPES_FILE = REPORTS_DIR / ".scopes.json"
+REPORT_SOLUTION_SHARES_FILE = REPORTS_DIR / ".solution_shares.json"
 REPORT_OWNERS_LOCK = threading.RLock()
 REPORT_SCOPES_LOCK = threading.RLock()
+REPORT_SOLUTION_SHARES_LOCK = threading.RLock()
 SESSIONS_LIST_SEMAPHORE = threading.BoundedSemaphore(SESSIONS_LIST_MAX_INFLIGHT)
 REPORTS_LIST_SEMAPHORE = threading.BoundedSemaphore(REPORTS_LIST_MAX_INFLIGHT)
 ALLOWED_STATIC_EXTENSIONS = {
@@ -2456,6 +2458,7 @@ prefetch_cache_lock = threading.Lock()
 PREFETCH_TTL = 300             # 预生成缓存有效期（秒）
 report_owners_cache = {"signature": None, "data": {}}
 report_scopes_cache = {"signature": None, "data": {}}
+report_solution_shares_cache = {"signature": None, "data": {}}
 session_list_cache = {}        # { filename: { signature, payload } }
 session_list_cache_lock = threading.Lock()
 list_overload_stats = {
@@ -5034,6 +5037,9 @@ def enforce_auth_for_protected_routes():
     if not path.startswith("/api/"):
         return None
 
+    if path.startswith("/api/public/"):
+        return None
+
     if path in PUBLIC_API_EXACT_PATHS:
         return None
 
@@ -7414,6 +7420,167 @@ def set_report_scope_key(filename: str, scope_key: object) -> None:
         else:
             scopes.pop(name, None)
         save_report_scopes(scopes)
+
+
+def normalize_solution_share_token(raw_token: object) -> str:
+    token = str(raw_token or "").strip()
+    if not token:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,160}", token):
+        return ""
+    return token
+
+
+def load_solution_share_map() -> dict:
+    with REPORT_SOLUTION_SHARES_LOCK:
+        signature = get_file_signature(REPORT_SOLUTION_SHARES_FILE)
+        cached_signature = report_solution_shares_cache.get("signature")
+        cached_data = report_solution_shares_cache.get("data")
+        if signature is not None and signature == cached_signature and isinstance(cached_data, dict):
+            return copy.deepcopy(cached_data)
+
+        if signature is None:
+            report_solution_shares_cache["signature"] = None
+            report_solution_shares_cache["data"] = {}
+            return {}
+
+        normalized = {}
+        try:
+            payload = json.loads(REPORT_SOLUTION_SHARES_FILE.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                for raw_token, raw_record in payload.items():
+                    token = normalize_solution_share_token(raw_token)
+                    if not token or not isinstance(raw_record, dict):
+                        continue
+                    report_name = normalize_solution_report_filename(raw_record.get("report_name"))
+                    if not report_name:
+                        continue
+                    try:
+                        owner_user_id = int(raw_record.get("owner_user_id", 0))
+                    except (TypeError, ValueError):
+                        owner_user_id = 0
+                    if owner_user_id <= 0:
+                        continue
+                    normalized[token] = {
+                        "report_name": report_name,
+                        "owner_user_id": owner_user_id,
+                        "created_at": str(raw_record.get("created_at") or ""),
+                        "updated_at": str(raw_record.get("updated_at") or ""),
+                    }
+        except Exception:
+            normalized = {}
+
+        report_solution_shares_cache["signature"] = signature
+        report_solution_shares_cache["data"] = dict(normalized)
+        return copy.deepcopy(normalized)
+
+
+def save_solution_share_map(data: dict) -> None:
+    normalized = {}
+    if isinstance(data, dict):
+        for raw_token, raw_record in data.items():
+            token = normalize_solution_share_token(raw_token)
+            if not token or not isinstance(raw_record, dict):
+                continue
+            report_name = normalize_solution_report_filename(raw_record.get("report_name"))
+            if not report_name:
+                continue
+            try:
+                owner_user_id = int(raw_record.get("owner_user_id", 0))
+            except (TypeError, ValueError):
+                owner_user_id = 0
+            if owner_user_id <= 0:
+                continue
+            normalized[token] = {
+                "report_name": report_name,
+                "owner_user_id": owner_user_id,
+                "created_at": str(raw_record.get("created_at") or ""),
+                "updated_at": str(raw_record.get("updated_at") or ""),
+            }
+
+    with REPORT_SOLUTION_SHARES_LOCK:
+        REPORT_SOLUTION_SHARES_FILE.write_text(
+            json.dumps(normalized, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+        report_solution_shares_cache["signature"] = get_file_signature(REPORT_SOLUTION_SHARES_FILE)
+        report_solution_shares_cache["data"] = dict(normalized)
+
+
+def get_solution_share_record(token: str) -> Optional[dict]:
+    normalized_token = normalize_solution_share_token(token)
+    if not normalized_token:
+        return None
+    record = load_solution_share_map().get(normalized_token)
+    if not isinstance(record, dict):
+        return None
+    result = copy.deepcopy(record)
+    result["share_token"] = normalized_token
+    return result
+
+
+def create_or_get_solution_share(report_name: str, owner_user_id: int) -> dict:
+    normalized_report_name = normalize_solution_report_filename(report_name)
+    owner_id = int(owner_user_id)
+    if not normalized_report_name or owner_id <= 0:
+        raise ValueError("分享参数无效")
+
+    with named_file_lock("solution-share", normalized_report_name):
+        with REPORT_SOLUTION_SHARES_LOCK:
+            shares = load_solution_share_map()
+            for token, record in shares.items():
+                if not isinstance(record, dict):
+                    continue
+                if record.get("report_name") != normalized_report_name:
+                    continue
+                if int(record.get("owner_user_id", 0) or 0) != owner_id:
+                    continue
+                result = copy.deepcopy(record)
+                result["share_token"] = token
+                return result
+
+            created_at = get_utc_now()
+            share_token = ""
+            while not share_token or share_token in shares:
+                share_token = normalize_solution_share_token(secrets.token_urlsafe(24))
+            record = {
+                "report_name": normalized_report_name,
+                "owner_user_id": owner_id,
+                "created_at": created_at,
+                "updated_at": created_at,
+            }
+            shares[share_token] = record
+            save_solution_share_map(shares)
+            result = copy.deepcopy(record)
+            result["share_token"] = share_token
+            return result
+
+
+def delete_solution_shares_for_report(report_name: str) -> None:
+    normalized_report_name = normalize_solution_report_filename(report_name)
+    if not normalized_report_name:
+        return
+
+    with named_file_lock("solution-share", normalized_report_name):
+        with REPORT_SOLUTION_SHARES_LOCK:
+            shares = load_solution_share_map()
+            mutated = False
+            for token in list(shares.keys()):
+                record = shares.get(token, {})
+                if isinstance(record, dict) and record.get("report_name") == normalized_report_name:
+                    shares.pop(token, None)
+                    mutated = True
+            if mutated:
+                save_solution_share_map(shares)
+
+
+def build_solution_share_url(share_token: str) -> str:
+    normalized_token = normalize_solution_share_token(share_token)
+    if not normalized_token:
+        return ""
+    base_url = url_for("static_files", filename="solution.html", _external=True)
+    separator = "&" if "?" in base_url else "?"
+    return f"{base_url}{separator}share={quote(normalized_token)}"
 
 
 def get_deleted_reports() -> set:
@@ -19102,6 +19269,7 @@ def batch_delete_sessions():
                         if report_file.exists():
                             mark_report_as_deleted(report_name)
                             delete_solution_sidecar(report_name)
+                            delete_solution_shares_for_report(report_name)
                             deleted_reports.add(report_name)
 
                 session_file_name = session_file.name
@@ -32564,6 +32732,75 @@ def get_report_solution(filename):
     return response
 
 
+@app.route('/api/reports/<path:filename>/solution/share', methods=['POST'])
+def create_report_solution_share(filename):
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    normalized = normalize_solution_report_filename(filename)
+    if not normalized:
+        return jsonify({"error": "报告文件名无效"}), 400
+
+    _report_file, owner_error = enforce_report_owner_or_404(normalized, user_id)
+    if owner_error:
+        response, status_code = owner_error
+        return response, status_code
+
+    share_record = create_or_get_solution_share(normalized, int(user_id))
+    share_token = str(share_record.get("share_token") or "")
+    share_url = build_solution_share_url(share_token)
+    if not share_url:
+        return jsonify({"error": "生成分享链接失败"}), 500
+
+    return jsonify({
+        "report_name": normalized,
+        "share_token": share_token,
+        "share_url": share_url,
+        "created_at": str(share_record.get("created_at") or ""),
+    })
+
+
+@app.route('/api/public/solutions/<share_token>', methods=['GET'])
+def get_public_solution_by_share_token(share_token):
+    record = get_solution_share_record(share_token)
+    if not record:
+        return jsonify({"error": "分享链接不存在或已失效"}), 404
+
+    report_name = normalize_solution_report_filename(record.get("report_name"))
+    if not report_name:
+        return jsonify({"error": "分享链接不存在或已失效"}), 404
+
+    report_file = REPORTS_DIR / report_name
+    if not report_file.exists() or not report_file.is_file():
+        return jsonify({"error": "分享链接不存在或已失效"}), 404
+
+    try:
+        owner_user_id = int(record.get("owner_user_id", 0))
+    except (TypeError, ValueError):
+        owner_user_id = 0
+    if owner_user_id <= 0 or get_report_owner_id(report_name) != owner_user_id:
+        return jsonify({"error": "分享链接不存在或已失效"}), 404
+    if report_name in get_deleted_reports():
+        return jsonify({"error": "分享链接不存在或已失效"}), 404
+
+    content = report_file.read_text(encoding="utf-8")
+    try:
+        generated_at = datetime.fromtimestamp(report_file.stat().st_mtime)
+    except Exception:
+        generated_at = None
+    content = normalize_report_time_fields(content, generated_at=generated_at)
+    payload = copy.deepcopy(build_solution_payload_from_report(report_name, content))
+    payload["share_mode"] = "public"
+    payload["report_name"] = ""
+
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+    return response
+
+
 @app.route('/api/reports/<path:filename>/appendix/pdf', methods=['GET'])
 def export_report_appendix_pdf(filename):
     user_id = get_current_user_id_or_none()
@@ -32940,6 +33177,7 @@ def delete_report(filename):
         # 只标记为已删除，不真正删除文件
         mark_report_as_deleted(filename)
         delete_solution_sidecar(filename)
+        delete_solution_shares_for_report(filename)
         return jsonify({
             "message": "报告已从列表中移除（文件已存档）",
             "name": filename
@@ -32977,6 +33215,7 @@ def batch_delete_reports():
         try:
             mark_report_as_deleted(report_name)
             delete_solution_sidecar(report_name)
+            delete_solution_shares_for_report(report_name)
             deleted_reports.append(report_name)
         except Exception as exc:
             skipped_reports.append({"name": report_name, "reason": f"标记删除失败: {str(exc)}"})
