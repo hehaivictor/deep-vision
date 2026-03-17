@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "0982d3f",
+  "committedAt": "2026-03-17T09:12:34+08:00",
+  "versionType": "patch",
+  "title": "整理 env 与 config 配置分层并补充回归校验",
+  "changes": [
+    "后端：围绕“整理 env 与 config 配置分层并补充回归校验”更新接口与数据处理逻辑。",
+    "测试：围绕“整理 env 与 config 配置分层并补充回归校验”补充并校验相关回归用例。",
+    "资源：围绕“整理 env 与 config 配置分层并补充回归校验”同步内置资源与示例内容。"
+  ],
+  "changedFiles": [
+    "tests/test_config_template_consistency.py",
+    "tests/test_runtime_token_config.py",
+    "web/.env.example",
+    "web/config.example.py",
+    "web/server.py"
+  ]
+}

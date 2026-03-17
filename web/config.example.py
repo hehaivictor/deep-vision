@@ -1,28 +1,16 @@
 """
-Deep Vision 配置文件示例
+Deep Vision 策略配置示例
 
 使用说明：
-1. 二选一：复制本文件为 config.py，或复制 .env.example 为 .env
-2. 按注释填入实际的 API Key 和业务配置
+1. 复制本文件为 config.py，只保留需要覆盖的本地策略默认值
+2. 复制 .env.example 为 .env，并在 .env 中填写密钥、地址、部署路径和运维开关
 3. config.py / .env 都已加入忽略规则，不会提交到版本库
 
 说明：
-- 本示例已按“配置来源 -> AI 路由 -> 运行策略 -> 外部集成”重新分组，便于按职责查找配置。
-- 本示例采用当前项目推荐的模型分工：问题=minimax-2.5，报告草案=kimi-k2.5，报告审稿=glm-5，摘要/搜索决策/评分=glm-5。
-- 报告 V3 默认使用 balanced 档，并启用双阶段路由：草案走 report_draft 网关，审稿走 report_review 网关。
-- 报告 V3 的时延/长度参数默认留空(None)，这样可按档位自动取值：balanced 更快，quality 更稳。
-- 当 `.env` 存在且包含实际键值时，AI 运行参数默认不再回落 `config.py`；如需保留历史混合模式，可在 `.env` 中设置 `CONFIG_RESOLUTION_MODE=hybrid`。
+- config.example.py 负责研发策略默认值：模型分工、链路阈值、缓存预算、报告/问题生成策略。
+- .env.example 负责部署差异：密钥、网关地址、部署路径、运维开关和少量应急覆盖项。
+- 自动模式下，若 `.env` 已加载，环境接入/部署类配置优先使用 env/default，不再回落 `config.py`；策略型配置仍可回落 `config.py`。
 """
-
-# ============ 配置来源与客户端初始化 ===========
-# 决定配置从哪里生效，以及服务启动时是否预热 AI 客户端。
-# `CONFIG_RESOLUTION_MODE` 常用值：`auto` / `hybrid` / `env_only`。
-# 作用：控制 .env 与 config.py 的配置解析优先级，建议保持 auto。
-CONFIG_RESOLUTION_MODE = "auto"
-# 作用：控制服务启动时是否立刻初始化所有 AI 客户端。
-AI_CLIENT_EAGER_INIT = False
-# 作用：控制初始化 AI 客户端时是否发送一条探测请求验证连通性。
-AI_CLIENT_INIT_CONNECTION_TEST = False
 
 # ============ 模型角色分工 ===========
 # 先看这一组，就能知道问题、报告、摘要、评分各自走哪个模型。
@@ -43,62 +31,8 @@ SEARCH_DECISION_MODEL_NAME = SUMMARY_MODEL_NAME
 # 作用：设置评分链路使用的模型名称。
 ASSESSMENT_MODEL_NAME = SEARCH_DECISION_MODEL_NAME
 
-# ============ 默认回落网关 ===========
-# 当某条 lane 没有单独配置网关时，会回落到这里。
-# 作用：设置全局默认 Anthropic 兼容网关使用的 API Key。
-ANTHROPIC_API_KEY = "your-global-api-key"
-# 作用：设置全局默认 Anthropic 兼容网关请求的根地址。
-ANTHROPIC_BASE_URL = "https://your-global-base-url"
-# 作用：控制全局默认 Anthropic 兼容网关是否使用 Bearer Authorization 鉴权。
-ANTHROPIC_USE_BEARER_AUTH = True
-
-# ============ 按链路网关与鉴权 ===========
-# 问题、报告、摘要、搜索决策、评分都可以绑定独立网关。
-# 作用：设置问题生成链路使用的 API Key。
-QUESTION_API_KEY = "your-question-api-key"
-# 作用：设置问题生成链路请求的根地址。
-QUESTION_BASE_URL = "https://your-minimax-base-url"
-# 作用：控制问题生成链路是否使用 Bearer Authorization 鉴权。
-QUESTION_USE_BEARER_AUTH = True
-# 作用：设置报告主链路使用的 API Key。
-REPORT_API_KEY = "your-report-default-api-key"
-# 作用：设置报告主链路请求的根地址。
-REPORT_BASE_URL = "https://your-report-default-base-url"
-# 作用：控制报告主链路是否使用 Bearer Authorization 鉴权。
-REPORT_USE_BEARER_AUTH = True
-# 作用：设置报告草案阶段使用的 API Key。
-REPORT_DRAFT_API_KEY = "your-kimi-api-key"
-# 作用：设置报告草案阶段请求的根地址。
-REPORT_DRAFT_BASE_URL = "https://your-kimi-base-url"
-# 作用：控制报告草案阶段是否使用 Bearer Authorization 鉴权。
-REPORT_DRAFT_USE_BEARER_AUTH = True
-# 作用：设置报告审稿阶段使用的 API Key。
-REPORT_REVIEW_API_KEY = "your-glm-api-key"
-# 作用：设置报告审稿阶段请求的根地址。
-REPORT_REVIEW_BASE_URL = "https://your-glm-base-url"
-# 作用：控制报告审稿阶段是否使用 Bearer Authorization 鉴权。
-REPORT_REVIEW_USE_BEARER_AUTH = True
-# 作用：设置摘要链路使用的 API Key。
-SUMMARY_API_KEY = "your-summary-api-key"
-# 作用：设置摘要链路请求的根地址。
-SUMMARY_BASE_URL = "https://your-glm-base-url"
-# 作用：控制摘要链路是否使用 Bearer Authorization 鉴权。
-SUMMARY_USE_BEARER_AUTH = True
-# 作用：设置搜索决策链路使用的 API Key。
-SEARCH_DECISION_API_KEY = "your-search-decision-api-key"
-# 作用：设置搜索决策链路请求的根地址。
-SEARCH_DECISION_BASE_URL = "https://your-glm-base-url"
-# 作用：控制搜索决策链路是否使用 Bearer Authorization 鉴权。
-SEARCH_DECISION_USE_BEARER_AUTH = True
-# 作用：设置评分链路使用的 API Key。
-ASSESSMENT_API_KEY = SEARCH_DECISION_API_KEY
-# 作用：设置评分链路请求的根地址。
-ASSESSMENT_BASE_URL = SEARCH_DECISION_BASE_URL
-# 作用：控制评分链路是否使用 Bearer Authorization 鉴权。
-ASSESSMENT_USE_BEARER_AUTH = True
-
-# ============ AI 通用运行限制 ===========
-# 控制通用超时、单次输出体量、上下文长度和长文压缩策略。
+# ============ AI 通用运行默认值 ===========
+# 通用运行限制放在 config，必要时可由 env 临时覆盖。
 # 作用：设置通用 AI 调用的默认超时时间（秒）。
 API_TIMEOUT = 90.0
 # 作用：设置未单独指定链路时，单次 AI 调用默认允许输出的最大 token 数。
@@ -178,6 +112,14 @@ QUESTION_SESSION_HEDGE_BUDGET = 4
 QUESTION_DIMENSION_HEDGE_BUDGET = 1
 # 作用：控制只有主备客户端不同才启用问题竞速。
 QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT = True
+# 作用：控制是否启用问题竞速延迟的自适应策略。
+QUESTION_HEDGE_ADAPTIVE_ENABLED = True
+# 作用：设置问题竞速自适应策略生效所需的最小样本数。
+QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES = 8
+# 作用：设置问题竞速自适应延迟计算采用的耗时分位点。
+QUESTION_HEDGE_ADAPTIVE_PERCENTILE = 0.8
+# 作用：设置问题竞速自适应延迟相对主请求超时的比例上限。
+QUESTION_HEDGE_ADAPTIVE_TIMEOUT_RATIO = 0.45
 # 作用：按 lane 覆盖问题快档超时时间。
 QUESTION_FAST_TIMEOUT_BY_LANE = {"question": 12.0, "summary": 9.0, "report": 14.0, "search_decision": 8.0}
 # 作用：按 lane 覆盖问题快档最大 token 数。
@@ -320,14 +262,8 @@ METRICS_ASYNC_BATCH_SIZE = 20
 # 作用：设置指标异步队列允许积压的最大条数。
 METRICS_ASYNC_MAX_PENDING = 5000
 
-# ============ 服务运行与任务并发 ===========
-# 服务监听、分页保护、任务队列等基础运行参数都在这里。
-# 作用：设置 Web 服务监听的主机地址。
-SERVER_HOST = "0.0.0.0"
-# 作用：设置 Web 服务监听的端口。
-SERVER_PORT = 5001
-# 作用：控制服务是否以调试模式运行。
-DEBUG_MODE = True
+# ============ 服务默认值与任务并发 ===========
+# 服务侧的产品默认值和并发预算放在这里，必要时可由 env 临时覆盖。
 # 作用：设置列表接口默认分页大小。
 LIST_API_DEFAULT_PAGE_SIZE = 20
 # 作用：设置列表接口允许的最大分页大小。
@@ -345,57 +281,20 @@ REPORT_GENERATION_MAX_PENDING = 16
 # 作用：设置报告生成队列繁忙时建议的重试时间（秒）。
 REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS = 3
 
-# ============ Gunicorn 生产部署 ===========
-# 这一组只对 Gunicorn 生产部署生效，直接从进程环境读取。
-# `web/gunicorn.conf.py` 只读取进程环境，不会读取 `config.py` 里的同名键。
-# 作用：设置 Gunicorn 工作进程数量。
-GUNICORN_WORKERS = 8
-# 作用：设置每个 Gunicorn 工作进程使用的线程数。
-GUNICORN_THREADS = 2
-# 作用：设置 Gunicorn 请求处理超时时间（秒）。
-GUNICORN_TIMEOUT = 120
-# 作用：设置 Gunicorn 优雅关闭等待时间（秒）。
-GUNICORN_GRACEFUL_TIMEOUT = 30
-# 作用：设置 Gunicorn 长连接保活时间（秒）。
-GUNICORN_KEEPALIVE = 5
-# 作用：设置 Gunicorn 使用的 worker 类型。
-GUNICORN_WORKER_CLASS = "gthread"
-# 作用：设置 Gunicorn 日志输出级别。
-GUNICORN_LOG_LEVEL = "info"
-
-# ============ 功能开关 ===========
-# 排查功能是否开启时，先看这一组。
-# 作用：控制是否启用真实 AI 调用。
-ENABLE_AI = True
-# 作用：控制是否输出调试日志。
-ENABLE_DEBUG_LOG = True
-# 作用：控制是否隐藏状态轮询接口的访问日志。
-SUPPRESS_STATUS_POLL_ACCESS_LOG = True
+# ============ 功能默认值 ===========
+# 排查体验和交互策略时，先看这一组。
 # 作用：控制深度模式下是否跳过追问前的二次确认。
 DEEP_MODE_SKIP_FOLLOWUP_CONFIRM = True
 
-# ============ 联网搜索 ===========
-# 真实联网搜索的开关、供应商凭据和结果规模都在这里。
-# 作用：控制是否启用联网搜索能力。
-ENABLE_WEB_SEARCH = True
-# 作用：设置智谱搜索与多模态服务的 API Key。
-ZHIPU_API_KEY = "your-zhipu-api-key"
-# 作用：设置联网搜索默认使用的智谱搜索引擎。
-ZHIPU_SEARCH_ENGINE = "search_pro"
+# ============ 联网搜索默认值 ===========
+# 结果规模与超时留在 config，便于研发统一评估成本与时延。
 # 作用：设置每次联网搜索最多返回的结果条数。
 SEARCH_MAX_RESULTS = 3
 # 作用：设置联网搜索请求的超时时间（秒）。
 SEARCH_TIMEOUT = 10
 
-# ============ 安全鉴权与短信登录 ===========
-# 包含会话密钥、用户库、短信验证码与短信供应商配置。
-# `SMS_PROVIDER` 常用值：`mock`（本地）/ `jdcloud`（生产）。
-# 作用：设置 Flask 会话与签名使用的密钥。
-SECRET_KEY = "replace-with-a-strong-random-secret"
-# 作用：设置登录鉴权数据库文件路径。
-AUTH_DB_PATH = "data/auth/users.db"
-# 作用：设置短信登录使用的服务提供商。
-SMS_PROVIDER = "mock"
+# ============ 安全鉴权与登录策略 ===========
+# 密钥、数据库路径、短信供应商等部署差异放 env；这里保留策略阈值默认值。
 # 作用：设置短信验证码长度。
 SMS_CODE_LENGTH = 6
 # 作用：设置短信验证码的有效期（秒）。
@@ -406,78 +305,20 @@ SMS_SEND_COOLDOWN_SECONDS = 60
 SMS_MAX_SEND_PER_PHONE_PER_DAY = 10
 # 作用：设置同一验证码允许校验失败的最大次数。
 SMS_MAX_VERIFY_ATTEMPTS = 5
-# 作用：设置测试环境可直接使用的固定短信验证码。
-SMS_TEST_CODE = "666666"
-# 作用：设置短信验证码签名使用的密钥。
-SMS_CODE_SIGNING_SECRET = ""
-# 作用：设置京东云短信服务的 Access Key ID。
-JD_SMS_ACCESS_KEY_ID = ""
-# 作用：设置京东云短信服务的 Access Key Secret。
-JD_SMS_ACCESS_KEY_SECRET = ""
-# 作用：设置京东云短信服务使用的地域 ID。
-JD_SMS_REGION_ID = "cn-north-1"
-# 作用：设置京东云短信服务的签名 ID。
-JD_SMS_SIGN_ID = ""
-# 作用：设置京东云短信登录验证码模板 ID。
-JD_SMS_TEMPLATE_ID_LOGIN = ""
-# 作用：设置京东云短信绑定手机号模板 ID。
-JD_SMS_TEMPLATE_ID_BIND = ""
-# 作用：设置京东云短信找回/恢复模板 ID。
-JD_SMS_TEMPLATE_ID_RECOVER = ""
-# 作用：设置京东云短信接口调用超时时间（秒）。
-JD_SMS_TIMEOUT = 8.0
-
-# ============ 场景目录与实例隔离 ===========
-# 场景目录和多实例隔离配置放在一起，便于运维排查。
-# 多实例共享数据目录时，`INSTANCE_SCOPE_KEY` 必须按业务实例区分。
-# 作用：设置内置场景配置目录路径。
-BUILTIN_SCENARIOS_DIR = "resources/scenarios/builtin"
-# 作用：设置用户自定义场景配置目录路径。
-CUSTOM_SCENARIOS_DIR = "~/.deepvision/scenarios/custom"
-# 作用：设置当前部署实例的业务作用域标识。
-INSTANCE_SCOPE_KEY = ""
-
-# ============ 微信登录 ===========
-# 微信扫码登录相关参数集中放置，回调地址要与部署域名一致。
-# 作用：控制是否启用微信扫码登录。
-WECHAT_LOGIN_ENABLED = False
-# 作用：设置微信开放平台应用的 AppID。
-WECHAT_APP_ID = ""
-# 作用：设置微信开放平台应用的 AppSecret。
-WECHAT_APP_SECRET = ""
-# 作用：设置微信登录完成后的回调地址。
-WECHAT_REDIRECT_URI = ""
-# 作用：设置微信 OAuth 请求使用的授权范围。
-WECHAT_OAUTH_SCOPE = "snsapi_login"
 # 作用：设置微信 OAuth 接口调用超时时间（秒）。
 WECHAT_OAUTH_TIMEOUT = 8.0
 # 作用：设置微信登录 state 参数的有效期（秒）。
 WECHAT_OAUTH_STATE_TTL_SECONDS = 300
 
-# ============ 图片理解 ===========
-# 图片理解模型、接口地址与上传限制。
+# ============ 图片理解默认值 ===========
+# 模型选择和上传约束属于产品默认值，可按环境临时覆盖。
 # 作用：设置图片理解链路使用的视觉模型名称。
 VISION_MODEL_NAME = "glm-4v-flash"
-# 作用：设置图片理解接口的请求地址。
-VISION_API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
-# 作用：控制是否启用图片理解能力。
-ENABLE_VISION = True
 # 作用：设置允许上传到视觉模型的单张图片大小上限（MB）。
 MAX_IMAGE_SIZE_MB = 10
 # 作用：设置视觉链路允许处理的图片文件扩展名列表。
-SUPPORTED_IMAGE_TYPES = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+SUPPORTED_IMAGE_TYPES = [".jpg", ".jpeg", ".png", ".gif", ".webp"]
 
-# ============ Refly 工作流 ===========
-# 与 Refly 工作流对接相关的配置统一放在这里。
-# 作用：设置 Refly Workflow API 的服务地址。
-REFLY_API_URL = "https://api.refly.ai/v1"
-# 作用：设置 Refly Workflow API 的认证密钥。
-REFLY_API_KEY = "your-refly-api-key"
-# 作用：设置默认调用的 Refly 工作流 ID。
-REFLY_WORKFLOW_ID = "replace-with-your-workflow-id"
-# 作用：设置 Refly 工作流中承接主文本输入的字段名。
-REFLY_INPUT_FIELD = "input"
-# 作用：设置 Refly 工作流中承接文件输入的字段名。
-REFLY_FILES_FIELD = "files"
+# ============ Refly 工作流默认值 ===========
 # 作用：设置 Refly 工作流请求的超时时间（秒）。
 REFLY_TIMEOUT = 30

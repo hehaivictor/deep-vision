@@ -275,6 +275,35 @@ class RuntimeTokenConfigTests(unittest.TestCase):
         self.assertEqual(module.PREFETCH_QUESTION_PRIMARY_LANE, "question")
         self.assertEqual(module.PREFETCH_QUESTION_SECONDARY_LANE, "summary")
 
+    def test_auto_mode_keeps_strategy_keys_falling_back_to_config_py(self):
+        module = load_server_module(
+            {
+                "AI_CLIENT_EAGER_INIT": True,
+                "MODEL_NAME": "config-question",
+                "REPORT_MODEL_NAME": "config-report",
+                "REPORT_API_TIMEOUT": 123.0,
+                "QUESTION_HEDGE_ADAPTIVE_PERCENTILE": 0.72,
+                "REPORT_V3_DRAFT_PRIMARY_LANE": "question",
+                "SUPPORTED_IMAGE_TYPES": [".png", ".webp"],
+                "MAX_IMAGE_SIZE_MB": 18,
+                "API_TIMEOUT": 123.0,
+            },
+            env_overrides={
+                "QUESTION_API_KEY": "sk-question-from-env",
+            },
+        )
+
+        self.assertEqual(module.CONFIG_RESOLUTION_MODE, "auto")
+        self.assertTrue(module.AI_CLIENT_EAGER_INIT)
+        self.assertEqual(module.QUESTION_MODEL_NAME, "config-question")
+        self.assertEqual(module.REPORT_MODEL_NAME, "config-report")
+        self.assertEqual(module.REPORT_API_TIMEOUT, 123.0)
+        self.assertEqual(module.QUESTION_HEDGE_ADAPTIVE_PERCENTILE, 0.72)
+        self.assertEqual(module.REPORT_V3_DRAFT_PRIMARY_LANE, "question")
+        self.assertEqual(module.SUPPORTED_IMAGE_TYPES, [".png", ".webp"])
+        self.assertEqual(module.MAX_IMAGE_SIZE_MB, 18)
+        self.assertEqual(module.API_TIMEOUT, 123.0)
+
     def test_env_only_mode_disables_ai_runtime_fallback_to_config_py(self):
         module = load_server_module(
             {

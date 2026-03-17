@@ -198,7 +198,7 @@ except Exception:
     PIL_AVAILABLE = False
 
 # 配置源策略：
-# - auto: 检测到 .env 且其中存在实际键时，AI 运行参数优先使用 env/default，不再回落 config.py
+# - auto: 检测到 .env 且其中存在实际键时，环境接入/部署类配置优先使用 env/default，不再回落 config.py
 # - hybrid: 保留历史行为，env 未命中时继续回落 config.py
 # - env_only: 只使用 env/default，不回落 config.py
 CONFIG_RESOLUTION_MODE = str(
@@ -210,53 +210,58 @@ if CONFIG_RESOLUTION_MODE not in {"auto", "hybrid", "env_only"}:
     CONFIG_RESOLUTION_MODE = "auto"
 
 
-AI_RUNTIME_ENV_ONLY_EXACT_KEYS = {
-    "MODEL_NAME",
+ENV_MANAGED_CONFIG_EXACT_KEYS = {
+    "AUTH_DB_PATH",
+    "BUILTIN_SCENARIOS_DIR",
+    "CONFIG_RESOLUTION_MODE",
+    "CUSTOM_SCENARIOS_DIR",
+    "DEBUG_MODE",
     "ENABLE_AI",
     "ENABLE_DEBUG_LOG",
+    "ENABLE_VISION",
     "ENABLE_WEB_SEARCH",
-    "API_TIMEOUT",
-    "REPORT_API_TIMEOUT",
-    "REPORT_DRAFT_API_TIMEOUT",
-    "REPORT_REVIEW_API_TIMEOUT",
-    "SEARCH_MAX_RESULTS",
-    "SEARCH_TIMEOUT",
-    "MAX_IMAGE_SIZE_MB",
-    "SUPPORTED_IMAGE_TYPES",
+    "FOCUS_GENERATION_ACCESS_LOG",
+    "INSTANCE_SCOPE_KEY",
+    "REFLY_API_URL",
+    "REFLY_FILES_FIELD",
+    "REFLY_INPUT_FIELD",
+    "REFLY_WORKFLOW_ID",
+    "SECRET_KEY",
+    "SERVER_HOST",
+    "SERVER_PORT",
+    "SMS_PROVIDER",
+    "SMS_TEST_CODE",
+    "SUPPRESS_STATUS_POLL_ACCESS_LOG",
+    "VISION_API_URL",
+    "WECHAT_APP_ID",
+    "WECHAT_LOGIN_ENABLED",
+    "WECHAT_OAUTH_SCOPE",
+    "WECHAT_REDIRECT_URI",
+    "ZHIPU_SEARCH_ENGINE",
 }
-AI_RUNTIME_ENV_ONLY_PREFIXES = (
-    "AI_CLIENT_",
-    "ANTHROPIC_",
-    "QUESTION_",
-    "SUMMARY_",
-    "SEARCH_DECISION_",
-    "ASSESSMENT_",
-    "PREFETCH_QUESTION_",
-    "REPORT_V3_",
-    "REPORT_DRAFT_",
-    "REPORT_REVIEW_",
-    "ZHIPU_",
-    "VISION_",
-    "REFLY_",
+ENV_MANAGED_CONFIG_PREFIXES = (
+    "GUNICORN_",
+    "JD_SMS_",
 )
-AI_RUNTIME_ENV_ONLY_SUFFIXES = (
+ENV_MANAGED_CONFIG_SUFFIXES = (
     "_API_KEY",
     "_BASE_URL",
+    "_SECRET",
     "_USE_BEARER_AUTH",
 )
 
 
-def _is_ai_runtime_config_key(name: str) -> bool:
+def _is_env_managed_config_key(name: str) -> bool:
     normalized = str(name or "").strip().upper()
     if not normalized:
         return False
-    if normalized in AI_RUNTIME_ENV_ONLY_EXACT_KEYS:
+    if normalized in ENV_MANAGED_CONFIG_EXACT_KEYS:
         return True
-    if normalized.startswith("MAX_TOKENS_"):
+    if normalized.startswith(ENV_MANAGED_CONFIG_PREFIXES):
         return True
-    if normalized.endswith(AI_RUNTIME_ENV_ONLY_SUFFIXES):
+    if normalized.endswith(ENV_MANAGED_CONFIG_SUFFIXES):
         return True
-    return normalized.startswith(AI_RUNTIME_ENV_ONLY_PREFIXES)
+    return False
 
 
 def _should_use_runtime_config_fallback(name: str) -> bool:
@@ -268,7 +273,7 @@ def _should_use_runtime_config_fallback(name: str) -> bool:
         return False
     if LOADED_ENV_KEY_COUNT <= 0:
         return True
-    return not _is_ai_runtime_config_key(name)
+    return not _is_env_managed_config_key(name)
 
 
 # ============ 配置读取工具 ============
@@ -283,7 +288,7 @@ def _cfg_get(name: str, default):
     if env_val is not None:
         return env_val
 
-    # 自动模式下，若已加载 .env，则 AI 运行参数不再回落 config.py，避免旧配置“偷生效”
+    # 自动模式下，若已加载 .env，则环境接入/部署类配置不再回落 config.py，避免旧密钥或部署参数“偷生效”
     if _should_use_runtime_config_fallback(name):
         return getattr(runtime_config, name)
     return default
