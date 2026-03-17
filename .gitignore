@@ -53,5 +53,14 @@ web/.env.*
 # 临时文件
 *.tmp
 *.temp
+.~*
+
+# 本地调试脚本与上传产物
+.codepilot-uploads/
+modify_ppt.py
+read_ppt.py
+read_ppt_details.py
+read_ppt_size.py
+
 # Local clipboard artifacts
 .gemini-clipboard/
