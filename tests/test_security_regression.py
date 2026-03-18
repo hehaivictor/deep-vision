@@ -173,6 +173,36 @@ class SecurityRegressionTests(unittest.TestCase):
         public_read = self.client.get("/api/scenarios")
         self.assertEqual(public_read.status_code, 200)
 
+    def test_ops_endpoints_require_admin_role(self):
+        user = self._register_user()
+
+        ordinary_get_metrics = self.client.get("/api/metrics")
+        self.assertEqual(ordinary_get_metrics.status_code, 403)
+        ordinary_reset_metrics = self.client.post("/api/metrics/reset", json={})
+        self.assertEqual(ordinary_reset_metrics.status_code, 403)
+        ordinary_get_summaries = self.client.get("/api/summaries")
+        self.assertEqual(ordinary_get_summaries.status_code, 403)
+        ordinary_clear_summaries = self.client.post("/api/summaries/clear", json={})
+        self.assertEqual(ordinary_clear_summaries.status_code, 403)
+
+        old_admin_ids = set(self.server.ADMIN_USER_IDS)
+        old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
+        try:
+            self.server.ADMIN_USER_IDS = {int(user["id"])}
+            self.server.ADMIN_PHONE_NUMBERS = set()
+
+            admin_get_metrics = self.client.get("/api/metrics")
+            self.assertEqual(admin_get_metrics.status_code, 200, admin_get_metrics.get_data(as_text=True))
+            admin_reset_metrics = self.client.post("/api/metrics/reset", json={})
+            self.assertEqual(admin_reset_metrics.status_code, 200, admin_reset_metrics.get_data(as_text=True))
+            admin_get_summaries = self.client.get("/api/summaries")
+            self.assertEqual(admin_get_summaries.status_code, 200, admin_get_summaries.get_data(as_text=True))
+            admin_clear_summaries = self.client.post("/api/summaries/clear", json={})
+            self.assertEqual(admin_clear_summaries.status_code, 200, admin_clear_summaries.get_data(as_text=True))
+        finally:
+            self.server.ADMIN_USER_IDS = old_admin_ids
+            self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
+
     def test_status_anonymous_response_is_minimal(self):
         response = self.client.get("/api/status")
         self.assertEqual(response.status_code, 200)
@@ -244,6 +274,129 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertFalse(errors, errors)
         success_count = sum(1 for ok, _message in results if ok)
         self.assertEqual(1, success_count, results)
+
+    def test_deleted_reports_sidecar_keeps_all_entries_under_parallel_updates(self):
+        report_names = [f"parallel-delete-{idx}.md" for idx in range(12)]
+        barrier = threading.Barrier(len(report_names))
+        errors = []
+        result_lock = threading.Lock()
+
+        def worker(report_name):
+            try:
+                barrier.wait(timeout=1.0)
+                self.server.mark_report_as_deleted(report_name)
+            except Exception as exc:
+                with result_lock:
+                    errors.append(str(exc))
+
+        threads = [threading.Thread(target=worker, args=(name,)) for name in report_names]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertFalse(errors, errors)
+        deleted = self.server.get_deleted_reports()
+        self.assertEqual(deleted, set(report_names))
+        payload = json.loads(self.server.DELETED_REPORTS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(set(payload.get("deleted", [])), set(report_names))
+
+    def test_solution_share_sidecar_keeps_all_entries_under_parallel_updates(self):
+        report_names = [f"parallel-share-{idx}.md" for idx in range(10)]
+        barrier = threading.Barrier(len(report_names))
+        errors = []
+        result_lock = threading.Lock()
+
+        def worker(report_name):
+            try:
+                barrier.wait(timeout=1.0)
+                self.server.create_or_get_solution_share(report_name, owner_user_id=1)
+            except Exception as exc:
+                with result_lock:
+                    errors.append(str(exc))
+
+        threads = [threading.Thread(target=worker, args=(name,)) for name in report_names]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertFalse(errors, errors)
+        payload = self.server.load_solution_share_map()
+        mapped_reports = {record.get("report_name") for record in payload.values() if isinstance(record, dict)}
+        self.assertTrue(set(report_names).issubset(mapped_reports))
+        raw_payload = json.loads(self.server.REPORT_SOLUTION_SHARES_FILE.read_text(encoding="utf-8"))
+        self.assertTrue(
+            set(report_names).issubset(
+                {record.get("report_name") for record in raw_payload.values() if isinstance(record, dict)}
+            )
+        )
+
+    def test_deleted_docs_sidecar_keeps_all_entries_under_parallel_updates(self):
+        session_id = "parallel-session"
+        doc_names = [f"parallel-doc-{idx}.md" for idx in range(10)]
+        barrier = threading.Barrier(len(doc_names))
+        errors = []
+        result_lock = threading.Lock()
+
+        def worker(doc_name):
+            try:
+                barrier.wait(timeout=1.0)
+                self.server.mark_doc_as_deleted(session_id, doc_name)
+            except Exception as exc:
+                with result_lock:
+                    errors.append(str(exc))
+
+        threads = [threading.Thread(target=worker, args=(name,)) for name in doc_names]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertFalse(errors, errors)
+        payload = self.server.get_deleted_docs()
+        recorded_names = {
+            item.get("doc_name")
+            for item in payload.get("reference_materials", [])
+            if isinstance(item, dict)
+        }
+        self.assertEqual(recorded_names, set(doc_names))
+        raw_payload = json.loads(self.server.DELETED_DOCS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(
+            {
+                item.get("doc_name")
+                for item in raw_payload.get("reference_materials", [])
+                if isinstance(item, dict)
+            },
+            set(doc_names),
+        )
+
+    def test_presentation_map_remains_valid_under_parallel_updates(self):
+        report_names = [f"parallel-presentation-{idx}.md" for idx in range(8)]
+        barrier = threading.Barrier(len(report_names))
+        errors = []
+        result_lock = threading.Lock()
+
+        def worker(index, report_name):
+            try:
+                barrier.wait(timeout=1.0)
+                self.server.record_presentation_execution(report_name, f"exec-{index}")
+            except Exception as exc:
+                with result_lock:
+                    errors.append(str(exc))
+
+        threads = [
+            threading.Thread(target=worker, args=(idx, name))
+            for idx, name in enumerate(report_names)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertFalse(errors, errors)
+        payload = json.loads(self.server.PRESENTATION_MAP_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(set(payload.keys()), set(report_names))
 
     def test_report_solution_endpoint_requires_auth(self):
         response = self.client.get('/api/reports/security-solution.md/solution')

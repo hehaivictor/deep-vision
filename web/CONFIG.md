@@ -2,11 +2,37 @@
 
 本文档说明如何通过 `site-config.js` 配置文件自定义 Deep Vision 前端的各项设置。
 
+`site-config.js` 只负责前端展示层和 API 基础地址，不负责后端运行、鉴权、短信、实例隔离或运维白名单配置。这些部署相关参数统一放在 `web/.env`，可参考 `web/.env.example` 与仓库根目录 `README.md`。
+
 ## 配置文件位置
 
 ```
 /web/site-config.js
 ```
+
+## 配置边界
+
+当前项目的配置分为两层：
+
+- `site-config.js`：前端页面行为与展示配置，例如诗句轮播、主题颜色、API 基础地址
+- `web/.env`：后端运行与部署配置，例如会话密钥、短信登录、管理员白名单、实例隔离、微信登录、AI 网关等
+
+常见但不属于 `site-config.js` 的配置包括：
+
+- `SECRET_KEY`
+- `SMS_PROVIDER`
+- `SMS_TEST_CODE`
+- `ADMIN_USER_IDS`
+- `ADMIN_PHONE_NUMBERS`
+- `INSTANCE_SCOPE_KEY`
+- `WECHAT_LOGIN_ENABLED`
+
+如果当前是内测或演示环境，并且仍在使用 `mock` 短信登录，建议在 `web/.env` 中显式配置固定测试码和演示管理员手机号，而不是尝试在 `site-config.js` 中处理。
+
+后端部署与鉴权的权威说明统一放在：
+
+- 仓库根目录 [README.md](../README.md)
+- 配置模板 [web/.env.example](./.env.example)
 
 ## 配置项说明
 
@@ -91,6 +117,24 @@ api: {
 **参数说明：**
 - `baseUrl`: 后端 API 的基础地址
 - `webSearchPollInterval`: 轮询 Web Search 状态的时间间隔（用于呼吸灯效果）
+
+说明：
+
+- `api.baseUrl` 只决定前端请求哪个后端，不会改变后端自身的鉴权方式或短信供应商
+- 是否启用短信登录、微信登录、管理员运维接口权限，均由后端 `web/.env` 决定
+- 当前 `metrics` / `summaries` 仍是后端 JSON 运维接口，前端没有独立管理页面
+
+## 后端相关配置入口
+
+如果你现在要改的是短信登录、管理员白名单、实例隔离、微信登录或运维接口权限，请不要继续修改 `site-config.js`，而是直接查看：
+
+- 仓库根目录 [README.md](../README.md) 中的“关键配置项”“内测 / 演示环境建议”“运维接口”
+- 配置模板 [web/.env.example](./.env.example)
+
+一句话判断：
+
+- 改页面表现、主题、前端请求地址：看本文档
+- 改登录方式、短信供应商、管理员权限、部署行为：看 `web/.env` 与 `README.md`
 
 ## 使用示例
 

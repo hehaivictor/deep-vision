@@ -222,12 +222,16 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         return response.get_json()
 
-    def _build_scoped_report_name(self, topic, date_str="20990101"):
+    def _build_scoped_report_name(self, topic, date_str="20990101", session_id=""):
         slug = self.server.normalize_topic_slug(topic)
+        parts = ["deep-vision", date_str]
         tag = self.server.get_instance_scope_short_tag()
         if tag:
-            return f"deep-vision-{date_str}-{tag}-{slug}.md"
-        return f"deep-vision-{date_str}-{slug}.md"
+            parts.append(tag)
+        if session_id:
+            parts.append(session_id)
+        parts.append(slug)
+        return "-".join(parts) + ".md"
 
     def _wait_report_generation(self, session_id, expected_state="completed", attempts=120):
         status_payload = {}
@@ -1224,7 +1228,13 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertIn("| 编号 | 行动项 | Owner | 时间计划 | 验收指标 | 证据 |", markdown)
 
     def test_metrics_and_summaries_authenticated(self):
-        self._register()
+        user = self._register()
+        old_admin_ids = set(self.server.ADMIN_USER_IDS)
+        old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
+        self.server.ADMIN_USER_IDS = {int(user["id"])}
+        self.server.ADMIN_PHONE_NUMBERS = set()
+        self.addCleanup(setattr, self.server, "ADMIN_USER_IDS", old_admin_ids)
+        self.addCleanup(setattr, self.server, "ADMIN_PHONE_NUMBERS", old_admin_phones)
 
         # 触发列表接口指标
         self.client.get("/api/sessions")
@@ -1408,7 +1418,10 @@ class ComprehensiveApiTests(unittest.TestCase):
             report_profile="quality",
         )
         first_report_name = first_payload.get("report_name")
-        self.assertEqual(first_report_name, self._build_scoped_report_name(created["topic"], date_str="20990101"))
+        self.assertEqual(
+            first_report_name,
+            self._build_scoped_report_name(created["topic"], date_str="20990101", session_id=session_id),
+        )
 
         session_detail = self.client.get(f"/api/sessions/{session_id}")
         self.assertEqual(session_detail.status_code, 200)
@@ -1434,6 +1447,39 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(refreshed_session.status_code, 200)
         refreshed_payload = refreshed_session.get_json() or {}
         self.assertEqual(refreshed_payload.get("current_report_name"), first_report_name)
+
+    def test_generate_report_uses_unique_filename_for_same_day_same_topic_sessions(self):
+        self._register()
+        first = self._create_session(topic="同主题同日报告")
+        second = self._create_session(topic="同主题同日报告")
+
+        self._submit_answer(first["session_id"], list(first["dimensions"].keys())[0], question="目标是什么？", answer="第一份报告")
+        self._submit_answer(second["session_id"], list(second["dimensions"].keys())[0], question="目标是什么？", answer="第二份报告")
+
+        fixed_now = datetime(2099, 1, 1, 9, 30)
+        first_payload = self._generate_report_with_fixed_now(first["session_id"], fixed_now, report_profile="quality")
+        second_payload = self._generate_report_with_fixed_now(second["session_id"], fixed_now, report_profile="quality")
+
+        first_report_name = first_payload.get("report_name")
+        second_report_name = second_payload.get("report_name")
+
+        self.assertNotEqual(first_report_name, second_report_name)
+        self.assertEqual(
+            first_report_name,
+            self._build_scoped_report_name(first["topic"], date_str="20990101", session_id=first["session_id"]),
+        )
+        self.assertEqual(
+            second_report_name,
+            self._build_scoped_report_name(second["topic"], date_str="20990101", session_id=second["session_id"]),
+        )
+
+        reports_resp = self.client.get("/api/reports")
+        self.assertEqual(reports_resp.status_code, 200, reports_resp.get_data(as_text=True))
+        report_names = [item["name"] for item in (reports_resp.get_json() or [])]
+        self.assertIn(first_report_name, report_names)
+        self.assertIn(second_report_name, report_names)
+        self.assertEqual(report_names.count(first_report_name), 1)
+        self.assertEqual(report_names.count(second_report_name), 1)
 
     def test_generate_report_returns_429_when_queue_full(self):
         self._register()

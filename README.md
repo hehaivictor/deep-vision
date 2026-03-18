@@ -52,7 +52,7 @@ cp web/config.example.py web/config.py
 
 - [web/.env.example](web/.env.example)
 - [web/config.example.py](web/config.example.py)
-- [web/CONFIG.md](web/CONFIG.md)
+- [web/CONFIG.md](web/CONFIG.md)（仅说明 `site-config.js` 前端展示配置）
 - [docs/instance-scope.md](docs/instance-scope.md)
 
 ### 3. 启动开发环境
@@ -91,6 +91,7 @@ uv run --with gunicorn gunicorn -c web/gunicorn.conf.py web.wsgi:app
 - Gunicorn 运行参数由 [web/gunicorn.conf.py](web/gunicorn.conf.py) 从进程环境变量读取
 - 如果只改 `web/config.py`，Gunicorn 相关参数不会自动生效
 - Nginx 示例配置见 [deploy/nginx/deepvision.conf.example](deploy/nginx/deepvision.conf.example)
+- 生产环境启动前会校验关键安全配置；`SECRET_KEY` 为模板占位值、`INSTANCE_SCOPE_KEY` 为空或 `SMS_PROVIDER=mock` 时会拒绝启动
 
 ## 关键配置项
 
@@ -109,6 +110,9 @@ uv run --with gunicorn gunicorn -c web/gunicorn.conf.py web.wsgi:app
   - `DEEPVISION_ENV_FILE`
 - 鉴权：
   - `SECRET_KEY`
+  - `AUTH_DB_PATH`
+  - `ADMIN_USER_IDS`
+  - `ADMIN_PHONE_NUMBERS`
   - `SMS_PROVIDER`
   - `SMS_TEST_CODE`
 - 运行与性能：
@@ -120,6 +124,42 @@ uv run --with gunicorn gunicorn -c web/gunicorn.conf.py web.wsgi:app
   - `BUILTIN_SCENARIOS_DIR`
   - `CUSTOM_SCENARIOS_DIR`
   - `INSTANCE_SCOPE_KEY`
+
+## 内测 / 演示环境建议
+
+如果当前阶段仍使用 `mock` 短信登录，建议在 [web/.env](web/.env) 中显式配置：
+
+```env
+DEBUG_MODE=true
+ENABLE_DEBUG_LOG=false
+SECRET_KEY=replace-with-your-own-random-secret
+INSTANCE_SCOPE_KEY=deepvision-demo
+SMS_PROVIDER=mock
+SMS_TEST_CODE=666666
+ADMIN_PHONE_NUMBERS=13886047722
+```
+
+说明：
+
+- `SMS_PROVIDER=mock` 仅适用于本地调试、内测或演示环境；当 `DEBUG_MODE=false` 时，服务会在启动期拒绝使用 `mock`
+- 配置 `SMS_TEST_CODE` 后，内测环境可直接使用固定验证码；未配置时，`mock` 仅会把验证码写入服务端日志
+- `ADMIN_PHONE_NUMBERS` / `ADMIN_USER_IDS` 只用于运维接口白名单，不影响普通业务功能
+- 变更 `web/.env` 后需要重启服务进程；已登录的旧会话如未刷新权限，重新登录一次即可
+- 使用固定测试码意味着“知道站点地址的人都可能尝试任意手机号登录”，因此演示环境不要直接暴露到公网
+
+## 运维接口
+
+当前运维接口以 JSON API 形式提供，前端没有独立管理页面：
+
+- `GET /api/metrics`：查看接口性能指标、列表接口统计和报告生成队列状态
+- `POST /api/metrics/reset`：清空性能指标历史
+- `GET /api/summaries`：查看文档摘要缓存数量、大小和开关状态
+- `POST /api/summaries/clear`：清空文档摘要缓存，不会删除会话或报告正文
+
+权限说明：
+
+- 以上接口仅对白名单管理员开放
+- 如果当前项目没有正式管理员角色，内测阶段可临时把演示手机号写入 `ADMIN_PHONE_NUMBERS`
 
 ## 测试
 
@@ -155,7 +195,7 @@ DeepVision/
 `data/` 下常见子目录包括：
 
 - `data/sessions/`：访谈会话数据
-- `data/reports/`：生成后的 Markdown 报告与分享映射
+- `data/reports/`：生成后的 Markdown 报告与分享映射；新报告文件名包含 `session_id` 以避免同日同主题碰撞
 - `data/presentations/`：演示或导出相关产物
 - `data/summaries/`：文档摘要缓存
 - `data/auth/`：鉴权相关运行数据

@@ -72,6 +72,59 @@ def load_server_module(config_overrides=None, env_overrides=None, process_env_ov
 
 
 class RuntimeTokenConfigTests(unittest.TestCase):
+    def test_production_import_rejects_placeholder_secret_key(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            load_server_module(
+                env_overrides={
+                    "DEBUG_MODE": "false",
+                    "SECRET_KEY": "replace-with-a-strong-random-secret",
+                    "INSTANCE_SCOPE_KEY": "prod-instance",
+                    "SMS_PROVIDER": "jdcloud",
+                },
+            )
+        self.assertIn("SECRET_KEY", str(ctx.exception))
+
+    def test_production_import_rejects_empty_instance_scope_key(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            load_server_module(
+                env_overrides={
+                    "DEBUG_MODE": "false",
+                    "SECRET_KEY": "prod-secret-value",
+                    "INSTANCE_SCOPE_KEY": "",
+                    "SMS_PROVIDER": "jdcloud",
+                },
+            )
+        self.assertIn("INSTANCE_SCOPE_KEY", str(ctx.exception))
+
+    def test_production_import_rejects_mock_sms_provider(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            load_server_module(
+                env_overrides={
+                    "DEBUG_MODE": "false",
+                    "SECRET_KEY": "prod-secret-value",
+                    "INSTANCE_SCOPE_KEY": "prod-instance",
+                    "SMS_PROVIDER": "mock",
+                },
+            )
+        self.assertIn("SMS_PROVIDER=mock", str(ctx.exception))
+
+    def test_debug_import_warns_for_explicit_insecure_defaults(self):
+        with patch("builtins.print") as mock_print:
+            module = load_server_module(
+                env_overrides={
+                    "DEBUG_MODE": "true",
+                    "SECRET_KEY": "replace-with-a-strong-random-secret",
+                    "INSTANCE_SCOPE_KEY": "",
+                    "SMS_PROVIDER": "mock",
+                },
+            )
+
+        self.assertTrue(module.DEBUG_MODE)
+        log_text = "\n".join(" ".join(str(arg) for arg in call.args) for call in mock_print.call_args_list)
+        self.assertIn("SECRET_KEY 仍是模板占位值", log_text)
+        self.assertIn("INSTANCE_SCOPE_KEY 为空", log_text)
+        self.assertIn("SMS_PROVIDER=mock", log_text)
+
     def test_search_decision_uses_configured_attempt_tokens(self):
         module = load_server_module(
             {

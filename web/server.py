@@ -211,6 +211,8 @@ if CONFIG_RESOLUTION_MODE not in {"auto", "hybrid", "env_only"}:
 
 
 ENV_MANAGED_CONFIG_EXACT_KEYS = {
+    "ADMIN_PHONE_NUMBERS",
+    "ADMIN_USER_IDS",
     "AUTH_DB_PATH",
     "BUILTIN_SCENARIOS_DIR",
     "CONFIG_RESOLUTION_MODE",
@@ -1738,6 +1740,8 @@ SMS_MAX_SEND_PER_PHONE_PER_DAY = max(1, min(SMS_MAX_SEND_PER_PHONE_PER_DAY, 200)
 SMS_MAX_VERIFY_ATTEMPTS = _cfg_int("SMS_MAX_VERIFY_ATTEMPTS", 5)
 SMS_MAX_VERIFY_ATTEMPTS = max(1, min(SMS_MAX_VERIFY_ATTEMPTS, 20))
 SMS_TEST_CODE = _cfg_text("SMS_TEST_CODE", "")
+ADMIN_USER_IDS_RAW = _cfg_text_list("ADMIN_USER_IDS", [])
+ADMIN_PHONE_NUMBERS_RAW = _cfg_text_list("ADMIN_PHONE_NUMBERS", [])
 
 JD_SMS_ACCESS_KEY_ID = _cfg_text("JD_SMS_ACCESS_KEY_ID", "")
 JD_SMS_ACCESS_KEY_SECRET = _cfg_text("JD_SMS_ACCESS_KEY_SECRET", "")
@@ -2158,11 +2162,73 @@ if raw_auth_db_path:
 else:
     AUTH_DB_PATH = AUTH_DIR / "users.db"
 
+INSECURE_SECRET_KEY_PLACEHOLDERS = {
+    "replace-with-a-strong-random-secret",
+    "deepvision-dev-secret-key",
+}
+INSECURE_INSTANCE_SCOPE_PLACEHOLDERS = {
+    "replace-with-instance-scope-key",
+}
+
+
+def _is_placeholder_runtime_value(value: object, placeholders: set[str]) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return text in placeholders
+
+
+def _collect_runtime_security_validation_issues() -> tuple[list[str], list[str]]:
+    warnings: list[str] = []
+    errors: list[str] = []
+
+    configured_secret = config_secret_key or env_secret_key
+    scope_key = str(INSTANCE_SCOPE_KEY or "").strip()
+    strict_mode = not DEBUG_MODE
+    has_explicit_env = bool(LOADED_ENV_KEY_COUNT)
+
+    placeholder_secret_configured = _is_placeholder_runtime_value(
+        configured_secret,
+        INSECURE_SECRET_KEY_PLACEHOLDERS,
+    )
+    placeholder_scope_configured = _is_placeholder_runtime_value(
+        scope_key,
+        INSECURE_INSTANCE_SCOPE_PLACEHOLDERS,
+    )
+
+    if placeholder_secret_configured:
+        message = "SECRET_KEY 仍是模板占位值，请替换为高强度随机密钥"
+        (errors if strict_mode else warnings).append(message)
+
+    if not scope_key:
+        message = "INSTANCE_SCOPE_KEY 为空，共享 data 目录时可能发生跨实例串看"
+        if strict_mode or has_explicit_env:
+            (errors if strict_mode else warnings).append(message)
+    elif placeholder_scope_configured:
+        message = "INSTANCE_SCOPE_KEY 仍是模板占位值，请替换为稳定唯一的实例标识"
+        (errors if strict_mode else warnings).append(message)
+
+    if SMS_PROVIDER == "mock":
+        message = "SMS_PROVIDER=mock 仅适用于本地调试，非调试环境禁止使用"
+        if strict_mode or has_explicit_env:
+            (errors if strict_mode else warnings).append(message)
+
+    return warnings, errors
+
+
+def validate_runtime_security_config() -> None:
+    warnings, errors = _collect_runtime_security_validation_issues()
+    for message in warnings:
+        print(f"⚠️  安全配置提醒: {message}")
+    if errors:
+        detail = "\n".join(f"- {item}" for item in errors)
+        raise RuntimeError(f"运行配置校验失败：\n{detail}")
+
+
 for d in [SESSIONS_DIR, REPORTS_DIR, CONVERTED_DIR, TEMP_DIR, METRICS_DIR, SUMMARIES_DIR, PRESENTATIONS_DIR, AUTH_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-if WECHAT_LOGIN_ENABLED and not INSTANCE_SCOPE_KEY:
-    print("⚠️  未配置 INSTANCE_SCOPE_KEY，不同深瞳链接若共享同一数据目录，可能互相看到会话/报告")
+validate_runtime_security_config()
 
 AUTH_PHONE_PATTERN = re.compile(r"^1\d{10}$")
 
@@ -3630,6 +3696,14 @@ def _write_text_atomic(file_path: Path, content: str, encoding: str = "utf-8") -
             temp_path.unlink(missing_ok=True)
 
 
+def _write_json_atomic(file_path: Path, payload: object) -> None:
+    _write_text_atomic(
+        file_path,
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 def save_session_json_and_sync(session_file: Path, session_data: dict) -> None:
     _write_text_atomic(
         session_file,
@@ -4083,6 +4157,35 @@ def normalize_phone_number(raw_phone: str) -> str:
     return normalized
 
 
+def _normalize_admin_user_ids(raw_values) -> set[int]:
+    normalized: set[int] = set()
+    if not isinstance(raw_values, (list, tuple, set)):
+        return normalized
+    for item in raw_values:
+        try:
+            user_id = int(str(item or "").strip())
+        except (TypeError, ValueError):
+            continue
+        if user_id > 0:
+            normalized.add(user_id)
+    return normalized
+
+
+def _normalize_admin_phone_numbers(raw_values) -> set[str]:
+    normalized: set[str] = set()
+    if not isinstance(raw_values, (list, tuple, set)):
+        return normalized
+    for item in raw_values:
+        phone = normalize_phone_number(str(item or "").strip())
+        if AUTH_PHONE_PATTERN.match(phone):
+            normalized.add(phone)
+    return normalized
+
+
+ADMIN_USER_IDS = _normalize_admin_user_ids(ADMIN_USER_IDS_RAW)
+ADMIN_PHONE_NUMBERS = _normalize_admin_phone_numbers(ADMIN_PHONE_NUMBERS_RAW)
+
+
 def normalize_account(account: str) -> tuple[str, str]:
     account_text = str(account or "").strip()
     if not account_text:
@@ -4439,6 +4542,7 @@ def build_user_payload(row: sqlite3.Row) -> dict:
         "wechat_nickname": wechat_nickname,
         "wechat_avatar_url": str((wechat_identity or {}).get("avatar_url") or "").strip(),
         "is_wechat_shadow_account": bool(email.endswith("@wechat.local") and not phone),
+        "is_admin": is_user_admin(row),
     }
 
 
@@ -5002,12 +5106,43 @@ def login_user(user_row: sqlite3.Row) -> None:
     session["auth_instance_id"] = str(get_auth_instance_id() or "")
 
 
+def is_user_admin(user_row: Optional[sqlite3.Row]) -> bool:
+    if not user_row:
+        return False
+
+    try:
+        user_id = int(user_row["id"])
+    except (TypeError, ValueError, KeyError):
+        user_id = 0
+    if user_id > 0 and user_id in ADMIN_USER_IDS:
+        return True
+
+    phone = normalize_phone_number(str(user_row["phone"] or "").strip())
+    if phone and phone in ADMIN_PHONE_NUMBERS:
+        return True
+
+    return False
+
+
 def require_login(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         user = get_current_user()
         if not user:
             return jsonify({"error": "请先登录"}), 401
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+def require_admin(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        user = get_current_user()
+        if not user:
+            return jsonify({"error": "请先登录"}), 401
+        if not is_user_admin(user):
+            return jsonify({"error": "仅管理员可访问"}), 403
         return func(*args, **kwargs)
 
     return wrapper
@@ -5093,10 +5228,7 @@ def load_presentation_map() -> dict:
 
 def save_presentation_map(data: dict) -> None:
     try:
-        PRESENTATION_MAP_FILE.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8"
-        )
+        _write_json_atomic(PRESENTATION_MAP_FILE, data)
     except Exception:
         pass
 
@@ -5151,9 +5283,10 @@ def record_presentation_file(report_filename: str, download_info: Optional[dict]
     if "path" not in record and "pdf_url" not in record:
         return None
     with PRESENTATION_MAP_LOCK:
-        data = load_presentation_map()
-        data[report_filename] = record
-        save_presentation_map(data)
+        with named_file_lock("sidecar", "presentation_map"):
+            data = load_presentation_map()
+            data[report_filename] = record
+            save_presentation_map(data)
     return record
 
 
@@ -5162,27 +5295,28 @@ def record_presentation_execution(report_filename: str, execution_id: str) -> No
     if not execution_id or not report_filename:
         return
     with PRESENTATION_MAP_LOCK:
-        data = load_presentation_map()
-        owner = find_execution_owner_in_map(data, execution_id)
-        if owner and owner != report_filename:
-            if ENABLE_DEBUG_LOG:
-                print(f"⚠️ 忽略跨报告 execution_id 绑定: {execution_id} 已属于 {owner}, 当前={report_filename}")
-            return
-        record = data.get(report_filename) if isinstance(data.get(report_filename), dict) else {}
-        record = record or {}
-        stopped_at = record.get("stopped_at")
-        stopped_execution_id = str(record.get("stopped_execution_id") or "").strip()
-        if stopped_at and (not stopped_execution_id or stopped_execution_id == execution_id):
-            if ENABLE_DEBUG_LOG:
-                print(f"⚠️ 忽略已停止任务的 execution_id 回写: execution_id={execution_id}, report={report_filename}")
-            return
-        record["execution_id"] = execution_id
-        record.pop("stopped_at", None)
-        record.pop("stopped_execution_id", None)
-        if "created_at" not in record:
-            record["created_at"] = datetime.now().isoformat()
-        data[report_filename] = record
-        save_presentation_map(data)
+        with named_file_lock("sidecar", "presentation_map"):
+            data = load_presentation_map()
+            owner = find_execution_owner_in_map(data, execution_id)
+            if owner and owner != report_filename:
+                if ENABLE_DEBUG_LOG:
+                    print(f"⚠️ 忽略跨报告 execution_id 绑定: {execution_id} 已属于 {owner}, 当前={report_filename}")
+                return
+            record = data.get(report_filename) if isinstance(data.get(report_filename), dict) else {}
+            record = record or {}
+            stopped_at = record.get("stopped_at")
+            stopped_execution_id = str(record.get("stopped_execution_id") or "").strip()
+            if stopped_at and (not stopped_execution_id or stopped_execution_id == execution_id):
+                if ENABLE_DEBUG_LOG:
+                    print(f"⚠️ 忽略已停止任务的 execution_id 回写: execution_id={execution_id}, report={report_filename}")
+                return
+            record["execution_id"] = execution_id
+            record.pop("stopped_at", None)
+            record.pop("stopped_execution_id", None)
+            if "created_at" not in record:
+                record["created_at"] = datetime.now().isoformat()
+            data[report_filename] = record
+            save_presentation_map(data)
 
 
 def clear_presentation_execution(report_filename: str) -> None:
@@ -5190,14 +5324,15 @@ def clear_presentation_execution(report_filename: str) -> None:
     if not report_filename:
         return
     with PRESENTATION_MAP_LOCK:
-        data = load_presentation_map()
-        record = data.get(report_filename) if isinstance(data.get(report_filename), dict) else {}
-        record = record or {}
-        if "execution_id" not in record:
-            return
-        record.pop("execution_id", None)
-        data[report_filename] = record
-        save_presentation_map(data)
+        with named_file_lock("sidecar", "presentation_map"):
+            data = load_presentation_map()
+            record = data.get(report_filename) if isinstance(data.get(report_filename), dict) else {}
+            record = record or {}
+            if "execution_id" not in record:
+                return
+            record.pop("execution_id", None)
+            data[report_filename] = record
+            save_presentation_map(data)
 
 
 def mark_presentation_stopped(report_filename: str, execution_id: str = "") -> None:
@@ -5205,22 +5340,23 @@ def mark_presentation_stopped(report_filename: str, execution_id: str = "") -> N
     if not report_filename:
         return
     with PRESENTATION_MAP_LOCK:
-        data = load_presentation_map()
-        record = data.get(report_filename) if isinstance(data.get(report_filename), dict) else {}
-        record = record or {}
-        stopped_execution_id = str(execution_id or "").strip()
-        if not stopped_execution_id:
-            stopped_execution_id = str(record.get("execution_id") or "").strip()
-        record.pop("execution_id", None)
-        if stopped_execution_id:
-            record["stopped_execution_id"] = stopped_execution_id
-        else:
-            record.pop("stopped_execution_id", None)
-        record["stopped_at"] = datetime.now().isoformat()
-        if "created_at" not in record:
-            record["created_at"] = datetime.now().isoformat()
-        data[report_filename] = record
-        save_presentation_map(data)
+        with named_file_lock("sidecar", "presentation_map"):
+            data = load_presentation_map()
+            record = data.get(report_filename) if isinstance(data.get(report_filename), dict) else {}
+            record = record or {}
+            stopped_execution_id = str(execution_id or "").strip()
+            if not stopped_execution_id:
+                stopped_execution_id = str(record.get("execution_id") or "").strip()
+            record.pop("execution_id", None)
+            if stopped_execution_id:
+                record["stopped_execution_id"] = stopped_execution_id
+            else:
+                record.pop("stopped_execution_id", None)
+            record["stopped_at"] = datetime.now().isoformat()
+            if "created_at" not in record:
+                record["created_at"] = datetime.now().isoformat()
+            data[report_filename] = record
+            save_presentation_map(data)
 
 
 def clear_presentation_stopped(report_filename: str) -> None:
@@ -5228,14 +5364,15 @@ def clear_presentation_stopped(report_filename: str) -> None:
     if not report_filename:
         return
     with PRESENTATION_MAP_LOCK:
-        data = load_presentation_map()
-        record = data.get(report_filename) if isinstance(data.get(report_filename), dict) else {}
-        record = record or {}
-        if "stopped_at" in record or "stopped_execution_id" in record:
-            record.pop("stopped_at", None)
-            record.pop("stopped_execution_id", None)
-            data[report_filename] = record
-            save_presentation_map(data)
+        with named_file_lock("sidecar", "presentation_map"):
+            data = load_presentation_map()
+            record = data.get(report_filename) if isinstance(data.get(report_filename), dict) else {}
+            record = record or {}
+            if "stopped_at" in record or "stopped_execution_id" in record:
+                record.pop("stopped_at", None)
+                record.pop("stopped_execution_id", None)
+                data[report_filename] = record
+                save_presentation_map(data)
 
 
 def get_presentation_record(report_filename: str) -> Optional[dict]:
@@ -7424,10 +7561,7 @@ def save_report_scopes(data: dict) -> None:
             normalized[name] = normalized_scope
 
     with REPORT_SCOPES_LOCK:
-        REPORT_SCOPES_FILE.write_text(
-            json.dumps(normalized, ensure_ascii=False, indent=2),
-            encoding="utf-8"
-        )
+        _write_json_atomic(REPORT_SCOPES_FILE, normalized)
         report_scopes_cache["signature"] = get_file_signature(REPORT_SCOPES_FILE)
         report_scopes_cache["data"] = dict(normalized)
 
@@ -7444,12 +7578,13 @@ def set_report_scope_key(filename: str, scope_key: object) -> None:
 
     normalized_scope = normalize_instance_scope_key(scope_key)
     with REPORT_SCOPES_LOCK:
-        scopes = load_report_scopes()
-        if normalized_scope:
-            scopes[name] = normalized_scope
-        else:
-            scopes.pop(name, None)
-        save_report_scopes(scopes)
+        with named_file_lock("sidecar", "report_scopes"):
+            scopes = load_report_scopes()
+            if normalized_scope:
+                scopes[name] = normalized_scope
+            else:
+                scopes.pop(name, None)
+            save_report_scopes(scopes)
 
 
 def normalize_solution_share_token(raw_token: object) -> str:
@@ -7529,10 +7664,7 @@ def save_solution_share_map(data: dict) -> None:
             }
 
     with REPORT_SOLUTION_SHARES_LOCK:
-        REPORT_SOLUTION_SHARES_FILE.write_text(
-            json.dumps(normalized, ensure_ascii=False, indent=2),
-            encoding="utf-8"
-        )
+        _write_json_atomic(REPORT_SOLUTION_SHARES_FILE, normalized)
         report_solution_shares_cache["signature"] = get_file_signature(REPORT_SOLUTION_SHARES_FILE)
         report_solution_shares_cache["data"] = dict(normalized)
 
@@ -7555,7 +7687,7 @@ def create_or_get_solution_share(report_name: str, owner_user_id: int) -> dict:
     if not normalized_report_name or owner_id <= 0:
         raise ValueError("分享参数无效")
 
-    with named_file_lock("solution-share", normalized_report_name):
+    with named_file_lock("sidecar", "solution_shares"):
         with REPORT_SOLUTION_SHARES_LOCK:
             shares = load_solution_share_map()
             for token, record in shares.items():
@@ -7591,7 +7723,7 @@ def delete_solution_shares_for_report(report_name: str) -> None:
     if not normalized_report_name:
         return
 
-    with named_file_lock("solution-share", normalized_report_name):
+    with named_file_lock("sidecar", "solution_shares"):
         with REPORT_SOLUTION_SHARES_LOCK:
             shares = load_solution_share_map()
             mutated = False
@@ -7676,10 +7808,7 @@ def save_report_owners(data: dict) -> None:
             normalized[name] = owner_id
 
     with REPORT_OWNERS_LOCK:
-        REPORT_OWNERS_FILE.write_text(
-            json.dumps(normalized, ensure_ascii=False, indent=2),
-            encoding="utf-8"
-        )
+        _write_json_atomic(REPORT_OWNERS_FILE, normalized)
         report_owners_cache["signature"] = get_file_signature(REPORT_OWNERS_FILE)
         report_owners_cache["data"] = dict(normalized)
 
@@ -7695,9 +7824,10 @@ def get_report_owner_id(filename: str) -> int:
 def set_report_owner_id(filename: str, owner_user_id: int) -> None:
     owner_id = int(owner_user_id)
     with REPORT_OWNERS_LOCK:
-        owners = load_report_owners()
-        owners[filename] = owner_id
-        save_report_owners(owners)
+        with named_file_lock("sidecar", "report_owners"):
+            owners = load_report_owners()
+            owners[filename] = owner_id
+            save_report_owners(owners)
     set_report_scope_key(filename, get_active_instance_scope_key())
     try:
         sync_report_index_for_filename(filename, owner_user_id=owner_id)
@@ -7788,12 +7918,10 @@ def enforce_report_owner_or_404(filename: str, user_id: int) -> tuple[Optional[P
 
 def mark_report_as_deleted(filename: str):
     """标记报告为已删除（不真正删除文件）"""
-    deleted = get_deleted_reports()
-    deleted.add(filename)
-    DELETED_REPORTS_FILE.write_text(
-        json.dumps({"deleted": list(deleted)}, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+    with named_file_lock("sidecar", "deleted_reports"):
+        deleted = get_deleted_reports()
+        deleted.add(filename)
+        _write_json_atomic(DELETED_REPORTS_FILE, {"deleted": sorted(deleted)})
     try:
         sync_report_index_for_filename(filename, deleted=True)
     except Exception as exc:
@@ -7807,15 +7935,13 @@ def unmark_report_as_deleted(filename: str) -> None:
     if not name:
         return
 
-    deleted = get_deleted_reports()
-    if name not in deleted:
-        return
+    with named_file_lock("sidecar", "deleted_reports"):
+        deleted = get_deleted_reports()
+        if name not in deleted:
+            return
 
-    deleted.discard(name)
-    DELETED_REPORTS_FILE.write_text(
-        json.dumps({"deleted": list(deleted)}, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+        deleted.discard(name)
+        _write_json_atomic(DELETED_REPORTS_FILE, {"deleted": sorted(deleted)})
     try:
         sync_report_index_for_filename(name, deleted=False)
     except Exception as exc:
@@ -7830,7 +7956,30 @@ def normalize_topic_slug(topic: str) -> str:
     topic = topic.strip()
     if not topic:
         return ""
-    return re.sub(r"\s+", "-", topic)[:30]
+    topic = re.sub(r"\s+", "-", topic)
+    topic = sanitize_filename(topic).strip().strip(".")
+    topic = re.sub(r"-{2,}", "-", topic)
+    return topic[:30]
+
+
+def build_session_report_filename(session: dict, now: Optional[datetime] = None) -> str:
+    if not isinstance(session, dict):
+        raise ValueError("session 无效")
+
+    date_value = now if isinstance(now, datetime) else datetime.now()
+    date_str = date_value.strftime("%Y%m%d")
+    topic_slug = normalize_topic_slug(session.get("topic", "")) or "report"
+    session_token = sanitize_filename(str(session.get("session_id") or "").strip()).replace(".", "-")
+    if not session_token:
+        raise ValueError("session_id 无效，无法生成报告文件名")
+
+    parts = ["deep-vision", date_str]
+    scope_tag = get_instance_scope_short_tag()
+    if scope_tag:
+        parts.append(scope_tag)
+    parts.append(session_token)
+    parts.append(topic_slug)
+    return "-".join(parts) + ".md"
 
 
 def get_session_total_progress(session: dict) -> int:
@@ -7941,23 +8090,7 @@ def resolve_session_bound_report_name(session: dict, user_id: int) -> str:
     for report_name in direct_candidates:
         if is_report_bound_to_session(report_name, session, user_id):
             return report_name
-
-    deleted_reports = get_deleted_reports()
-    fallback_candidates = []
-    for report_name in find_reports_by_session_topic(session):
-        report_path = REPORTS_DIR / report_name
-        try:
-            stat = report_path.stat()
-        except (FileNotFoundError, OSError):
-            continue
-        visible_rank = 1 if report_name not in deleted_reports else 0
-        fallback_candidates.append((visible_rank, float(stat.st_mtime), report_name))
-
-    if not fallback_candidates:
-        return ""
-
-    fallback_candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return fallback_candidates[0][2]
+    return ""
 
 
 def get_bound_reports_for_session(session: dict) -> list[str]:
@@ -8000,11 +8133,10 @@ def get_bound_reports_for_session(session: dict) -> list[str]:
         bound_reports.append(report_name)
         seen.add(report_name)
 
-    for report_name in find_reports_by_session_topic(session):
-        if report_name in seen:
-            continue
-        bound_reports.append(report_name)
-        seen.add(report_name)
+    fallback_candidates = [name for name in find_reports_by_session_topic(session) if name not in seen]
+    if len(fallback_candidates) == 1:
+        bound_reports.append(fallback_candidates[0])
+        seen.add(fallback_candidates[0])
     return bound_reports
 
 
@@ -8049,19 +8181,17 @@ def mark_doc_as_deleted(session_id: str, doc_name: str, doc_type: str = "referen
         doc_name: 文档名称
         doc_type: 文档类型（默认 'reference_materials'）
     """
-    deleted = get_deleted_docs()
-    record = {
-        "session_id": session_id,
-        "doc_name": doc_name,
-        "deleted_at": get_utc_now()
-    }
-    if "reference_materials" not in deleted:
-        deleted["reference_materials"] = []
-    deleted["reference_materials"].append(record)
-    DELETED_DOCS_FILE.write_text(
-        json.dumps(deleted, ensure_ascii=False, indent=2),
-        encoding="utf-8"
-    )
+    with named_file_lock("sidecar", "deleted_docs"):
+        deleted = get_deleted_docs()
+        record = {
+            "session_id": session_id,
+            "doc_name": doc_name,
+            "deleted_at": get_utc_now()
+        }
+        if "reference_materials" not in deleted:
+            deleted["reference_materials"] = []
+        deleted["reference_materials"].append(record)
+        _write_json_atomic(DELETED_DOCS_FILE, deleted)
 
 
 def migrate_session_docs(session: dict) -> dict:
@@ -22460,17 +22590,11 @@ def run_report_generation_job(
                 filename = resolve_session_bound_report_name(session, user_id)
 
             if not filename:
-                topic_slug = session.get("topic", "report").replace(" ", "-")[:30]
-                date_str = datetime.now().strftime("%Y%m%d")
-                scope_tag = get_instance_scope_short_tag()
-                if scope_tag:
-                    filename = f"deep-vision-{date_str}-{scope_tag}-{topic_slug}.md"
-                else:
-                    filename = f"deep-vision-{date_str}-{topic_slug}.md"
+                filename = build_session_report_filename(session, now=datetime.now())
 
             report_file = REPORTS_DIR / filename
             normalized_content = normalize_report_time_fields(content)
-            report_file.write_text(normalized_content, encoding="utf-8")
+            _write_text_atomic(report_file, normalized_content, encoding="utf-8")
             unmark_report_as_deleted(filename)
             set_report_owner_id(filename, user_id)
 
@@ -33503,6 +33627,7 @@ def get_report_generation_status(session_id):
 
 
 @app.route('/api/metrics', methods=['GET'])
+@require_admin
 def get_metrics():
     """获取 API 性能指标和统计信息"""
     last_n = request.args.get('last_n', type=int)
@@ -33518,6 +33643,7 @@ def get_metrics():
 
 
 @app.route('/api/metrics/reset', methods=['POST'])
+@require_admin
 def reset_metrics():
     """重置性能指标（清空历史数据）"""
     try:
@@ -33535,6 +33661,7 @@ def reset_metrics():
 
 
 @app.route('/api/summaries', methods=['GET'])
+@require_admin
 def get_summaries_info():
     """获取智能摘要缓存信息"""
     try:
@@ -33555,6 +33682,7 @@ def get_summaries_info():
 
 
 @app.route('/api/summaries/clear', methods=['POST'])
+@require_admin
 def clear_summaries_cache():
     """清空智能摘要缓存"""
     try:
