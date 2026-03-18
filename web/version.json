@@ -1,7 +1,24 @@
 {
-  "version": "4.1.1",
-  "releaseDate": "2026-03-17",
+  "version": "4.1.2",
+  "releaseDate": "2026-03-18",
   "changelog": [
+    {
+      "version": "4.1.2",
+      "date": "2026-03-18",
+      "type": "patch",
+      "title": "修复报告隔离与运维鉴权问题",
+      "changes": [
+        "安全与隔离：",
+        "为报告命名补充 session_id 并收紧 regenerate 绑定逻辑",
+        "为 sidecar 状态写入补充文件锁与原子落盘，避免并发丢更新",
+        "收紧运行配置校验，限制生产环境使用占位密钥与 mock 短信",
+        "接口与测试：",
+        "为 metrics 与 summaries 接口增加管理员白名单校验",
+        "增加并发、鉴权与运行配置回归测试",
+        "文档：",
+        "更新 README 与 CONFIG，补充演示环境、关键配置和运维接口说明"
+      ]
+    },
     {
       "version": "4.1.1",
       "date": "2026-03-17",
