@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "8b8e9c7",
+  "committedAt": "2026-03-18T14:41:31+08:00",
+  "versionType": "patch",
+  "title": "优化方案页多端响应式体验",
+  "changes": [
+    "前端：",
+    "修复蓝图头部与流程图容器在移动端的宽度溢出",
+    "调整底部导航为自适应网格并补齐小屏安全区留白",
+    "刷新方案页静态资源版本，确保浏览器及时加载新样式"
+  ],
+  "changedFiles": [
+    "web/solution.css",
+    "web/solution.html"
+  ]
+}
