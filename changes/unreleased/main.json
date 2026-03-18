@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "a84b3a7",
+  "committedAt": "2026-03-18T13:50:27+08:00",
+  "versionType": "major",
+  "title": "优化前端交互与展示逻辑",
+  "changes": [
+    "前端：围绕“优化前端交互与展示逻辑”更新界面交互与展示逻辑。"
+  ],
+  "changedFiles": [
+    "web/app.js",
+    "web/index.html"
+  ]
+}

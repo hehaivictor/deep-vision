@@ -146,8 +146,7 @@ function deepVision() {
             'showSettingsModal',
             'showBindPhoneModal',
             'showActionConfirmModal',
-            'showBatchDeleteModal',
-            'showChangelogModal'
+            'showBatchDeleteModal'
         ],
         systemThemeMedia: null,
         systemThemeListener: null,
@@ -484,8 +483,6 @@ function deepVision() {
 
         // 版本信息
         appVersion: (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.version?.current) || '1.0.0',
-        changelog: [],
-        showChangelogModal: false,
 
         // 产品介绍
         showIntroPage: false,
@@ -1912,7 +1909,6 @@ function deepVision() {
                 if (response.ok) {
                     const data = await response.json();
                     this.appVersion = data.version || this.appVersion;
-                    this.changelog = data.changelog || [];
                 }
             } catch (error) {
                 console.warn('无法加载版本信息:', error);

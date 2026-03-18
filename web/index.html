@@ -4067,6 +4067,8 @@
             <div class="max-w-7xl mx-auto px-4 text-center text-xs sm:text-sm text-muted">
                 <span>© DeepVision 深瞳</span>
                 <span class="mx-2">|</span>
+                <span x-text="`v${appVersion}`"></span>
+                <span class="mx-2">|</span>
                 <a href="https://ncn0qgc0e3lv.feishu.cn/share/base/form/shrcnlnObpoyYMbFW1YMasLbZad"
                    target="_blank"
                    rel="noopener noreferrer"
@@ -4075,118 +4077,10 @@
                 </a>
             </div>
         </footer>
-
-        <!-- ========== 更新日志弹窗 ========== -->
-        <div x-show="showChangelogModal"
-             data-dialog-key="showChangelogModal"
-             x-bind="getDialogAttrs('showChangelogModal')"
-             x-transition:enter="transition ease-out duration-200"
-             x-transition:enter-start="opacity-0"
-             x-transition:enter-end="opacity-100"
-             x-transition:leave="transition ease-in duration-150"
-             x-transition:leave-start="opacity-100"
-             x-transition:leave-end="opacity-0"
-             class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
-             @click.self="showChangelogModal = false"
-             @keydown.escape.window="showChangelogModal = false">
-            <div x-bind="getDialogPanelAttrs('showChangelogModal')"
-                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[80vh] flex flex-col"
-                 x-transition:enter="transition ease-out duration-200"
-                 x-transition:enter-start="opacity-0 scale-95 translate-y-1"
-                 x-transition:enter-end="opacity-100 scale-100 translate-y-0"
-                 x-transition:leave="transition ease-in duration-150"
-                 x-transition:leave-start="opacity-100 scale-100 translate-y-0"
-                 x-transition:leave-end="opacity-0 scale-95 translate-y-1">
-                <!-- 弹窗头部 -->
-                <div class="flex items-center justify-between p-5 border-b border-gray-200">
-                    <div class="flex items-center gap-3">
-                        <div class="w-10 h-10 bg-primary/10 rounded-full flex items-center justify-center">
-                            <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
-                            </svg>
-                        </div>
-                        <div>
-                            <h3 id="dv-dialog-changelog-title" class="text-lg font-semibold text-primary">更新日志</h3>
-                            <p class="text-xs text-muted">Deep Vision 版本历史</p>
-                        </div>
-                    </div>
-                    <button @click="showChangelogModal = false" class="text-gray-500 hover:text-gray-700 cursor-pointer" aria-label="关闭">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-                        </svg>
-                    </button>
-                </div>
-
-                <p id="dv-dialog-changelog-desc" class="sr-only">查看 Deep Vision 历史版本更新内容。</p>
-                <!-- 更新日志内容 -->
-                <div class="flex-1 overflow-y-auto p-5">
-                    <template x-if="changelog && changelog.length > 0">
-                        <div class="space-y-6">
-                            <template x-for="(release, index) in changelog" :key="`${release.version}-${index}`">
-                                <div class="relative">
-                                    <!-- 版本标签 -->
-                                    <div class="flex items-center gap-3 mb-3">
-                                        <span class="px-2.5 py-1 rounded-lg text-sm font-semibold bg-[#357BE2]/10 text-[#357BE2]"
-                                              x-text="'v' + release.version">
-                                        </span>
-                                        <span class="text-xs text-muted" x-text="release.date"></span>
-                                        <template x-if="index === 0">
-                                            <span class="px-2 py-0.5 bg-[#357BE2] text-white text-xs rounded-full">当前版本</span>
-                                        </template>
-                                    </div>
-
-                                    <!-- 版本标题 -->
-                                    <h4 class="font-medium text-secondary mb-2" x-text="release.title"></h4>
-
-                                    <!-- 更新内容列表 -->
-                                    <ul class="space-y-1.5 text-sm text-muted">
-                                        <template x-if="release && release.changes && release.changes.length > 0">
-                                            <template x-for="(change, cidx) in release.changes" :key="change + '-' + cidx">
-                                            <li class="flex items-start gap-2">
-                                                <svg class="w-4 h-4 text-green-500 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                                                </svg>
-                                                <span x-text="change"></span>
-                                            </li>
-                                            </template>
-                                        </template>
-                                        <template x-if="!release || !release.changes || release.changes.length === 0">
-                                            <li class="text-xs text-muted">暂无更新细节</li>
-                                        </template>
-                                    </ul>
-
-                                    <!-- 分隔线 -->
-                                    <template x-if="index < changelog.length - 1">
-                                        <div class="border-b border-gray-100 mt-5"></div>
-                                    </template>
-                                </div>
-                            </template>
-                        </div>
-                    </template>
-                    <template x-if="!changelog || changelog.length === 0">
-                        <div class="text-center py-8 text-muted">
-                            <svg class="w-12 h-12 mx-auto mb-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
-                            </svg>
-                            <p>暂无更新日志</p>
-                        </div>
-                    </template>
-                </div>
-
-                <!-- 弹窗底部 -->
-                <div class="p-4 border-t border-gray-200 bg-gray-50 rounded-b-2xl dv-modal-safe-footer">
-                    <button @click="showChangelogModal = false"
-                            data-dialog-autofocus
-                            class="w-full py-2.5 dv-modal-btn-primary rounded-lg font-medium transition-colors cursor-pointer">
-                        我知道了
-                    </button>
-                </div>
-            </div>
-        </div>
     </div>
 
     <!-- 前端配置文件 -->
     <script src="site-config.js"></script>
-    <script src="app.js?v=20260317-auth-sms-fix-v27"></script>
+    <script src="app.js?v=20260318-footer-version-v28"></script>
 </body>
 </html>
