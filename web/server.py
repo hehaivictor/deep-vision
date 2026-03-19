@@ -4020,12 +4020,12 @@ def query_report_index_for_user(owner_user_id: int, page: int, page_size: int) -
         ).fetchall()
 
     return ([
-        {
-            "name": row["file_name"],
-            "path": str((REPORTS_DIR / row["file_name"]).resolve()),
-            "size": int(row["size"] or 0),
-            "created_at": str(row["created_at"] or ""),
-        }
+        build_report_list_item(
+            row["file_name"],
+            int(row["size"] or 0),
+            str(row["created_at"] or ""),
+            owner_user_id=int(owner_user_id),
+        )
         for row in rows
     ], total)
 
@@ -5684,7 +5684,7 @@ def schedule_solution_payload_prewarm(report_name: str, report_content: str = ""
                 effective_content = report_file.read_text(encoding="utf-8")
             if not effective_content.strip():
                 return
-            build_solution_payload_from_report(normalized, effective_content)
+            build_solution_payload_from_report(normalized, effective_content, allow_ai_enhancement=False)
             if ENABLE_DEBUG_LOG:
                 print(f"✅ 方案缓存预热完成: report={normalized}")
         except Exception as exc:
@@ -5719,7 +5719,7 @@ def ensure_solution_payload_ready(report_name: str, report_content: str = "", se
         update_report_generation_status(session_id, "saving", message="正在预热方案视图...")
 
     try:
-        build_solution_payload_from_report(normalized, effective_content)
+        build_solution_payload_from_report(normalized, effective_content, allow_ai_enhancement=False)
         if ENABLE_DEBUG_LOG:
             print(f"✅ 方案缓存已就绪: report={normalized}")
         return True
@@ -7409,6 +7409,88 @@ def parse_json_object_response(raw_text: str, required_keys: list = None) -> Opt
     raise ValueError("未找到可解析的 JSON 对象")
 
 
+def parse_generated_scenario_response(raw_text: str) -> Optional[dict]:
+    parse_meta = {}
+    parsed = parse_structured_json_response(
+        raw_text,
+        required_keys=["name", "dimensions"],
+        require_all_keys=True,
+        parse_meta=parse_meta,
+    )
+    if isinstance(parsed, dict):
+        return parsed
+
+    partial = parse_structured_json_response(
+        raw_text,
+        required_keys=["name"],
+        require_all_keys=False,
+    )
+    if not isinstance(partial, dict):
+        return None
+
+    raw_dimensions = partial.get("dimensions", [])
+    if not isinstance(raw_dimensions, list):
+        raw_dimensions = []
+    partial["dimensions"] = raw_dimensions
+    return partial
+
+
+def normalize_generated_scenario_payload(generated: dict) -> Optional[dict]:
+    if not isinstance(generated, dict):
+        return None
+
+    name = str(generated.get("name") or "").strip()
+    if not name:
+        return None
+
+    description = str(generated.get("description") or "").strip()
+    raw_dimensions = generated.get("dimensions", [])
+    if not isinstance(raw_dimensions, list):
+        raw_dimensions = []
+
+    normalized_dimensions = []
+    for index, raw_dim in enumerate(raw_dimensions, start=1):
+        if not isinstance(raw_dim, dict):
+            continue
+        dim_name = str(raw_dim.get("name") or "").strip()
+        if not dim_name:
+            continue
+        raw_aspects = raw_dim.get("key_aspects", [])
+        if isinstance(raw_aspects, str):
+            raw_aspects = re.split(r"[,，、\n]+", raw_aspects)
+        if not isinstance(raw_aspects, list):
+            raw_aspects = []
+        key_aspects = []
+        seen_aspects = set()
+        for item in raw_aspects:
+            aspect = str(item or "").strip()
+            if not aspect or aspect in seen_aspects:
+                continue
+            seen_aspects.add(aspect)
+            key_aspects.append(aspect[:30])
+        normalized_dimensions.append({
+            "id": f"dim_{index}",
+            "name": dim_name[:24],
+            "description": str(raw_dim.get("description") or "").strip()[:120],
+            "key_aspects": key_aspects[:6],
+            "min_questions": 2,
+            "max_questions": 4,
+        })
+
+    if not normalized_dimensions:
+        return None
+
+    normalized = {
+        "name": name[:32],
+        "description": description[:120],
+        "dimensions": normalized_dimensions,
+    }
+    explanation = str(generated.get("explanation") or "").strip()
+    if explanation:
+        normalized["explanation"] = explanation[:240]
+    return normalized
+
+
 def parse_scenario_recognition_response(raw_text: str, valid_scenario_ids: set) -> Optional[dict]:
     """解析场景识别结果，支持 JSON 与半结构化兜底提取。"""
     try:
@@ -8173,19 +8255,46 @@ def get_deleted_docs() -> dict:
         return {"reference_materials": []}
 
 
-def mark_doc_as_deleted(session_id: str, doc_name: str, doc_type: str = "reference_materials"):
+def build_reference_material_doc_id(doc: dict, index: int = 0) -> str:
+    if not isinstance(doc, dict):
+        doc = {}
+    seed = "|".join([
+        str(doc.get("name") or "").strip(),
+        str(doc.get("uploaded_at") or "").strip(),
+        str(doc.get("source") or "").strip(),
+        str(index),
+        str(len(str(doc.get("content") or ""))),
+    ])
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+
+
+def ensure_reference_material_doc_ids(materials) -> list:
+    normalized = materials if isinstance(materials, list) else []
+    for index, doc in enumerate(normalized):
+        if not isinstance(doc, dict):
+            continue
+        if "source" not in doc:
+            doc["source"] = "upload"
+        if not str(doc.get("doc_id") or "").strip():
+            doc["doc_id"] = build_reference_material_doc_id(doc, index=index)
+    return normalized
+
+
+def mark_doc_as_deleted(session_id: str, doc_name: str, doc_type: str = "reference_materials", doc_id: str = ""):
     """标记文档为已删除（软删除）
 
     Args:
         session_id: 会话 ID
         doc_name: 文档名称
         doc_type: 文档类型（默认 'reference_materials'）
+        doc_id: 文档唯一标识
     """
     with named_file_lock("sidecar", "deleted_docs"):
         deleted = get_deleted_docs()
         record = {
             "session_id": session_id,
             "doc_name": doc_name,
+            "doc_id": str(doc_id or "").strip(),
             "deleted_at": get_utc_now()
         }
         if "reference_materials" not in deleted:
@@ -8223,6 +8332,7 @@ def migrate_session_docs(session: dict) -> dict:
             session["reference_materials"].append(doc)
         del session["research_docs"]
 
+    session["reference_materials"] = ensure_reference_material_doc_ids(session.get("reference_materials", []))
     return session
 
 
@@ -18192,8 +18302,17 @@ def generate_scenario_with_ai():
     if len(user_description) > 500:
         return jsonify({"error": "描述不能超过500字"}), 400
 
-    # 构建 Prompt
-    prompt = f'''你是一个专业的访谈场景设计师。用户将描述他们想要进行的访谈或调研目标，你需要设计一个完整的访谈场景配置。
+    def _build_prompt(strict_json: bool = False) -> str:
+        strict_notice = ""
+        if strict_json:
+            strict_notice = """
+
+## 额外要求
+- 只输出单个 JSON 对象
+- 不要使用 markdown 代码块
+- 不要输出说明文字、标题或备注
+"""
+        return f'''你是一个专业的访谈场景设计师。用户将描述他们想要进行的访谈或调研目标，你需要设计一个完整的访谈场景配置。
 
 ## 用户描述
 {user_description}
@@ -18237,45 +18356,40 @@ def generate_scenario_with_ai():
   ],
   "explanation": "设计思路说明（1-2句话，解释为什么这样设计维度）"
 }}
-```'''
+```{strict_notice}'''
 
     try:
-        response = ai_client.messages.create(
-            model=resolve_model_name(call_type="scenario_generate"),
-            max_tokens=1500,
-            timeout=30.0,
-            messages=[{"role": "user", "content": prompt}]
-        )
+        generated = None
+        ai_explanation = ""
+        last_error = None
+        for attempt_index, strict_json in enumerate((False, True), start=1):
+            try:
+                response = ai_client.messages.create(
+                    model=resolve_model_name(call_type="scenario_generate"),
+                    max_tokens=1500,
+                    timeout=18.0 if strict_json else 24.0,
+                    messages=[{"role": "user", "content": _build_prompt(strict_json=strict_json)}]
+                )
 
-        raw_text = extract_message_text(response)
-        if not raw_text:
-            raise ValueError("模型响应中未包含场景配置文本")
+                raw_text = extract_message_text(response)
+                if not raw_text:
+                    raise ValueError("模型响应中未包含场景配置文本")
 
-        # 提取 JSON（兼容模型返回 markdown 代码块）
-        if "```json" in raw_text:
-            raw_text = raw_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in raw_text:
-            raw_text = raw_text.split("```")[1].split("```")[0].strip()
+                parsed = parse_generated_scenario_response(raw_text)
+                normalized_generated = normalize_generated_scenario_payload(parsed or {})
+                if not isinstance(normalized_generated, dict):
+                    raise ValueError("AI 场景结构不完整")
 
-        generated = json.loads(raw_text)
+                ai_explanation = str(normalized_generated.pop("explanation", "") or "").strip()
+                generated = normalized_generated
+                break
+            except Exception as exc:
+                last_error = exc
+                if ENABLE_DEBUG_LOG:
+                    print(f"⚠️ AI 生成场景第{attempt_index}次解析失败: {exc}")
 
-        # 验证必要字段
-        if not generated.get("name"):
-            return jsonify({"error": "生成的场景缺少名称"}), 500
-
-        if not generated.get("dimensions") or len(generated["dimensions"]) < 1:
-            return jsonify({"error": "生成的场景缺少维度"}), 500
-
-        # 提取 explanation 并移除（不存入场景配置）
-        ai_explanation = generated.pop("explanation", "")
-
-        # 确保维度格式正确
-        for i, dim in enumerate(generated["dimensions"]):
-            dim["id"] = f"dim_{i + 1}"
-            dim.setdefault("min_questions", 2)
-            dim.setdefault("max_questions", 4)
-            if not isinstance(dim.get("key_aspects"), list):
-                dim["key_aspects"] = []
+        if not isinstance(generated, dict):
+            raise ValueError(str(last_error or "AI 场景生成失败"))
 
         # 添加默认的 report / solution 配置
         generated["report"] = {"type": "standard", "template": "default"}
@@ -18291,7 +18405,7 @@ def generate_scenario_with_ai():
             "ai_explanation": ai_explanation
         })
 
-    except json.JSONDecodeError as e:
+    except ValueError as e:
         print(f"⚠️ AI 生成场景 JSON 解析失败: {e}")
         return jsonify({"error": "AI 返回格式异常，请重试"}), 500
     except Exception as e:
@@ -19740,6 +19854,114 @@ def normalize_generated_question_result(result: Optional[dict], fallback_contrac
     return result
 
 
+def get_dimension_fallback_options(session: dict, dimension: str, limit: int = 4) -> list[str]:
+    dim_info = get_dimension_info_for_session(session).get(dimension, {})
+    raw_options = dim_info.get("key_aspects", [])
+    if not isinstance(raw_options, list):
+        raw_options = []
+
+    cleaned = []
+    seen = set()
+    for item in raw_options:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        cleaned.append(text[:24])
+        if len(cleaned) >= limit:
+            break
+
+    if len(cleaned) >= 2:
+        return cleaned
+
+    dim_name = str(dim_info.get("name") or dimension or "当前维度").strip()
+    generic_options = [
+        f"{dim_name}现状",
+        f"{dim_name}目标",
+        f"{dim_name}约束",
+        f"{dim_name}待确认",
+    ]
+    for item in generic_options:
+        if item in seen:
+            continue
+        cleaned.append(item[:24])
+        seen.add(item)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
+
+
+def repair_generated_question_result_from_response(
+    response_text: str,
+    session: dict,
+    dimension: str,
+    fallback_contract: Optional[dict] = None,
+    debug: bool = False,
+) -> Optional[dict]:
+    if not response_text:
+        return None
+
+    parse_meta = {}
+    partial = parse_structured_json_response(
+        response_text,
+        required_keys=["question"],
+        require_all_keys=False,
+        parse_meta=parse_meta,
+    )
+    if not isinstance(partial, dict):
+        return None
+
+    question_text = str(partial.get("question") or "").strip()
+    if not question_text:
+        return None
+
+    raw_options = partial.get("options", [])
+    if isinstance(raw_options, str):
+        raw_options = re.split(r"[\n,，、]+", raw_options)
+    if not isinstance(raw_options, list):
+        raw_options = []
+
+    normalized_options = []
+    seen_options = set()
+    for item in raw_options:
+        option = str(item or "").strip()
+        if not option or option in seen_options:
+            continue
+        seen_options.add(option)
+        normalized_options.append(option[:40])
+
+    if len(normalized_options) < 2:
+        for option in get_dimension_fallback_options(session, dimension, limit=4):
+            if option in seen_options:
+                continue
+            normalized_options.append(option)
+            seen_options.add(option)
+            if len(normalized_options) >= 4:
+                break
+
+    if len(normalized_options) < 2:
+        return None
+
+    repaired_result = {
+        "question": question_text[:240],
+        "options": normalized_options[:6],
+        "multi_select": bool(partial.get("multi_select", False)),
+        "is_follow_up": bool(partial.get("is_follow_up", False)),
+        "follow_up_reason": str(partial.get("follow_up_reason") or "").strip() or None,
+        "answer_mode": partial.get("answer_mode", ""),
+        "requires_rationale": bool(partial.get("requires_rationale", False)),
+        "evidence_intent": partial.get("evidence_intent", ""),
+        "repair_applied": True,
+        "repair_source": str(parse_meta.get("selected_source", "") or ""),
+    }
+    if debug:
+        print(
+            "🔧 问题响应本地修复成功: "
+            f"source={repaired_result.get('repair_source') or '-'}, options={len(repaired_result['options'])}"
+        )
+    return normalize_generated_question_result(repaired_result, fallback_contract=fallback_contract)
+
+
 def _normalize_question_call_result(raw_result, lane: str, max_tokens: int, timeout: Optional[float]) -> tuple[Optional[str], dict]:
     """兼容 call_claude 返回文本或 (文本, meta) 两种形态。"""
     response_text = None
@@ -21062,8 +21284,8 @@ def get_next_question(session_id):
         return jsonify({
             "dimension": dimension,
             "completed": True,
-            "completion_reason": dim_state.get("completion_reason"),
-            "quality_warning": bool(dim_state.get("quality_warning", False)),
+            "completion_reason": latest_dim_state.get("completion_reason"),
+            "quality_warning": bool(latest_dim_state.get("quality_warning", False)),
             "decision_meta": {
                 "mode": get_mode_identifier(session),
                 "follow_up_round": snapshot.get("follow_up_round", get_follow_up_round_for_dimension_logs(all_dim_logs)),
@@ -21127,12 +21349,10 @@ def get_next_question(session_id):
             print(f"⚙️ 问题生成通道: {tier_used}")
 
         if not response:
-            # 清除思考状态
             clear_thinking_status(session_id)
-            return jsonify({
-                "error": "AI 响应失败",
-                "detail": "未能从 AI 服务获取响应，请检查网络连接或稍后重试"
-            }), 503
+            fallback = get_fallback_question(session, dimension)
+            fallback["detail"] = "AI 服务暂时不可用，已切换为备用题目"
+            return jsonify(fallback)
 
         if result:
             selected_lane = tier_used.split(":", 1)[1] if ":" in tier_used else ""
@@ -21175,12 +21395,10 @@ def get_next_question(session_id):
                     retry_result["question_runtime_profile"] = runtime_profile.get("profile_name", "")
                     result = retry_result
                 else:
-                    # 清除思考状态
                     clear_thinking_status(session_id)
-                    return jsonify({
-                        "error": "生成重复问题",
-                        "detail": "检测到重复问题，请重试"
-                    }), 503
+                    fallback = get_fallback_question(session, dimension)
+                    fallback["detail"] = "AI 连续生成了重复问题，已切换为备用题目"
+                    return jsonify(fallback)
 
             # ========== 后端强制校验 is_follow_up ==========
             # 防止 AI 绕过追问预算控制，自行将问题标记为追问
@@ -21224,19 +21442,44 @@ def get_next_question(session_id):
             _set_question_result_cache(question_cache_key, result)
             return jsonify(result)
 
-        # 解析失败
-        # 清除思考状态
         clear_thinking_status(session_id)
+        repaired_result = repair_generated_question_result_from_response(
+            response,
+            session=session,
+            dimension=dimension,
+            fallback_contract=runtime_profile,
+            debug=ENABLE_DEBUG_LOG,
+        )
+        if repaired_result:
+            selected_lane = tier_used.split(":", 1)[1] if ":" in tier_used else ""
+            repaired_result["dimension"] = dimension
+            repaired_result["ai_generated"] = True
+            repaired_result["decision_meta"] = dict(decision_meta or {})
+            repaired_result["question_generation_tier"] = tier_used
+            repaired_result["question_selected_lane"] = selected_lane
+            repaired_result["question_runtime_profile"] = runtime_profile.get("profile_name", "")
+            trigger_prefetch_if_needed(session, dimension, session_signature=session_signature)
+            _set_question_result_cache(question_cache_key, repaired_result)
+            return jsonify(repaired_result)
+
+        fallback = get_fallback_question(session, dimension)
+        if fallback.get("question") or fallback.get("completed"):
+            fallback["detail"] = "AI 返回内容无法稳定解析，已切换为备用题目"
+            return jsonify(fallback)
+
         return jsonify({
             "error": "AI 响应格式错误",
             "detail": "AI 返回的内容无法解析为有效的 JSON 格式。请点击「重试」按钮重新生成问题。"
         }), 503
 
     except Exception as e:
-        # 清除思考状态
         clear_thinking_status(session_id)
         print(f"生成问题时发生异常: {e}")
         error_msg = str(e)
+        fallback = get_fallback_question(session, dimension)
+        if fallback.get("question") or fallback.get("completed"):
+            fallback["detail"] = "AI 生成过程中发生异常，已切换为备用题目"
+            return jsonify(fallback)
 
         # 根据异常类型提供更具体的错误信息
         if "connection" in error_msg.lower() or "network" in error_msg.lower():
@@ -21291,8 +21534,11 @@ def get_fallback_question(session: dict, dimension: str) -> dict:
         ]
     }
 
-    # 获取该维度已回答的问题数
-    answered = len([log for log in session.get("interview_log", []) if log.get("dimension") == dimension])
+    # 获取该维度已回答的正式问题数
+    answered = len([
+        log for log in session.get("interview_log", [])
+        if log.get("dimension") == dimension and not log.get("is_follow_up", False)
+    ])
     questions = fallback_questions.get(dimension, [])
 
     if answered < len(questions):
@@ -21306,6 +21552,34 @@ def get_fallback_question(session: dict, dimension: str) -> dict:
             "ai_generated": False,
             "is_follow_up": False,
             "ai_recommendation": None
+        }
+
+    dim_info = get_dimension_info_for_session(session).get(dimension, {})
+    mode_config = get_interview_mode_config(session)
+    max_formal = max(
+        1,
+        int(mode_config.get("max_formal_questions_per_dim", mode_config.get("formal_questions_per_dim", 3)) or 3),
+    )
+    if answered < max_formal:
+        dim_name = str(dim_info.get("name") or dimension or "当前维度").strip()
+        key_aspects = get_dimension_fallback_options(session, dimension, limit=4)
+        focus = key_aspects[min(answered, max(0, len(key_aspects) - 1))] if key_aspects else f"{dim_name}重点"
+        question_templates = [
+            f"关于{dim_name}，当前最需要优先确认的是哪一项？",
+            f"如果先聚焦{dim_name}，您认为最关键的判断点是什么？",
+            f"围绕{focus}，哪项更符合您的当前情况？",
+            f"为便于推进{dim_name}，接下来最应补充哪类信息？",
+        ]
+        return {
+            "question": question_templates[min(answered, len(question_templates) - 1)],
+            "options": key_aspects[:4] if key_aspects else [f"{dim_name}现状", f"{dim_name}目标", f"{dim_name}约束", "需要进一步确认"],
+            "multi_select": answered == 0,
+            "question_multi_select": answered == 0,
+            "dimension": dimension,
+            "ai_generated": False,
+            "is_follow_up": False,
+            "ai_recommendation": None,
+            "fallback_generated": True,
         }
 
     # 维度已完成
@@ -21942,20 +22216,26 @@ def upload_document(session_id):
 
         latest_session_file, latest_session = latest_loaded
         latest_session = migrate_session_docs(latest_session)
-        latest_session["reference_materials"].append({
+        uploaded_document = {
             "name": filename,
             "type": ext,
             "content": content[:10000],  # 限制长度
             "source": "upload",  # 用户上传
-            "uploaded_at": get_utc_now()
-        })
+            "uploaded_at": get_utc_now(),
+        }
+        uploaded_document["doc_id"] = build_reference_material_doc_id(
+            uploaded_document,
+            index=len(latest_session["reference_materials"]),
+        )
+        latest_session["reference_materials"].append(uploaded_document)
         latest_session["updated_at"] = get_utc_now()
         save_session_json_and_sync(latest_session_file, latest_session)
 
     return jsonify({
         "success": True,
         "filename": filename,
-        "content_length": len(content)
+        "content_length": len(content),
+        "uploaded_document": copy.deepcopy(uploaded_document),
     })
 
 
@@ -21979,12 +22259,16 @@ def delete_document(session_id, doc_name):
     session_file, session = loaded
     # 数据迁移：兼容旧会话
     session = migrate_session_docs(session)
+    doc_id = str(request.args.get("doc_id") or "").strip()
 
     # 查找并删除文档
     original_count = len(session["reference_materials"])
     session["reference_materials"] = [
         doc for doc in session["reference_materials"]
-        if doc["name"] != doc_name
+        if not (
+            (doc_id and str(doc.get("doc_id") or "").strip() == doc_id)
+            or (not doc_id and doc["name"] == doc_name)
+        )
     ]
 
     if len(session["reference_materials"]) == original_count:
@@ -21994,11 +22278,12 @@ def delete_document(session_id, doc_name):
     save_session_json_and_sync(session_file, session)
 
     # 软删除：记录到删除日志，文件保留在 temp/converted 目录
-    mark_doc_as_deleted(session_id, doc_name)
+    mark_doc_as_deleted(session_id, doc_name, doc_id=doc_id)
 
     return jsonify({
         "success": True,
         "deleted": doc_name,
+        "deleted_doc_id": doc_id,
         "message": "文档已从列表中移除（文件已存档）"
     })
 
@@ -22070,13 +22355,18 @@ def restart_interview(session_id):
     if len(research_content) > max_length:
         research_content = research_content[:max_length] + "\n\n...(内容过长已截断)"
 
-    session["reference_materials"].append({
+    restart_doc = {
         "name": doc_name,
         "type": ".md",
         "content": research_content,
         "source": "auto",  # 系统自动生成
-        "uploaded_at": get_utc_now()
-    })
+        "uploaded_at": get_utc_now(),
+    }
+    restart_doc["doc_id"] = build_reference_material_doc_id(
+        restart_doc,
+        index=len(session["reference_materials"]),
+    )
+    session["reference_materials"].append(restart_doc)
 
     # 重置访谈状态 - 从场景配置动态创建维度
     session["interview_log"] = []
@@ -22706,18 +22996,19 @@ def run_report_generation_job(
 
             update_report_generation_status(session_id, "saving", message=saving_message)
             report_file, filename = persist_report(report_content, quality_meta=quality_meta)
+            structured_snapshot = build_solution_sidecar_snapshot(
+                report_name=filename,
+                session_id=session_id,
+                session=session,
+                draft_snapshot=result.get("draft_snapshot", {}),
+                quality_meta=quality_meta,
+                evidence_pack=result.get("evidence_pack", {}),
+                report_template=result.get("report_template", ""),
+                report_type=result.get("report_type", ""),
+            )
             write_solution_sidecar(
                 filename,
-                build_solution_sidecar_snapshot(
-                    report_name=filename,
-                    session_id=session_id,
-                    session=session,
-                    draft_snapshot=result.get("draft_snapshot", {}),
-                    quality_meta=quality_meta,
-                    evidence_pack=result.get("evidence_pack", {}),
-                    report_template=result.get("report_template", ""),
-                    report_type=result.get("report_type", ""),
-                ),
+                build_final_solution_sidecar_snapshot(structured_snapshot, report_content),
             )
             ensure_solution_payload_ready(filename, report_content, session_id=session_id)
             update_report_generation_status(session_id, "completed", active=False)
@@ -23013,6 +23304,9 @@ def run_report_generation_job(
 
                 update_report_generation_status(session_id, "saving", message="正在保存回退生成报告...")
                 report_file, filename = persist_report(report_content, quality_meta=quality_meta)
+                rebound_snapshot = build_bound_solution_sidecar_snapshot(filename, report_content, session)
+                if rebound_snapshot:
+                    write_solution_sidecar(filename, rebound_snapshot)
                 ensure_solution_payload_ready(filename, report_content, session_id=session_id)
                 update_report_generation_status(session_id, "completed", active=False)
                 set_report_generation_metadata(session_id, {
@@ -23034,6 +23328,9 @@ def run_report_generation_job(
         session["last_report_quality_meta"] = quality_meta
         update_report_generation_status(session_id, "saving")
         report_file, filename = persist_report(report_content, quality_meta=quality_meta)
+        rebound_snapshot = build_bound_solution_sidecar_snapshot(filename, report_content, session)
+        if rebound_snapshot:
+            write_solution_sidecar(filename, rebound_snapshot)
 
         ensure_solution_payload_ready(filename, report_content, session_id=session_id)
         update_report_generation_status(session_id, "completed", active=False)
@@ -24343,12 +24640,14 @@ def load_reports_for_user_from_files(user_id_int: int) -> list[dict]:
             continue
 
         stat = report_path.stat()
-        reports.append({
-            "name": report_name,
-            "path": str(report_path),
-            "size": stat.st_size,
-            "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat()
-        })
+        reports.append(
+            build_report_list_item(
+                report_name,
+                int(stat.st_size),
+                datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                owner_user_id=int(user_id_int),
+            )
+        )
 
     reports.sort(key=lambda x: x["created_at"], reverse=True)
     return reports
@@ -25318,6 +25617,104 @@ def read_solution_sidecar(report_name: str) -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _collect_direct_bound_report_names(session: dict) -> list[str]:
+    if not isinstance(session, dict):
+        return []
+
+    candidates = []
+    current_report_name = str(session.get("current_report_name") or "").strip()
+    if current_report_name:
+        candidates.append(current_report_name)
+
+    current_report_path = str(session.get("current_report_path") or "").strip()
+    if current_report_path:
+        derived_name = Path(current_report_path).name.strip()
+        if derived_name and derived_name not in candidates:
+            candidates.append(derived_name)
+
+    last_report_name = normalize_solution_report_filename(session.get("last_report_name", ""))
+    if last_report_name and last_report_name not in candidates:
+        candidates.append(last_report_name)
+    return candidates
+
+
+def find_direct_bound_session_for_report(report_name: str, owner_user_id: int) -> Optional[dict]:
+    expected_scope = get_active_instance_scope_key()
+    normalized_report_name = normalize_solution_report_filename(report_name)
+    if not normalized_report_name:
+        return None
+
+    for session_file in SESSIONS_DIR.glob("*.json"):
+        session_data = safe_load_session(session_file)
+        if not isinstance(session_data, dict):
+            continue
+        if not ensure_session_owner(session_data, owner_user_id):
+            continue
+        if not is_instance_scope_visible(get_session_instance_scope_key(session_data), expected_scope=expected_scope):
+            continue
+        if normalized_report_name in _collect_direct_bound_report_names(session_data):
+            return session_data
+    return None
+
+
+def build_report_binding_metadata(report_name: str, owner_user_id: int = 0) -> dict:
+    normalized_report_name = normalize_solution_report_filename(report_name)
+    metadata = {
+        "session_id": "",
+        "topic": "",
+        "scenario_name": "",
+        "report_template": "",
+        "report_type": "",
+    }
+    if not normalized_report_name:
+        return metadata
+
+    sidecar = read_solution_sidecar(normalized_report_name)
+    if isinstance(sidecar, dict) and sidecar:
+        normalized_snapshot = _normalize_solution_snapshot(sidecar)
+        metadata.update({
+            "session_id": str(normalized_snapshot.get("session_id") or "").strip(),
+            "topic": str(normalized_snapshot.get("topic") or "").strip(),
+            "scenario_name": str(normalized_snapshot.get("scenario_name") or "").strip(),
+            "report_template": str(normalized_snapshot.get("report_template") or "").strip(),
+            "report_type": str(normalized_snapshot.get("report_type") or "").strip(),
+        })
+
+    if all(metadata.values()):
+        return metadata
+
+    if int(owner_user_id or 0) <= 0:
+        return metadata
+
+    session_data = find_direct_bound_session_for_report(normalized_report_name, int(owner_user_id))
+    if not isinstance(session_data, dict):
+        return metadata
+
+    metadata["session_id"] = metadata["session_id"] or str(session_data.get("session_id") or "").strip()
+    metadata["topic"] = metadata["topic"] or str(session_data.get("topic") or "").strip()
+    scenario_config = session_data.get("scenario_config", {}) if isinstance(session_data.get("scenario_config", {}), dict) else {}
+    report_cfg = scenario_config.get("report", {}) if isinstance(scenario_config.get("report", {}), dict) else {}
+    metadata["scenario_name"] = metadata["scenario_name"] or str(scenario_config.get("name") or "").strip()
+    metadata["report_type"] = metadata["report_type"] or str(report_cfg.get("type") or "standard").strip().lower()
+    metadata["report_template"] = metadata["report_template"] or normalize_report_template_name(
+        report_cfg.get("template", ""),
+        report_type=metadata["report_type"] or "standard",
+    )
+    return metadata
+
+
+def build_report_list_item(report_name: str, size: int, created_at: str, owner_user_id: int = 0) -> dict:
+    path = str((REPORTS_DIR / report_name).resolve())
+    payload = {
+        "name": report_name,
+        "path": path,
+        "size": int(size or 0),
+        "created_at": str(created_at or ""),
+    }
+    payload.update(build_report_binding_metadata(report_name, owner_user_id=owner_user_id))
+    return payload
+
+
 def write_solution_sidecar(report_name: str, snapshot: dict) -> None:
     if not isinstance(snapshot, dict) or not snapshot:
         return
@@ -25549,15 +25946,15 @@ def _normalize_solution_structured_list(raw_rows, kind: str) -> list[dict]:
         },
         "risks": {
             "risk": ["risk", "风险项", "风险描述", "风险类别"],
-            "impact": ["impact", "影响", "风险等级", "可能性", "描述", "影响程度", "发生概率"],
-            "mitigation": ["mitigation", "缓解措施", "应对策略"],
+            "impact": ["impact", "影响", "风险等级", "可能性", "描述", "影响程度", "发生概率", "风险说明"],
+            "mitigation": ["mitigation", "缓解措施", "应对策略", "应对建议"],
             "evidence_refs": ["evidence_refs", "证据"],
         },
         "actions": {
-            "action": ["action", "行动项", "事项", "任务"],
+            "action": ["action", "行动项", "动作项", "事项", "任务"],
             "owner": ["owner", "Owner", "负责方", "责任方", "负责人"],
             "timeline": ["timeline", "时间计划", "时间建议", "时间节点", "排期", "截止时间"],
-            "metric": ["metric", "验收指标", "交付物", "预期效果", "产出"],
+            "metric": ["metric", "验收指标", "交付物", "预期效果", "预期产出", "产出"],
             "evidence_refs": ["evidence_refs", "证据"],
         },
         "open_questions": {
@@ -25647,6 +26044,7 @@ def _normalize_solution_snapshot(snapshot: dict) -> dict:
         "quality_snapshot": copy.deepcopy(quality_snapshot),
         "overall_coverage": max(0.0, min(overall_coverage, 1.0)),
         "snapshot_origin": clean_solution_text(snapshot.get("snapshot_origin", ""), max_len=40),
+        "snapshot_stage": clean_solution_text(snapshot.get("snapshot_stage", ""), max_len=40),
         "has_structured_evidence": bool(snapshot.get("has_structured_evidence", False)),
         "draft": {
             "overview": clean_solution_text(draft.get("overview", snapshot.get("overview", "")), max_len=3200),
@@ -25711,8 +26109,195 @@ def build_solution_sidecar_snapshot(
         "quality_snapshot": evidence_pack.get("quality_snapshot", {}) if isinstance(evidence_pack.get("quality_snapshot", {}), dict) else {},
         "overall_coverage": evidence_pack.get("overall_coverage", 0),
         "snapshot_origin": "structured_sidecar",
+        "snapshot_stage": "structured_draft",
         "has_structured_evidence": True,
         "draft": copy.deepcopy(draft_snapshot) if isinstance(draft_snapshot, dict) else {},
+    }
+    normalized_snapshot = _normalize_solution_snapshot(snapshot)
+    normalized_snapshot["solution_snapshot"] = build_solution_runtime_snapshot(normalized_snapshot)
+    return _normalize_solution_snapshot(normalized_snapshot)
+
+
+def _build_report_bound_solution_draft(
+    report_text: str,
+    report_schema: dict,
+) -> dict:
+    sections_level2 = split_markdown_sections(str(report_text or ""), "## ")
+    draft = {
+        "overview": "",
+        "needs": [],
+        "analysis": {
+            "customer_needs": "",
+            "business_flow": "",
+            "tech_constraints": "",
+            "project_constraints": "",
+        },
+        "visualizations": {},
+        "solutions": [],
+        "risks": [],
+        "actions": [],
+        "open_questions": [],
+        "evidence_index": [],
+    }
+    if not sections_level2:
+        return draft
+
+    normalized_schema, _schema_issues = normalize_custom_report_schema(report_schema)
+    analysis_source_map = {
+        "analysis.customer_needs": "customer_needs",
+        "analysis.business_flow": "business_flow",
+        "analysis.tech_constraints": "tech_constraints",
+        "analysis.project_constraints": "project_constraints",
+    }
+    table_sources = {"needs", "solutions", "risks", "actions", "open_questions"}
+
+    for section in normalized_schema.get("sections", []) if isinstance(normalized_schema.get("sections", []), list) else []:
+        if not isinstance(section, dict):
+            continue
+        title = clean_solution_text(section.get("title", ""), max_len=80)
+        if not title:
+            continue
+        body = _solution_find_section_body(sections_level2, [title])
+        if not body:
+            continue
+
+        source = str(section.get("source") or "").strip()
+        if source == "overview":
+            text = clean_solution_text(_solution_strip_markdown_tables(body), max_len=3000)
+            if text and len(text) >= len(draft["overview"]):
+                draft["overview"] = text
+            continue
+
+        if source in table_sources:
+            rows = _solution_parse_table_from_sections([(title, body)], [title], fallback_body=body)
+            normalized_rows = _normalize_solution_structured_list(rows, source)
+            section_refs = _normalize_solution_refs(re.findall(r"Q\d+", body, flags=re.IGNORECASE))
+            if normalized_rows and section_refs:
+                for item in normalized_rows:
+                    if isinstance(item, dict) and not _normalize_solution_refs(item.get("evidence_refs", [])):
+                        item["evidence_refs"] = list(section_refs)
+            if normalized_rows:
+                draft[source] = normalized_rows
+            continue
+
+        analysis_key = analysis_source_map.get(source)
+        if analysis_key:
+            text = clean_solution_text(_solution_strip_markdown_tables(body), max_len=2000)
+            if text:
+                draft["analysis"][analysis_key] = text
+
+    if not draft["overview"]:
+        for title, body in sections_level2:
+            if "附录" in clean_solution_text(title, max_len=80):
+                continue
+            fallback_text = clean_solution_text(_solution_strip_markdown_tables(body), max_len=3000)
+            if fallback_text:
+                draft["overview"] = fallback_text
+                break
+
+    return draft
+
+
+def build_bound_solution_sidecar_snapshot(
+    report_name: str,
+    report_content: str,
+    session: dict,
+) -> dict:
+    session = session if isinstance(session, dict) else {}
+    if not session:
+        return {}
+
+    scenario_config = session.get("scenario_config", {}) if isinstance(session.get("scenario_config", {}), dict) else {}
+    report_cfg = scenario_config.get("report", {}) if isinstance(scenario_config.get("report", {}), dict) else {}
+    report_type = str(report_cfg.get("type") or "standard").strip().lower() or "standard"
+    report_template = normalize_report_template_name(report_cfg.get("template", ""), report_type=report_type)
+    report_schema = {}
+    if report_template == REPORT_TEMPLATE_CUSTOM_V1:
+        normalized_schema, _schema_issues = normalize_custom_report_schema(
+            report_cfg.get("schema"),
+            fallback_sections=report_cfg.get("sections"),
+        )
+        report_schema = normalized_schema
+    elif isinstance(report_cfg.get("schema", {}), dict):
+        report_schema = copy.deepcopy(report_cfg.get("schema", {}))
+
+    normalized_content = normalize_report_time_fields(str(report_content or ""))
+    report_text = strip_inline_evidence_markers(normalized_content)
+    main_report_text = report_text.split("## 附录：完整访谈记录", 1)[0].strip()
+    report_title = _solution_report_title_from_content(main_report_text)
+
+    markdown_snapshot = build_solution_snapshot_from_markdown_report(report_name, report_content)
+    markdown_draft = copy.deepcopy(markdown_snapshot.get("draft", {})) if isinstance(markdown_snapshot, dict) else {}
+    bound_draft = _build_report_bound_solution_draft(main_report_text, report_schema) if report_schema else {}
+
+    analysis = markdown_draft.get("analysis", {}) if isinstance(markdown_draft.get("analysis", {}), dict) else {}
+    bound_analysis = bound_draft.get("analysis", {}) if isinstance(bound_draft.get("analysis", {}), dict) else {}
+    draft = {
+        "overview": bound_draft.get("overview", "") or markdown_draft.get("overview", ""),
+        "needs": copy.deepcopy(bound_draft.get("needs", []) or markdown_draft.get("needs", [])),
+        "analysis": {
+            "customer_needs": bound_analysis.get("customer_needs", "") or analysis.get("customer_needs", ""),
+            "business_flow": bound_analysis.get("business_flow", "") or analysis.get("business_flow", ""),
+            "tech_constraints": bound_analysis.get("tech_constraints", "") or analysis.get("tech_constraints", ""),
+            "project_constraints": bound_analysis.get("project_constraints", "") or analysis.get("project_constraints", ""),
+        },
+        "visualizations": copy.deepcopy(markdown_draft.get("visualizations", {})) if isinstance(markdown_draft.get("visualizations", {}), dict) else {},
+        "solutions": copy.deepcopy(bound_draft.get("solutions", []) or markdown_draft.get("solutions", [])),
+        "risks": copy.deepcopy(bound_draft.get("risks", []) or markdown_draft.get("risks", [])),
+        "actions": copy.deepcopy(bound_draft.get("actions", []) or markdown_draft.get("actions", [])),
+        "open_questions": copy.deepcopy(bound_draft.get("open_questions", []) or markdown_draft.get("open_questions", [])),
+        "evidence_index": copy.deepcopy(markdown_draft.get("evidence_index", [])) if isinstance(markdown_draft.get("evidence_index", []), list) else [],
+    }
+    has_meaningful_draft = bool(
+        draft.get("overview")
+        or draft.get("needs")
+        or draft.get("solutions")
+        or draft.get("risks")
+        or draft.get("actions")
+        or draft.get("open_questions")
+        or any(value for value in draft.get("analysis", {}).values())
+    )
+    if not has_meaningful_draft:
+        return {}
+
+    dimensions = session.get("dimensions", {}) if isinstance(session.get("dimensions", {}), dict) else {}
+    dimension_coverages = []
+    for dim_state in dimensions.values():
+        if not isinstance(dim_state, dict):
+            continue
+        try:
+            dimension_coverages.append(max(0.0, min(float(dim_state.get("coverage", 0) or 0), 100.0)))
+        except Exception:
+            continue
+    overall_coverage = round((sum(dimension_coverages) / max(1, len(dimension_coverages))) / 100.0, 4) if dimension_coverages else 0.0
+    quality_meta = session.get("last_report_quality_meta", {}) if isinstance(session.get("last_report_quality_meta", {}), dict) else {}
+
+    snapshot = {
+        "version": SOLUTION_SNAPSHOT_VERSION,
+        "report_name": report_name,
+        "topic": report_title or str(session.get("topic") or "").strip(),
+        "session_id": str(session.get("session_id") or "").strip(),
+        "scenario_id": str(session.get("scenario_id") or "").strip(),
+        "scenario_name": str(scenario_config.get("name") or "").strip(),
+        "report_template": report_template,
+        "report_type": report_type,
+        "report_schema": report_schema,
+        "solution_schema": get_scenario_solution_compiled_schema(scenario_config),
+        "quality_meta": copy.deepcopy(quality_meta),
+        "quality_snapshot": copy.deepcopy(markdown_snapshot.get("quality_snapshot", {})) if isinstance(markdown_snapshot, dict) else {},
+        "overall_coverage": overall_coverage,
+        "snapshot_origin": "bound_session_markdown",
+        "snapshot_stage": "final_report",
+        "has_structured_evidence": bool(
+            (isinstance(markdown_snapshot, dict) and markdown_snapshot.get("has_structured_evidence", False))
+            or any(
+                item.get("evidence_refs")
+                for field in ["needs", "solutions", "risks", "actions", "open_questions", "evidence_index"]
+                for item in draft.get(field, [])
+                if isinstance(item, dict)
+            )
+        ),
+        "draft": draft,
     }
     normalized_snapshot = _normalize_solution_snapshot(snapshot)
     normalized_snapshot["solution_snapshot"] = build_solution_runtime_snapshot(normalized_snapshot)
@@ -25812,6 +26397,44 @@ def build_solution_snapshot_from_markdown_report(report_name: str, report_conten
     normalized_snapshot = _normalize_solution_snapshot(snapshot)
     normalized_snapshot["solution_snapshot"] = build_solution_runtime_snapshot(normalized_snapshot)
     return _normalize_solution_snapshot(normalized_snapshot)
+
+
+def build_final_solution_sidecar_snapshot(structured_snapshot: dict, report_content: str) -> dict:
+    normalized_structured = _normalize_solution_snapshot(structured_snapshot if isinstance(structured_snapshot, dict) else {})
+    markdown_snapshot = build_solution_snapshot_from_markdown_report(
+        normalized_structured.get("report_name", ""),
+        report_content,
+    )
+    if not isinstance(markdown_snapshot, dict) or not markdown_snapshot:
+        fallback_snapshot = copy.deepcopy(normalized_structured)
+        fallback_snapshot["snapshot_stage"] = "final_report"
+        fallback_snapshot["snapshot_origin"] = "structured_finalized"
+        fallback_snapshot["solution_snapshot"] = build_solution_runtime_snapshot(fallback_snapshot)
+        return _normalize_solution_snapshot(fallback_snapshot)
+
+    normalized_markdown = _normalize_solution_snapshot(markdown_snapshot)
+    final_snapshot = copy.deepcopy(normalized_structured)
+    final_snapshot["topic"] = normalized_markdown.get("topic") or normalized_structured.get("topic", "")
+    final_snapshot["snapshot_stage"] = "final_report"
+    final_snapshot["snapshot_origin"] = "final_report_markdown"
+    final_snapshot["has_structured_evidence"] = bool(
+        normalized_markdown.get("has_structured_evidence", False)
+        or normalized_structured.get("has_structured_evidence", False)
+    )
+    final_snapshot["draft"] = {
+        "overview": normalized_markdown.get("draft", {}).get("overview", "") or normalized_structured.get("draft", {}).get("overview", ""),
+        "needs": copy.deepcopy(normalized_markdown.get("draft", {}).get("needs", []) or normalized_structured.get("draft", {}).get("needs", [])),
+        "analysis": copy.deepcopy(normalized_markdown.get("draft", {}).get("analysis", {}) or normalized_structured.get("draft", {}).get("analysis", {})),
+        "visualizations": copy.deepcopy(normalized_structured.get("draft", {}).get("visualizations", {})),
+        "solutions": copy.deepcopy(normalized_markdown.get("draft", {}).get("solutions", []) or normalized_structured.get("draft", {}).get("solutions", [])),
+        "risks": copy.deepcopy(normalized_markdown.get("draft", {}).get("risks", []) or normalized_structured.get("draft", {}).get("risks", [])),
+        "actions": copy.deepcopy(normalized_markdown.get("draft", {}).get("actions", []) or normalized_structured.get("draft", {}).get("actions", [])),
+        "open_questions": copy.deepcopy(normalized_markdown.get("draft", {}).get("open_questions", []) or normalized_structured.get("draft", {}).get("open_questions", [])),
+        "evidence_index": copy.deepcopy(normalized_structured.get("draft", {}).get("evidence_index", [])),
+    }
+    final_snapshot = _normalize_solution_snapshot(final_snapshot)
+    final_snapshot["solution_snapshot"] = build_solution_runtime_snapshot(final_snapshot)
+    return _normalize_solution_snapshot(final_snapshot)
 
 
 def _solution_phrase_set(values: list[object]) -> list[str]:
@@ -25917,7 +26540,7 @@ def build_solution_quality_signals(snapshot: dict, source_mode: str = "structure
     normalized = _normalize_solution_snapshot(snapshot)
     draft = normalized["draft"]
     analysis = draft.get("analysis", {})
-    slot_values = {
+    default_slot_values = {
         "overview": bool(draft.get("overview")),
         "needs": bool(draft.get("needs")),
         "solutions": bool(draft.get("solutions")),
@@ -25925,6 +26548,28 @@ def build_solution_quality_signals(snapshot: dict, source_mode: str = "structure
         "risks": bool(draft.get("risks")),
         "analysis": any(bool(value) for value in analysis.values()),
     }
+    expected_slots = []
+    report_schema = normalized.get("report_schema", {}) if isinstance(normalized.get("report_schema", {}), dict) else {}
+    for section in report_schema.get("sections", []) if isinstance(report_schema.get("sections", []), list) else []:
+        if not isinstance(section, dict):
+            continue
+        source = str(section.get("source") or "").strip()
+        if source == "overview":
+            expected_slots.append("overview")
+        elif source in {"needs", "solutions", "actions", "risks"}:
+            expected_slots.append(source)
+        elif source.startswith("analysis."):
+            expected_slots.append("analysis")
+    if expected_slots:
+        ordered_slot_keys = []
+        seen_slot_keys = set()
+        for key in expected_slots:
+            if key in default_slot_values and key not in seen_slot_keys:
+                seen_slot_keys.add(key)
+                ordered_slot_keys.append(key)
+        slot_values = {key: default_slot_values[key] for key in ordered_slot_keys} if ordered_slot_keys else dict(default_slot_values)
+    else:
+        slot_values = dict(default_slot_values)
     fallback_ratio = round(sum(1 for present in slot_values.values() if not present) / max(1, len(slot_values)), 3)
 
     structured_items = []
@@ -32548,7 +33193,12 @@ def _build_solution_degraded_payload(snapshot: dict, source_mode: str, quality_s
     }
 
 
-def _build_solution_payload_from_snapshot(snapshot: dict, source_mode: str = "structured_sidecar") -> dict:
+def _build_solution_payload_from_snapshot(
+    snapshot: dict,
+    source_mode: str = "structured_sidecar",
+    *,
+    allow_ai_enhancement: bool = True,
+) -> dict:
     normalized = _normalize_solution_snapshot(snapshot)
     quality_signals = build_solution_quality_signals(normalized, source_mode=source_mode)
     if quality_signals.get("degraded_reasons"):
@@ -32580,17 +33230,32 @@ def _build_solution_payload_from_snapshot(snapshot: dict, source_mode: str = "st
     hero = build_solution_hero_from_schema(normalized, quality_signals, default_hero) if use_schema_renderer else default_hero
     nav_items = [{"id": section.get("id"), "label": section.get("label")} for section in sections]
     rule_proposal_brief = build_solution_proposal_brief(normalized, quality_signals=quality_signals, source_mode=source_mode)
-    proposal_brief = build_solution_proposal_brief_with_ai(normalized, quality_signals=quality_signals, source_mode=source_mode)
+    proposal_brief = copy.deepcopy(rule_proposal_brief)
+    proposal_meta = proposal_brief.get("meta", {}) if isinstance(proposal_brief.get("meta", {}), dict) else {}
+    proposal_meta["generation_mode"] = "rule"
+    proposal_brief["meta"] = proposal_meta
+    if allow_ai_enhancement:
+        proposal_brief = build_solution_proposal_brief_with_ai(normalized, quality_signals=quality_signals, source_mode=source_mode)
     proposal_brief = _solution_postprocess_proposal_brief(proposal_brief, rule_proposal_brief)
     rule_chapter_copy = build_solution_chapter_copy(normalized, rule_proposal_brief, quality_signals=quality_signals)
-    chapter_copy = build_solution_chapter_copy_with_ai(normalized, proposal_brief, quality_signals=quality_signals)
-    chapter_copy = _solution_postprocess_chapter_copy(chapter_copy, rule_chapter_copy)
-    chapter_copy, quality_review = review_solution_chapter_copy_with_ai(
-        normalized,
-        proposal_brief,
-        chapter_copy,
-        quality_signals=quality_signals,
-    )
+    chapter_copy = copy.deepcopy(rule_chapter_copy)
+    chapter_meta = chapter_copy.get("meta", {}) if isinstance(chapter_copy.get("meta", {}), dict) else {}
+    chapter_meta["generation_mode"] = "rule"
+    chapter_copy["meta"] = chapter_meta
+    quality_review = build_solution_quality_review(normalized, proposal_brief, chapter_copy)
+    quality_review["review_mode"] = "heuristic"
+    if allow_ai_enhancement:
+        chapter_copy = build_solution_chapter_copy_with_ai(normalized, proposal_brief, quality_signals=quality_signals)
+        chapter_copy, quality_review = review_solution_chapter_copy_with_ai(
+            normalized,
+            proposal_brief,
+            chapter_copy,
+            quality_signals=quality_signals,
+        )
+    else:
+        chapter_meta = chapter_copy.get("meta", {}) if isinstance(chapter_copy.get("meta", {}), dict) else {}
+        chapter_meta["review_mode"] = "heuristic"
+        chapter_copy["meta"] = chapter_meta
     chapter_copy = _solution_postprocess_chapter_copy(chapter_copy, rule_chapter_copy)
     proposal_page = build_solution_proposal_page(normalized, proposal_brief, chapter_copy, quality_review=quality_review)
     proposal_support = build_solution_proposal_support(normalized)
@@ -32793,15 +33458,31 @@ def _build_payload_from_legacy_solution(legacy_payload: dict) -> dict:
     }
 
 
-def build_solution_payload_from_report(report_name: str, report_content: str) -> dict:
+def build_solution_payload_from_report(
+    report_name: str,
+    report_content: str,
+    *,
+    allow_ai_enhancement: bool = False,
+    owner_user_id: int = 0,
+) -> dict:
     lock_key = normalize_solution_report_filename(report_name) or str(report_name or "report.md")
     with named_file_lock("solution-payload", lock_key):
         sidecar = read_solution_sidecar(report_name)
+        if not sidecar and int(owner_user_id or 0) > 0:
+            bound_session = find_direct_bound_session_for_report(report_name, int(owner_user_id))
+            if isinstance(bound_session, dict):
+                rebound_snapshot = build_bound_solution_sidecar_snapshot(report_name, report_content, bound_session)
+                if rebound_snapshot:
+                    write_solution_sidecar(report_name, rebound_snapshot)
+                    sidecar = read_solution_sidecar(report_name)
         if sidecar:
+            sidecar_snapshot = _normalize_solution_snapshot(sidecar)
+            if str(sidecar_snapshot.get("snapshot_stage") or "").strip().lower() != "final_report":
+                sidecar_snapshot = build_final_solution_sidecar_snapshot(sidecar_snapshot, report_content)
             source_hash = _solution_payload_cache_source_hash(
                 report_name,
                 source_mode="structured_sidecar",
-                snapshot=sidecar,
+                snapshot=sidecar_snapshot,
             )
             cached_payload = read_solution_payload_cache(
                 report_name,
@@ -32810,8 +33491,12 @@ def build_solution_payload_from_report(report_name: str, report_content: str) ->
             )
             if cached_payload:
                 return cached_payload
-            payload = _build_solution_payload_from_snapshot(sidecar, source_mode="structured_sidecar")
-            finalized_payload = _finalize_solution_payload_for_delivery(payload, sidecar, source_mode="structured_sidecar")
+            payload = _build_solution_payload_from_snapshot(
+                sidecar_snapshot,
+                source_mode="structured_sidecar",
+                allow_ai_enhancement=allow_ai_enhancement,
+            )
+            finalized_payload = _finalize_solution_payload_for_delivery(payload, sidecar_snapshot, source_mode="structured_sidecar")
             write_solution_payload_cache(
                 report_name,
                 finalized_payload,
@@ -32834,7 +33519,11 @@ def build_solution_payload_from_report(report_name: str, report_content: str) ->
             )
             if cached_payload:
                 return cached_payload
-            payload = _build_solution_payload_from_snapshot(markdown_snapshot, source_mode="legacy_markdown")
+            payload = _build_solution_payload_from_snapshot(
+                markdown_snapshot,
+                source_mode="legacy_markdown",
+                allow_ai_enhancement=allow_ai_enhancement,
+            )
             finalized_payload = _finalize_solution_payload_for_delivery(payload, markdown_snapshot, source_mode="legacy_markdown")
             write_solution_payload_cache(
                 report_name,
@@ -33006,7 +33695,12 @@ def get_report_solution(filename):
     except Exception:
         generated_at = None
     content = normalize_report_time_fields(content, generated_at=generated_at)
-    payload = build_solution_payload_from_report(normalized, content)
+    payload = build_solution_payload_from_report(
+        normalized,
+        content,
+        allow_ai_enhancement=False,
+        owner_user_id=int(user_id),
+    )
     response = jsonify(payload)
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
@@ -33071,7 +33765,12 @@ def get_public_solution_by_share_token(share_token):
     except Exception:
         generated_at = None
     content = normalize_report_time_fields(content, generated_at=generated_at)
-    payload = copy.deepcopy(build_solution_payload_from_report(report_name, content))
+    payload = copy.deepcopy(build_solution_payload_from_report(
+        report_name,
+        content,
+        allow_ai_enhancement=False,
+        owner_user_id=owner_user_id,
+    ))
     payload["share_mode"] = "public"
     payload["report_name"] = ""
 

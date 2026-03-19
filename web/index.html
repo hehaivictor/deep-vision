@@ -742,7 +742,7 @@
                 </div>
                 <nav class="flex items-center gap-2 md:gap-3" x-show="authReady" x-cloak>
                     <button @click="switchView('sessions')"
-                            :class="getHeaderNavClass(currentView === 'sessions')"
+                            :class="getHeaderNavClass(isSessionViewActive())"
                             class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium">
                         <span class="hidden sm:inline">会话</span>
                         <span class="sm:hidden">会话</span>
@@ -1499,7 +1499,7 @@
                                 <p class="text-xs text-muted mb-3">上传已有的文档供 AI 参考</p>
                                 <template x-if="currentSession.reference_materials && currentSession.reference_materials.length > 0">
                                     <div class="space-y-2">
-                                        <template x-for="(doc, index) in currentSession.reference_materials" :key="doc.name">
+                                        <template x-for="(doc, index) in currentSession.reference_materials" :key="getDocumentKey(doc, index)">
                                             <div class="flex items-center gap-2 p-2 bg-gray-50 rounded-lg text-sm group">
                                                 <span class="shrink-0 w-4 h-4 text-gray-500">
                                                     <template x-if="doc.source === 'auto'">
@@ -1582,7 +1582,7 @@
                                                     <span class="font-medium text-primary" x-text="currentSession.reference_materials.length + ' 个资料已上传'"></span>
                                                 </div>
                                                 <div class="space-y-2 max-h-48 overflow-y-auto">
-                                                    <template x-for="(doc, index) in currentSession.reference_materials" :key="doc.name">
+                                                    <template x-for="(doc, index) in currentSession.reference_materials" :key="getDocumentKey(doc, index)">
                                                         <div class="flex items-center gap-2 p-2 bg-white rounded-lg text-sm group">
                                                             <span class="shrink-0 w-4 h-4 text-gray-500">
                                                                 <template x-if="doc.source === 'auto'">
@@ -1851,9 +1851,9 @@
                                             <svg class="w-8 h-8 text-[#357BE2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                                             </svg>
-                                        </div>
+                                    </div>
                                         <h3 class="text-xl font-semibold text-primary mb-2">所有问题已完成</h3>
-                                        <p class="text-muted text-sm">您已经完成了全部 4 个维度的访谈</p>
+                                        <p class="text-muted text-sm">您已经完成了全部 <span x-text="getCurrentSessionDimensionCount()"></span> 个维度的访谈</p>
                                             <p class="text-muted text-sm mt-1">请点击下方“确认需求摘要”按钮进入下一阶段</p>
                                     </div>
 
@@ -2816,7 +2816,7 @@
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
                                                 </svg>
                                                 <span class="text-sm font-medium text-primary" x-text="recognizedResult.recommended.name"></span>
-                                                <span class="text-[10px] text-muted" x-text="recognizedResult.recommended.dimensions.length + '维度'"></span>
+                                                <span class="text-[10px] text-muted" x-text="getScenarioDimensionCount(recognizedResult.recommended) + '维度'"></span>
                                             </div>
                                         </button>
                                     </div>
@@ -2835,7 +2835,7 @@
                                                 <span class="text-[8px] bg-amber-100 text-amber-700 px-1 py-0.5 rounded">评估</span>
                                             </template>
                                         </div>
-                                        <span class="text-[10px] text-muted" x-text="scenario.dimensions.length + '维度'"></span>
+                                        <span class="text-[10px] text-muted" x-text="getScenarioDimensionCount(scenario) + '维度'"></span>
                                     </button>
                                 </template>
 
@@ -2853,7 +2853,7 @@
                                                     <span class="text-[8px] bg-purple-100 text-purple-600 px-1 py-0.5 rounded">自定义</span>
                                                 </div>
                                                 <div class="flex items-center gap-2">
-                                                    <span class="text-[10px] text-muted" x-text="scenario.dimensions.length + '维度'"></span>
+                                                    <span class="text-[10px] text-muted" x-text="getScenarioDimensionCount(scenario) + '维度'"></span>
                                                     <!-- 删除按钮 -->
                                                     <div @click.stop="deleteCustomScenario(scenario.id, scenario.name)"
                                                          class="w-5 h-5 rounded-full flex items-center justify-center text-gray-500 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
@@ -2885,7 +2885,7 @@
                         </div>
 
                         <!-- 低置信度时的智能引导 -->
-                        <div x-show="recognizedResult && recognizedResult.confidence < 0.5 && !aiGenerating && !showScenarioSelector"
+                        <div x-show="shouldShowLowConfidenceScenarioHint()"
                              x-transition
                              class="mt-2 p-3 bg-amber-50 border border-amber-200 rounded-lg">
                             <div class="flex items-start gap-2 mb-2">

@@ -68,7 +68,9 @@ class SolutionPayloadTests(unittest.TestCase):
         cls.sandbox_root = Path(cls.temp_dir.name).resolve()
         cls.server.DATA_DIR = cls.sandbox_root / "data"
         cls.server.REPORTS_DIR = cls.server.DATA_DIR / "reports"
+        cls.server.SESSIONS_DIR = cls.server.DATA_DIR / "sessions"
         cls.server.REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+        cls.server.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
         cls.server.ENABLE_AI = False
         cls.server.question_ai_client = None
         cls.server.report_ai_client = None
@@ -83,13 +85,18 @@ class SolutionPayloadTests(unittest.TestCase):
         cls.temp_dir.cleanup()
 
     def setUp(self):
-        for path in self.server.REPORTS_DIR.glob("*"):
-            if path.is_file():
-                path.unlink()
+        for directory in (self.server.REPORTS_DIR, self.server.SESSIONS_DIR):
+            for path in directory.glob("*"):
+                if path.is_file():
+                    path.unlink()
 
-    def _write_structured_sidecar(self, report_name: str, snapshot: dict):
+    def _write_structured_sidecar(self, report_name: str, snapshot: dict, *, allow_ai_enhancement: bool = False):
         self.server.write_solution_sidecar(report_name, snapshot)
-        return self.server.build_solution_payload_from_report(report_name, "# 占位报告")
+        return self.server.build_solution_payload_from_report(
+            report_name,
+            "# 占位报告",
+            allow_ai_enhancement=allow_ai_enhancement,
+        )
 
     def _build_snapshot(self, report_name: str, *, topic: str, scenario_id: str = "", scenario_name: str = "", overview: str, needs=None, solutions=None, risks=None, actions=None, open_questions=None, evidence_index=None, analysis=None, coverage: float = 0.78, has_structured_evidence: bool = True, solution_schema=None):
         payload = {
@@ -506,6 +513,138 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertIn('刷新后的方案需要把升级链路', refreshed_payload.get('overview', ''))
         self.assertIn('缓存刷新后方案', refreshed_payload.get('title', ''))
 
+    def test_build_solution_payload_finalizes_non_final_sidecar_with_markdown_snapshot(self):
+        report_name = 'final-stage-upgrade.md'
+        solution_schema = {
+            "version": "v1",
+            "sections": [
+                "推进判断",
+                "现状问题",
+                "方案对比",
+                "实施路径",
+                "风险边界",
+            ],
+        }
+        structured_snapshot = self._build_snapshot(
+            report_name,
+            topic='草案方案主题',
+            scenario_name='用户反馈闭环',
+            overview='这是一份结构化草案概述，尚未对齐最终报告。',
+            needs=[{'priority': 'P0', 'name': '旧需求', 'description': '草案里的旧需求描述。', 'evidence_refs': ['Q1']}],
+            solutions=[{'title': '旧方案模块', 'description': '草案里的旧方案。', 'owner': '产品', 'timeline': '第1周', 'metric': '草案指标', 'evidence_refs': ['Q2']}],
+            risks=[{'risk': '旧风险项', 'impact': '草案影响', 'mitigation': '草案缓解措施', 'evidence_refs': ['Q3']}],
+            actions=[{'action': '旧行动项', 'owner': '产品', 'timeline': '本周', 'metric': '草案交付', 'evidence_refs': ['Q4']}],
+            solution_schema=solution_schema,
+        )
+        report_content = (
+            '# 用户反馈访谈报告\n\n'
+            '## 1. 访谈概述\n'
+            '正式报告需要优先统一反馈归因口径，再把分发、复盘和责任闭环串起来。\n\n'
+            '## 2. 需求摘要\n'
+            '### 核心需求\n'
+            '| 优先级 | 需求项 | 描述 | 证据 |\n'
+            '| --- | --- | --- | --- |\n'
+            '| P0 | 反馈归因口径统一 | 先统一高频反馈标签与升级标准。 | Q1 |\n\n'
+            '## 4. 方案建议\n'
+            '### 建议清单\n'
+            '| 方案建议 | 说明 | Owner | 时间计划 | 验收指标 | 证据 |\n'
+            '| --- | --- | --- | --- | --- | --- |\n'
+            '| 建立统一标签字典 | 收口高频问题标签，减少跨团队争议。 | 产品 | 第1周 | 标签一致率 > 90% | Q2 |\n\n'
+            '## 5. 风险评估\n'
+            '### 风险清单\n'
+            '| 风险项 | 影响 | 缓解措施 | 证据 |\n'
+            '| --- | --- | --- | --- |\n'
+            '| 标签口径不一致 | 指标失真，无法形成稳定复盘。 | 先冻结标签字典，再开放补充字段。 | Q3 |\n\n'
+            '## 6. 下一步行动\n'
+            '### 行动计划\n'
+            '| 行动项 | Owner | 时间计划 | 验收指标 | 证据 |\n'
+            '| --- | --- | --- | --- | --- |\n'
+            '| 完成标签词典评审 | 产品+运营 | 本周 | 形成统一规则文档 | Q4 |\n'
+        )
+
+        final_snapshot = self.server.build_final_solution_sidecar_snapshot(structured_snapshot, report_content)
+        self.assertEqual(final_snapshot.get('snapshot_stage'), 'final_report')
+        self.assertEqual(final_snapshot.get('snapshot_origin'), 'final_report_markdown')
+        self.assertEqual((final_snapshot.get('draft', {}).get('needs', []) or [{}])[0].get('name'), '反馈归因口径统一')
+        self.assertEqual((final_snapshot.get('draft', {}).get('solutions', []) or [{}])[0].get('title'), '建立统一标签字典')
+        self.assertEqual((final_snapshot.get('draft', {}).get('risks', []) or [{}])[0].get('risk'), '标签口径不一致')
+        self.assertEqual((final_snapshot.get('draft', {}).get('actions', []) or [{}])[0].get('action'), '完成标签词典评审')
+
+        self.server.write_solution_sidecar(report_name, structured_snapshot)
+        payload = self.server.build_solution_payload_from_report(report_name, report_content)
+        self.assertEqual(payload.get('source_mode'), 'structured_sidecar')
+        self.assertIn('正式报告需要优先统一反馈归因口径', payload.get('overview', ''))
+        self.assertEqual(payload.get('solution_schema_meta', {}).get('render_mode'), 'schema')
+
+    def test_build_solution_payload_backfills_bound_sidecar_for_custom_report_schema(self):
+        report_name = 'custom-schema-bound.md'
+        report_content = (
+            '# 章节蓝图一致性验证访谈报告\n\n'
+            '## 1. 推进判断\n\n'
+            '**当前建议**：建议推进，先收口最小闭环后进入试点。\n\n'
+            '**判断依据**：基于收益明确、路径清晰、投入可控三方面综合判断（Q2）。\n\n'
+            '## 2. 风险边界\n\n'
+            '| 风险项 | 风险描述 | 严重程度 | 应对建议 |\n'
+            '| --- | --- | --- | --- |\n'
+            '| 数据口径风险 | 指标定义不清会导致结论偏差。 | 高 | 先统一口径标准 |\n\n'
+            '*注：风险信息来源于Q3访谈记录*\n\n'
+            '## 3. 下一步动作\n\n'
+            '| 序号 | 动作项 | 执行要点 | 预期产出 |\n'
+            '| --- | --- | --- | --- |\n'
+            '| 1 | 明确口径 | 统一定义与边界 | 口径标准文档 |\n'
+            '| 2 | 小范围试点 | 先跑最小闭环 | 试点运行数据 |\n\n'
+            '*注：动作安排来源于Q4访谈记录*\n'
+        )
+        custom_schema = {
+            "version": "v1",
+            "sections": [
+                {"section_id": "decision", "title": "推进判断", "component": "paragraph", "source": "overview", "required": True},
+                {"section_id": "risks", "title": "风险边界", "component": "table", "source": "risks", "required": True},
+                {"section_id": "actions", "title": "下一步动作", "component": "table", "source": "actions", "required": True},
+            ],
+        }
+        session_id = 'dv-bound-custom'
+        session_payload = {
+            "session_id": session_id,
+            "owner_user_id": 7,
+            "topic": "章节蓝图一致性验证",
+            "status": "completed",
+            "current_report_name": report_name,
+            "last_report_name": report_name,
+            "dimensions": {
+                "decision": {"coverage": 100},
+                "risks": {"coverage": 100},
+                "actions": {"coverage": 100},
+            },
+            "scenario_config": {
+                "id": "custom-scenario-1",
+                "name": "章节蓝图一致性场景",
+                "report": {
+                    "template": self.server.REPORT_TEMPLATE_CUSTOM_V1,
+                    "type": "standard",
+                    "schema": custom_schema,
+                },
+            },
+        }
+        session_path = self.server.SESSIONS_DIR / f'{session_id}.json'
+        session_path.write_text(json.dumps(session_payload, ensure_ascii=False, indent=2), encoding='utf-8')
+
+        payload = self.server.build_solution_payload_from_report(
+            report_name,
+            report_content,
+            owner_user_id=7,
+        )
+
+        nav_labels = [item.get('label') for item in payload.get('nav_items', [])]
+        sidecar = self.server.read_solution_sidecar(report_name)
+
+        self.assertEqual(payload.get('source_mode'), 'structured_sidecar')
+        self.assertEqual(payload.get('solution_schema_meta', {}).get('render_mode'), 'schema')
+        self.assertEqual(nav_labels, ['推进判断', '风险边界', '下一步动作'])
+        self.assertEqual(sidecar.get('snapshot_stage'), 'final_report')
+        self.assertEqual(sidecar.get('scenario_name'), '章节蓝图一致性场景')
+        self.assertEqual(sidecar.get('report_template'), self.server.REPORT_TEMPLATE_CUSTOM_V1)
+
     def test_schedule_solution_payload_prewarm_builds_cache_async(self):
         report_name = 'async-prewarm-sidecar.md'
         snapshot = self._build_snapshot(
@@ -532,6 +671,32 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertEqual(cached_payload.get('cache_version'), self.server.SOLUTION_PAYLOAD_CACHE_VERSION)
         self.assertEqual(cached_payload.get('source_mode'), 'structured_sidecar')
         self.assertEqual((cached_payload.get('payload', {}) or {}).get('report_name'), report_name)
+
+    def test_build_solution_payload_from_report_defaults_to_fast_rule_delivery(self):
+        report_name = 'delivery-fast.md'
+        snapshot = self._build_snapshot(
+            report_name,
+            topic='售后回访问题归因',
+            scenario_name='用户反馈闭环',
+            overview='方案页请求默认应直接返回规则版结果，不能在页面请求里同步等待 AI 文案增强。',
+            needs=[{'priority': 'P0', 'name': '首屏打开要稳定', 'description': '用户打开方案页不能卡在加载态。', 'evidence_refs': ['Q1']}],
+            solutions=[{'title': '页面请求只消费规则版 payload', 'description': '后续增强不应阻塞页面。', 'owner': '后端', 'timeline': '立即', 'metric': '首屏秒开', 'evidence_refs': ['Q2']}],
+            actions=[{'action': '同步返回规则版方案 payload', 'owner': '后端', 'timeline': '立即', 'metric': '接口稳定返回', 'evidence_refs': ['Q3']}],
+        )
+        self.server.write_solution_sidecar(report_name, snapshot)
+
+        def _fail_call_claude(*_args, **_kwargs):
+            raise AssertionError('默认交付链路不应触发 AI 文案增强')
+
+        with patch.object(self.server, 'ENABLE_AI', True), \
+             patch.object(self.server, 'HAS_ANTHROPIC', True), \
+             patch.object(self.server, 'call_claude', new=_fail_call_claude):
+            payload = self.server.build_solution_payload_from_report(report_name, '# 占位报告')
+
+        self.assertEqual(payload.get('source_mode'), 'structured_sidecar')
+        self.assertEqual(payload.get('proposal_brief', {}).get('meta', {}).get('generation_mode'), 'rule')
+        self.assertEqual(payload.get('chapter_copy', {}).get('meta', {}).get('generation_mode'), 'rule')
+        self.assertEqual(payload.get('quality_review', {}).get('review_mode'), 'heuristic')
 
     def test_structured_sidecar_builds_proposal_brief_and_chapter_copy(self):
         payload = self._write_structured_sidecar(
@@ -1242,7 +1407,7 @@ class SolutionPayloadTests(unittest.TestCase):
         with patch.object(self.server, 'ENABLE_AI', True), \
              patch.object(self.server, 'HAS_ANTHROPIC', True), \
              patch.object(self.server, 'call_claude', new=_fake_call_claude):
-            payload = self._write_structured_sidecar('proposal-ai.md', snapshot)
+            payload = self._write_structured_sidecar('proposal-ai.md', snapshot, allow_ai_enhancement=True)
 
         proposal_brief = payload.get('proposal_brief', {}) or {}
         chapter_copy = payload.get('chapter_copy', {}) or {}
@@ -1482,7 +1647,7 @@ class SolutionPayloadTests(unittest.TestCase):
         with patch.object(self.server, 'ENABLE_AI', True), \
              patch.object(self.server, 'HAS_ANTHROPIC', True), \
              patch.object(self.server, 'call_claude', new=_fake_call_claude):
-            payload = self._write_structured_sidecar('proposal-ai-bad-json.md', snapshot)
+            payload = self._write_structured_sidecar('proposal-ai-bad-json.md', snapshot, allow_ai_enhancement=True)
 
         proposal_brief = payload.get('proposal_brief', {}) or {}
         chapter_copy = payload.get('chapter_copy', {}) or {}
@@ -1584,7 +1749,7 @@ class SolutionPayloadTests(unittest.TestCase):
         with patch.object(self.server, 'ENABLE_AI', True), \
              patch.object(self.server, 'HAS_ANTHROPIC', True), \
              patch.object(self.server, 'call_claude', new=_fake_call_claude):
-            payload = self._write_structured_sidecar('proposal-ai-chapters.md', snapshot)
+            payload = self._write_structured_sidecar('proposal-ai-chapters.md', snapshot, allow_ai_enhancement=True)
 
         proposal_brief = payload.get('proposal_brief', {}) or {}
         chapter_copy = payload.get('chapter_copy', {}) or {}

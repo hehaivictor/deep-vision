@@ -10,6 +10,9 @@
 
 // 从配置文件获取 API 地址，如果配置文件未加载则使用默认值
 const API_BASE = window.location.origin + '/api';
+const QUESTION_REQUEST_TIMEOUT_MS = 25000;
+const QUESTION_REQUEST_STALL_GRACE_MS = 4000;
+const QUESTION_REQUEST_IDLE_MS = 2500;
 
 function deepVision() {
     return {
@@ -60,6 +63,12 @@ function deepVision() {
         loading: false,
         loadingQuestion: false,
         questionRequestId: 0,
+        questionRequestStartedAt: 0,
+        questionRequestLastActiveAt: 0,
+        questionRequestWatchdogTimer: null,
+        thinkingPollRequestId: 0,
+        webSearchPollRequestId: 0,
+        scenarioRecognizeRequestId: 0,
         isGoingPrev: false,
         submitting: false,  // 提交答案进行中，防止并发操作
         generatingReport: false,
@@ -435,6 +444,8 @@ function deepVision() {
         recognizeTimer: null,         // 防抖定时器
         recognizedResult: null,       // 识别结果 {recommended, confidence, alternatives}
         autoRecognizeEnabled: true,   // 是否启用自动识别
+        activeRecognizeFingerprint: '',
+        documentUploading: false,
 
         // 当前问题（AI 生成）
         currentQuestion: {
@@ -1702,6 +1713,10 @@ function deepVision() {
                 : 'text-primary hover:bg-surface-secondary';
         },
 
+        isSessionViewActive() {
+            return this.currentView === 'sessions' || this.currentView === 'interview';
+        },
+
         applyMermaidTheme(theme) {
             if (typeof mermaid === 'undefined') return;
             try {
@@ -1992,9 +2007,11 @@ function deepVision() {
         },
 
         // 开始轮询 Web Search 状态
-        startWebSearchPolling() {
+        startWebSearchPolling(requestId = this.questionRequestId) {
             // 先停止旧的轮询，防止多个轮询并发
             this.stopWebSearchPolling();
+            const currentRequestId = Number(requestId) || 0;
+            this.webSearchPollRequestId = currentRequestId;
 
             // 从配置文件读取轮询间隔
             const pollInterval = (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG.api?.webSearchPollInterval)
@@ -2002,11 +2019,26 @@ function deepVision() {
                 : 200;  // 默认 200ms
 
             this.webSearchPollInterval = setInterval(async () => {
+                if (!this.loadingQuestion || currentRequestId !== this.questionRequestId || currentRequestId !== this.webSearchPollRequestId) {
+                    this.stopWebSearchPolling();
+                    return;
+                }
                 try {
                     const response = await fetch(`${API_BASE}/status/web-search`);
+                    if (!this.loadingQuestion || currentRequestId !== this.questionRequestId || currentRequestId !== this.webSearchPollRequestId) {
+                        return;
+                    }
                     if (response.ok) {
                         const data = await response.json();
+                        if (!this.loadingQuestion || currentRequestId !== this.questionRequestId || currentRequestId !== this.webSearchPollRequestId) {
+                            return;
+                        }
                         this.webSearching = data.active;
+                        if (data.active) {
+                            this.markQuestionRequestActive(currentRequestId);
+                        } else {
+                            this.observeQuestionRequestIdle(currentRequestId);
+                        }
                     }
                 } catch (error) {
                     // 轮询失败时不显示错误，静默处理
@@ -2020,28 +2052,162 @@ function deepVision() {
                 clearInterval(this.webSearchPollInterval);
                 this.webSearchPollInterval = null;
             }
+            this.webSearchPollRequestId = 0;
             this.webSearching = false;  // 重置状态
         },
 
+        startQuestionRequestGuard(requestId = this.questionRequestId) {
+            this.stopQuestionRequestGuard();
+            const currentRequestId = Number(requestId) || 0;
+            const now = Date.now();
+            this.questionRequestStartedAt = now;
+            this.questionRequestLastActiveAt = now;
+            this.questionRequestWatchdogTimer = setTimeout(() => {
+                void this.recoverStalledQuestionRequest(currentRequestId, 'timeout');
+            }, QUESTION_REQUEST_TIMEOUT_MS);
+        },
+
+        stopQuestionRequestGuard() {
+            if (this.questionRequestWatchdogTimer) {
+                clearTimeout(this.questionRequestWatchdogTimer);
+                this.questionRequestWatchdogTimer = null;
+            }
+            this.questionRequestStartedAt = 0;
+            this.questionRequestLastActiveAt = 0;
+        },
+
+        markQuestionRequestActive(requestId = this.questionRequestId) {
+            const currentRequestId = Number(requestId) || 0;
+            if (!this.loadingQuestion || currentRequestId !== this.questionRequestId) {
+                return;
+            }
+            this.questionRequestLastActiveAt = Date.now();
+        },
+
+        observeQuestionRequestIdle(requestId = this.questionRequestId) {
+            const currentRequestId = Number(requestId) || 0;
+            if (!this.loadingQuestion || currentRequestId !== this.questionRequestId) {
+                return;
+            }
+            const startedAt = Number(this.questionRequestStartedAt) || 0;
+            if (!startedAt) {
+                return;
+            }
+            const now = Date.now();
+            if (now - startedAt < QUESTION_REQUEST_STALL_GRACE_MS) {
+                return;
+            }
+            const lastActiveAt = Number(this.questionRequestLastActiveAt) || startedAt;
+            if (now - lastActiveAt < QUESTION_REQUEST_IDLE_MS) {
+                return;
+            }
+            if (this.webSearching || this.thinkingStage?.active) {
+                return;
+            }
+            void this.recoverStalledQuestionRequest(currentRequestId, 'stalled');
+        },
+
+        async recoverStalledQuestionRequest(requestId = this.questionRequestId, reason = 'stalled') {
+            const currentRequestId = Number(requestId) || 0;
+            if (!this.loadingQuestion || currentRequestId !== this.questionRequestId) {
+                return;
+            }
+
+            // 标记旧请求过期，避免迟到响应覆盖界面。
+            this.questionRequestId += 1;
+            this.stopQuestionRequestGuard();
+            this.stopThinkingPolling();
+            this.stopWebSearchPolling();
+            this.stopTipRotation();
+            this.loadingQuestion = false;
+            this.isGoingPrev = false;
+
+            const sessionId = this.currentSession?.session_id;
+            if (sessionId) {
+                try {
+                    this.currentSession = await this.apiCall(`/sessions/${sessionId}`, { suppressErrorLog: true });
+                    this.updateDimensionsFromSession(this.currentSession);
+                } catch (error) {
+                    console.warn('刷新会话状态失败:', error);
+                }
+            }
+
+            const nextDim = this.getNextIncompleteDimension();
+            const currentCoverage = Number(this.currentSession?.dimensions?.[this.currentDimension]?.coverage) || 0;
+            if (!nextDim) {
+                this.currentStep = 1;
+                this.currentQuestion = this.createQuestionState();
+                this.aiRecommendationExpanded = false;
+                this.aiRecommendationApplied = false;
+                this.aiRecommendationPrevSelection = null;
+                this.showToast('所有维度访谈完成！', 'success');
+                return;
+            }
+
+            if (currentCoverage >= 100 && nextDim !== this.currentDimension) {
+                const completedDimension = this.currentDimension;
+                this.ensureDimensionVisualComplete(completedDimension);
+                this.currentDimension = nextDim;
+                this.currentQuestion = this.createQuestionState();
+                this.aiRecommendationExpanded = false;
+                this.aiRecommendationApplied = false;
+                this.aiRecommendationPrevSelection = null;
+                this.showToast(`当前维度已完成，已恢复到${this.getDimensionName(nextDim)}`, 'warning');
+                await this.fetchNextQuestion();
+                return;
+            }
+
+            const timeoutTriggered = reason === 'timeout';
+            this.currentQuestion = this.createQuestionState({
+                serviceError: true,
+                errorTitle: timeoutTriggered ? '生成问题超时' : '问题生成已中断',
+                errorDetail: timeoutTriggered
+                    ? '获取下一题耗时过长，已自动停止等待。请点击“重新获取问题”继续。'
+                    : '长时间没有收到新的问题结果，已自动停止等待。请点击“重新获取问题”继续；如果当前维度已完成，也可以直接跳到下一维度。'
+            });
+            this.aiRecommendationExpanded = false;
+            this.aiRecommendationApplied = false;
+            this.aiRecommendationPrevSelection = null;
+            this.interactionReady = true;
+            this.showToast(
+                timeoutTriggered ? '获取下一题超时，已停止等待' : '未检测到新的问题输出，已停止等待',
+                'warning'
+            );
+        },
+
         // ========== 方案B: 思考进度轮询 ==========
-        startThinkingPolling() {
+        startThinkingPolling(requestId = this.questionRequestId) {
             // 先停止旧的轮询，防止多个轮询并发
             this.stopThinkingPolling();
+            const currentRequestId = Number(requestId) || 0;
+            this.thinkingPollRequestId = currentRequestId;
 
             const pollInterval = 300;  // 300ms 轮询间隔
 
             this.thinkingPollInterval = setInterval(async () => {
+                if (!this.loadingQuestion || currentRequestId !== this.questionRequestId || currentRequestId !== this.thinkingPollRequestId) {
+                    this.stopThinkingPolling();
+                    return;
+                }
                 try {
                     const sessionId = this.currentSession?.session_id;
                     if (!sessionId) return;
 
                     const response = await fetch(`${API_BASE}/status/thinking/${sessionId}`);
+                    if (!this.loadingQuestion || currentRequestId !== this.questionRequestId || currentRequestId !== this.thinkingPollRequestId) {
+                        return;
+                    }
                     if (response.ok) {
                         const data = await response.json();
+                        if (!this.loadingQuestion || currentRequestId !== this.questionRequestId || currentRequestId !== this.thinkingPollRequestId) {
+                            return;
+                        }
                         if (data.active) {
                             this.thinkingStage = data;
+                            this.markQuestionRequestActive(currentRequestId);
                         } else {
                             this.thinkingStage = null;
+                            this.observeQuestionRequestIdle(currentRequestId);
                         }
                     }
                 } catch (error) {
@@ -2055,6 +2221,7 @@ function deepVision() {
                 clearInterval(this.thinkingPollInterval);
                 this.thinkingPollInterval = null;
             }
+            this.thinkingPollRequestId = 0;
             this.thinkingStage = null;  // 重置状态
         },
 
@@ -2618,33 +2785,11 @@ function deepVision() {
         },
 
         findMatchedSessionForReport(report) {
-            const reportName = report?.name;
-            if (!reportName || !Array.isArray(this.sessions) || this.sessions.length === 0) {
+            const reportSessionId = String(report?.session_id || '').trim();
+            if (!reportSessionId || !Array.isArray(this.sessions) || this.sessions.length === 0) {
                 return null;
             }
-
-            const reportTs = this.parseValidTimestamp(report?.created_at);
-            let matchedSession = null;
-            let bestDiff = Number.POSITIVE_INFINITY;
-            let bestAnchorTs = 0;
-
-            this.sessions.forEach(session => {
-                const topicSlug = this.buildSessionTopicSlug(session?.topic || '');
-                if (!topicSlug || !reportName.endsWith(`-${topicSlug}.md`)) {
-                    return;
-                }
-
-                const sessionAnchorTs = this.parseValidTimestamp(session?.updated_at || session?.created_at);
-                const diff = Math.abs(sessionAnchorTs - reportTs);
-
-                if (!matchedSession || diff < bestDiff || (diff === bestDiff && sessionAnchorTs > bestAnchorTs)) {
-                    matchedSession = session;
-                    bestDiff = diff;
-                    bestAnchorTs = sessionAnchorTs;
-                }
-            });
-
-            return matchedSession;
+            return this.sessions.find(session => String(session?.session_id || '').trim() === reportSessionId) || null;
         },
 
         extractReportDisplayTitle(reportName) {
@@ -3010,7 +3155,11 @@ function deepVision() {
                 '.webp': ['image/webp']
             };
 
-            for (const file of files) {
+            const sessionId = this.currentSession.session_id;
+            let successCount = 0;
+            this.documentUploading = true;
+            try {
+                for (const file of Array.from(files)) {
                 // 验证文件大小 - 最小值
                 if (file.size < minFileSize) {
                     this.showToast(`文件 ${file.name} 是空文件，请选择有效文件`, 'error');
@@ -3043,15 +3192,13 @@ function deepVision() {
 
                 try {
                     const response = await fetch(
-                        `${API_BASE}/sessions/${this.currentSession.session_id}/documents`,
+                        `${API_BASE}/sessions/${sessionId}/documents`,
                         { method: 'POST', body: formData }
                     );
 
                     if (response.ok) {
-                        const result = await response.json();
-                        // 刷新会话数据
-                        this.currentSession = await this.apiCall(`/sessions/${this.currentSession.session_id}`);
-                        this.showToast(`文档 ${file.name} 上传成功`, 'success');
+                        await response.json();
+                        successCount += 1;
                     } else {
                         // 尝试获取详细错误信息
                         let errorMsg = '上传失败';
@@ -3064,11 +3211,18 @@ function deepVision() {
                 } catch (error) {
                     this.showToast(`上传 ${file.name} 失败: ${error.message}`, 'error');
                 }
-            }
+                }
 
-            // 清除 input 值（仅点击上传时）
-            if (event.target?.value !== undefined) {
-                event.target.value = '';
+                // 清除 input 值（仅点击上传时）
+                if (event.target?.value !== undefined) {
+                    event.target.value = '';
+                }
+                if (successCount > 0 && this.currentSession?.session_id === sessionId) {
+                    this.currentSession = await this.apiCall(`/sessions/${sessionId}`);
+                    this.showToast(successCount === 1 ? '文档上传成功' : `已完成 ${successCount} 个文档上传`, 'success');
+                }
+            } finally {
+                this.documentUploading = false;
             }
         },
 
@@ -3083,8 +3237,9 @@ function deepVision() {
             this.docToDelete = doc;
             this.docDeleteCallback = async () => {
                 try {
+                    const query = doc?.doc_id ? `?doc_id=${encodeURIComponent(doc.doc_id)}` : '';
                     const response = await fetch(
-                        `${API_BASE}/sessions/${this.currentSession.session_id}/documents/${encodeURIComponent(doc.name)}`,
+                        `${API_BASE}/sessions/${this.currentSession.session_id}/documents/${encodeURIComponent(doc.name)}${query}`,
                         { method: 'DELETE' }
                     );
 
@@ -3101,6 +3256,11 @@ function deepVision() {
                 }
             };
             this.showDeleteDocModal = true;
+        },
+
+        getDocumentKey(doc, index = 0) {
+            if (!doc || typeof doc !== 'object') return `doc-${index}`;
+            return doc.doc_id || `${doc.uploaded_at || 'unknown'}-${doc.name || 'doc'}-${doc.source || 'upload'}-${index}`;
         },
 
 
@@ -3175,8 +3335,9 @@ function deepVision() {
             this.aiRecommendationExpanded = false;
             this.aiRecommendationApplied = false;
             this.aiRecommendationPrevSelection = null;
-            this.startThinkingPolling();  // 方案B: 开始轮询思考进度
-            this.startWebSearchPolling();  // 同时保留 Web Search 状态轮询
+            this.startQuestionRequestGuard(requestId);
+            this.startThinkingPolling(requestId);  // 方案B: 开始轮询思考进度
+            this.startWebSearchPolling(requestId);  // 同时保留 Web Search 状态轮询
             this.selectedAnswers = [];
             this.rationaleText = '';
             this.otherAnswerText = '';
@@ -3195,6 +3356,7 @@ function deepVision() {
                     return;
                 }
 
+                this.stopQuestionRequestGuard();
                 // 先停止轮询，手动设置完成状态让所有步骤显示为已完成
                 this.stopThinkingPolling();
                 this.stopWebSearchPolling();
@@ -3303,6 +3465,7 @@ function deepVision() {
             } finally {
                 if (requestId === this.questionRequestId) {
                     // 确保停止轮询
+                    this.stopQuestionRequestGuard();
                     this.stopThinkingPolling();
                     this.stopWebSearchPolling();
                     this.loadingQuestion = false;
@@ -4264,6 +4427,11 @@ function deepVision() {
                     this.updateDimensionsFromSession(this.currentSession);
 
                     // 重置前端状态
+                    this.questionRequestId += 1;
+                    this.stopQuestionRequestGuard();
+                    this.stopThinkingPolling();
+                    this.stopWebSearchPolling();
+                    this.loadingQuestion = false;
                     this.currentStep = 0;
                     this.currentDimension = this.dimensionOrder[0] || 'customer_needs';
                     this.currentQuestion = null;
@@ -4827,9 +4995,8 @@ function deepVision() {
             if (!this.reports || this.reports.length === 0) {
                 await this.loadReports();
             }
-            const topic = this.currentSession.topic || 'report';
-            const slug = topic.replace(/\s+/g, '-').slice(0, 30);
-            const candidates = (this.reports || []).filter(r => r.name?.includes(slug));
+            const currentSessionId = String(this.currentSession?.session_id || '').trim();
+            const candidates = (this.reports || []).filter(r => String(r?.session_id || '').trim() === currentSessionId);
             const target = candidates.length > 0 ? candidates[0] : null;
             this.currentView = 'reports';
             if (target) {
@@ -8247,8 +8414,11 @@ function deepVision() {
         exitInterview() {
             if (!this.authReady) return;
             // 清理所有定时器，防止内存泄漏
+            this.questionRequestId += 1;
+            this.stopQuestionRequestGuard();
             this.stopThinkingPolling();
             this.stopWebSearchPolling();
+            this.loadingQuestion = false;
             this.resetReportGenerationFeedback();
             this.submitting = false;
 
@@ -8306,42 +8476,54 @@ function deepVision() {
             return this.currentSession.interview_log.length;
         },
 
+        getCurrentFormalQuestionCount() {
+            if (!this.currentSession) return 0;
+            return (this.currentSession.interview_log || []).filter(log => !log?.is_follow_up).length;
+        },
+
+        getCurrentSessionDimensionCount() {
+            if (!this.currentSession) return 0;
+            return this.getSessionDimKeys(this.currentSession).length;
+        },
+
+        getEstimatedQuestionBounds() {
+            const config = this.getInterviewModeConfig();
+            const dimensionCount = Math.max(1, this.getCurrentSessionDimensionCount() || this.dimensionOrder.length || 4);
+            if (!config) {
+                return { min: 24, max: 24, expected: 24 };
+            }
+
+            const formalMin = Math.max(1, Number(config.formal || 0));
+            const formalMax = Math.max(formalMin, Number(config.formalMax || formalMin));
+            const perDimFollowUp = Math.max(0, Number(config.followUp || 0));
+            const totalFollowUp = Math.max(0, Number(config.total || 0));
+            const followUpCap = Math.min(totalFollowUp, perDimFollowUp * dimensionCount);
+
+            const min = formalMin * dimensionCount;
+            const max = formalMax * dimensionCount + followUpCap;
+            const expected = Math.round((min + max) / 2);
+            return { min, max, expected };
+        },
+
         // 获取预估总问题数（中间值）
         getEstimatedTotalQuestions() {
-            const config = this.getInterviewModeConfig();
-            if (!config) return 24;
-            const range = config.range.split('-');
-            return Math.round((parseInt(range[0]) + parseInt(range[1])) / 2);
+            return this.getEstimatedQuestionBounds().expected;
         },
 
         // 获取预估剩余问题数
         getEstimatedRemainingQuestions() {
             if (!this.currentSession) return 0;
 
-            const progress = this.getTotalProgress();
-            const current = this.getCurrentQuestionCount();
-
-            // 基于进度反推剩余问题数
-            // 如果进度是 25%，已答 53 题，则预估总数 = 53 / 0.25 = 212，剩余 = 212 - 53 = 159
-            // 这样更准确反映实际情况
-            if (progress > 0 && progress < 100) {
-                const estimatedTotal = Math.round(current / (progress / 100));
-                const remaining = Math.max(0, estimatedTotal - current);
-
-                // 限制显示范围，避免数字过大
-                if (remaining > 50) {
-                    return '50+';
-                }
-                return remaining;
-            } else if (progress >= 100) {
+            if (this.getTotalProgress() >= 100) {
                 return 0;
-            } else {
-                // 进度为0时，使用模式配置的预估
-                const config = this.getInterviewModeConfig();
-                if (!config) return 20;
-                const range = config.range.split('-');
-                return Math.round((parseInt(range[0]) + parseInt(range[1])) / 2);
             }
+
+            const answered = this.getCurrentQuestionCount();
+            const bounds = this.getEstimatedQuestionBounds();
+            const remainingMin = Math.max(0, bounds.min - answered);
+            const remainingMax = Math.max(0, bounds.max - answered);
+            const remaining = Math.round((remainingMin + remainingMax) / 2);
+            return remaining > 50 ? '50+' : remaining;
         },
 
         // 获取进度反馈信息
@@ -9177,6 +9359,7 @@ function deepVision() {
 
         // 选择场景
         selectScenario(scenario) {
+            this.scenarioRecognizeRequestId += 1;
             if (this.selectedScenario?.id === scenario.id) {
                 this.selectedScenario = null;  // 取消选择
             } else {
@@ -9218,6 +9401,10 @@ function deepVision() {
             return this.scenarioPlaceholders['default'].description;
         },
 
+        getScenarioRecognizeFingerprint(topic = '', description = '') {
+            return `${String(topic || '').trim()}\n${String(description || '').trim()}`;
+        },
+
         // 场景自动识别（防抖触发）
         onTopicInput() {
             // 清除之前的定时器
@@ -9229,6 +9416,8 @@ function deepVision() {
 
             // 主题少于 2 个字符时不触发识别
             if (topic.length < 2) {
+                this.scenarioRecognizeRequestId += 1;
+                this.activeRecognizeFingerprint = '';
                 this.recognizedResult = null;
                 return;
             }
@@ -9248,15 +9437,31 @@ function deepVision() {
         async recognizeScenario(topic) {
             if (!topic || topic.length < 2) return;
 
+            const description = this.newSessionDescription.trim() || '';
+            const requestId = ++this.scenarioRecognizeRequestId;
+            const requestFingerprint = this.getScenarioRecognizeFingerprint(topic, description);
+            this.activeRecognizeFingerprint = requestFingerprint;
             this.recognizing = true;
             try {
                 const result = await this.apiCall('/scenarios/recognize', {
                     method: 'POST',
                     body: JSON.stringify({
                         topic,
-                        description: this.newSessionDescription.trim() || ''
+                        description
                     })
                 });
+
+                const latestFingerprint = this.getScenarioRecognizeFingerprint(
+                    this.newSessionTopic.trim(),
+                    this.newSessionDescription.trim() || ''
+                );
+                if (
+                    requestId !== this.scenarioRecognizeRequestId
+                    || requestFingerprint !== this.activeRecognizeFingerprint
+                    || requestFingerprint !== latestFingerprint
+                ) {
+                    return;
+                }
 
                 this.recognizedResult = result;
 
@@ -9294,11 +9499,21 @@ function deepVision() {
 
         // 重置场景选择状态（打开新建弹窗时调用）
         resetScenarioSelection() {
+            this.scenarioRecognizeRequestId += 1;
             this.selectedScenario = null;
             this.recognizedResult = null;
             this.autoRecognizeEnabled = true;
             this.showScenarioSelector = false;
             this.scenarioSearchQuery = '';
+            this.activeRecognizeFingerprint = '';
+        },
+
+        shouldShowLowConfidenceScenarioHint() {
+            if (!this.recognizedResult || this.aiGenerating || this.showScenarioSelector) return false;
+            if (Number(this.recognizedResult?.confidence || 0) >= 0.5) return false;
+            const recommendedId = String(this.recognizedResult?.recommended?.id || '').trim();
+            const selectedId = String(this.selectedScenario?.id || '').trim();
+            return !recommendedId || !selectedId || recommendedId !== selectedId;
         },
 
         // 一键生成专属场景（基于用户已输入的主题和描述）
@@ -9470,6 +9685,10 @@ function deepVision() {
             });
             labels.push('实施计划', '风险与边界');
             return labels.filter((item, index, list) => item && list.indexOf(item) === index).slice(0, 10);
+        },
+
+        getScenarioDimensionCount(scenario) {
+            return Array.isArray(scenario?.dimensions) ? scenario.dimensions.length : 0;
         },
 
         getScenarioSolutionPreview(target) {

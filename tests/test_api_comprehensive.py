@@ -734,6 +734,67 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertIsInstance(payload.get("options"), list)
         self.assertGreater(len(payload.get("options", [])), 0)
 
+    def test_next_question_repairs_truncated_ai_response(self):
+        self._register()
+        created = self._create_session(topic="问题修复链路")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        old_resolve_ai_client = self.server.resolve_ai_client
+        old_generate_question = self.server.generate_question_with_tiered_strategy
+        try:
+            self.server.resolve_ai_client = lambda call_type="question": object()
+            self.server.generate_question_with_tiered_strategy = lambda *_args, **_kwargs: (
+                '{"question":"当前最需要优先确认的重点是什么？","options":["预算范围","上线节奏"',
+                None,
+                "fast:summary",
+            )
+
+            next_q = self.client.post(
+                f"/api/sessions/{session_id}/next-question",
+                json={"dimension": dimension},
+            )
+            self.assertEqual(next_q.status_code, 200, next_q.get_data(as_text=True))
+            payload = next_q.get_json() or {}
+            self.assertEqual(payload.get("dimension"), dimension)
+            self.assertTrue(payload.get("ai_generated"))
+            self.assertTrue(payload.get("repair_applied"))
+            self.assertGreaterEqual(len(payload.get("options", [])), 2)
+            self.assertEqual(payload.get("question"), "当前最需要优先确认的重点是什么？")
+        finally:
+            self.server.resolve_ai_client = old_resolve_ai_client
+            self.server.generate_question_with_tiered_strategy = old_generate_question
+
+    def test_next_question_falls_back_when_ai_generation_raises(self):
+        self._register()
+        created = self._create_session(topic="问题异常回退")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        old_resolve_ai_client = self.server.resolve_ai_client
+        old_generate_question = self.server.generate_question_with_tiered_strategy
+        try:
+            self.server.resolve_ai_client = lambda call_type="question": object()
+
+            def _raise_timeout(*_args, **_kwargs):
+                raise TimeoutError("simulated timeout")
+
+            self.server.generate_question_with_tiered_strategy = _raise_timeout
+
+            next_q = self.client.post(
+                f"/api/sessions/{session_id}/next-question",
+                json={"dimension": dimension},
+            )
+            self.assertEqual(next_q.status_code, 200, next_q.get_data(as_text=True))
+            payload = next_q.get_json() or {}
+            self.assertEqual(payload.get("dimension"), dimension)
+            self.assertFalse(payload.get("ai_generated", True))
+            self.assertTrue(payload.get("question"))
+            self.assertIn("已切换为备用题目", payload.get("detail", ""))
+        finally:
+            self.server.resolve_ai_client = old_resolve_ai_client
+            self.server.generate_question_with_tiered_strategy = old_generate_question
+
     def test_next_question_waits_for_inflight_prefetch(self):
         self._register()
         created = self._create_session(topic="首题等待预生成")
@@ -863,12 +924,17 @@ class ComprehensiveApiTests(unittest.TestCase):
             content_type="multipart/form-data",
         )
         self.assertEqual(upload_resp.status_code, 200, upload_resp.get_data(as_text=True))
+        upload_payload = upload_resp.get_json() or {}
+        uploaded_document = upload_payload.get("uploaded_document") or {}
+        self.assertTrue(uploaded_document.get("doc_id"))
+        self.assertEqual(uploaded_document.get("name"), "note.md")
 
         get_session_resp = self.client.get(f"/api/sessions/{session_id}")
         self.assertEqual(get_session_resp.status_code, 200)
         materials = get_session_resp.get_json().get("reference_materials", [])
         self.assertEqual(len(materials), 1)
         self.assertEqual(materials[0]["name"], "note.md")
+        self.assertEqual(materials[0].get("doc_id"), uploaded_document.get("doc_id"))
 
         cn_name = "开目AI产品手册.md"
         upload_cn_resp = self.client.post(
@@ -901,6 +967,101 @@ class ComprehensiveApiTests(unittest.TestCase):
 
         invalid_name = self.client.delete(f"/api/sessions/{session_id}/documents/../hack.md")
         self.assertEqual(invalid_name.status_code, 400)
+
+    def test_document_delete_by_doc_id_keeps_same_name_files(self):
+        self._register()
+        session_id = self._create_session(topic="文档唯一标识删除")["session_id"]
+
+        first_resp = self.client.post(
+            f"/api/sessions/{session_id}/documents",
+            data={"file": (io.BytesIO(b"first"), "note.md")},
+            content_type="multipart/form-data",
+        )
+        second_resp = self.client.post(
+            f"/api/sessions/{session_id}/documents",
+            data={"file": (io.BytesIO(b"second"), "note.md")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(first_resp.status_code, 200, first_resp.get_data(as_text=True))
+        self.assertEqual(second_resp.status_code, 200, second_resp.get_data(as_text=True))
+
+        first_doc = (first_resp.get_json() or {}).get("uploaded_document") or {}
+        second_doc = (second_resp.get_json() or {}).get("uploaded_document") or {}
+        self.assertTrue(first_doc.get("doc_id"))
+        self.assertTrue(second_doc.get("doc_id"))
+        self.assertNotEqual(first_doc.get("doc_id"), second_doc.get("doc_id"))
+
+        delete_resp = self.client.delete(
+            f"/api/sessions/{session_id}/documents/note.md?doc_id={quote(second_doc['doc_id'])}"
+        )
+        self.assertEqual(delete_resp.status_code, 200, delete_resp.get_data(as_text=True))
+        delete_payload = delete_resp.get_json() or {}
+        self.assertEqual(delete_payload.get("deleted_doc_id"), second_doc.get("doc_id"))
+
+        get_session_resp = self.client.get(f"/api/sessions/{session_id}")
+        self.assertEqual(get_session_resp.status_code, 200)
+        materials = get_session_resp.get_json().get("reference_materials", [])
+        self.assertEqual(len(materials), 1)
+        self.assertEqual(materials[0].get("doc_id"), first_doc.get("doc_id"))
+
+    def test_generate_scenario_with_ai_retries_and_normalizes_dirty_json(self):
+        self._register()
+
+        class FakeMessages:
+            def __init__(self, responses):
+                self.responses = list(responses)
+                self.calls = 0
+
+            def create(self, **_kwargs):
+                self.calls += 1
+                text = self.responses[min(self.calls - 1, len(self.responses) - 1)]
+                return types.SimpleNamespace(
+                    content=[types.SimpleNamespace(type="text", text=text)]
+                )
+
+        class FakeClient:
+            def __init__(self, responses):
+                self.messages = FakeMessages(responses)
+
+        fake_client = FakeClient([
+            "这次先解释一下设计思路，但没有返回 JSON。",
+            """```json
+{
+  "name": "售后回访",
+  "description": "用于识别售后回访中的问题归因与处理节奏",
+  "dimensions": [
+    {
+      "name": "问题归因",
+      "description": "确认问题来源与责任边界",
+      "key_aspects": "问题来源,责任归属,升级条件"
+    }
+  ],
+  "explanation": "先锁定问题归因，再决定后续处理优先级"
+}
+```""",
+        ])
+
+        old_resolve_ai_client = self.server.resolve_ai_client
+        try:
+            self.server.resolve_ai_client = lambda call_type="scenario_generate": fake_client
+            response = self.client.post(
+                "/api/scenarios/generate",
+                json={"user_description": "我想做一套售后回访问题归因和处理节奏的访谈场景"},
+            )
+            self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+            payload = response.get_json() or {}
+            generated = payload.get("generated_scenario") or {}
+            self.assertTrue(payload.get("success"))
+            self.assertEqual(fake_client.messages.calls, 2)
+            self.assertEqual(generated.get("name"), "售后回访")
+            self.assertEqual(generated.get("dimensions", [])[0].get("id"), "dim_1")
+            self.assertEqual(generated.get("dimensions", [])[0].get("min_questions"), 2)
+            self.assertEqual(generated.get("dimensions", [])[0].get("max_questions"), 4)
+            self.assertEqual(generated.get("dimensions", [])[0].get("key_aspects"), ["问题来源", "责任归属", "升级条件"])
+            self.assertEqual(generated.get("report", {}).get("type"), "standard")
+            self.assertTrue(payload.get("ai_explanation"))
+        finally:
+            self.server.resolve_ai_client = old_resolve_ai_client
 
     def test_custom_scenario_create_and_delete(self):
         self._register()
@@ -1309,11 +1470,21 @@ class ComprehensiveApiTests(unittest.TestCase):
         solution_cache_payload = json.loads(solution_cache_path.read_text(encoding="utf-8"))
         self.assertEqual(solution_cache_payload.get("report_name"), report_name)
         self.assertEqual(solution_cache_payload.get("cache_version"), self.server.SOLUTION_PAYLOAD_CACHE_VERSION)
+        sidecar_snapshot = self.server.read_solution_sidecar(report_name)
+        if sidecar_snapshot:
+            self.assertEqual(sidecar_snapshot.get("snapshot_stage"), "final_report")
 
         reports_resp = self.client.get("/api/reports")
         self.assertEqual(reports_resp.status_code, 200)
-        report_names = [item["name"] for item in reports_resp.get_json()]
+        report_items = reports_resp.get_json() or []
+        report_names = [item["name"] for item in report_items]
         self.assertIn(report_name, report_names)
+        report_meta = next(item for item in report_items if item.get("name") == report_name)
+        self.assertEqual(report_meta.get("session_id"), session_id)
+        self.assertEqual(report_meta.get("topic"), created.get("topic"))
+        self.assertTrue(report_meta.get("scenario_name"))
+        self.assertTrue(report_meta.get("report_template"))
+        self.assertEqual(report_meta.get("report_type"), "standard")
 
         get_report_resp = self.client.get(f"/api/reports/{report_name}")
         self.assertEqual(get_report_resp.status_code, 200)
@@ -1342,7 +1513,10 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertTrue(solution_payload.get("title"))
         self.assertTrue(solution_payload.get("subtitle"))
         self.assertNotIn("###", solution_payload.get("overview", ""))
-        self.assertEqual(solution_payload.get("source_mode"), "legacy_markdown")
+        if sidecar_snapshot:
+            self.assertEqual(solution_payload.get("source_mode"), "structured_sidecar")
+        else:
+            self.assertIn(solution_payload.get("source_mode"), {"legacy_markdown", "legacy_fallback"})
         self.assertIsInstance(solution_payload.get("quality_signals"), dict)
         self.assertIn("fallback_ratio", solution_payload.get("quality_signals", {}))
         self.assertIn("evidence_binding_ratio", solution_payload.get("quality_signals", {}))
@@ -1403,6 +1577,34 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(list_after_delete.status_code, 200)
         names_after_delete = [item["name"] for item in list_after_delete.get_json()]
         self.assertNotIn(report_name, names_after_delete)
+
+    def test_reports_list_returns_direct_binding_metadata_for_same_topic_sessions(self):
+        user = self._register()
+        first = self._create_session(topic="同主题元数据绑定")
+        second = self._create_session(topic="同主题元数据绑定")
+        first_session_id = first["session_id"]
+        second_session_id = second["session_id"]
+        report_name = self._build_scoped_report_name(first["topic"], session_id=first_session_id)
+        report_path = self.server.REPORTS_DIR / report_name
+        report_path.write_text("# 绑定测试报告\n", encoding="utf-8")
+        self.server.set_report_owner_id(report_name, int(user["id"]))
+
+        session_file = self.server.SESSIONS_DIR / f"{first_session_id}.json"
+        session_data = self.server.safe_load_session(session_file)
+        session_data["current_report_name"] = report_name
+        session_data["current_report_path"] = str(report_path.resolve())
+        self.server.save_session_json_and_sync(session_file, session_data)
+
+        reports_resp = self.client.get("/api/reports")
+        self.assertEqual(reports_resp.status_code, 200, reports_resp.get_data(as_text=True))
+        report_items = reports_resp.get_json() or []
+        report_meta = next(item for item in report_items if item.get("name") == report_name)
+        self.assertEqual(report_meta.get("session_id"), first_session_id)
+        self.assertNotEqual(report_meta.get("session_id"), second_session_id)
+        self.assertEqual(report_meta.get("topic"), first["topic"])
+        self.assertTrue(report_meta.get("scenario_name"))
+        self.assertTrue(report_meta.get("report_template"))
+        self.assertEqual(report_meta.get("report_type"), "standard")
 
     def test_regenerate_report_overwrites_current_session_report(self):
         self._register()

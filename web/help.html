@@ -243,6 +243,20 @@
         .nav-sub {
             margin-left: 10px;
         }
+        .nav-subheads {
+            margin-left: 18px;
+            margin-bottom: 4px;
+        }
+        .nav-link--sub {
+            font-size: 12px;
+            color: #7c8ba1;
+            padding-top: 4px;
+            padding-bottom: 4px;
+        }
+        .nav-link--sub.level-4 {
+            margin-left: 10px;
+            font-size: 11.5px;
+        }
         .nav-sub--scenario {
             margin-left: 22px;
         }
@@ -1786,8 +1800,6 @@
         })();
 
         const fades = Array.from(document.querySelectorAll('.fade'));
-        const navLinks = Array.from(document.querySelectorAll('.nav-link'));
-        const sections = Array.from(document.querySelectorAll('.content section, .hero'));
         const progressBar = document.getElementById('readProgress');
         const currentSection = document.getElementById('currentSection');
         const remainingTime = document.getElementById('remainingTime');
@@ -1804,22 +1816,272 @@
         }, { threshold: 0.15 });
         fades.forEach(el => revealObserver.observe(el));
 
-        const spyObserver = new IntersectionObserver(entries => {
-            entries.forEach(entry => {
-                if (!entry.isIntersecting) return;
-                const id = entry.target.getAttribute('id');
-                if (!id) return;
-                navLinks.forEach(link => link.classList.toggle('active', link.getAttribute('href') === `#${id}`));
-                if (currentSection) {
-                    const label = entry.target.querySelector('h2, h1');
-                    currentSection.textContent = `当前：${label ? label.textContent.trim() : '阅读中'}`;
+        const slugify = text => text
+            .toLowerCase()
+            .replace(/[^\w\u4e00-\u9fa5]+/g, '-')
+            .replace(/^-+|-+$/g, '');
+
+        const getScrollOffset = () => window.matchMedia('(max-width: 960px)').matches ? 72 : 94;
+        const getAllNavLinks = () => Array.from(document.querySelectorAll('.nav-link'));
+        const getTargetTop = element => (element?.getBoundingClientRect().top || 0) + window.scrollY;
+        const isSpyTargetVisible = element => {
+            if (!element || !element.isConnected) return false;
+            const rects = element.getClientRects();
+            if (!rects.length) return false;
+            const style = window.getComputedStyle(element);
+            return style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        const revealAnchorTarget = element => {
+            if (!element) return;
+            const faqGroup = element.closest('.faq-group');
+            if (faqGroup) faqGroup.classList.remove('collapsed');
+            const faqItem = element.closest('.faq-item');
+            if (faqItem) faqItem.classList.add('active');
+        };
+        const scrollToAnchorId = id => {
+            const target = document.getElementById(id);
+            if (!target) return false;
+            revealAnchorTarget(target);
+            const top = Math.max(0, getTargetTop(target) - getScrollOffset());
+            window.scrollTo({ top, behavior: 'smooth' });
+            return true;
+        };
+        const syncLocationHash = id => {
+            const hash = id ? `#${encodeURIComponent(id)}` : '';
+            if (`${window.location.hash || ''}` === hash) return;
+            if (window.history && typeof window.history.replaceState === 'function') {
+                const nextUrl = `${window.location.pathname}${window.location.search}${hash}`;
+                window.history.replaceState(null, '', nextUrl);
+                return;
+            }
+            window.location.hash = hash;
+        };
+
+        const buildSectionMeta = () => {
+            const mainSections = Array.from(document.querySelectorAll('.content section'));
+            let totalWords = 0;
+            const spyTargets = [];
+            const suggestionPool = [];
+
+            mainSections.forEach((section, idx) => {
+                const h2 = section.querySelector('h2');
+                if (!h2) return;
+                const titleText = h2.textContent.trim();
+                if (!section.id) {
+                    section.id = slugify(titleText) || `section-${idx + 1}`;
+                }
+                section.dataset.title = titleText;
+                const index = String(idx + 1).padStart(2, '0');
+                const level = section.dataset.level || '基础';
+                h2.innerHTML = `<span class="sec-index">第${index}章</span><span class="sec-title">${titleText}</span><span class="sec-level">${level}</span><span class="sec-meta" data-readtime>阅读中</span>`;
+
+                const rawText = section.textContent || '';
+                totalWords += rawText.length;
+                const minutes = Math.max(1, Math.round(rawText.length / 360));
+                const meta = h2.querySelector('[data-readtime]');
+                if (meta) meta.textContent = `${minutes} 分钟`;
+
+                const navLink = document.querySelector(`.nav-link[href="#${section.id}"]`);
+                if (navLink) {
+                    navLink.innerHTML = `<span class="nav-idx">第${index}章</span><span class="nav-text">${titleText}</span>`;
+                    navLink.parentElement?.querySelectorAll('.nav-subheads').forEach(node => node.remove());
+                }
+
+                spyTargets.push({
+                    id: section.id,
+                    element: section,
+                    label: titleText,
+                    keywords: (section.dataset.keywords || '').split(',').map(k => k.trim()).filter(Boolean),
+                });
+                suggestionPool.push({
+                    id: section.id,
+                    text: titleText,
+                    keywords: (section.dataset.keywords || '').split(',').map(k => k.trim()).filter(Boolean),
+                    element: section,
+                });
+
+                const subHeadings = Array.from(section.querySelectorAll('h3, h4'));
+                section.querySelectorAll('.section-toc').forEach(node => node.remove());
+                if (subHeadings.length) {
+                    const toc = document.createElement('div');
+                    toc.className = 'section-toc';
+                    toc.innerHTML = `<label>本节目录</label><div class="section-toc-links"></div>`;
+                    const container = toc.querySelector('.section-toc-links');
+                    const subNav = document.createElement('div');
+                    subNav.className = 'nav-subheads';
+
+                    subHeadings.forEach((heading, headingIndex) => {
+                        if (!heading.id) {
+                            heading.id = `${section.id}-${slugify(heading.textContent) || `sub-${headingIndex + 1}`}`;
+                        }
+                        const headingText = heading.textContent.trim();
+                        const headingLevel = heading.tagName.toLowerCase();
+                        const tocLink = document.createElement('a');
+                        tocLink.href = `#${heading.id}`;
+                        tocLink.textContent = headingText;
+                        container.appendChild(tocLink);
+
+                        const navSubLink = document.createElement('a');
+                        navSubLink.href = `#${heading.id}`;
+                        navSubLink.className = `nav-link nav-link--sub ${headingLevel === 'h4' ? 'level-4' : 'level-3'}`;
+                        navSubLink.textContent = headingText;
+                        subNav.appendChild(navSubLink);
+
+                        const keywords = [headingText, titleText];
+                        spyTargets.push({
+                            id: heading.id,
+                            element: heading,
+                            label: headingText,
+                            keywords,
+                        });
+                        suggestionPool.push({
+                            id: heading.id,
+                            text: headingText,
+                            keywords,
+                            element: heading,
+                        });
+                    });
+
+                    const firstHeading = subHeadings[0];
+                    let tocAnchor = firstHeading;
+                    while (tocAnchor && tocAnchor.parentElement !== section) {
+                        tocAnchor = tocAnchor.parentElement;
+                    }
+                    if (tocAnchor) {
+                        section.insertBefore(toc, tocAnchor);
+                    } else {
+                        section.appendChild(toc);
+                    }
+
+                    if (navLink && subNav.childElementCount > 0) {
+                        navLink.insertAdjacentElement('afterend', subNav);
+                    }
                 }
             });
-        }, { threshold: 0.4 });
-        sections.forEach(section => spyObserver.observe(section));
+
+            const totalMinutes = Math.max(2, Math.round(totalWords / 420));
+            if (docReadTime) docReadTime.textContent = `预计阅读：${totalMinutes} 分钟`;
+            return { totalMinutes, spyTargets, suggestionPool };
+        };
+
+        const { totalMinutes, spyTargets, suggestionPool } = buildSectionMeta();
+
+        const clearMarks = () => {
+            document.querySelectorAll('.mark').forEach(mark => {
+                const text = document.createTextNode(mark.textContent || '');
+                mark.parentNode.replaceChild(text, mark);
+            });
+        };
+        const highlightIn = (element, text) => {
+            if (!element || !text) return;
+            const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const regex = new RegExp(escaped, 'i');
+            const html = element.innerHTML;
+            if (!regex.test(html)) return;
+            element.innerHTML = html.replace(regex, match => `<span class="mark">${match}</span>`);
+        };
+
+        const resolveActiveSpyTarget = () => {
+            if (!spyTargets.length) return null;
+            const visibleTargets = spyTargets.filter(target => isSpyTargetVisible(target?.element));
+            if (!visibleTargets.length) return null;
+            const scrollAnchor = window.scrollY + getScrollOffset() + 24;
+            let active = visibleTargets[0];
+            visibleTargets.forEach(target => {
+                if (!target?.element) return;
+                if (getTargetTop(target.element) <= scrollAnchor) {
+                    active = target;
+                }
+            });
+            const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            if (docHeight <= 0 || window.scrollY >= docHeight - 4) {
+                active = visibleTargets[visibleTargets.length - 1];
+            }
+            return active;
+        };
+
+        const resolveHashSpyTarget = () => {
+            const targetId = decodeURIComponent((window.location.hash || '').replace(/^#/, '')).trim();
+            if (!targetId) return null;
+            const target = document.getElementById(targetId);
+            if (!isSpyTargetVisible(target)) return null;
+            const targetTop = Math.round(target.getBoundingClientRect().top);
+            const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            const maxTop = (docHeight > 0 && window.scrollY >= docHeight - 4)
+                ? Math.max(getScrollOffset() + 160, 220)
+                : getScrollOffset() + 120;
+            if (targetTop < -32 || targetTop > maxTop) return null;
+            return spyTargets.find(item => item?.id === targetId) || {
+                id: targetId,
+                element: target,
+                label: target.textContent?.trim() || '阅读中',
+            };
+        };
+
+        const updateProgress = () => {
+            const scrollTop = window.scrollY;
+            const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            const percent = docHeight > 0 ? Math.min(100, Math.max(0, (scrollTop / docHeight) * 100)) : 100;
+            if (progressBar) progressBar.style.width = `${percent.toFixed(0)}%`;
+            if (remainingTime && totalMinutes) {
+                const remaining = percent >= 99.5 ? 0 : Math.max(1, Math.round(totalMinutes * (1 - percent / 100)));
+                remainingTime.textContent = percent >= 99.5 ? '剩余：已读完' : `剩余：约 ${remaining} 分钟`;
+            }
+
+            const active = resolveHashSpyTarget() || resolveActiveSpyTarget();
+            if (active) {
+                getAllNavLinks().forEach(link => link.classList.toggle('active', link.getAttribute('href') === `#${active.id}`));
+                if (currentSection) {
+                    currentSection.textContent = `当前：${active.label || '阅读中'}`;
+                }
+            }
+        };
+
+        let readingStateTicking = false;
+        const scheduleReadingStateUpdate = () => {
+            if (readingStateTicking) return;
+            readingStateTicking = true;
+            window.requestAnimationFrame(() => {
+                readingStateTicking = false;
+                updateProgress();
+            });
+        };
+
+        updateProgress();
+        window.addEventListener('scroll', scheduleReadingStateUpdate, { passive: true });
+        window.addEventListener('resize', scheduleReadingStateUpdate);
+        document.addEventListener('click', event => {
+            const link = event.target.closest('a[href^="#"]');
+            if (!link) return;
+            const href = link.getAttribute('href') || '';
+            const targetId = decodeURIComponent(href.slice(1)).trim();
+            if (!targetId || !document.getElementById(targetId)) return;
+            event.preventDefault();
+            if (!scrollToAnchorId(targetId)) return;
+            syncLocationHash(targetId);
+            window.setTimeout(scheduleReadingStateUpdate, 260);
+        });
+
+        const syncReadingStateFromHash = () => {
+            const targetId = decodeURIComponent((window.location.hash || '').replace(/^#/, '')).trim();
+            if (!targetId) {
+                scheduleReadingStateUpdate();
+                return;
+            }
+            if (scrollToAnchorId(targetId)) {
+                window.setTimeout(scheduleReadingStateUpdate, 260);
+            } else {
+                scheduleReadingStateUpdate();
+            }
+        };
+        window.addEventListener('hashchange', syncReadingStateFromHash);
+        window.requestAnimationFrame(syncReadingStateFromHash);
 
         document.querySelectorAll('.faq-item').forEach(item => {
-            item.addEventListener('click', () => item.classList.toggle('active'));
+            item.addEventListener('click', () => {
+                item.classList.toggle('active');
+                scheduleReadingStateUpdate();
+            });
         });
         const faqGroups = Array.from(document.querySelectorAll('.faq-group'));
         faqGroups.forEach((group, idx) => {
@@ -1828,7 +2090,10 @@
         document.querySelectorAll('.faq-group h3').forEach(title => {
             title.addEventListener('click', () => {
                 const group = title.closest('.faq-group');
-                if (group) group.classList.toggle('collapsed');
+                if (group) {
+                    group.classList.toggle('collapsed');
+                    scheduleReadingStateUpdate();
+                }
             });
         });
 
@@ -1870,27 +2135,6 @@
                 ['xiezhuo', '协作与复用'],
                 ['fuyong', '协作与复用']
             ]);
-            const suggestionPool = sections
-                .filter(section => section.id && section.dataset && section.dataset.keywords)
-                .map(section => ({
-                    id: section.id,
-                    text: section.dataset.title || section.querySelector('h2')?.textContent || section.id,
-                    keywords: section.dataset.keywords.split(',').map(k => k.trim())
-                }));
-            const clearMarks = () => {
-                document.querySelectorAll('.mark').forEach(mark => {
-                    const text = document.createTextNode(mark.textContent || '');
-                    mark.parentNode.replaceChild(text, mark);
-                });
-            };
-            const highlightIn = (element, text) => {
-                if (!text) return;
-                const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                const regex = new RegExp(escaped, 'i');
-                const html = element.innerHTML;
-                if (!regex.test(html)) return;
-                element.innerHTML = html.replace(regex, match => `<span class="mark">${match}</span>`);
-            };
             const renderSuggestions = keyword => {
                 if (!searchSuggestions || !searchEmpty) return;
                 const list = suggestionPool
@@ -1919,12 +2163,15 @@
                     || keyword;
                 renderSuggestions(normalized);
                 if (!normalized) return;
-                const target = sections.find(section => section.textContent.includes(normalized));
+                const target = suggestionPool.find(item =>
+                    item.text.includes(normalized) || item.keywords.some(k => k.includes(normalized))
+                );
                 if (target) {
-                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    highlightIn(target, normalized);
-                    target.classList.add('search-focus');
-                    setTimeout(() => target.classList.remove('search-focus'), 2000);
+                    const targetElement = target.element || document.getElementById(target.id);
+                    scrollToAnchorId(target.id);
+                    highlightIn(targetElement, normalized);
+                    targetElement?.classList.add('search-focus');
+                    setTimeout(() => targetElement?.classList.remove('search-focus'), 2000);
                 }
             });
             if (searchClear) {
@@ -1942,80 +2189,6 @@
                 }
             });
         }
-
-        const slugify = text => text
-            .toLowerCase()
-            .replace(/[^\w\u4e00-\u9fa5]+/g, '-')
-            .replace(/^-+|-+$/g, '');
-
-        const buildSectionMeta = () => {
-            const mainSections = Array.from(document.querySelectorAll('.content section'));
-            let totalWords = 0;
-
-            mainSections.forEach((section, idx) => {
-                const h2 = section.querySelector('h2');
-                if (!h2) return;
-                const titleText = h2.textContent.trim();
-                section.dataset.title = titleText;
-                const index = String(idx + 1).padStart(2, '0');
-                const level = section.dataset.level || '基础';
-                h2.innerHTML = `<span class="sec-index">第${index}章</span><span class="sec-title">${titleText}</span><span class="sec-level">${level}</span><span class="sec-meta" data-readtime>阅读中</span>`;
-
-                const rawText = section.textContent || '';
-                totalWords += rawText.length;
-                const minutes = Math.max(1, Math.round(rawText.length / 360));
-                const meta = h2.querySelector('[data-readtime]');
-                if (meta) meta.textContent = `${minutes} 分钟`;
-
-                const navLink = document.querySelector(`.nav-link[href="#${section.id}"]`);
-                if (navLink) {
-                    navLink.innerHTML = `<span class="nav-idx">第${index}章</span><span class="nav-text">${titleText}</span>`;
-                }
-
-                const h3List = Array.from(section.querySelectorAll('h3'));
-                if (h3List.length) {
-                    const toc = document.createElement('div');
-                    toc.className = 'section-toc';
-                    toc.innerHTML = `<label>本节目录</label><div class="section-toc-links"></div>`;
-                    const container = toc.querySelector('.section-toc-links');
-                    h3List.forEach(h3 => {
-                        if (!h3.id) h3.id = slugify(h3.textContent);
-                        const link = document.createElement('a');
-                        link.href = `#${h3.id}`;
-                        link.textContent = h3.textContent.trim();
-                        container.appendChild(link);
-                    });
-                    const firstHeading = h3List[0];
-                    let tocAnchor = firstHeading;
-                    while (tocAnchor && tocAnchor.parentElement !== section) {
-                        tocAnchor = tocAnchor.parentElement;
-                    }
-                    if (tocAnchor) {
-                        section.insertBefore(toc, tocAnchor);
-                    } else {
-                        section.appendChild(toc);
-                    }
-                }
-            });
-
-            const totalMinutes = Math.max(2, Math.round(totalWords / 420));
-            if (docReadTime) docReadTime.textContent = `预计阅读：${totalMinutes} 分钟`;
-            return totalMinutes;
-        };
-        const totalMinutes = buildSectionMeta();
-
-        const updateProgress = () => {
-            const scrollTop = window.scrollY;
-            const docHeight = document.documentElement.scrollHeight - window.innerHeight;
-            const percent = docHeight > 0 ? Math.min(100, Math.max(0, (scrollTop / docHeight) * 100)) : 0;
-            if (progressBar) progressBar.style.width = `${percent.toFixed(0)}%`;
-            if (remainingTime && totalMinutes) {
-                const remaining = Math.max(1, Math.round(totalMinutes * (1 - percent / 100)));
-                remainingTime.textContent = `剩余：约 ${remaining} 分钟`;
-            }
-        };
-        updateProgress();
-        window.addEventListener('scroll', updateProgress, { passive: true });
 
         document.querySelectorAll('.nav-title').forEach(title => {
             title.style.cursor = 'pointer';

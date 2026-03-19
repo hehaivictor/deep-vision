@@ -2176,7 +2176,9 @@ function solutionRenderTopbar(model, payload) {
             ${solutionEscapeHtml(item.label)}
         </button>
     `).join('');
-    const finalTarget = model?.closing?.headline ? 'closing' : (model?.mode === 'decision_v1' ? 'value' : 'fit');
+    const finalTarget = model?.mode === 'schema_flat'
+        ? ''
+        : (model?.closing?.headline ? 'closing' : (model?.mode === 'decision_v1' ? 'value' : 'fit'));
     const kicker = payload?.share_mode === 'public'
         ? '外部分享 · 只读方案'
         : `企业决策提案 · ${solutionEscapeHtml(SOLUTION_SOURCE_MODE_LABELS[payload?.source_mode] || '方案')}`;
@@ -2191,7 +2193,7 @@ function solutionRenderTopbar(model, payload) {
             </div>
             <nav class="solution-nav" aria-label="方案章节导航">
                 ${renderButtons(model.navItems)}
-                <button type="button" class="solution-nav-button is-conclusion" data-scroll-target="${solutionEscapeHtml(finalTarget)}">查看结论</button>
+                ${finalTarget ? `<button type="button" class="solution-nav-button is-conclusion" data-scroll-target="${solutionEscapeHtml(finalTarget)}">查看结论</button>` : ''}
             </nav>
         </div>
     `;
@@ -3183,6 +3185,58 @@ function solutionRenderDegradedExperience(payload) {
     return navItems;
 }
 
+function solutionShouldUseSchemaExperience(payload) {
+    const reportTemplate = solutionShortText(payload?.report_template || '', 24).toLowerCase();
+    const renderMode = solutionShortText(payload?.solution_schema_meta?.render_mode || '', 24).toLowerCase();
+    const sections = solutionNormalizeList(payload?.sections).filter((section) => section?.id);
+    return payload?.source_mode === 'structured_sidecar'
+        && reportTemplate === 'custom_v1'
+        && renderMode === 'schema'
+        && sections.length > 0;
+}
+
+function solutionRenderSchemaExperience(payload) {
+    const content = document.getElementById('solution-content');
+    if (!content) return [];
+    const hero = payload?.hero || {};
+    const sections = solutionNormalizeList(payload?.sections).filter((section) => section?.id);
+    const navItems = solutionNormalizeList(payload?.nav_items).filter((item) => item?.id && item?.label).length
+        ? solutionNormalizeList(payload?.nav_items).filter((item) => item?.id && item?.label)
+        : sections.map((section) => ({
+            id: section.id,
+            label: section.label || section.title || '章节'
+        }));
+    const metrics = solutionNormalizeList(payload?.metrics || hero?.metrics).slice(0, 4);
+    content.innerHTML = `
+        <section class="proposal-section proposal-hero">
+            <div class="proposal-hero-grid">
+                <div class="proposal-hero-copy">
+                    <div class="proposal-hero-top">
+                        <span class="proposal-eyebrow">${solutionEscapeHtml(hero.eyebrow || 'DeepVision 结构化方案')}</span>
+                        <span class="proposal-year-tag">${solutionEscapeHtml(SOLUTION_SOURCE_MODE_LABELS[payload?.source_mode] || '方案')}</span>
+                    </div>
+                    <h1 class="proposal-hero-title">${solutionEscapeHtml(payload?.title || hero?.title || '查看方案')}</h1>
+                    ${payload?.subtitle ? `<p class="proposal-hero-subtitle">${solutionEscapeHtml(payload.subtitle)}</p>` : ''}
+                    ${hero?.summary ? `<p class="proposal-hero-judgement">${solutionEscapeHtml(hero.summary)}</p>` : ''}
+                </div>
+                <div class="proposal-hero-side">
+                    <div class="proposal-metric-wall proposal-metric-wall--count-${metrics.length}">
+                        ${metrics.map((item) => `
+                            <article class="proposal-metric-card ${solutionMetricValueWrapClass(item?.value)}">
+                                <div class="proposal-metric-label">${solutionEscapeHtml(item?.label || '指标')}</div>
+                                <div class="proposal-metric-value">${solutionEscapeHtml(item?.value || '-')}</div>
+                                ${item?.note ? `<div class="proposal-metric-note">${solutionEscapeHtml(item.note)}</div>` : ''}
+                            </article>
+                        `).join('')}
+                    </div>
+                </div>
+            </div>
+        </section>
+        ${sections.map(solutionRenderGenericSection).join('')}
+    `;
+    return navItems;
+}
+
 function solutionRenderProposalExperience(model) {
     const content = document.getElementById('solution-content');
     if (!content) return [];
@@ -3524,16 +3578,30 @@ function solutionRegisterReveals() {
 
 function solutionRender(payload) {
     const model = solutionBuildProposalModel(payload);
+    const useSchemaExperience = solutionShouldUseSchemaExperience(payload);
+    const schemaNavItems = solutionNormalizeList(payload?.nav_items).filter((item) => item?.id && item?.label);
+    const topbarModel = useSchemaExperience
+        ? {
+            ...model,
+            mode: 'schema_flat',
+            navItems: schemaNavItems.length
+                ? schemaNavItems
+                : solutionNormalizeList(payload?.sections).map((section) => ({
+                    id: section?.id,
+                    label: section?.label || section?.title || '章节'
+                })).filter((item) => item.id)
+        }
+        : model;
     document.title = `${model?.overview?.title || payload?.title || '查看方案'} | DeepVision`;
     const shell = document.getElementById('solution-shell');
     const state = document.getElementById('solution-state-card');
     if (!shell || !state) return;
 
-    solutionRenderTopbar(model, payload);
+    solutionRenderTopbar(topbarModel, payload);
     solutionRenderQualityStrip(payload);
     const navItems = payload?.source_mode === 'degraded' || !model.hasProposal
         ? solutionRenderDegradedExperience(payload)
-        : solutionRenderProposalExperience(model);
+        : (useSchemaExperience ? solutionRenderSchemaExperience(payload) : solutionRenderProposalExperience(model));
 
     const navRoot = document.querySelector('.solution-topbar .solution-nav');
     const mobileNavRoot = document.getElementById('solution-mobile-nav');
