@@ -10,7 +10,9 @@
 
 // 从配置文件获取 API 地址，如果配置文件未加载则使用默认值
 const API_BASE = window.location.origin + '/api';
-const QUESTION_REQUEST_TIMEOUT_MS = 25000;
+const QUESTION_REQUEST_SOFT_TIMEOUT_MS = 30000;
+const QUESTION_REQUEST_HARD_TIMEOUT_MS = 90000;
+const QUESTION_REQUEST_WATCHDOG_INTERVAL_MS = 1000;
 const QUESTION_REQUEST_STALL_GRACE_MS = 4000;
 const QUESTION_REQUEST_IDLE_MS = 2500;
 
@@ -66,6 +68,7 @@ function deepVision() {
         questionRequestStartedAt: 0,
         questionRequestLastActiveAt: 0,
         questionRequestWatchdogTimer: null,
+        questionRequestAbortController: null,
         thinkingPollRequestId: 0,
         webSearchPollRequestId: 0,
         scenarioRecognizeRequestId: 0,
@@ -758,8 +761,12 @@ function deepVision() {
             this.reportBatchMode = false;
             this.selectedSessionIds = [];
             this.selectedReportNames = [];
+            this.questionRequestId += 1;
+            this.abortQuestionRequest();
+            this.stopQuestionRequestGuard();
             this.stopThinkingPolling();
             this.stopWebSearchPolling();
+            this.loadingQuestion = false;
             this.stopReportGenerationPolling();
             this.stopSessionsAutoRefresh();
             this.stopPresentationPolling();
@@ -2062,18 +2069,53 @@ function deepVision() {
             const now = Date.now();
             this.questionRequestStartedAt = now;
             this.questionRequestLastActiveAt = now;
-            this.questionRequestWatchdogTimer = setTimeout(() => {
+            this.questionRequestWatchdogTimer = setInterval(() => {
+                if (!this.loadingQuestion || currentRequestId !== this.questionRequestId) {
+                    this.stopQuestionRequestGuard();
+                    return;
+                }
+
+                const startedAt = Number(this.questionRequestStartedAt) || now;
+                const lastActiveAt = Number(this.questionRequestLastActiveAt) || startedAt;
+                const elapsed = Date.now() - startedAt;
+                const idleElapsed = Date.now() - lastActiveAt;
+                const hasLiveProgress = Boolean(this.webSearching || this.thinkingStage?.active);
+
+                if (elapsed >= QUESTION_REQUEST_HARD_TIMEOUT_MS) {
+                    void this.recoverStalledQuestionRequest(currentRequestId, 'timeout');
+                    return;
+                }
+
+                if (elapsed < QUESTION_REQUEST_SOFT_TIMEOUT_MS) {
+                    return;
+                }
+
+                if (hasLiveProgress || idleElapsed < QUESTION_REQUEST_IDLE_MS) {
+                    return;
+                }
+
                 void this.recoverStalledQuestionRequest(currentRequestId, 'timeout');
-            }, QUESTION_REQUEST_TIMEOUT_MS);
+            }, QUESTION_REQUEST_WATCHDOG_INTERVAL_MS);
         },
 
         stopQuestionRequestGuard() {
             if (this.questionRequestWatchdogTimer) {
-                clearTimeout(this.questionRequestWatchdogTimer);
+                clearInterval(this.questionRequestWatchdogTimer);
                 this.questionRequestWatchdogTimer = null;
             }
             this.questionRequestStartedAt = 0;
             this.questionRequestLastActiveAt = 0;
+        },
+
+        abortQuestionRequest() {
+            const controller = this.questionRequestAbortController;
+            this.questionRequestAbortController = null;
+            if (!controller) return;
+            try {
+                controller.abort();
+            } catch (error) {
+                console.warn('取消问题请求失败:', error);
+            }
         },
 
         markQuestionRequestActive(requestId = this.questionRequestId) {
@@ -2115,6 +2157,7 @@ function deepVision() {
 
             // 标记旧请求过期，避免迟到响应覆盖界面。
             this.questionRequestId += 1;
+            this.abortQuestionRequest();
             this.stopQuestionRequestGuard();
             this.stopThinkingPolling();
             this.stopWebSearchPolling();
@@ -3326,7 +3369,9 @@ function deepVision() {
         async fetchNextQuestion() {
             if (this.loadingQuestion) return;
             const requestId = ++this.questionRequestId;
+            const requestAbortController = typeof AbortController === 'function' ? new AbortController() : null;
             this.loadingQuestion = true;
+            this.questionRequestAbortController = requestAbortController;
             this.skeletonMode = false;
             this.interactionReady = false;
             this.startTipRotation();
@@ -3348,7 +3393,8 @@ function deepVision() {
                 const response = await fetch(`${API_BASE}/sessions/${this.currentSession.session_id}/next-question`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ dimension: this.currentDimension })
+                    body: JSON.stringify({ dimension: this.currentDimension }),
+                    signal: requestAbortController?.signal
                 });
 
                 const result = await response.json();
@@ -3356,6 +3402,9 @@ function deepVision() {
                     return;
                 }
 
+                if (this.questionRequestAbortController === requestAbortController) {
+                    this.questionRequestAbortController = null;
+                }
                 this.stopQuestionRequestGuard();
                 // 先停止轮询，手动设置完成状态让所有步骤显示为已完成
                 this.stopThinkingPolling();
@@ -3445,6 +3494,9 @@ function deepVision() {
                 if (requestId !== this.questionRequestId) {
                     return;
                 }
+                if (error?.name === 'AbortError') {
+                    return;
+                }
                 console.error('获取问题失败:', error);
                 console.error('错误详情:', error.message, error.stack);
 
@@ -3463,6 +3515,9 @@ function deepVision() {
                 this.aiRecommendationPrevSelection = null;
                 this.interactionReady = true;  // 错误状态下允许交互（重试）
             } finally {
+                if (this.questionRequestAbortController === requestAbortController) {
+                    this.questionRequestAbortController = null;
+                }
                 if (requestId === this.questionRequestId) {
                     // 确保停止轮询
                     this.stopQuestionRequestGuard();
@@ -4428,6 +4483,7 @@ function deepVision() {
 
                     // 重置前端状态
                     this.questionRequestId += 1;
+                    this.abortQuestionRequest();
                     this.stopQuestionRequestGuard();
                     this.stopThinkingPolling();
                     this.stopWebSearchPolling();
@@ -8415,6 +8471,7 @@ function deepVision() {
             if (!this.authReady) return;
             // 清理所有定时器，防止内存泄漏
             this.questionRequestId += 1;
+            this.abortQuestionRequest();
             this.stopQuestionRequestGuard();
             this.stopThinkingPolling();
             this.stopWebSearchPolling();
