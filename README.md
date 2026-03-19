@@ -2,24 +2,32 @@
 
 DeepVision 是一个面向需求访谈、方案沉淀与交付输出的 AI Web 应用。系统覆盖「发起访谈 -> 沉淀记录 -> 生成报告 -> 派生方案页 -> 导出与分享」的完整链路，适合需求调研、售前咨询、业务诊断与方案澄清场景。
 
-当前版本：`4.0.0`（`2026-03-17`，见 [web/version.json](web/version.json)）
+当前版本：`5.0.2`（`2026-03-19`，见 [web/version.json](web/version.json)）
+
+## 近期更新
+
+- 访谈链路：补齐下一题生成的超时看门狗与失活恢复，异常请求不会再长期停留在加载态
+- 报告与方案页：统一消费已绑定报告的最终快照，方案页支持跟随自定义章节蓝图渲染
+- 帮助与导航：修复帮助文档目录定位与当前章节高亮，补齐方案页与会话页的前端一致性体验
 
 ## 核心能力
 
-- 智能访谈：按场景驱动问题生成，支持追问、进度推进、会话持久化
+- 智能访谈：按场景驱动问题生成，支持追问、进度推进、会话持久化，以及下一题超时恢复
 - 资料输入：支持 `md`、`txt`、`pdf`、`docx`、`xlsx`、`pptx` 上传并转为可引用内容
-- 报告生成：异步队列化生成、状态轮询、质量门控、证据索引
-- 方案页输出：从报告派生结构化方案页，支持匿名只读分享链接
+- 报告生成：异步队列化生成、状态轮询、质量门控、证据索引、自定义章节蓝图
+- 方案页输出：从报告派生结构化方案页，默认基于最终报告快照生成，支持匿名只读分享链接
 - 导出能力：支持 Markdown、Word、PDF、附录 PDF
 - 鉴权能力：手机号验证码登录（`mock` / 京东云短信），支持可选微信扫码登录
 - 场景管理：内置场景 + 自定义场景，支持目录化加载
-- 稳定性优化：分页、ETag/304、429 快速失败、缓存与预热
+- 帮助文档：内置帮助页，支持 `h2-h4` 目录、本节目录与当前章节高亮
+- 稳定性优化：分页、ETag/304、429 快速失败、缓存预热、最终态快照与前端请求看门狗
 
 ## 技术结构
 
 - 后端：Flask 单文件主服务 [web/server.py](web/server.py)
 - 前端：原生 HTML / CSS / JavaScript，主入口为 [web/index.html](web/index.html) 与 [web/app.js](web/app.js)
 - 方案页：独立入口 [web/solution.html](web/solution.html)、[web/solution.js](web/solution.js)、[web/solution.css](web/solution.css)
+- 帮助页：独立入口 [web/help.html](web/help.html)
 - 生产运行：Gunicorn + [web/wsgi.py](web/wsgi.py)
 - 依赖管理：使用 `uv run` 直接读取 [web/server.py](web/server.py) 顶部的 inline dependency metadata
 
@@ -172,6 +180,7 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 常见专项测试：
 
 - `python3 -m unittest tests.test_api_comprehensive`
+- `python3 -m unittest tests.test_question_fast_strategy`
 - `python3 -m unittest tests.test_security_regression`
 - `python3 -m unittest tests.test_solution_payload`
 - `python3 -m unittest tests.test_version_manager`
