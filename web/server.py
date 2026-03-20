@@ -2144,7 +2144,7 @@ elif configured_scenarios_root is not None:
 else:
     BUILTIN_SCENARIOS_DIR = default_builtin_scenarios_dir
 
-default_custom_scenarios_dir = Path.home() / ".deepvision" / "scenarios" / "custom"
+default_custom_scenarios_dir = LEGACY_SCENARIOS_CUSTOM_DIR
 if CONFIG_CUSTOM_SCENARIOS_DIR:
     CUSTOM_SCENARIOS_DIR = _resolve_runtime_path(CONFIG_CUSTOM_SCENARIOS_DIR, default_custom_scenarios_dir)
 elif configured_scenarios_root is not None:
@@ -2239,7 +2239,7 @@ from scripts.scenario_loader import get_scenario_loader
 scenario_loader = get_scenario_loader(
     builtin_dir=BUILTIN_SCENARIOS_DIR,
     custom_dir=CUSTOM_SCENARIOS_DIR,
-    migrate_legacy_custom_dir=LEGACY_SCENARIOS_CUSTOM_DIR,
+    migrate_legacy_custom_dir=Path.home() / ".deepvision" / "scenarios" / "custom",
 )
 
 # Web Search 状态追踪（用于前端呼吸灯效果）

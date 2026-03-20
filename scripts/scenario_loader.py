@@ -17,7 +17,7 @@ import shutil
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 DEFAULT_LEGACY_SCENARIOS_DIR = PROJECT_ROOT / "data" / "scenarios"
 DEFAULT_BUILTIN_SCENARIOS_DIR = PROJECT_ROOT / "resources" / "scenarios" / "builtin"
-DEFAULT_CUSTOM_SCENARIOS_DIR = Path.home() / ".deepvision" / "scenarios" / "custom"
+DEFAULT_CUSTOM_SCENARIOS_DIR = PROJECT_ROOT / "data" / "scenarios" / "custom"
 
 
 class ScenarioLoader:
@@ -75,7 +75,7 @@ class ScenarioLoader:
                 self.builtin_dir = self.scenarios_dir / "builtin"
                 self.custom_dir = self.scenarios_dir / "custom"
             else:
-                # 新默认：内置场景走 resources，自定义场景走用户目录
+                # 新默认：内置场景走 resources，自定义场景走持久化 data 目录
                 default_builtin = DEFAULT_BUILTIN_SCENARIOS_DIR
                 if not default_builtin.exists():
                     default_builtin = DEFAULT_LEGACY_SCENARIOS_DIR / "builtin"
@@ -101,7 +101,7 @@ class ScenarioLoader:
         self._load_all_scenarios()
 
     def _migrate_legacy_custom_scenarios(self) -> None:
-        """将历史 data/scenarios/custom 下的 JSON 自动迁移到新自定义目录。"""
+        """将历史自定义场景目录下的 JSON 自动迁移到当前自定义目录。"""
         legacy_dir = self.legacy_custom_dir
         target_dir = self.custom_dir
 

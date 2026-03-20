@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "865184e",
+  "committedAt": "2026-03-20T17:07:53+08:00",
+  "versionType": "patch",
+  "title": "修正自定义场景默认持久化目录",
+  "changes": [
+    "配置：将 CUSTOM_SCENARIOS_DIR 示例值改为 data/scenarios/custom",
+    "后端：默认自定义场景目录回落到 data/scenarios/custom，并从旧的 ~/.deepvision/scenarios/custom 迁移"
+  ],
+  "changedFiles": [
+    "scripts/scenario_loader.py",
+    "web/.env.example",
+    "web/server.py"
+  ]
+}
