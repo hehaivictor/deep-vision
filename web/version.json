@@ -1,7 +1,17 @@
 {
-  "version": "5.0.3",
-  "releaseDate": "2026-03-19",
+  "version": "5.0.4",
+  "releaseDate": "2026-03-20",
   "changelog": [
+    {
+      "version": "5.0.4",
+      "date": "2026-03-20",
+      "type": "patch",
+      "title": "修正自定义场景默认持久化目录",
+      "changes": [
+        "配置：将 CUSTOM_SCENARIOS_DIR 示例值改为 data/scenarios/custom",
+        "后端：默认自定义场景目录回落到 data/scenarios/custom，并从旧的 ~/.deepvision/scenarios/custom 迁移"
+      ]
+    },
     {
       "version": "5.0.3",
       "date": "2026-03-19",
