@@ -15,6 +15,9 @@ const QUESTION_REQUEST_HARD_TIMEOUT_MS = 90000;
 const QUESTION_REQUEST_WATCHDOG_INTERVAL_MS = 1000;
 const QUESTION_REQUEST_STALL_GRACE_MS = 4000;
 const QUESTION_REQUEST_IDLE_MS = 2500;
+const QUESTION_SUBMIT_PREFETCH_WAIT_MS = 25000;
+const QUESTION_OVERLOAD_RETRY_DEFAULT_SECONDS = 2;
+const QUESTION_OVERLOAD_RETRY_MAX_WAIT_MS = 20000;
 
 function deepVision() {
     return {
@@ -49,6 +52,12 @@ function deepVision() {
         currentUser: null,
         showSettingsModal: false,
         settingsTab: 'appearance',
+        opsMetrics: null,
+        opsMetricsLoading: false,
+        opsMetricsError: '',
+        opsMetricsLastUpdatedAt: 0,
+        opsMetricsLastLoadedAt: 0,
+        opsMetricsLastN: 200,
         showBindPhoneModal: false,
         bindPhoneLoading: false,
         bindCodeSending: false,
@@ -69,6 +78,23 @@ function deepVision() {
         questionRequestLastActiveAt: 0,
         questionRequestWatchdogTimer: null,
         questionRequestAbortController: null,
+        questionRequestPreferPrefetch: false,
+        questionOpsLocalState: {
+            lastRequestAt: 0,
+            lastDimension: '',
+            lastResultStatus: 'idle',
+            lastTier: '',
+            lastLane: '',
+            lastProfile: '',
+            lastFastHedge: null,
+            lastFullHedge: null,
+            lastHedgeTriggered: false,
+            lastFallbackTriggered: false,
+            lastOverloadRetryCount: 0,
+            lastOverloadWaitMs: 0,
+            lastPreferPrefetch: false,
+            lastError: ''
+        },
         thinkingPollRequestId: 0,
         webSearchPollRequestId: 0,
         scenarioRecognizeRequestId: 0,
@@ -761,6 +787,13 @@ function deepVision() {
             this.reportBatchMode = false;
             this.selectedSessionIds = [];
             this.selectedReportNames = [];
+            this.opsMetrics = null;
+            this.opsMetricsError = '';
+            this.opsMetricsLoading = false;
+            this.opsMetricsLastUpdatedAt = 0;
+            this.opsMetricsLastLoadedAt = 0;
+            this.settingsTab = 'appearance';
+            this.resetQuestionOpsLocalState();
             this.questionRequestId += 1;
             this.abortQuestionRequest();
             this.stopQuestionRequestGuard();
@@ -1137,14 +1170,242 @@ function deepVision() {
 
         openSettingsModal(tab = 'appearance') {
             if (!this.authReady) return;
-            const normalizedTab = tab === 'account' ? 'account' : 'appearance';
-            this.settingsTab = normalizedTab;
+            this.switchSettingsTab(tab, { forceOpen: true });
             this.showAccountMenu = false;
             this.showSettingsModal = true;
         },
 
         closeSettingsModal() {
             this.showSettingsModal = false;
+        },
+
+        switchSettingsTab(tab = 'appearance', options = {}) {
+            const { forceOpen = false } = options;
+            let normalizedTab = 'appearance';
+            if (tab === 'account') {
+                normalizedTab = 'account';
+            } else if (tab === 'ops' && this.canViewOpsMetrics()) {
+                normalizedTab = 'ops';
+            }
+            this.settingsTab = normalizedTab;
+            if (forceOpen) {
+                this.showSettingsModal = true;
+            }
+            if (normalizedTab === 'ops' && this.canViewOpsMetrics()) {
+                void this.loadOpsMetrics();
+            }
+        },
+
+        canViewOpsMetrics() {
+            return !!this.currentUser?.is_admin;
+        },
+
+        createQuestionOpsLocalState(overrides = {}) {
+            return {
+                lastRequestAt: 0,
+                lastDimension: '',
+                lastResultStatus: 'idle',
+                lastTier: '',
+                lastLane: '',
+                lastProfile: '',
+                lastFastHedge: null,
+                lastFullHedge: null,
+                lastHedgeTriggered: false,
+                lastFallbackTriggered: false,
+                lastOverloadRetryCount: 0,
+                lastOverloadWaitMs: 0,
+                lastPreferPrefetch: false,
+                lastError: '',
+                ...overrides
+            };
+        },
+
+        resetQuestionOpsLocalState() {
+            this.questionOpsLocalState = this.createQuestionOpsLocalState();
+        },
+
+        updateQuestionOpsLocalState(patch = {}) {
+            this.questionOpsLocalState = this.createQuestionOpsLocalState({
+                ...(this.questionOpsLocalState || {}),
+                ...(patch || {})
+            });
+        },
+
+        recordQuestionOpsRequestStart({ dimension = '', preferPrefetch = false } = {}) {
+            this.updateQuestionOpsLocalState({
+                lastRequestAt: Date.now(),
+                lastDimension: String(dimension || '').trim(),
+                lastResultStatus: 'loading',
+                lastTier: '',
+                lastLane: '',
+                lastProfile: '',
+                lastFastHedge: null,
+                lastFullHedge: null,
+                lastHedgeTriggered: false,
+                lastFallbackTriggered: false,
+                lastOverloadRetryCount: 0,
+                lastOverloadWaitMs: 0,
+                lastPreferPrefetch: !!preferPrefetch,
+                lastError: ''
+            });
+        },
+
+        recordQuestionOpsOverloadRetry({ retryCount = 0, waitMs = 0 } = {}) {
+            this.updateQuestionOpsLocalState({
+                lastResultStatus: 'overloaded',
+                lastOverloadRetryCount: Math.max(0, Number(retryCount) || 0),
+                lastOverloadWaitMs: Math.max(0, Number(waitMs) || 0)
+            });
+        },
+
+        recordQuestionOpsOutcome(status = 'idle', payload = {}) {
+            const normalizedStatus = String(status || 'idle').trim() || 'idle';
+            const decisionMeta = payload?.decisionMeta && typeof payload.decisionMeta === 'object'
+                ? payload.decisionMeta
+                : {};
+            const tier = String(payload?.tier || decisionMeta?.tier_used || '').trim();
+            const lane = String(payload?.lane || decisionMeta?.selected_lane || '').trim();
+            const profile = String(payload?.profile || '').trim();
+            const fastHedgeValue = typeof payload?.fastHedge === 'boolean'
+                ? payload.fastHedge
+                : (typeof decisionMeta?.fast_hedged_enabled === 'boolean' ? decisionMeta.fast_hedged_enabled : null);
+            const fullHedgeValue = typeof payload?.fullHedge === 'boolean'
+                ? payload.fullHedge
+                : (typeof decisionMeta?.full_hedged_enabled === 'boolean' ? decisionMeta.full_hedged_enabled : null);
+            this.updateQuestionOpsLocalState({
+                lastResultStatus: normalizedStatus,
+                lastTier: tier,
+                lastLane: lane,
+                lastProfile: profile,
+                lastFastHedge: fastHedgeValue,
+                lastFullHedge: fullHedgeValue,
+                lastHedgeTriggered: !!payload?.hedgeTriggered,
+                lastFallbackTriggered: !!payload?.fallbackTriggered,
+                lastOverloadRetryCount: Math.max(0, Number(payload?.overloadRetryCount) || 0),
+                lastOverloadWaitMs: Math.max(0, Number(payload?.overloadWaitMs) || 0),
+                lastError: String(payload?.error || '').trim()
+            });
+        },
+
+        async loadOpsMetrics(options = {}) {
+            const {
+                force = false,
+                silent = false
+            } = options;
+            if (!this.canViewOpsMetrics()) {
+                return null;
+            }
+            if (this.opsMetricsLoading && !force) {
+                return this.opsMetrics;
+            }
+
+            const now = Date.now();
+            if (!force && this.opsMetrics && (now - (Number(this.opsMetricsLastLoadedAt) || 0)) < 15000) {
+                return this.opsMetrics;
+            }
+
+            this.opsMetricsLoading = true;
+            this.opsMetricsError = '';
+            try {
+                const lastN = Math.max(50, Number(this.opsMetricsLastN) || 200);
+                const result = await this.apiCall(`/metrics?last_n=${lastN}`, {
+                    suppressErrorLog: true,
+                    expectedStatuses: [403]
+                });
+                this.opsMetrics = result && typeof result === 'object' ? result : {};
+                this.opsMetricsLastUpdatedAt = Date.now();
+                this.opsMetricsLastLoadedAt = this.opsMetricsLastUpdatedAt;
+                return this.opsMetrics;
+            } catch (error) {
+                const message = error?.status === 403 ? '仅管理员可查看运行监控' : (error?.message || '监控数据加载失败');
+                this.opsMetricsError = message;
+                if (!silent) {
+                    this.showToast(message, 'error');
+                }
+                return null;
+            } finally {
+                this.opsMetricsLoading = false;
+            }
+        },
+
+        refreshOpsMetricsIfVisible(options = {}) {
+            if (!this.showSettingsModal || this.settingsTab !== 'ops' || !this.canViewOpsMetrics()) {
+                return;
+            }
+            void this.loadOpsMetrics({
+                force: true,
+                silent: true,
+                ...options
+            });
+        },
+
+        getOpsMetricsFreshnessText() {
+            const updatedAt = Number(this.opsMetricsLastUpdatedAt) || 0;
+            if (!updatedAt) return '尚未加载';
+            const deltaSeconds = Math.max(0, Math.floor((Date.now() - updatedAt) / 1000));
+            if (deltaSeconds < 5) return '刚刚更新';
+            if (deltaSeconds < 60) return `${deltaSeconds} 秒前更新`;
+            const deltaMinutes = Math.floor(deltaSeconds / 60);
+            if (deltaMinutes < 60) return `${deltaMinutes} 分钟前更新`;
+            return this.formatDate(updatedAt);
+        },
+
+        getQuestionFastStageGroups(limit = 4) {
+            const groups = Array.isArray(this.opsMetrics?.stage_profiles?.groups)
+                ? this.opsMetrics.stage_profiles.groups
+                : [];
+            return groups
+                .filter((group) => group && group.stage === 'question_fast')
+                .sort((left, right) => {
+                    const countGap = (Number(right?.count) || 0) - (Number(left?.count) || 0);
+                    if (countGap !== 0) return countGap;
+                    return (Number(left?.p50_ms) || 0) - (Number(right?.p50_ms) || 0);
+                })
+                .slice(0, Math.max(1, Number(limit) || 4));
+        },
+
+        getQuestionFastStageSummary() {
+            const stageSummary = this.opsMetrics?.stage_profiles?.stages?.question_fast;
+            if (stageSummary && typeof stageSummary === 'object') {
+                return stageSummary;
+            }
+            return {
+                count: 0,
+                success_rate: 0,
+                p50_ms: 0,
+                p95_ms: 0
+            };
+        },
+
+        getQuestionOpsStatusLabel(status = '') {
+            const normalized = String(status || '').trim().toLowerCase();
+            if (normalized === 'loading') return '请求中';
+            if (normalized === 'success') return 'AI 成功';
+            if (normalized === 'fallback') return '备用题目';
+            if (normalized === 'overloaded') return '排队重试';
+            if (normalized === 'completed') return '维度完成';
+            if (normalized === 'stalled') return '请求停滞';
+            if (normalized === 'interrupted') return '请求中断';
+            if (normalized === 'error') return '请求失败';
+            return '空闲';
+        },
+
+        formatOpsDurationMs(value) {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric) || numeric <= 0) return '0 ms';
+            if (numeric >= 1000) return `${(numeric / 1000).toFixed(numeric >= 10000 ? 0 : 1)} s`;
+            return `${Math.round(numeric)} ms`;
+        },
+
+        formatOpsPercent(value) {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) return '0%';
+            return `${numeric.toFixed(numeric % 1 === 0 ? 0 : 2)}%`;
+        },
+
+        formatOpsBool(flag, yesText = '开启', noText = '关闭', unknownText = '未知') {
+            if (typeof flag !== 'boolean') return unknownText;
+            return flag ? yesText : noText;
         },
 
         openBindPhoneModal() {
@@ -2043,6 +2304,8 @@ function deepVision() {
                         this.webSearching = data.active;
                         if (data.active) {
                             this.markQuestionRequestActive(currentRequestId);
+                        } else if (this.questionRequestPreferPrefetch && (Date.now() - (Number(this.questionRequestStartedAt) || Date.now())) < QUESTION_SUBMIT_PREFETCH_WAIT_MS) {
+                            this.markQuestionRequestActive(currentRequestId);
                         } else {
                             this.observeQuestionRequestIdle(currentRequestId);
                         }
@@ -2079,7 +2342,8 @@ function deepVision() {
                 const lastActiveAt = Number(this.questionRequestLastActiveAt) || startedAt;
                 const elapsed = Date.now() - startedAt;
                 const idleElapsed = Date.now() - lastActiveAt;
-                const hasLiveProgress = Boolean(this.webSearching || this.thinkingStage?.active);
+                const waitingPrefetch = Boolean(this.questionRequestPreferPrefetch && elapsed < QUESTION_SUBMIT_PREFETCH_WAIT_MS);
+                const hasLiveProgress = Boolean(this.webSearching || this.thinkingStage?.active || waitingPrefetch);
 
                 if (elapsed >= QUESTION_REQUEST_HARD_TIMEOUT_MS) {
                     void this.recoverStalledQuestionRequest(currentRequestId, 'timeout');
@@ -2118,6 +2382,25 @@ function deepVision() {
             }
         },
 
+        parseQuestionRetryAfterSeconds(response) {
+            const rawHeader = String(response?.headers?.get('Retry-After') || '').trim();
+            const parsedHeader = Number.parseFloat(rawHeader);
+            if (Number.isFinite(parsedHeader) && parsedHeader > 0) {
+                return Math.max(1, Math.ceil(parsedHeader));
+            }
+            return QUESTION_OVERLOAD_RETRY_DEFAULT_SECONDS;
+        },
+
+        async waitForQuestionOverloadRetry(requestId, delayMs) {
+            const currentRequestId = Number(requestId) || 0;
+            const safeDelayMs = Math.max(0, Number(delayMs) || 0);
+            if (!safeDelayMs) {
+                return currentRequestId === this.questionRequestId;
+            }
+            await new Promise((resolve) => setTimeout(resolve, safeDelayMs));
+            return currentRequestId === this.questionRequestId;
+        },
+
         markQuestionRequestActive(requestId = this.questionRequestId) {
             const currentRequestId = Number(requestId) || 0;
             if (!this.loadingQuestion || currentRequestId !== this.questionRequestId) {
@@ -2136,6 +2419,9 @@ function deepVision() {
                 return;
             }
             const now = Date.now();
+            if (this.questionRequestPreferPrefetch && (now - startedAt) < QUESTION_SUBMIT_PREFETCH_WAIT_MS) {
+                return;
+            }
             if (now - startedAt < QUESTION_REQUEST_STALL_GRACE_MS) {
                 return;
             }
@@ -2178,16 +2464,23 @@ function deepVision() {
             const nextDim = this.getNextIncompleteDimension();
             const currentCoverage = Number(this.currentSession?.dimensions?.[this.currentDimension]?.coverage) || 0;
             if (!nextDim) {
+                this.recordQuestionOpsOutcome('completed', {
+                    error: ''
+                });
                 this.currentStep = 1;
                 this.currentQuestion = this.createQuestionState();
                 this.aiRecommendationExpanded = false;
                 this.aiRecommendationApplied = false;
                 this.aiRecommendationPrevSelection = null;
                 this.showToast('所有维度访谈完成！', 'success');
+                this.refreshOpsMetricsIfVisible();
                 return;
             }
 
             if (currentCoverage >= 100 && nextDim !== this.currentDimension) {
+                this.recordQuestionOpsOutcome('completed', {
+                    error: ''
+                });
                 const completedDimension = this.currentDimension;
                 this.ensureDimensionVisualComplete(completedDimension);
                 this.currentDimension = nextDim;
@@ -2196,11 +2489,15 @@ function deepVision() {
                 this.aiRecommendationApplied = false;
                 this.aiRecommendationPrevSelection = null;
                 this.showToast(`当前维度已完成，已恢复到${this.getDimensionName(nextDim)}`, 'warning');
+                this.refreshOpsMetricsIfVisible();
                 await this.fetchNextQuestion();
                 return;
             }
 
             const timeoutTriggered = reason === 'timeout';
+            this.recordQuestionOpsOutcome(timeoutTriggered ? 'error' : 'stalled', {
+                error: timeoutTriggered ? '生成问题超时' : '问题生成已中断'
+            });
             this.currentQuestion = this.createQuestionState({
                 serviceError: true,
                 errorTitle: timeoutTriggered ? '生成问题超时' : '问题生成已中断',
@@ -2216,6 +2513,7 @@ function deepVision() {
                 timeoutTriggered ? '获取下一题超时，已停止等待' : '未检测到新的问题输出，已停止等待',
                 'warning'
             );
+            this.refreshOpsMetricsIfVisible();
         },
 
         // ========== 方案B: 思考进度轮询 ==========
@@ -2247,6 +2545,15 @@ function deepVision() {
                         }
                         if (data.active) {
                             this.thinkingStage = data;
+                            this.markQuestionRequestActive(currentRequestId);
+                        } else if (this.questionRequestPreferPrefetch && (Date.now() - (Number(this.questionRequestStartedAt) || Date.now())) < QUESTION_SUBMIT_PREFETCH_WAIT_MS) {
+                            this.thinkingStage = {
+                                active: true,
+                                stage_index: 2,
+                                stage_name: '生成问题',
+                                message: '正在等待上一题提交后的预取结果',
+                                progress: 88
+                            };
                             this.markQuestionRequestActive(currentRequestId);
                         } else {
                             this.thinkingStage = null;
@@ -3366,12 +3673,16 @@ function deepVision() {
             }
         },
 
-        async fetchNextQuestion() {
+        async fetchNextQuestion(options = {}) {
             if (this.loadingQuestion) return;
             const requestId = ++this.questionRequestId;
-            const requestAbortController = typeof AbortController === 'function' ? new AbortController() : null;
+            let activeRequestAbortController = null;
+            const preferPrefetch = !!options?.preferPrefetch;
+            this.recordQuestionOpsRequestStart({
+                dimension: this.currentDimension,
+                preferPrefetch
+            });
             this.loadingQuestion = true;
-            this.questionRequestAbortController = requestAbortController;
             this.skeletonMode = false;
             this.interactionReady = false;
             this.startTipRotation();
@@ -3380,7 +3691,17 @@ function deepVision() {
             this.aiRecommendationExpanded = false;
             this.aiRecommendationApplied = false;
             this.aiRecommendationPrevSelection = null;
+            if (preferPrefetch) {
+                this.thinkingStage = {
+                    active: true,
+                    stage_index: 2,
+                    stage_name: '生成问题',
+                    message: '正在等待上一题提交后的预取结果',
+                    progress: 88
+                };
+            }
             this.startQuestionRequestGuard(requestId);
+            this.questionRequestPreferPrefetch = preferPrefetch;
             this.startThinkingPolling(requestId);  // 方案B: 开始轮询思考进度
             this.startWebSearchPolling(requestId);  // 同时保留 Web Search 状态轮询
             this.selectedAnswers = [];
@@ -3390,111 +3711,201 @@ function deepVision() {
             this.resetSingleSelectDisambiguation();
 
             try {
-                const response = await fetch(`${API_BASE}/sessions/${this.currentSession.session_id}/next-question`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ dimension: this.currentDimension }),
-                    signal: requestAbortController?.signal
-                });
+                let overloadWaitMs = 0;
+                let overloadRetryCount = 0;
 
-                const result = await response.json();
-                if (requestId !== this.questionRequestId) {
-                    return;
-                }
+                while (requestId === this.questionRequestId) {
+                    const requestAbortController = typeof AbortController === 'function' ? new AbortController() : null;
+                    activeRequestAbortController = requestAbortController;
+                    this.questionRequestAbortController = requestAbortController;
+                    this.startQuestionRequestGuard(requestId);
+                    this.questionRequestPreferPrefetch = preferPrefetch;
+                    this.startThinkingPolling(requestId);
+                    this.startWebSearchPolling(requestId);
 
-                if (this.questionRequestAbortController === requestAbortController) {
-                    this.questionRequestAbortController = null;
-                }
-                this.stopQuestionRequestGuard();
-                // 先停止轮询，手动设置完成状态让所有步骤显示为已完成
-                this.stopThinkingPolling();
-                this.stopWebSearchPolling();
-
-                // 手动设置为完成状态，让用户看到所有步骤都完成
-                this.thinkingStage = {
-                    active: true,
-                    stage_index: 2,
-                    stage_name: '生成问题',
-                    message: '问题生成完成',
-                    progress: 100
-                };
-
-                // 等待 600ms 让用户看到完成动画，然后再切换到新问题
-                await new Promise(resolve => setTimeout(resolve, 600));
-
-                // 关闭加载状态
-                this.loadingQuestion = false;
-                this.thinkingStage = null;
-                this.stopTipRotation();
-
-                // 检查是否有错误
-                if (!response.ok || result.error) {
-                    const errorTitle = result.error || '服务错误';
-                    const errorDetail = result.detail || '请稍后重试';
-
-                    // 显示 Toast 提示
-                    this.showToast(errorTitle, 'error');
-
-                    // 设置错误状态
-                    this.currentQuestion = this.createQuestionState({
-                        serviceError: true,
-                        errorTitle: errorTitle,
-                        errorDetail: errorDetail
+                    const response = await fetch(`${API_BASE}/sessions/${this.currentSession.session_id}/next-question`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            dimension: this.currentDimension,
+                            prefer_prefetch: preferPrefetch
+                        }),
+                        signal: requestAbortController?.signal
                     });
-                    this.aiRecommendationExpanded = false;
-                    this.aiRecommendationApplied = false;
-                    this.aiRecommendationPrevSelection = null;
-                    this.interactionReady = true;  // 错误状态下允许交互（重试）
-                    return;
-                }
 
-                if (result.completed) {
-                    // 当前维度已完成：自动推进流程，不再展示里程碑弹窗
-                    const completedDimension = this.currentDimension;
-                    const completedDimName = this.getDimensionName(completedDimension);
-
-                    if (result.quality_warning) {
-                        this.showToast('该维度已达上限保护完成，建议后续补充细节以提升结论可信度', 'warning');
+                    let result = {};
+                    try {
+                        result = await response.json();
+                    } catch (_error) {
+                        result = {};
                     }
 
-                    // 与后端 completed 判定保持一致，切维度前确保视觉上完成
-                    this.ensureDimensionVisualComplete(completedDimension);
+                    if (requestId !== this.questionRequestId) {
+                        return;
+                    }
 
-                    // 找下一个未完成的维度
-                    const currentIdx = this.dimensionOrder.indexOf(this.currentDimension);
-                    let nextDim = null;
-                    for (let i = 1; i <= this.dimensionOrder.length; i++) {
-                        const dim = this.dimensionOrder[(currentIdx + i) % this.dimensionOrder.length];
-                        const dimension = this.currentSession?.dimensions?.[dim];
-                        if (dimension && dimension.coverage < 100) {
-                            nextDim = dim;
-                            break;
+                    if (this.questionRequestAbortController === requestAbortController) {
+                        this.questionRequestAbortController = null;
+                    }
+                    this.stopQuestionRequestGuard();
+                    this.stopThinkingPolling();
+                    this.stopWebSearchPolling();
+
+                    if (response.status === 429 && result?.code === 'overloaded') {
+                        overloadRetryCount += 1;
+                        const retryAfterSeconds = this.parseQuestionRetryAfterSeconds(response);
+                        overloadWaitMs += retryAfterSeconds * 1000;
+                        this.recordQuestionOpsOverloadRetry({
+                            retryCount: overloadRetryCount,
+                            waitMs: overloadWaitMs
+                        });
+
+                        if (overloadRetryCount === 1) {
+                            this.showToast('问题生成链路繁忙，正在自动重试', 'warning');
                         }
+
+                        if (overloadWaitMs > QUESTION_OVERLOAD_RETRY_MAX_WAIT_MS) {
+                            this.recordQuestionOpsOutcome('overloaded', {
+                                overloadRetryCount,
+                                overloadWaitMs,
+                                error: '问题生成繁忙'
+                            });
+                            this.loadingQuestion = false;
+                            this.thinkingStage = null;
+                            this.stopTipRotation();
+                            this.currentQuestion = this.createQuestionState({
+                                serviceError: true,
+                                errorTitle: '问题生成繁忙',
+                                errorDetail: `当前请求较多，已自动等待 ${Math.ceil(overloadWaitMs / 1000)} 秒仍未轮到本次生成。请点击“重试”继续。`
+                            });
+                            this.aiRecommendationExpanded = false;
+                            this.aiRecommendationApplied = false;
+                            this.aiRecommendationPrevSelection = null;
+                            this.interactionReady = true;
+                            return;
+                        }
+
+                        this.thinkingStage = {
+                            active: true,
+                            stage_index: 2,
+                            stage_name: '生成问题',
+                            message: `问题生成链路繁忙，正在排队，${retryAfterSeconds}秒后自动重试`,
+                            progress: 92
+                        };
+
+                        const shouldContinue = await this.waitForQuestionOverloadRetry(requestId, retryAfterSeconds * 1000);
+                        if (!shouldContinue) {
+                            return;
+                        }
+                        continue;
                     }
 
-                    if (nextDim) {
-                        this.currentDimension = nextDim;
-                        this.showToast(`${completedDimName}收集完成，已自动进入${this.getDimensionName(nextDim)}`, 'success');
-                        await this.fetchNextQuestion();
-                    } else {
-                        // 所有维度都完成，停留在访谈阶段等待确认
-                        this.currentStep = 1;
-                        this.currentQuestion = this.createQuestionState();
+                    // 先停止轮询，手动设置完成状态让所有步骤显示为已完成
+                    this.thinkingStage = {
+                        active: true,
+                        stage_index: 2,
+                        stage_name: '生成问题',
+                        message: '问题生成完成',
+                        progress: 100
+                    };
+
+                    // 等待 600ms 让用户看到完成动画，然后再切换到新问题
+                    await new Promise(resolve => setTimeout(resolve, 600));
+
+                    // 关闭加载状态
+                    this.loadingQuestion = false;
+                    this.thinkingStage = null;
+                    this.stopTipRotation();
+
+                    // 检查是否有错误
+                    if (!response.ok || result.error) {
+                        const errorTitle = result.error || '服务错误';
+                        const errorDetail = result.detail || '请稍后重试';
+                        this.recordQuestionOpsOutcome('error', {
+                            overloadRetryCount,
+                            overloadWaitMs,
+                            error: errorTitle
+                        });
+
+                        this.showToast(errorTitle, 'error');
+                        this.currentQuestion = this.createQuestionState({
+                            serviceError: true,
+                            errorTitle: errorTitle,
+                            errorDetail: errorDetail
+                        });
                         this.aiRecommendationExpanded = false;
                         this.aiRecommendationApplied = false;
                         this.aiRecommendationPrevSelection = null;
-                        this.showToast('所有维度访谈完成！', 'success');
+                        this.interactionReady = true;
+                        return;
                     }
-                    return;
-                } else {
-                    // 方案D: 调用骨架填充（打字机效果 + 选项依次淡入）
+
+                    if (result.completed) {
+                        this.recordQuestionOpsOutcome('completed', {
+                            decisionMeta: result.decision_meta || null,
+                            overloadRetryCount,
+                            overloadWaitMs
+                        });
+                        // 当前维度已完成：自动推进流程，不再展示里程碑弹窗
+                        const completedDimension = this.currentDimension;
+                        const completedDimName = this.getDimensionName(completedDimension);
+
+                        if (result.quality_warning) {
+                            this.showToast('该维度已达上限保护完成，建议后续补充细节以提升结论可信度', 'warning');
+                        }
+
+                        this.ensureDimensionVisualComplete(completedDimension);
+
+                        const currentIdx = this.dimensionOrder.indexOf(this.currentDimension);
+                        let nextDim = null;
+                        for (let i = 1; i <= this.dimensionOrder.length; i++) {
+                            const dim = this.dimensionOrder[(currentIdx + i) % this.dimensionOrder.length];
+                            const dimension = this.currentSession?.dimensions?.[dim];
+                            if (dimension && dimension.coverage < 100) {
+                                nextDim = dim;
+                                break;
+                            }
+                        }
+
+                        if (nextDim) {
+                            this.currentDimension = nextDim;
+                            this.showToast(`${completedDimName}收集完成，已自动进入${this.getDimensionName(nextDim)}`, 'success');
+                            await this.fetchNextQuestion();
+                        } else {
+                            this.currentStep = 1;
+                            this.currentQuestion = this.createQuestionState();
+                            this.aiRecommendationExpanded = false;
+                            this.aiRecommendationApplied = false;
+                            this.aiRecommendationPrevSelection = null;
+                            this.showToast('所有维度访谈完成！', 'success');
+                        }
+                        return;
+                    }
+
+                    const decisionMeta = result.decision_meta || null;
+                    const fallbackTriggered = !!result.question_fallback_triggered || (!result.ai_generated && !!result.question);
+                    this.recordQuestionOpsOutcome(fallbackTriggered ? 'fallback' : 'success', {
+                        tier: result.question_generation_tier || '',
+                        lane: result.question_selected_lane || '',
+                        profile: result.question_runtime_profile || '',
+                        decisionMeta,
+                        hedgeTriggered: !!result.question_hedge_triggered,
+                        fallbackTriggered,
+                        overloadRetryCount,
+                        overloadWaitMs,
+                        error: ''
+                    });
                     await this.startSkeletonFill(result);
+                    return;
                 }
             } catch (error) {
                 if (requestId !== this.questionRequestId) {
                     return;
                 }
                 if (error?.name === 'AbortError') {
+                    this.recordQuestionOpsOutcome('interrupted', {
+                        error: '请求已取消'
+                    });
                     return;
                 }
                 console.error('获取问题失败:', error);
@@ -3503,6 +3914,11 @@ function deepVision() {
                 // 网络错误或其他异常
                 const errorTitle = '网络错误';
                 const errorDetail = `无法连接到服务器: ${error.message}`;
+                this.recordQuestionOpsOutcome('error', {
+                    error: errorTitle,
+                    overloadRetryCount,
+                    overloadWaitMs
+                });
 
                 this.showToast(`${errorTitle}: ${error.message}`, 'error');
                 this.currentQuestion = this.createQuestionState({
@@ -3515,10 +3931,11 @@ function deepVision() {
                 this.aiRecommendationPrevSelection = null;
                 this.interactionReady = true;  // 错误状态下允许交互（重试）
             } finally {
-                if (this.questionRequestAbortController === requestAbortController) {
+                if (this.questionRequestAbortController === activeRequestAbortController) {
                     this.questionRequestAbortController = null;
                 }
                 if (requestId === this.questionRequestId) {
+                    this.questionRequestPreferPrefetch = false;
                     // 确保停止轮询
                     this.stopQuestionRequestGuard();
                     this.stopThinkingPolling();
@@ -3526,6 +3943,7 @@ function deepVision() {
                     this.loadingQuestion = false;
                     this.isGoingPrev = false;
                 }
+                this.refreshOpsMetricsIfVisible();
             }
         },
 
@@ -4226,7 +4644,7 @@ function deepVision() {
                     }
                 }
 
-                await this.fetchNextQuestion();
+                await this.fetchNextQuestion({ preferPrefetch: true });
 
             } catch (error) {
                 console.error('提交回答错误:', error);

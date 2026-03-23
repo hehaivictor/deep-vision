@@ -534,6 +534,14 @@ LIST_API_RETRY_AFTER_SECONDS = _cfg_int("LIST_API_RETRY_AFTER_SECONDS", 2)
 if LIST_API_RETRY_AFTER_SECONDS < 1:
     LIST_API_RETRY_AFTER_SECONDS = 2
 
+QUESTION_GENERATION_MAX_INFLIGHT = _cfg_int("QUESTION_GENERATION_MAX_INFLIGHT", 2)
+if QUESTION_GENERATION_MAX_INFLIGHT < 1:
+    QUESTION_GENERATION_MAX_INFLIGHT = 2
+
+QUESTION_GENERATION_RETRY_AFTER_SECONDS = _cfg_int("QUESTION_GENERATION_RETRY_AFTER_SECONDS", 2)
+if QUESTION_GENERATION_RETRY_AFTER_SECONDS < 1:
+    QUESTION_GENERATION_RETRY_AFTER_SECONDS = 2
+
 # 报告生成任务池与排队上限（并发优化）
 REPORT_GENERATION_MAX_WORKERS = _cfg_int("REPORT_GENERATION_MAX_WORKERS", 2)
 if REPORT_GENERATION_MAX_WORKERS < 1:
@@ -622,6 +630,10 @@ if SEARCH_DECISION_CACHE_MAX_ENTRIES < 32:
 SEARCH_DECISION_INFLIGHT_WAIT_SECONDS = _cfg_float("SEARCH_DECISION_INFLIGHT_WAIT_SECONDS", 10.0)
 if SEARCH_DECISION_INFLIGHT_WAIT_SECONDS < 1.0:
     SEARCH_DECISION_INFLIGHT_WAIT_SECONDS = 1.0
+SEARCH_DECISION_MAX_INFLIGHT = _cfg_int("SEARCH_DECISION_MAX_INFLIGHT", 1)
+if SEARCH_DECISION_MAX_INFLIGHT < 1:
+    SEARCH_DECISION_MAX_INFLIGHT = 1
+SEARCH_DECISION_PREFETCH_RULE_ONLY = _cfg_bool("SEARCH_DECISION_PREFETCH_RULE_ONLY", True)
 SEARCH_RESULT_CACHE_TTL_SECONDS = _cfg_int("SEARCH_RESULT_CACHE_TTL_SECONDS", 300)
 if SEARCH_RESULT_CACHE_TTL_SECONDS < 0:
     SEARCH_RESULT_CACHE_TTL_SECONDS = 0
@@ -646,11 +658,46 @@ QUESTION_FAST_PATH_ENABLED = _cfg_bool("QUESTION_FAST_PATH_ENABLED", True)
 QUESTION_FAST_TIMEOUT = _cfg_float("QUESTION_FAST_TIMEOUT", 12.0)
 if QUESTION_FAST_TIMEOUT < 5.0:
     QUESTION_FAST_TIMEOUT = 5.0
+QUESTION_FAST_REFERENCE_TIMEOUT = _cfg_float("QUESTION_FAST_REFERENCE_TIMEOUT", max(QUESTION_FAST_TIMEOUT, 15.0))
+if QUESTION_FAST_REFERENCE_TIMEOUT < QUESTION_FAST_TIMEOUT:
+    QUESTION_FAST_REFERENCE_TIMEOUT = QUESTION_FAST_TIMEOUT
+QUESTION_FAST_REFERENCE_QUESTION_TIMEOUT = _cfg_float(
+    "QUESTION_FAST_REFERENCE_QUESTION_TIMEOUT",
+    QUESTION_FAST_REFERENCE_TIMEOUT,
+)
+if QUESTION_FAST_REFERENCE_QUESTION_TIMEOUT < QUESTION_FAST_TIMEOUT:
+    QUESTION_FAST_REFERENCE_QUESTION_TIMEOUT = QUESTION_FAST_TIMEOUT
+QUESTION_FAST_REFERENCE_REPORT_TIMEOUT = _cfg_float(
+    "QUESTION_FAST_REFERENCE_REPORT_TIMEOUT",
+    max(14.0, QUESTION_FAST_REFERENCE_QUESTION_TIMEOUT - 1.0),
+)
+if QUESTION_FAST_REFERENCE_REPORT_TIMEOUT < 5.0:
+    QUESTION_FAST_REFERENCE_REPORT_TIMEOUT = 5.0
 QUESTION_FAST_MAX_TOKENS = _cfg_int("QUESTION_FAST_MAX_TOKENS", 1000)
 QUESTION_FAST_MAX_TOKENS = max(600, min(QUESTION_FAST_MAX_TOKENS, MAX_TOKENS_QUESTION))
+QUESTION_FAST_REFERENCE_QUESTION_MAX_TOKENS = _cfg_int(
+    "QUESTION_FAST_REFERENCE_QUESTION_MAX_TOKENS",
+    max(QUESTION_FAST_MAX_TOKENS, 1000),
+)
+QUESTION_FAST_REFERENCE_QUESTION_MAX_TOKENS = max(
+    500,
+    min(QUESTION_FAST_REFERENCE_QUESTION_MAX_TOKENS, MAX_TOKENS_QUESTION),
+)
+QUESTION_FAST_REFERENCE_REPORT_MAX_TOKENS = _cfg_int(
+    "QUESTION_FAST_REFERENCE_REPORT_MAX_TOKENS",
+    min(MAX_TOKENS_QUESTION, max(QUESTION_FAST_REFERENCE_QUESTION_MAX_TOKENS, 1100)),
+)
+QUESTION_FAST_REFERENCE_REPORT_MAX_TOKENS = max(
+    QUESTION_FAST_REFERENCE_QUESTION_MAX_TOKENS,
+    min(QUESTION_FAST_REFERENCE_REPORT_MAX_TOKENS, MAX_TOKENS_QUESTION),
+)
 QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS = _cfg_int("QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS", 1800)
 if QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS < 0:
     QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS = 0
+QUESTION_FAST_LIGHT_REFERENCE_DOCS_ENABLED = _cfg_bool("QUESTION_FAST_LIGHT_REFERENCE_DOCS_ENABLED", True)
+QUESTION_FAST_LIGHT_MAX_REFERENCE_DOCS = _cfg_int("QUESTION_FAST_LIGHT_MAX_REFERENCE_DOCS", 2)
+if QUESTION_FAST_LIGHT_MAX_REFERENCE_DOCS < 1:
+    QUESTION_FAST_LIGHT_MAX_REFERENCE_DOCS = 1
 QUESTION_FAST_SKIP_WHEN_TRUNCATED_DOCS = _cfg_bool("QUESTION_FAST_SKIP_WHEN_TRUNCATED_DOCS", True)
 QUESTION_FAST_ADAPTIVE_ENABLED = _cfg_bool("QUESTION_FAST_ADAPTIVE_ENABLED", True)
 QUESTION_FAST_ADAPTIVE_WINDOW_SIZE = _cfg_int("QUESTION_FAST_ADAPTIVE_WINDOW_SIZE", 20)
@@ -695,8 +742,10 @@ if QUESTION_HIGH_EVIDENCE_SECONDARY_LANE not in {"question", "report", "search_d
     QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = "report"
 QUESTION_HIGH_EVIDENCE_DISABLE_DYNAMIC_LANE = _cfg_bool("QUESTION_HIGH_EVIDENCE_DISABLE_DYNAMIC_LANE", True)
 QUESTION_HIGH_EVIDENCE_HEDGED_ENABLED = _cfg_bool("QUESTION_HIGH_EVIDENCE_HEDGED_ENABLED", False)
+QUESTION_HIGH_EVIDENCE_FAST_PATH_ENABLED = _cfg_bool("QUESTION_HIGH_EVIDENCE_FAST_PATH_ENABLED", True)
 QUESTION_HEDGE_FAILURE_FALLBACK_ENABLED = _cfg_bool("QUESTION_HEDGE_FAILURE_FALLBACK_ENABLED", True)
 QUESTION_HEDGE_REQUIRE_SHADOW_BLOCKER = _cfg_bool("QUESTION_HEDGE_REQUIRE_SHADOW_BLOCKER", True)
+QUESTION_FAST_REFERENCE_HEDGE_BYPASS_BUDGET = _cfg_bool("QUESTION_FAST_REFERENCE_HEDGE_BYPASS_BUDGET", True)
 QUESTION_SESSION_HEDGE_BUDGET = _cfg_int("QUESTION_SESSION_HEDGE_BUDGET", 4)
 if QUESTION_SESSION_HEDGE_BUDGET < 0:
     QUESTION_SESSION_HEDGE_BUDGET = 0
@@ -744,6 +793,9 @@ if QUESTION_RESULT_CACHE_MAX_ENTRIES < 64:
 QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = _cfg_float("QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS", 1.8)
 if QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS < 0.0:
     QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = 0.0
+QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS = _cfg_float("QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS", 25.0)
+if QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS < QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS:
+    QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS = QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS
 METRICS_ASYNC_FLUSH_INTERVAL_SECONDS = _cfg_float("METRICS_ASYNC_FLUSH_INTERVAL_SECONDS", 1.5)
 if METRICS_ASYNC_FLUSH_INTERVAL_SECONDS < 0.2:
     METRICS_ASYNC_FLUSH_INTERVAL_SECONDS = 0.2
@@ -761,6 +813,19 @@ if INTERVIEW_PROMPT_CACHE_MAX_ENTRIES < 32:
     INTERVIEW_PROMPT_CACHE_MAX_ENTRIES = 32
 MAX_DOC_LENGTH = _cfg_int("MAX_DOC_LENGTH", 2000)         # 单个文档最大长度（字符）
 MAX_TOTAL_DOCS = _cfg_int("MAX_TOTAL_DOCS", 5000)         # 所有文档总长度限制（字符）
+QUESTION_FAST_LIGHT_DOC_BUDGET = _cfg_int(
+    "QUESTION_FAST_LIGHT_DOC_BUDGET",
+    min(MAX_TOTAL_DOCS, max(1200, QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS)),
+)
+if QUESTION_FAST_LIGHT_DOC_BUDGET < 400:
+    QUESTION_FAST_LIGHT_DOC_BUDGET = 400
+QUESTION_FAST_LIGHT_DOC_BUDGET = min(QUESTION_FAST_LIGHT_DOC_BUDGET, MAX_TOTAL_DOCS)
+QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS = _cfg_int(
+    "QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS",
+    max(QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS, QUESTION_FAST_LIGHT_DOC_BUDGET + 900),
+)
+if QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS < QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS:
+    QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS = QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS
 API_TIMEOUT = _cfg_float("API_TIMEOUT", 90.0)             # 通用 API 超时时间（秒）
 REPORT_API_TIMEOUT = _cfg_float("REPORT_API_TIMEOUT", 210.0)  # 报告生成专用超时（秒）
 if REPORT_API_TIMEOUT < API_TIMEOUT:
@@ -2037,6 +2102,8 @@ REPORT_SCOPES_LOCK = threading.RLock()
 REPORT_SOLUTION_SHARES_LOCK = threading.RLock()
 SESSIONS_LIST_SEMAPHORE = threading.BoundedSemaphore(SESSIONS_LIST_MAX_INFLIGHT)
 REPORTS_LIST_SEMAPHORE = threading.BoundedSemaphore(REPORTS_LIST_MAX_INFLIGHT)
+QUESTION_GENERATION_SEMAPHORE = threading.BoundedSemaphore(QUESTION_GENERATION_MAX_INFLIGHT)
+SEARCH_DECISION_SEMAPHORE = threading.BoundedSemaphore(SEARCH_DECISION_MAX_INFLIGHT)
 ALLOWED_STATIC_EXTENSIONS = {
     ".html", ".css", ".js", ".map", ".json",
     ".ico", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
@@ -2532,6 +2599,22 @@ list_overload_stats = {
     "reports_list": {"rejected": 0},
 }
 list_overload_stats_lock = threading.Lock()
+question_generation_stats_lock = threading.Lock()
+question_generation_stats = {
+    "overloaded": 0,
+    "ai_success": 0,
+    "fallback_served": 0,
+    "fallback_reasons": {},
+}
+search_decision_stats_lock = threading.Lock()
+search_decision_stats = {
+    "overloaded": 0,
+    "ai_success": 0,
+    "degraded": 0,
+    "rule_only": 0,
+    "cache_hit": 0,
+    "degrade_reasons": {},
+}
 list_api_metrics_lock = threading.Lock()
 list_api_metrics = {
     "sessions_list": {
@@ -2775,6 +2858,20 @@ def _build_search_decision_cache_key(topic: str, dimension: str, recent_qa: list
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
 
+def _normalize_search_decision_mode(mode: str = "default") -> str:
+    normalized = str(mode or "default").strip().lower()
+    if normalized in {"rule_only", "rules", "prefetch"}:
+        return "rule_only"
+    return "default"
+
+
+def _resolve_prompt_search_mode(call_type: str) -> str:
+    normalized_call_type = str(call_type or "").strip().lower()
+    if SEARCH_DECISION_PREFETCH_RULE_ONLY and normalized_call_type.startswith("prefetch"):
+        return "rule_only"
+    return "default"
+
+
 def _get_search_decision_cache(cache_key: str) -> Optional[dict]:
     if SEARCH_DECISION_CACHE_TTL_SECONDS <= 0:
         return None
@@ -3008,6 +3105,7 @@ def _build_interview_prompt_cache_key(
     dimension: str,
     session_id: str = "",
     output_mode: str = "full",
+    search_mode: str = "default",
 ) -> str:
     if not isinstance(session_signature, tuple) or len(session_signature) != 2:
         return ""
@@ -3016,6 +3114,7 @@ def _build_interview_prompt_cache_key(
         "signature": session_signature,
         "dimension": str(dimension or "").strip(),
         "output_mode": str(output_mode or "full").strip().lower() or "full",
+        "search_mode": _normalize_search_decision_mode(search_mode),
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
@@ -3174,14 +3273,21 @@ def parse_if_none_match_values() -> set[str]:
     return {token.strip() for token in raw.split(",") if token.strip()}
 
 
-def build_overload_response(endpoint_key: str):
+def build_overload_response(
+    endpoint_key: str,
+    *,
+    message: str = "请求过于繁忙，请稍后重试",
+    retry_after_seconds: Optional[int] = None,
+):
     response = jsonify({
-        "error": "请求过于繁忙，请稍后重试",
+        "error": str(message or "请求过于繁忙，请稍后重试"),
         "code": "overloaded",
         "endpoint": endpoint_key,
     })
     response.status_code = 429
-    response.headers["Retry-After"] = str(LIST_API_RETRY_AFTER_SECONDS)
+    response.headers["Retry-After"] = str(
+        max(1, int(retry_after_seconds if retry_after_seconds is not None else LIST_API_RETRY_AFTER_SECONDS))
+    )
     return response
 
 
@@ -3198,6 +3304,122 @@ def try_acquire_list_semaphore(endpoint_key: str, semaphore: threading.BoundedSe
     if ENABLE_DEBUG_LOG and (rejected == 1 or rejected % 20 == 0):
         _safe_log(f"⚠️ {endpoint_key} 触发过载保护，累计拒绝 {rejected} 次")
     return False
+
+
+def record_question_generation_event(event: str, reason: str = "") -> None:
+    event_key = str(event or "").strip()
+    reason_key = str(reason or "").strip()
+    if event_key not in {"overloaded", "ai_success", "fallback_served"}:
+        return
+
+    with question_generation_stats_lock:
+        question_generation_stats[event_key] = int(question_generation_stats.get(event_key, 0) or 0) + 1
+        if event_key == "fallback_served" and reason_key:
+            fallback_reasons = question_generation_stats.setdefault("fallback_reasons", {})
+            fallback_reasons[reason_key] = int(fallback_reasons.get(reason_key, 0) or 0) + 1
+
+
+def record_search_decision_event(event: str, reason: str = "") -> None:
+    event_key = str(event or "").strip()
+    reason_key = str(reason or "").strip()
+    if event_key not in {"overloaded", "ai_success", "degraded", "rule_only", "cache_hit"}:
+        return
+
+    with search_decision_stats_lock:
+        search_decision_stats[event_key] = int(search_decision_stats.get(event_key, 0) or 0) + 1
+        if event_key == "degraded" and reason_key:
+            degrade_reasons = search_decision_stats.setdefault("degrade_reasons", {})
+            degrade_reasons[reason_key] = int(degrade_reasons.get(reason_key, 0) or 0) + 1
+
+
+def get_question_generation_stats_snapshot() -> dict:
+    with question_generation_stats_lock:
+        fallback_reasons = dict(question_generation_stats.get("fallback_reasons") or {})
+        total = int(question_generation_stats.get("ai_success", 0) or 0) + int(question_generation_stats.get("fallback_served", 0) or 0)
+        return {
+            "overloaded": int(question_generation_stats.get("overloaded", 0) or 0),
+            "ai_success": int(question_generation_stats.get("ai_success", 0) or 0),
+            "fallback_served": int(question_generation_stats.get("fallback_served", 0) or 0),
+            "fallback_rate": round(int(question_generation_stats.get("fallback_served", 0) or 0) / total * 100, 2) if total > 0 else 0.0,
+            "fallback_reasons": fallback_reasons,
+        }
+
+
+def get_search_decision_stats_snapshot() -> dict:
+    with search_decision_stats_lock:
+        return {
+            "overloaded": int(search_decision_stats.get("overloaded", 0) or 0),
+            "ai_success": int(search_decision_stats.get("ai_success", 0) or 0),
+            "degraded": int(search_decision_stats.get("degraded", 0) or 0),
+            "rule_only": int(search_decision_stats.get("rule_only", 0) or 0),
+            "cache_hit": int(search_decision_stats.get("cache_hit", 0) or 0),
+            "degrade_reasons": dict(search_decision_stats.get("degrade_reasons") or {}),
+        }
+
+
+def reset_question_generation_stats() -> None:
+    with question_generation_stats_lock:
+        question_generation_stats["overloaded"] = 0
+        question_generation_stats["ai_success"] = 0
+        question_generation_stats["fallback_served"] = 0
+        question_generation_stats["fallback_reasons"] = {}
+
+
+def reset_search_decision_stats() -> None:
+    with search_decision_stats_lock:
+        search_decision_stats["overloaded"] = 0
+        search_decision_stats["ai_success"] = 0
+        search_decision_stats["degraded"] = 0
+        search_decision_stats["rule_only"] = 0
+        search_decision_stats["cache_hit"] = 0
+        search_decision_stats["degrade_reasons"] = {}
+
+
+def try_acquire_question_generation_semaphore(record_overload: bool = True) -> bool:
+    acquired = QUESTION_GENERATION_SEMAPHORE.acquire(blocking=False)
+    if acquired:
+        return True
+
+    if not record_overload:
+        return False
+
+    record_question_generation_event("overloaded")
+    overloaded_count = 0
+    with question_generation_stats_lock:
+        overloaded_count = int(question_generation_stats.get("overloaded", 0) or 0)
+    if ENABLE_DEBUG_LOG and (overloaded_count == 1 or overloaded_count % 20 == 0):
+        _safe_log(f"⚠️ question_generation 触发过载保护，累计拒绝 {overloaded_count} 次")
+    return False
+
+
+def try_acquire_search_decision_semaphore(record_overload: bool = True) -> bool:
+    acquired = SEARCH_DECISION_SEMAPHORE.acquire(blocking=False)
+    if acquired:
+        return True
+
+    if not record_overload:
+        return False
+
+    record_search_decision_event("overloaded")
+    overloaded_count = 0
+    with search_decision_stats_lock:
+        overloaded_count = int(search_decision_stats.get("overloaded", 0) or 0)
+    if ENABLE_DEBUG_LOG and (overloaded_count == 1 or overloaded_count % 20 == 0):
+        _safe_log(f"⚠️ search_decision 触发过载保护，累计拒绝 {overloaded_count} 次")
+    return False
+
+
+def _is_upstream_rate_limit_error(error: Exception) -> bool:
+    text = str(error or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "429" in text
+        or "rate limit" in text
+        or "too many requests" in text
+        or "请求频率" in text
+        or "限流" in text
+    )
 
 
 def build_compact_dimensions(dimensions: dict) -> dict:
@@ -3474,6 +3696,10 @@ def reset_list_metrics() -> None:
             metric = list_cache_metrics.setdefault(cache_name, {"hit": 0, "miss": 0})
             metric["hit"] = 0
             metric["miss"] = 0
+
+
+def _record_question_generation_fallback(reason: str) -> None:
+    record_question_generation_event("fallback_served", reason=reason)
 
 
 def get_meta_index_db_path() -> Path:
@@ -5845,6 +6071,147 @@ def invalidate_prefetch(session_id: str, dimension: str = None):
             prefetch_cache.pop(session_id, None)
 
 
+def trigger_current_dimension_prefetch(session: dict, current_dimension: str, session_signature: Optional[tuple[int, int]] = None):
+    """提交回答后预生成当前维度下一题，优先覆盖用户的下一次实时请求。"""
+    session_id = str((session or {}).get("session_id") or "").strip()
+    if not session_id:
+        return
+
+    dimension = str(current_dimension or "").strip()
+    if not dimension:
+        return
+
+    dim_state = (session.get("dimensions") or {}).get(dimension)
+    if not isinstance(dim_state, dict):
+        return
+    if float(dim_state.get("coverage", 0) or 0) >= 100 or bool(dim_state.get("user_completed", False)):
+        return
+    if evaluate_dimension_completion_v2(session, dimension).get("can_complete"):
+        return
+
+    normalized_signature = _normalize_session_signature_value(session_signature)
+    if normalized_signature is None:
+        session_file = SESSIONS_DIR / f"{session_id}.json"
+        if not session_file.exists():
+            return
+        normalized_signature = get_file_signature(session_file)
+
+    question_cache_key = _build_question_result_cache_key(session_id, dimension, normalized_signature)
+    cached_question_payload = _get_question_result_cache(question_cache_key)
+    if isinstance(cached_question_payload, dict):
+        return
+
+    with prefetch_cache_lock:
+        existing = prefetch_cache.get(session_id, {}).get(dimension)
+        if existing and existing.get("valid") and _prefetch_entry_matches_signature(existing, normalized_signature):
+            return
+
+    owner_event, is_owner = _begin_question_prefetch_inflight(question_cache_key)
+    if not is_owner:
+        return
+
+    def do_prefetch():
+        question_generation_slot_acquired = False
+        try:
+            if ENABLE_DEBUG_LOG:
+                print(f"🔮 开始预生成当前维度下一题: session={session_id}, dim={dimension}")
+
+            if not _wait_for_prefetch_idle(PREFETCH_IDLE_WAIT_SECONDS):
+                if ENABLE_DEBUG_LOG:
+                    print(f"⏭️  跳过当前维度预生成（主链路繁忙）: session={session_id}, dim={dimension}")
+                return
+
+            session_file = SESSIONS_DIR / f"{session_id}.json"
+            if not session_file.exists():
+                return
+
+            session_data = json.loads(session_file.read_text(encoding="utf-8"))
+            fresh_signature = get_file_signature(session_file)
+            if normalized_signature is not None and fresh_signature != normalized_signature:
+                if ENABLE_DEBUG_LOG:
+                    print(f"⏭️  放弃过期当前维度预生成: session={session_id}, dim={dimension}")
+                return
+
+            fresh_dim_state = (session_data.get("dimensions") or {}).get(dimension, {})
+            if float(fresh_dim_state.get("coverage", 0) or 0) >= 100 or bool(fresh_dim_state.get("user_completed", False)):
+                return
+            if evaluate_dimension_completion_v2(session_data, dimension).get("can_complete"):
+                return
+
+            dim_logs = [
+                log for log in session_data.get("interview_log", [])
+                if log.get("dimension") == dimension
+            ]
+
+            if not try_acquire_question_generation_semaphore(record_overload=False):
+                if ENABLE_DEBUG_LOG:
+                    print(f"⏭️  跳过当前维度预生成（问题槽位繁忙）: session={session_id}, dim={dimension}")
+                return
+            question_generation_slot_acquired = True
+
+            prepared_runtime = _prepare_question_generation_runtime(
+                session_data,
+                dimension,
+                dim_logs,
+                session_signature=fresh_signature,
+                base_call_type="prefetch_current",
+                allow_fast_path=True,
+            )
+
+            response, result, tier_used = generate_question_with_tiered_strategy(
+                prepared_runtime["full_prompt"],
+                truncated_docs=prepared_runtime["truncated_docs"],
+                fast_truncated_docs=prepared_runtime.get("fast_truncated_docs"),
+                debug=ENABLE_DEBUG_LOG,
+                base_call_type="prefetch_current",
+                allow_fast_path=bool(prepared_runtime["runtime_profile"].get("allow_fast_path", True)),
+                fast_prompt=prepared_runtime["fast_prompt"],
+                runtime_profile=prepared_runtime["runtime_profile"],
+            )
+            if ENABLE_DEBUG_LOG:
+                print(f"⚙️ 当前维度预生成通道: {tier_used}")
+
+            if response and result:
+                result["dimension"] = dimension
+                result["ai_generated"] = True
+                selected_lane = tier_used.split(":", 1)[1] if ":" in tier_used else ""
+                decision_meta = dict(prepared_runtime.get("decision_meta", {}) or {})
+                decision_meta["tier_used"] = tier_used
+                decision_meta["selected_lane"] = selected_lane
+                result["decision_meta"] = decision_meta
+                result["question_generation_tier"] = tier_used
+                result["question_selected_lane"] = selected_lane
+                result["question_runtime_profile"] = prepared_runtime.get("runtime_profile", {}).get("profile_name", "")
+
+                with prefetch_cache_lock:
+                    if session_id not in prefetch_cache:
+                        prefetch_cache[session_id] = {}
+                    prefetch_cache[session_id][dimension] = {
+                        "question_data": result,
+                        "created_at": _time.time(),
+                        "topic": session_data.get("topic"),
+                        "session_signature": fresh_signature,
+                        "valid": True,
+                    }
+                _set_question_result_cache(question_cache_key, result)
+                if ENABLE_DEBUG_LOG:
+                    print(f"✅ 当前维度预生成完成: session={session_id}, dim={dimension}")
+            else:
+                if ENABLE_DEBUG_LOG:
+                    print(f"⚠️ 当前维度预生成解析失败: session={session_id}, dim={dimension}")
+        except Exception as e:
+            print(f"⚠️ 当前维度预生成失败: {e}")
+        finally:
+            if question_generation_slot_acquired:
+                try:
+                    QUESTION_GENERATION_SEMAPHORE.release()
+                except ValueError:
+                    pass
+            _end_question_prefetch_inflight(question_cache_key, owner_event)
+
+    threading.Thread(target=do_prefetch, daemon=True).start()
+
+
 def trigger_prefetch_if_needed(session: dict, current_dimension: str, session_signature: Optional[tuple[int, int]] = None):
     """判断是否需要预生成下一维度首题，如果需要则启动后台线程
 
@@ -5943,6 +6310,7 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str, session_si
             response, result, tier_used = generate_question_with_tiered_strategy(
                 prepared_runtime["full_prompt"],
                 truncated_docs=prepared_runtime["truncated_docs"],
+                fast_truncated_docs=prepared_runtime.get("fast_truncated_docs"),
                 debug=ENABLE_DEBUG_LOG,
                 base_call_type="prefetch",
                 allow_fast_path=bool(prepared_runtime["runtime_profile"].get("allow_fast_path", True)),
@@ -6047,6 +6415,7 @@ def prefetch_first_question(session_id: str):
             response, result, tier_used = generate_question_with_tiered_strategy(
                 prepared_runtime["full_prompt"],
                 truncated_docs=prepared_runtime["truncated_docs"],
+                fast_truncated_docs=prepared_runtime.get("fast_truncated_docs"),
                 debug=ENABLE_DEBUG_LOG,
                 base_call_type="prefetch_first",
                 allow_fast_path=bool(prepared_runtime["runtime_profile"].get("allow_fast_path", True)),
@@ -8750,10 +9119,12 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
         if ENABLE_DEBUG_LOG:
             print("📦 命中搜索决策缓存，跳过 AI 决策调用")
         _record_cache_hit_metric("search_decision_cache_hit")
+        record_search_decision_event("cache_hit")
         return cached
 
     owner_event = None
     owner_mode = False
+    search_decision_slot_acquired = False
     if cache_key:
         owner_event, owner_mode = _begin_search_decision_inflight(cache_key)
         if not owner_mode and isinstance(owner_event, threading.Event):
@@ -8766,9 +9137,15 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
                 if ENABLE_DEBUG_LOG:
                     print("✅ 复用并发搜索决策结果")
                 _record_cache_hit_metric("search_decision_cache_hit")
+                record_search_decision_event("cache_hit")
                 return cached_after_wait
 
     try:
+        if not try_acquire_search_decision_semaphore():
+            record_search_decision_event("degraded", reason="overloaded")
+            return {"need_search": False, "reason": "搜索决策繁忙，已降级跳过", "search_query": ""}
+        search_decision_slot_acquired = True
+
         search_dim_info = get_dimension_info_for_session(context) if context else DIMENSION_INFO
         dim_info = search_dim_info.get(dimension, {})
         dim_name = dim_info.get("name", dimension)
@@ -8807,6 +9184,7 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
 }}"""
 
         result = None
+        last_error = None
         attempts = [
             {
                 "max_tokens": SEARCH_DECISION_FIRST_MAX_TOKENS,
@@ -8844,11 +9222,16 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
                 )
                 break
             except Exception as retry_error:
+                last_error = retry_error
+                if _is_upstream_rate_limit_error(retry_error):
+                    if ENABLE_DEBUG_LOG:
+                        print(f"⚠️  AI搜索决策触发上游限流，停止重试: {retry_error}")
+                    break
                 if ENABLE_DEBUG_LOG and idx < len(attempts):
                     print(f"ℹ️  AI搜索决策第{idx}次解析失败，准备重试: {retry_error}")
 
         if result is None:
-            raise ValueError("AI 搜索决策结果解析失败")
+            raise ValueError(f"AI 搜索决策结果解析失败: {last_error}" if last_error else "AI 搜索决策结果解析失败")
 
         if ENABLE_DEBUG_LOG:
             print(f"🤖 AI搜索决策: need_search={result.get('need_search')}, reason={result.get('reason')}")
@@ -8863,19 +9246,33 @@ def ai_evaluate_search_need(topic: str, dimension: str, context: dict, recent_qa
             "search_query": str(result.get("search_query", "") or "")
         }
         _set_search_decision_cache(cache_key, normalized_result)
+        record_search_decision_event("ai_success")
         return normalized_result
 
     except Exception as e:
+        degrade_reason = "rate_limited" if _is_upstream_rate_limit_error(e) else "exception"
+        record_search_decision_event("degraded", reason=degrade_reason)
         if ENABLE_DEBUG_LOG:
             print(f"⚠️  AI搜索决策失败: {e}")
         # 失败时返回不搜索，避免阻塞流程
-        return {"need_search": False, "reason": f"决策失败: {e}", "search_query": ""}
+        return {"need_search": False, "reason": f"决策降级: {e}", "search_query": ""}
     finally:
+        if search_decision_slot_acquired:
+            try:
+                SEARCH_DECISION_SEMAPHORE.release()
+            except ValueError:
+                pass
         if owner_mode:
             _end_search_decision_inflight(cache_key, owner_event)
 
 
-def smart_search_decision(topic: str, dimension: str, context: dict, recent_qa: list = None) -> tuple:
+def smart_search_decision(
+    topic: str,
+    dimension: str,
+    context: dict,
+    recent_qa: list = None,
+    decision_mode: str = "default",
+) -> tuple:
     """
     智能搜索决策：规则预判 + AI 最终判断
     返回: (need_search: bool, search_query: str, reason: str)
@@ -8883,8 +9280,16 @@ def smart_search_decision(topic: str, dimension: str, context: dict, recent_qa: 
     if not ENABLE_WEB_SEARCH:
         return (False, "", "搜索功能未启用")
 
+    normalized_mode = _normalize_search_decision_mode(decision_mode)
+
     # 第一步：规则预判
     rule_suggests_search = should_search(topic, dimension, context)
+
+    if normalized_mode == "rule_only":
+        record_search_decision_event("rule_only")
+        if rule_suggests_search:
+            return (False, "", "预取降级：规则触发但后台跳过联网")
+        return (False, "", "预取降级：规则未触发搜索")
 
     if not rule_suggests_search:
         # 规则判断不需要搜索，但让 AI 做二次确认（可能漏掉的场景）
@@ -11402,10 +11807,26 @@ def _normalize_question_prompt_output_mode(output_mode: str = "full") -> str:
     return "full"
 
 
+def _clip_prompt_text(text: str, limit: int, *, keep_newlines: bool = False) -> str:
+    if limit <= 0:
+        return ""
+    raw = str(text or "")
+    if keep_newlines:
+        normalized = "\n".join(line.strip() for line in raw.splitlines() if line.strip())
+    else:
+        normalized = re.sub(r"\s+", " ", raw).strip()
+    if len(normalized) <= limit:
+        return normalized
+    if limit <= 3:
+        return normalized[:limit]
+    return normalized[: limit - 3].rstrip() + "..."
+
+
 def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
                            session_id: str = None,
                            session_signature: Optional[tuple[int, int]] = None,
-                           output_mode: str = "full") -> tuple[str, list, dict]:
+                           output_mode: str = "full",
+                           search_mode: str = "default") -> tuple[str, list, dict]:
     """构建访谈 prompt（使用滑动窗口 + 摘要压缩 + 智能追问）
 
     Args:
@@ -11429,11 +11850,13 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     dim_info = session_dim_info.get(dimension, {})
     cache_session_id = str(session.get("session_id", "") or "").strip()
     normalized_output_mode = _normalize_question_prompt_output_mode(output_mode)
+    normalized_search_mode = _normalize_search_decision_mode(search_mode)
     prompt_cache_key = _build_interview_prompt_cache_key(
         session_signature,
         dimension,
         cache_session_id,
         output_mode=normalized_output_mode,
+        search_mode=normalized_search_mode,
     )
     if prompt_cache_key:
         cached_prompt = _get_interview_prompt_cache(prompt_cache_key)
@@ -11443,27 +11866,45 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
             return cached_prompt
 
     is_lightweight_output = normalized_output_mode == "light"
-    context_window_limit = min(CONTEXT_WINDOW_SIZE, 2) if is_lightweight_output else CONTEXT_WINDOW_SIZE
+    context_window_limit = 1 if is_lightweight_output else CONTEXT_WINDOW_SIZE
     include_history_summary = not is_lightweight_output
     search_result_limit = 1 if is_lightweight_output else 2
-    search_excerpt_limit = 100 if is_lightweight_output else 150
+    search_excerpt_limit = 80 if is_lightweight_output else 150
+    topic_text = _clip_prompt_text(topic, 80 if is_lightweight_output else 200)
+    description_text = _clip_prompt_text(description, 220 if is_lightweight_output else 500)
+    dimension_description = _clip_prompt_text(dim_info.get("description", ""), 72 if is_lightweight_output else 180)
+    key_aspects = list(dim_info.get("key_aspects", []) or [])
+    if is_lightweight_output:
+        key_aspects = [_clip_prompt_text(item, 12) for item in key_aspects[:3] if _clip_prompt_text(item, 12)]
+    key_aspects_text = "、".join(key_aspects) if key_aspects else "待补充"
+    effective_reference_materials = list(reference_materials or [])
+    doc_budget = MAX_TOTAL_DOCS
+    if is_lightweight_output:
+        if QUESTION_FAST_LIGHT_REFERENCE_DOCS_ENABLED:
+            doc_budget = min(MAX_TOTAL_DOCS, QUESTION_FAST_LIGHT_DOC_BUDGET)
+            effective_reference_materials = effective_reference_materials[:QUESTION_FAST_LIGHT_MAX_REFERENCE_DOCS]
+        else:
+            effective_reference_materials = []
+            doc_budget = 0
 
     # 构建上下文
-    context_parts = [f"当前访谈主题：{topic}"]
+    context_parts = [f"当前访谈主题：{topic_text}"]
 
     # 如果有主题描述，添加到上下文中（限制长度）
-    if description:
-        context_parts.append(f"\n主题描述：{description[:500]}")
+    if description_text:
+        context_parts.append(f"\n主题描述：{description_text}")
 
     # 添加参考资料内容（使用总长度限制 + 智能摘要）
     total_doc_length = 0
     truncated_docs = []  # 记录被处理的文档（摘要或截断）
     summarized_docs = []  # 记录使用智能摘要的文档
-    if reference_materials:
+    if effective_reference_materials and doc_budget > 0:
         context_parts.append("\n## 参考资料：")
-        for doc in reference_materials:
-            if doc.get("content") and total_doc_length < MAX_TOTAL_DOCS:
-                remaining = MAX_TOTAL_DOCS - total_doc_length
+        for doc in effective_reference_materials:
+            if doc.get("content") and total_doc_length < doc_budget:
+                remaining = doc_budget - total_doc_length
+                if is_lightweight_output and remaining < min(SMART_SUMMARY_TARGET, 600):
+                    break
                 original_length = len(doc["content"])
 
                 # 使用智能摘要处理文档
@@ -11472,29 +11913,48 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
                 )
 
                 if processed_content:
+                    display_name = _clip_prompt_text(doc_name, 22 if is_lightweight_output else 48)
+                    if is_lightweight_output:
+                        light_doc_limit = min(320, max(180, remaining))
+                        processed_content = _clip_prompt_text(processed_content, light_doc_limit, keep_newlines=True)
+                        used_length = len(processed_content)
+                        if used_length < original_length:
+                            was_processed = True
                     # 根据 source 添加标记
                     source_marker = "🔄 " if doc.get("source") == "auto" else ""
-                    context_parts.append(f"### {source_marker}{doc_name}")
+                    context_parts.append(f"### {source_marker}{display_name}")
                     context_parts.append(processed_content)
                     total_doc_length += used_length
 
                     # 记录处理情况
                     if was_processed:
                         if used_length < original_length * 0.6:  # 如果内容减少超过40%，可能是摘要
-                            summarized_docs.append(f"{doc_name}（原{original_length}字符，摘要至{used_length}字符）")
+                            summarized_docs.append(display_name if is_lightweight_output else f"{doc_name}（原{original_length}字符，摘要至{used_length}字符）")
                         else:
-                            truncated_docs.append(f"{doc_name}（原{original_length}字符，截取{used_length}字符）")
+                            truncated_docs.append(display_name if is_lightweight_output else f"{doc_name}（原{original_length}字符，截取{used_length}字符）")
 
     # 添加处理提示（让 AI 知道文档信息经过处理）
     if summarized_docs:
-        context_parts.append(f"\n📝 注意：以下文档已通过AI生成摘要以保留关键信息：{', '.join(summarized_docs)}")
+        if is_lightweight_output:
+            context_parts.append(f"\n提示：文档已摘要：{', '.join(summarized_docs[:2])}")
+        else:
+            context_parts.append(f"\n📝 注意：以下文档已通过AI生成摘要以保留关键信息：{', '.join(summarized_docs)}")
     if truncated_docs:
-        context_parts.append(f"\n⚠️ 注意：以下文档因长度限制已被截断，请基于已有信息进行提问：{', '.join(truncated_docs)}")
+        if is_lightweight_output:
+            context_parts.append(f"\n提示：文档有截断：{', '.join(truncated_docs[:2])}")
+        else:
+            context_parts.append(f"\n⚠️ 注意：以下文档因长度限制已被截断，请基于已有信息进行提问：{', '.join(truncated_docs)}")
 
     # ========== 智能联网搜索（规则预判 + AI决策） ==========
     # 获取最近的问答记录用于 AI 判断
     recent_qa = interview_log[-3:] if interview_log else []
-    will_search, search_query, search_reason = smart_search_decision(topic, dimension, session, recent_qa)
+    will_search, search_query, search_reason = smart_search_decision(
+        topic,
+        dimension,
+        session,
+        recent_qa,
+        decision_mode=normalized_search_mode,
+    )
 
     if will_search and search_query:
         # 更新思考状态到"搜索"阶段
@@ -11530,18 +11990,20 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
                     schedule_context_summary_update_async(target_session_id)
 
             # 问题生成主链路优先：仅使用缓存/轻量摘要，不在此处阻塞等待 AI 摘要。
-            history_summary = generate_history_summary(
-                session,
-                exclude_recent=CONTEXT_WINDOW_SIZE,
-                allow_ai_generation=False,
-            )
-            if history_summary:
-                context_parts.append(f"\n### 历史访谈摘要（共{len(interview_log) - CONTEXT_WINDOW_SIZE}条）：")
+            history_summary = None
+            if include_history_summary:
+                history_summary = generate_history_summary(
+                    session,
+                    exclude_recent=context_window_limit,
+                    allow_ai_generation=False,
+                )
+            if history_summary and include_history_summary:
+                context_parts.append(f"\n### 历史访谈摘要（共{len(interview_log) - context_window_limit}条）：")
                 context_parts.append(history_summary)
                 context_parts.append("\n### 最近问答记录：")
 
             # 只保留最近的完整记录
-            recent_logs = interview_log[-CONTEXT_WINDOW_SIZE:]
+            recent_logs = interview_log[-context_window_limit:]
         else:
             recent_logs = interview_log
 
@@ -11550,11 +12012,17 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         for offset, log in enumerate(recent_logs, 1):
             follow_up_mark = " [追问]" if log.get("is_follow_up") else ""
             q_number = base_index + offset
-            context_parts.append(f"- Q{q_number}: {log['question']}{follow_up_mark}")
-            context_parts.append(f"  A: {log['answer']}")
-            dim_name = session_dim_info.get(log.get("dimension", ""), {}).get("name", "")
-            if dim_name:
-                context_parts.append(f"  (维度: {dim_name})")
+            if is_lightweight_output:
+                question_text = _clip_prompt_text(log.get("question", ""), 72)
+                answer_text = _clip_prompt_text(log.get("answer", ""), 120)
+                context_parts.append(f"- Q{q_number}: {question_text}{follow_up_mark}")
+                context_parts.append(f"  A: {answer_text}")
+            else:
+                context_parts.append(f"- Q{q_number}: {log['question']}{follow_up_mark}")
+                context_parts.append(f"  A: {log['answer']}")
+                dim_name = session_dim_info.get(log.get("dimension", ""), {}).get("name", "")
+                if dim_name:
+                    context_parts.append(f"  (维度: {dim_name})")
 
     # 计算正式问题数量（排除追问）
     formal_questions_count = len([log for log in all_dim_logs if not log.get("is_follow_up", False)])
@@ -11677,7 +12145,16 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     if not should_follow_up:
         min_formal = mode_config.get("formal_questions_per_dim", 3)
         if formal_questions_count >= min_formal and missing_aspects:
-            blindspot_guidance = f"""
+            if is_lightweight_output:
+                blindspot_guidance = f"""
+## 盲区补问
+
+仍缺：{', '.join(missing_aspects[:2])}
+
+本题只补 1 个最关键缺口，不要重复已覆盖信息。
+"""
+            else:
+                blindspot_guidance = f"""
 ## 盲区补问优先（必须执行）
 
 当前维度仍有未覆盖关键方面：{', '.join(missing_aspects)}
@@ -11694,7 +12171,16 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         focus_text = "、".join(focus_slots[:EVIDENCE_LEDGER_MAX_FOCUS_SLOTS]) if focus_slots else "关键依据"
         blocked_sections = [item for item in list(preflight_plan.get("blocked_sections", []) or []) if str(item or "").strip()]
         blocked_text = f"，当前阻塞段落：{', '.join(blocked_sections)}" if blocked_sections else ""
-        preflight_guidance = f"""
+        if is_lightweight_output:
+            preflight_guidance = f"""
+## 证据预检
+
+优先补：{focus_text}{blocked_text}
+
+要求：一次只补 1 个关键依据，优先用选项补原因/频次/角色/影响。
+"""
+        else:
+            preflight_guidance = f"""
 ## 证据预检优先级（必须优先）
 
 系统在访谈中途检测到当前维度仍有关键证据缺口：{preflight_plan.get('reason', '需要优先补齐关键依据')}{blocked_text}
@@ -11716,15 +12202,14 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 
 上一个用户回答需要追问。原因：{follow_up_reason}
 
-**上一个问题**: {last_log.get('question', '')[:90] if last_log else ''}
-**用户回答**: {last_log.get('answer', '')[:180] if last_log else ''}
+**上一个问题**: {_clip_prompt_text(last_log.get('question', ''), 72) if last_log else ''}
+**用户回答**: {_clip_prompt_text(last_log.get('answer', ''), 120) if last_log else ''}
 
 追问要求：
 1. 必须设置 is_follow_up: true
 2. 追问必须紧扣上一条回答，不要跳题
 3. 问题尽量简洁，优先问最关键的一个缺口
-4. 选项要短、清晰；若 answer_mode=pick_with_reason，优先提供可一键选择的原因/影响/频次类补充项
-5. 不要要求用户长篇输入，优先让用户通过下一题的一次点击补齐关键依据
+4. 优先给 3-4 个可一键选择的高信息量选项
 """
         else:
             follow_up_section = f"""## 追问模式（必须执行）
@@ -11746,13 +12231,12 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
             follow_up_section = """## 问题生成要求
 
 1. 生成 1 个清晰、聚焦的问题
-2. 提供 3-4 个简洁选项，优先使用短句
+2. 提供 3-4 个简洁选项
 3. 优先覆盖当前最关键的一个缺口，不要贪多
 4. 根据问题性质判断单选或多选：
-   - 问“哪些/哪些方面/哪些角色/哪些系统/哪些环节/希望解决哪些问题”时，优先输出多选
-   - 只有明确存在唯一主项时才输出单选，例如“最核心/最优先/唯一/当前最重要”
-5. 问题和选项都要便于用户快速选择，不要写成长段解释
-6. 若 answer_mode=pick_with_reason，优先输出自带场景、原因或角色信息的选项，不要依赖用户额外填写说明
+   - 可并存枚举题优先多选
+   - 只有明确唯一主项时才单选
+5. 若 answer_mode=pick_with_reason，优先输出自带场景、原因或角色信息的选项
 """
         else:
             follow_up_section = """## 问题生成要求
@@ -11776,7 +12260,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     if is_lightweight_output:
         prompt = f"""**严格输出要求：你的回复必须是纯 JSON 对象，不要添加任何解释、markdown 代码块或其他文本。第一个字符必须是 {{，最后一个字符必须是 }}**
 
-你是一个高效率的访谈师，正在进行"{topic}"的访谈。
+你是一个高效率的访谈师，正在进行"{topic_text}"的访谈。
 请用尽量少的文字，生成一个可直接选择的问题。
 
 {chr(10).join(context_parts)}
@@ -11784,16 +12268,14 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 ## 当前任务
 
 你现在需要针对「{dim_info.get('name', dimension)}」维度收集信息。
-这个维度关注：{dim_info.get('description', '')}
+这个维度关注：{dimension_description}
 
-该维度已收集了 {formal_questions_count} 个正式问题的回答，关键方面包括：{', '.join(dim_info.get('key_aspects', []))}
+该维度已收集了 {formal_questions_count} 个正式问题的回答，关键方面包括：{key_aspects_text}
 {blindspot_guidance}
 {preflight_guidance}
 {follow_up_section}
 
-## 输出格式（必须严格遵守）
-
-只输出下面这个 JSON 结构，不要输出任何额外说明：
+## JSON 模板
 
     {{
         "question": "你的问题",
@@ -11806,25 +12288,15 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         "follow_up_reason": {json.dumps(follow_up_reason, ensure_ascii=False) if should_follow_up else 'null'}
     }}
 
-字段要求：
-- question: 一句话问题，尽量直接、清晰
-- options: 3-4 个选项；每个选项尽量不超过 18 个字
-- multi_select: true=多选，false=单选
-- answer_mode: 严格按模板输出，pick_only 或 pick_with_reason
-- requires_rationale: 严格按模板输出，表示该题属于高取证契约，系统必要时可在后续补追问
-- evidence_intent: 严格按模板输出，low/medium/high
-- is_follow_up: 必须严格按模板给定的值输出
-- follow_up_reason: 追问时输出原因，否则输出 null
-
-关键提醒：
+约束：
+- 只输出这个 JSON，不要代码块，不要额外说明
+- options 保持 3-4 个，每项尽量不超过 14 个字
 - 不要输出 ai_recommendation、conflict_detected、conflict_description
-- 不要输出 markdown 代码块
-- 你的整个回复只能是这个 JSON 对象
-- **重要**：is_follow_up 的值已由系统预先决定，请严格照抄模板中的值**"""
+- is_follow_up 必须严格照抄模板中的值"""
     else:
         prompt = f"""**严格输出要求：你的回复必须是纯 JSON 对象，不要添加任何解释、markdown 代码块或其他文本。第一个字符必须是 {{，最后一个字符必须是 }}**
 
-你是一个专业的访谈师，正在进行"{topic}"的访谈。
+你是一个专业的访谈师，正在进行"{topic_text}"的访谈。
 你的核心职责是**深度挖掘用户的真实需求**，不满足于表面回答。
 
 {chr(10).join(context_parts)}
@@ -11832,9 +12304,9 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 ## 当前任务
 
 你现在需要针对「{dim_info.get('name', dimension)}」维度收集信息。
-这个维度关注：{dim_info.get('description', '')}
+这个维度关注：{dimension_description or dim_info.get('description', '')}
 
-该维度已收集了 {formal_questions_count} 个正式问题的回答，关键方面包括：{', '.join(dim_info.get('key_aspects', []))}
+该维度已收集了 {formal_questions_count} 个正式问题的回答，关键方面包括：{key_aspects_text}
 {ai_eval_guidance}
 {blindspot_guidance}
 {preflight_guidance}
@@ -11905,9 +12377,11 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         "requires_rationale": requires_rationale,
         "evidence_intent": evidence_intent,
         "has_search": bool(will_search and search_query),
+        "search_mode": normalized_search_mode,
         "output_mode": normalized_output_mode,
         "formal_questions_count": formal_questions_count,
         "has_reference_docs": bool(reference_materials),
+        "reference_docs_compact_mode": bool(is_lightweight_output and effective_reference_materials),
         "has_truncated_docs": bool(truncated_docs),
         "evidence_ledger": {
             "formal_questions_total": int((evidence_ledger or {}).get("formal_questions_total", 0) or 0),
@@ -20162,15 +20636,21 @@ def _record_question_fast_outcome(success: bool, lane: str = "", reason: str = "
         )
 
 
-def _get_question_fast_skip_reason(prompt: str, truncated_docs: Optional[list] = None) -> str:
+def _get_question_fast_skip_reason(
+    prompt: str,
+    truncated_docs: Optional[list] = None,
+    prompt_max_chars: Optional[int] = None,
+    allow_compacted_docs: bool = False,
+) -> str:
     if not QUESTION_FAST_PATH_ENABLED:
         return "config_disabled"
 
     prompt_length = len(prompt or "")
-    if QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS > 0 and prompt_length > QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS:
-        return f"prompt_too_long:{prompt_length}>{QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS}"
+    max_chars = QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS if prompt_max_chars is None else int(prompt_max_chars)
+    if max_chars > 0 and prompt_length > max_chars:
+        return f"prompt_too_long:{prompt_length}>{max_chars}"
 
-    if QUESTION_FAST_SKIP_WHEN_TRUNCATED_DOCS and truncated_docs:
+    if QUESTION_FAST_SKIP_WHEN_TRUNCATED_DOCS and truncated_docs and not allow_compacted_docs:
         return f"truncated_docs:{len(truncated_docs)}"
 
     if QUESTION_FAST_ADAPTIVE_ENABLED:
@@ -20275,6 +20755,74 @@ def _resolve_question_lane_runtime_params(
     if hedge_delay_seconds is not None:
         hedge_delay_seconds = max(0.5, float(hedge_delay_seconds))
     return timeout, max_tokens, hedge_delay_seconds
+
+
+def _resolve_reference_light_fast_timeout(base_timeout: Optional[float], is_prefetch: bool = False) -> Optional[float]:
+    if base_timeout is None:
+        return None
+
+    try:
+        normalized_base = float(base_timeout)
+    except Exception:
+        normalized_base = float(QUESTION_FAST_TIMEOUT)
+
+    if is_prefetch:
+        floor_seconds = max(float(PREFETCH_QUESTION_FAST_TIMEOUT), min(float(QUESTION_FAST_REFERENCE_TIMEOUT), 12.0))
+    else:
+        floor_seconds = float(QUESTION_FAST_REFERENCE_TIMEOUT)
+
+    return _clamp_question_generation_timeout(max(normalized_base, floor_seconds), minimum=5.0)
+
+
+def _apply_reference_light_lane_runtime_overrides(
+    fast_timeout_by_lane: Optional[dict],
+    fast_max_tokens_by_lane: Optional[dict],
+    *,
+    base_fast_timeout: Optional[float],
+    max_tokens_ceiling: int,
+    is_prefetch: bool = False,
+) -> tuple[dict, dict, Optional[float], int]:
+    timeout_overrides = dict(fast_timeout_by_lane or {})
+    token_overrides = dict(fast_max_tokens_by_lane or {})
+
+    question_timeout = _resolve_reference_light_fast_timeout(base_fast_timeout, is_prefetch=is_prefetch)
+    if is_prefetch:
+        report_timeout = question_timeout
+        question_tokens_floor = min(max_tokens_ceiling, max(int(PREFETCH_QUESTION_FAST_MAX_TOKENS), 760))
+        report_tokens_floor = question_tokens_floor
+    else:
+        report_timeout = _clamp_question_generation_timeout(
+            max(
+                float(QUESTION_FAST_REFERENCE_REPORT_TIMEOUT),
+                float(question_timeout or QUESTION_FAST_REFERENCE_QUESTION_TIMEOUT) - 1.0,
+            ),
+            minimum=5.0,
+        )
+        question_tokens_floor = min(max_tokens_ceiling, int(QUESTION_FAST_REFERENCE_QUESTION_MAX_TOKENS))
+        report_tokens_floor = min(max_tokens_ceiling, int(QUESTION_FAST_REFERENCE_REPORT_MAX_TOKENS))
+
+    timeout_overrides["question"] = _clamp_question_generation_timeout(
+        max(float(timeout_overrides.get("question", 0.0) or 0.0), float(question_timeout or QUESTION_FAST_REFERENCE_QUESTION_TIMEOUT)),
+        minimum=5.0,
+    )
+    timeout_overrides["report"] = _clamp_question_generation_timeout(
+        max(float(timeout_overrides.get("report", 0.0) or 0.0), float(report_timeout or question_timeout or QUESTION_FAST_REFERENCE_REPORT_TIMEOUT)),
+        minimum=5.0,
+    )
+    token_overrides["question"] = _clamp_question_generation_tokens(
+        max(int(token_overrides.get("question", 0) or 0), int(question_tokens_floor)),
+        minimum=500,
+        ceiling=max_tokens_ceiling,
+    )
+    token_overrides["report"] = _clamp_question_generation_tokens(
+        max(int(token_overrides.get("report", 0) or 0), int(report_tokens_floor)),
+        minimum=500,
+        ceiling=max_tokens_ceiling,
+    )
+
+    effective_timeout = timeout_overrides.get("question", question_timeout)
+    effective_tokens = token_overrides.get("question", question_tokens_floor)
+    return timeout_overrides, token_overrides, effective_timeout, int(effective_tokens)
 
 
 def _resolve_question_lane_call_runtime_overrides(
@@ -20401,17 +20949,23 @@ def _select_question_generation_runtime_profile(
     follow_up_round = max(0, int(normalized_meta.get("follow_up_round", 0) or 0))
     formal_questions_count = max(0, int(normalized_meta.get("formal_questions_count", 0) or 0))
     answer_mode = normalize_question_answer_mode(normalized_meta.get("answer_mode", ""), fallback="pick_only")
-    requires_rationale = bool(normalized_meta.get("requires_rationale", False) or answer_mode == "pick_with_reason")
+    explicit_requires_rationale = bool(normalized_meta.get("requires_rationale", False))
+    requires_rationale = bool(explicit_requires_rationale or answer_mode == "pick_with_reason")
     evidence_intent = normalize_question_evidence_intent(
         normalized_meta.get("evidence_intent", ""),
-        fallback="high" if requires_rationale else ("medium" if answer_mode == "pick_with_reason" else "low"),
+        fallback="high" if explicit_requires_rationale else ("medium" if answer_mode == "pick_with_reason" else "low"),
     )
     high_evidence_intent = evidence_intent == "high" and not is_prefetch
-    can_use_light_prompt = not has_search and not has_reference_docs and not has_truncated_docs
+    can_use_light_prompt = not has_search and (
+        not has_truncated_docs or (has_reference_docs and QUESTION_FAST_LIGHT_REFERENCE_DOCS_ENABLED)
+    )
+    reference_light_candidate = bool(can_use_light_prompt and has_reference_docs)
+    high_evidence_fast_candidate = bool(high_evidence_intent and can_use_light_prompt and QUESTION_HIGH_EVIDENCE_FAST_PATH_ENABLED)
     effective_fast_allowed = bool(allow_fast_path)
 
     profile_name = f"{profile_prefix}_balanced_full"
     fast_output_mode = "full"
+    fast_prompt_max_chars = QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS
     primary_lane = "question"
     secondary_lane = QUESTION_HEDGED_SECONDARY_LANE
     hedged_enabled = bool(QUESTION_HEDGED_ENABLED)
@@ -20457,7 +21011,6 @@ def _select_question_generation_runtime_profile(
     if high_evidence_intent:
         primary_lane = QUESTION_HIGH_EVIDENCE_PRIMARY_LANE
         secondary_lane = QUESTION_HIGH_EVIDENCE_SECONDARY_LANE
-        effective_fast_allowed = False
         hedged_enabled = bool(QUESTION_HIGH_EVIDENCE_HEDGED_ENABLED)
         fallback_enabled = bool(QUESTION_HEDGE_FAILURE_FALLBACK_ENABLED)
         fast_output_mode = "full"
@@ -20476,7 +21029,7 @@ def _select_question_generation_runtime_profile(
         if requires_rationale:
             reasons.append("requires_rationale")
 
-    if has_search or has_truncated_docs:
+    if has_search or (has_truncated_docs and not can_use_light_prompt):
         profile_name = f"{profile_prefix}_evidence_search_full" if high_evidence_intent else f"{profile_prefix}_search_full"
         effective_fast_allowed = False
         if has_search:
@@ -20485,11 +21038,60 @@ def _select_question_generation_runtime_profile(
             reasons.append("has_truncated_docs")
     elif high_evidence_intent:
         if should_follow_up:
-            profile_name = f"{profile_prefix}_follow_up_evidence"
+            profile_name = (
+                f"{profile_prefix}_follow_up_reference_light"
+                if reference_light_candidate else f"{profile_prefix}_follow_up_evidence"
+            )
         elif hard_triggered or missing_aspects or formal_questions_count >= 2:
-            profile_name = f"{profile_prefix}_probe_evidence"
+            profile_name = (
+                f"{profile_prefix}_probe_reference_light"
+                if reference_light_candidate else f"{profile_prefix}_probe_evidence"
+            )
         else:
-            profile_name = f"{profile_prefix}_evidence_full"
+            profile_name = (
+                f"{profile_prefix}_evidence_reference_light"
+                if reference_light_candidate else f"{profile_prefix}_evidence_full"
+            )
+        if high_evidence_fast_candidate and (profile_name != f"{profile_prefix}_evidence_full" or reference_light_candidate):
+            effective_fast_allowed = bool(allow_fast_path)
+            fast_output_mode = "light"
+            fast_prompt_max_chars = (
+                QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS
+                if reference_light_candidate else QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS
+            )
+            if reference_light_candidate:
+                fast_timeout = _resolve_reference_light_fast_timeout(fast_timeout, is_prefetch=is_prefetch)
+            else:
+                fast_timeout = _clamp_question_generation_timeout(
+                    max(7.0, float(fast_timeout) - 2.0),
+                    minimum=5.0,
+                )
+            fast_max_tokens = _clamp_question_generation_tokens(
+                min(max_tokens_ceiling, 880 if reference_light_candidate else 760),
+                minimum=500,
+                ceiling=max_tokens_ceiling,
+            )
+            full_timeout = _clamp_question_generation_timeout(
+                max((15.0 if is_prefetch else 18.0), float(full_timeout or fast_timeout) + 8.0),
+                minimum=15.0 if is_prefetch else 18.0,
+            )
+            full_max_tokens = _clamp_question_generation_tokens(
+                min(max_tokens_ceiling, 1500 if reference_light_candidate else 1400),
+                minimum=820,
+                ceiling=max_tokens_ceiling,
+            )
+            reasons.append("evidence_fast")
+            if reference_light_candidate:
+                fast_timeout_by_lane, fast_max_tokens_by_lane, fast_timeout, fast_max_tokens = _apply_reference_light_lane_runtime_overrides(
+                    fast_timeout_by_lane,
+                    fast_max_tokens_by_lane,
+                    base_fast_timeout=fast_timeout,
+                    max_tokens_ceiling=max_tokens_ceiling,
+                    is_prefetch=is_prefetch,
+                )
+                reasons.append("reference_light")
+        else:
+            effective_fast_allowed = False
         if should_follow_up:
             reasons.append("follow_up")
         if hard_triggered:
@@ -20499,13 +21101,23 @@ def _select_question_generation_runtime_profile(
         if formal_questions_count >= 2:
             reasons.append(f"formal_questions={formal_questions_count}")
     elif can_use_light_prompt and should_follow_up:
-        profile_name = f"{profile_prefix}_follow_up_light"
+        profile_name = (
+            f"{profile_prefix}_follow_up_reference_light"
+            if reference_light_candidate else f"{profile_prefix}_follow_up_light"
+        )
         fast_output_mode = "light"
+        fast_prompt_max_chars = (
+            QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS
+            if reference_light_candidate else QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS
+        )
         secondary_lane = "summary" if not is_prefetch else secondary_lane
         hedge_delay_seconds = min(float(hedge_delay_seconds), 1.0 if not is_prefetch else float(PREFETCH_QUESTION_HEDGE_DELAY_SECONDS))
-        fast_timeout = _clamp_question_generation_timeout(max(6.0, float(fast_timeout) - 3.0), minimum=5.0)
+        if reference_light_candidate:
+            fast_timeout = _resolve_reference_light_fast_timeout(fast_timeout, is_prefetch=is_prefetch)
+        else:
+            fast_timeout = _clamp_question_generation_timeout(max(6.0, float(fast_timeout) - 3.0), minimum=5.0)
         fast_max_tokens = _clamp_question_generation_tokens(
-            min(max_tokens_ceiling, 650 if follow_up_round > 0 else 720),
+            min(max_tokens_ceiling, 760 if reference_light_candidate else (650 if follow_up_round > 0 else 720)),
             minimum=420,
             ceiling=max_tokens_ceiling,
         )
@@ -20519,13 +21131,32 @@ def _select_question_generation_runtime_profile(
             ceiling=max_tokens_ceiling,
         )
         reasons.append("follow_up")
+        if reference_light_candidate:
+            fast_timeout_by_lane, fast_max_tokens_by_lane, fast_timeout, fast_max_tokens = _apply_reference_light_lane_runtime_overrides(
+                fast_timeout_by_lane,
+                fast_max_tokens_by_lane,
+                base_fast_timeout=fast_timeout,
+                max_tokens_ceiling=max_tokens_ceiling,
+                is_prefetch=is_prefetch,
+            )
+            reasons.append("reference_light")
     elif can_use_light_prompt and (hard_triggered or missing_aspects or formal_questions_count >= 2 or prompt_length > QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS):
-        profile_name = f"{profile_prefix}_probe_light"
+        profile_name = (
+            f"{profile_prefix}_probe_reference_light"
+            if reference_light_candidate else f"{profile_prefix}_probe_light"
+        )
         fast_output_mode = "light"
+        fast_prompt_max_chars = (
+            QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS
+            if reference_light_candidate else QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS
+        )
         secondary_lane = "summary" if not is_prefetch else secondary_lane
-        fast_timeout = _clamp_question_generation_timeout(float(fast_timeout), minimum=5.0)
+        if reference_light_candidate:
+            fast_timeout = _resolve_reference_light_fast_timeout(fast_timeout, is_prefetch=is_prefetch)
+        else:
+            fast_timeout = _clamp_question_generation_timeout(float(fast_timeout), minimum=5.0)
         fast_max_tokens = _clamp_question_generation_tokens(
-            min(max_tokens_ceiling, 850),
+            min(max_tokens_ceiling, 920 if reference_light_candidate else 850),
             minimum=500,
             ceiling=max_tokens_ceiling,
         )
@@ -20544,19 +21175,46 @@ def _select_question_generation_runtime_profile(
             reasons.append(f"missing_aspects={len(missing_aspects)}")
         if formal_questions_count >= 2:
             reasons.append(f"formal_questions={formal_questions_count}")
+        if reference_light_candidate:
+            fast_timeout_by_lane, fast_max_tokens_by_lane, fast_timeout, fast_max_tokens = _apply_reference_light_lane_runtime_overrides(
+                fast_timeout_by_lane,
+                fast_max_tokens_by_lane,
+                base_fast_timeout=fast_timeout,
+                max_tokens_ceiling=max_tokens_ceiling,
+                is_prefetch=is_prefetch,
+            )
+            reasons.append("reference_light")
     elif can_use_light_prompt:
-        profile_name = f"{profile_prefix}_balanced_light"
+        profile_name = (
+            f"{profile_prefix}_balanced_reference_light"
+            if reference_light_candidate else f"{profile_prefix}_balanced_light"
+        )
         fast_output_mode = "light"
+        fast_prompt_max_chars = (
+            QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS
+            if reference_light_candidate else QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS
+        )
         secondary_lane = "summary" if not is_prefetch else secondary_lane
+        if reference_light_candidate:
+            fast_timeout = _resolve_reference_light_fast_timeout(fast_timeout, is_prefetch=is_prefetch)
         full_timeout = _clamp_question_generation_timeout(
             max((15.0 if is_prefetch else 18.0), float((full_timeout or fast_timeout)) if full_timeout is not None else float(fast_timeout) + 12.0),
             minimum=15.0 if is_prefetch else 18.0,
         )
         full_max_tokens = _clamp_question_generation_tokens(
-            min(max_tokens_ceiling, 1500),
+            min(max_tokens_ceiling, 1500 if reference_light_candidate else 1400),
             minimum=800,
             ceiling=max_tokens_ceiling,
         )
+        if reference_light_candidate:
+            fast_timeout_by_lane, fast_max_tokens_by_lane, fast_timeout, fast_max_tokens = _apply_reference_light_lane_runtime_overrides(
+                fast_timeout_by_lane,
+                fast_max_tokens_by_lane,
+                base_fast_timeout=fast_timeout,
+                max_tokens_ceiling=max_tokens_ceiling,
+                is_prefetch=is_prefetch,
+            )
+            reasons.append("reference_light")
 
     if has_reference_docs:
         reasons.append("has_reference_docs")
@@ -20568,6 +21226,7 @@ def _select_question_generation_runtime_profile(
         "selection_reason": ",".join([item for item in reasons if item]),
         "allow_fast_path": effective_fast_allowed,
         "fast_output_mode": _normalize_question_prompt_output_mode(fast_output_mode),
+        "fast_prompt_max_chars": int(fast_prompt_max_chars),
         "full_output_mode": "full",
         "fast_timeout": fast_timeout,
         "fast_max_tokens": fast_max_tokens,
@@ -20600,6 +21259,7 @@ def _prepare_question_generation_runtime(
     allow_fast_path: bool = True,
 ) -> dict:
     evidence_ledger = refresh_session_evidence_ledger(session)
+    search_mode = _resolve_prompt_search_mode(base_call_type)
     full_prompt, truncated_docs, decision_meta = build_interview_prompt(
         session,
         dimension,
@@ -20607,6 +21267,7 @@ def _prepare_question_generation_runtime(
         session_id=session_id,
         session_signature=session_signature,
         output_mode="full",
+        search_mode=search_mode,
     )
     runtime_profile = _select_question_generation_runtime_profile(
         full_prompt,
@@ -20617,7 +21278,9 @@ def _prepare_question_generation_runtime(
     )
 
     fast_prompt = full_prompt
+    fast_truncated_docs = list(truncated_docs or [])
     fast_prompt_mode = str((decision_meta or {}).get("output_mode", "full") or "full")
+    fast_allow_compacted_docs = False
     if runtime_profile.get("allow_fast_path") and runtime_profile.get("fast_output_mode") == "light":
         light_prompt, light_truncated_docs, light_decision_meta = build_interview_prompt(
             session,
@@ -20626,33 +21289,69 @@ def _prepare_question_generation_runtime(
             session_id=session_id,
             session_signature=session_signature,
             output_mode="light",
+            search_mode=search_mode,
         )
-        if light_truncated_docs:
+        light_compaction_allowed = bool(
+            (light_decision_meta or {}).get("reference_docs_compact_mode", False)
+            and not (light_decision_meta or {}).get("has_search", False)
+        )
+        if light_truncated_docs and not light_compaction_allowed:
             runtime_profile["allow_fast_path"] = False
             runtime_profile["selection_reason"] = (
                 f"{runtime_profile.get('selection_reason', '')},light_prompt_truncated_docs".strip(",")
             )
         else:
             fast_prompt = light_prompt
+            fast_truncated_docs = list(light_truncated_docs or [])
             fast_prompt_mode = str((light_decision_meta or {}).get("output_mode", "light") or "light")
+            fast_allow_compacted_docs = bool(light_compaction_allowed)
 
     runtime_profile["fast_prompt_mode"] = fast_prompt_mode
+    runtime_profile["fast_allow_compacted_docs"] = bool(fast_allow_compacted_docs)
     runtime_profile["full_prompt_mode"] = str((decision_meta or {}).get("output_mode", "full") or "full")
     hedge_budget_state = _get_question_hedge_budget_state(session, dimension)
     shadow_blocker_state = _get_question_shadow_blocker_state(session, dimension, ledger=evidence_ledger)
     concurrent_hedge_allowed = bool(runtime_profile.get("hedged_enabled", QUESTION_HEDGED_ENABLED))
+    fast_hedged_enabled = bool(concurrent_hedge_allowed)
+    full_hedged_enabled = bool(concurrent_hedge_allowed)
     fallback_enabled = bool(runtime_profile.get("fallback_enabled", False))
     selection_reason = str(runtime_profile.get("selection_reason", "") or "").strip()
+    reference_light_fast_candidate = bool(
+        runtime_profile.get("fast_output_mode") == "light"
+        and "reference_light" in str(runtime_profile.get("profile_name", "") or "")
+        and not bool((decision_meta or {}).get("has_search", False))
+    )
 
     if runtime_profile.get("evidence_intent") == "high":
         if QUESTION_HEDGE_REQUIRE_SHADOW_BLOCKER and not shadow_blocker_state["is_blocker"]:
             concurrent_hedge_allowed = False
+            fast_hedged_enabled = False
+            full_hedged_enabled = False
             selection_reason = ",".join(filter(None, [selection_reason, "hedge_blocked=no_shadow_blocker"]))
         if not hedge_budget_state["hedge_allowed"]:
             concurrent_hedge_allowed = False
-            selection_reason = ",".join(filter(None, [selection_reason, "hedge_blocked=budget_exhausted"]))
+            full_hedged_enabled = False
+            if reference_light_fast_candidate and QUESTION_FAST_REFERENCE_HEDGE_BYPASS_BUDGET:
+                fast_hedged_enabled = True
+                selection_reason = ",".join(filter(None, [selection_reason, "hedge_blocked=budget_exhausted", "fast_hedge_budget_bypass=reference_light"]))
+            else:
+                fast_hedged_enabled = False
+                selection_reason = ",".join(filter(None, [selection_reason, "hedge_blocked=budget_exhausted"]))
+        else:
+            fast_hedged_enabled = bool(concurrent_hedge_allowed)
+            full_hedged_enabled = bool(concurrent_hedge_allowed)
+    else:
+        fast_hedged_enabled = bool(concurrent_hedge_allowed)
+        full_hedged_enabled = bool(concurrent_hedge_allowed)
 
-    runtime_profile["hedged_enabled"] = bool(concurrent_hedge_allowed)
+    if not bool(concurrent_hedge_allowed) and not reference_light_fast_candidate:
+        fast_hedged_enabled = False
+        full_hedged_enabled = False
+
+    runtime_profile["hedged_enabled"] = bool(fast_hedged_enabled or full_hedged_enabled)
+    runtime_profile["fast_hedged_enabled"] = bool(fast_hedged_enabled)
+    runtime_profile["full_hedged_enabled"] = bool(full_hedged_enabled)
+    runtime_profile["reference_light_fast_candidate"] = bool(reference_light_fast_candidate)
     runtime_profile["fallback_enabled"] = bool(fallback_enabled)
     runtime_profile["selection_reason"] = selection_reason
     runtime_profile["hedge_budget"] = copy.deepcopy(hedge_budget_state)
@@ -20664,7 +21363,14 @@ def _prepare_question_generation_runtime(
         "selection_reason": runtime_profile.get("selection_reason", ""),
         "fast_path_enabled": bool(runtime_profile.get("allow_fast_path", allow_fast_path)),
         "fast_prompt_mode": runtime_profile.get("fast_prompt_mode", "full"),
+        "fast_allow_compacted_docs": bool(runtime_profile.get("fast_allow_compacted_docs", False)),
         "full_prompt_mode": runtime_profile.get("full_prompt_mode", "full"),
+        "fast_timeout": runtime_profile.get("fast_timeout"),
+        "fast_max_tokens": runtime_profile.get("fast_max_tokens"),
+        "full_timeout": runtime_profile.get("full_timeout"),
+        "full_max_tokens": runtime_profile.get("full_max_tokens"),
+        "fast_timeout_by_lane": copy.deepcopy(runtime_profile.get("fast_timeout_by_lane", {}) or {}),
+        "fast_max_tokens_by_lane": copy.deepcopy(runtime_profile.get("fast_max_tokens_by_lane", {}) or {}),
         "primary_lane": runtime_profile.get("primary_lane", "question"),
         "secondary_lane": runtime_profile.get("secondary_lane", QUESTION_HEDGED_SECONDARY_LANE),
         "fast_prompt_length": len(fast_prompt or ""),
@@ -20672,6 +21378,8 @@ def _prepare_question_generation_runtime(
         "dynamic_lane_order_enabled": bool(runtime_profile.get("dynamic_lane_order_enabled", True)),
         "disallowed_lanes": list(runtime_profile.get("disallowed_lanes", []) or []),
         "hedged_enabled": bool(runtime_profile.get("hedged_enabled", QUESTION_HEDGED_ENABLED)),
+        "fast_hedged_enabled": bool(runtime_profile.get("fast_hedged_enabled", runtime_profile.get("hedged_enabled", QUESTION_HEDGED_ENABLED))),
+        "full_hedged_enabled": bool(runtime_profile.get("full_hedged_enabled", runtime_profile.get("hedged_enabled", QUESTION_HEDGED_ENABLED))),
         "fallback_enabled": bool(runtime_profile.get("fallback_enabled", False)),
         "hedge_budget": copy.deepcopy(hedge_budget_state),
         "shadow_blocker": copy.deepcopy(shadow_blocker_state),
@@ -20685,6 +21393,7 @@ def _prepare_question_generation_runtime(
 
     return {
         "fast_prompt": fast_prompt,
+        "fast_truncated_docs": fast_truncated_docs,
         "full_prompt": full_prompt,
         "truncated_docs": truncated_docs,
         "decision_meta": enriched_decision_meta,
@@ -20880,6 +21589,7 @@ def _call_question_with_optional_hedge(
 def generate_question_with_tiered_strategy(
     prompt: str,
     truncated_docs: Optional[list] = None,
+    fast_truncated_docs: Optional[list] = None,
     debug: bool = False,
     base_call_type: str = "question",
     allow_fast_path: bool = True,
@@ -20920,6 +21630,8 @@ def generate_question_with_tiered_strategy(
         minimum=600,
     )
     hedged_enabled = runtime_profile.get("hedged_enabled", QUESTION_HEDGED_ENABLED)
+    fast_hedged_enabled = runtime_profile.get("fast_hedged_enabled", hedged_enabled)
+    full_hedged_enabled = runtime_profile.get("full_hedged_enabled", hedged_enabled)
     fallback_enabled = bool(runtime_profile.get("fallback_enabled", False))
     hedge_delay_seconds = runtime_profile.get("hedge_delay_seconds", QUESTION_HEDGED_DELAY_SECONDS)
     fast_primary_lane, fast_secondary_lane, fast_lane_meta = _resolve_dynamic_question_lane_order(runtime_profile, phase="fast")
@@ -20971,6 +21683,8 @@ def generate_question_with_tiered_strategy(
             f"profile={runtime_profile.get('profile_name', '-')},"
             f"fast_mode={runtime_profile.get('fast_prompt_mode', runtime_profile.get('fast_output_mode', 'full'))},"
             f"full_mode={runtime_profile.get('full_prompt_mode', 'full')},"
+            f"fast_hedge={'on' if bool(runtime_profile.get('fast_hedged_enabled', fast_hedged_enabled)) else 'off'},"
+            f"full_hedge={'on' if bool(runtime_profile.get('full_hedged_enabled', full_hedged_enabled)) else 'off'},"
             f"fast_lanes={fast_primary_lane}({fast_primary_timeout}s/{fast_primary_max_tokens})->{fast_secondary_lane}({fast_secondary_timeout}s/{fast_secondary_max_tokens}),"
             f"full_lanes={full_primary_lane}({full_primary_timeout}s/{full_primary_max_tokens})->{full_secondary_lane}({full_secondary_timeout}s/{full_secondary_max_tokens}),"
             f"reason={runtime_profile.get('selection_reason', '-') or '-'}"
@@ -20978,20 +21692,25 @@ def generate_question_with_tiered_strategy(
 
     fast_skip_reason = ""
     if effective_fast_allowed:
-        fast_skip_reason = _get_question_fast_skip_reason(effective_fast_prompt, truncated_docs=truncated_docs)
+        fast_skip_reason = _get_question_fast_skip_reason(
+            effective_fast_prompt,
+            truncated_docs=fast_truncated_docs if fast_truncated_docs is not None else truncated_docs,
+            prompt_max_chars=runtime_profile.get("fast_prompt_max_chars"),
+            allow_compacted_docs=bool(runtime_profile.get("fast_allow_compacted_docs", False)),
+        )
 
     if effective_fast_allowed and not fast_skip_reason:
         fast_response, fast_lane, fast_meta = _call_question_with_optional_hedge(
             effective_fast_prompt,
             max_tokens=fast_primary_max_tokens,
             call_type=f"{base_call_type}_fast",
-            truncated_docs=truncated_docs,
+            truncated_docs=fast_truncated_docs if fast_truncated_docs is not None else truncated_docs,
             timeout=fast_primary_timeout,
             retry_on_timeout=False,
             debug=debug,
             primary_lane=fast_primary_lane,
             secondary_lane=fast_secondary_lane,
-            hedged_enabled=hedged_enabled,
+            hedged_enabled=fast_hedged_enabled,
             hedge_delay_seconds=fast_hedge_delay_seconds,
             lane_profile_name=str(fast_lane_meta.get("strategy_key", "") or ""),
             lane_runtime_overrides=fast_lane_runtime_overrides,
@@ -21026,7 +21745,7 @@ def generate_question_with_tiered_strategy(
         debug=debug,
         primary_lane=full_primary_lane,
         secondary_lane=full_secondary_lane,
-        hedged_enabled=hedged_enabled,
+        hedged_enabled=full_hedged_enabled,
         hedge_delay_seconds=full_hedge_delay_seconds,
         lane_profile_name=str(full_lane_meta.get("strategy_key", "") or ""),
         lane_runtime_overrides=full_lane_runtime_overrides,
@@ -21040,7 +21759,7 @@ def generate_question_with_tiered_strategy(
 
     should_try_fallback = (
         fallback_enabled
-        and not bool(hedged_enabled)
+        and not bool(full_hedged_enabled)
         and full_primary_lane != full_secondary_lane
         and not full_result
     )
@@ -21103,6 +21822,7 @@ def get_next_question(session_id):
     data = request.get_json() or {}
     default_dim = get_dimension_order_for_session(session)[0] if get_dimension_order_for_session(session) else "customer_needs"
     dimension = data.get("dimension", default_dim)
+    prefer_prefetch = bool(data.get("prefer_prefetch", False))
     session_signature = get_file_signature(session_file)
     question_cache_key = _build_question_result_cache_key(session_id, dimension, session_signature)
 
@@ -21114,7 +21834,8 @@ def get_next_question(session_id):
         cached_question_payload["cached"] = True
         return jsonify(cached_question_payload)
 
-    if _wait_for_question_prefetch_inflight(question_cache_key, QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS):
+    prefetch_wait_seconds = QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS if prefer_prefetch else QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS
+    if _wait_for_question_prefetch_inflight(question_cache_key, prefetch_wait_seconds):
         cached_question_payload = _get_question_result_cache(question_cache_key)
         if isinstance(cached_question_payload, dict):
             if ENABLE_DEBUG_LOG:
@@ -21221,6 +21942,7 @@ def get_next_question(session_id):
         if ENABLE_DEBUG_LOG:
             print(f"ℹ️ AI 未启用，使用 fallback 题库: session={session_id}, dimension={dimension}")
         fallback = get_fallback_question(session, dimension)
+        _record_question_generation_fallback("ai_disabled")
         return jsonify(fallback)
 
     # 获取当前维度的所有记录
@@ -21300,11 +22022,20 @@ def get_next_question(session_id):
             }
         })
 
-    # 调用 Claude 生成问题
-    # 判断是否会有搜索（用于设置正确的阶段数）
-    has_search = should_search(session.get("topic", ""), dimension, session)
+    if not try_acquire_question_generation_semaphore():
+        return build_overload_response(
+            "question_generation",
+            message="问题生成链路繁忙，请稍后重试",
+            retry_after_seconds=QUESTION_GENERATION_RETRY_AFTER_SECONDS,
+        )
+
+    question_generation_slot_acquired = True
 
     try:
+        # 调用 Claude 生成问题
+        # 判断是否会有搜索（用于设置正确的阶段数）
+        has_search = should_search(session.get("topic", ""), dimension, session)
+
         # 阶段1: 分析回答
         update_thinking_status(session_id, "analyzing", has_search)
 
@@ -21319,6 +22050,7 @@ def get_next_question(session_id):
         )
         prompt = prepared_runtime["full_prompt"]
         truncated_docs = prepared_runtime["truncated_docs"]
+        fast_truncated_docs = prepared_runtime.get("fast_truncated_docs")
         decision_meta = prepared_runtime["decision_meta"]
         runtime_profile = prepared_runtime["runtime_profile"]
         fast_prompt = prepared_runtime["fast_prompt"]
@@ -21339,6 +22071,7 @@ def get_next_question(session_id):
         response, result, tier_used = generate_question_with_tiered_strategy(
             prompt,
             truncated_docs=truncated_docs,
+            fast_truncated_docs=fast_truncated_docs,
             debug=ENABLE_DEBUG_LOG,
             base_call_type="question",
             allow_fast_path=bool(runtime_profile.get("allow_fast_path", True)),
@@ -21352,6 +22085,7 @@ def get_next_question(session_id):
             clear_thinking_status(session_id)
             fallback = get_fallback_question(session, dimension)
             fallback["detail"] = "AI 服务暂时不可用，已切换为备用题目"
+            _record_question_generation_fallback("ai_unavailable")
             return jsonify(fallback)
 
         if result:
@@ -21375,6 +22109,7 @@ def get_next_question(session_id):
                 retry_response, retry_result, retry_tier = generate_question_with_tiered_strategy(
                     prompt,
                     truncated_docs=truncated_docs,
+                    fast_truncated_docs=fast_truncated_docs,
                     debug=ENABLE_DEBUG_LOG,
                     base_call_type="question_retry",
                     allow_fast_path=False,
@@ -21384,6 +22119,8 @@ def get_next_question(session_id):
                 if ENABLE_DEBUG_LOG:
                     print(f"⚙️ 重复问题重试通道: {retry_tier}")
                 if retry_result and retry_result.get("question") != last_log.get("question"):
+                    tier_used = retry_tier
+                    response = retry_response
                     selected_lane = retry_tier.split(":", 1)[1] if ":" in retry_tier else ""
                     decision_meta["tier_used"] = retry_tier
                     decision_meta["selected_lane"] = selected_lane
@@ -21398,6 +22135,7 @@ def get_next_question(session_id):
                     clear_thinking_status(session_id)
                     fallback = get_fallback_question(session, dimension)
                     fallback["detail"] = "AI 连续生成了重复问题，已切换为备用题目"
+                    _record_question_generation_fallback("repeat_retry_failed")
                     return jsonify(fallback)
 
             # ========== 后端强制校验 is_follow_up ==========
@@ -21440,6 +22178,7 @@ def get_next_question(session_id):
             # ========== 步骤5: 触发预生成（如果需要）==========
             trigger_prefetch_if_needed(session, dimension, session_signature=session_signature)
             _set_question_result_cache(question_cache_key, result)
+            record_question_generation_event("ai_success", reason=tier_used)
             return jsonify(result)
 
         clear_thinking_status(session_id)
@@ -21460,11 +22199,13 @@ def get_next_question(session_id):
             repaired_result["question_runtime_profile"] = runtime_profile.get("profile_name", "")
             trigger_prefetch_if_needed(session, dimension, session_signature=session_signature)
             _set_question_result_cache(question_cache_key, repaired_result)
+            record_question_generation_event("ai_success", reason=f"{tier_used}:repair")
             return jsonify(repaired_result)
 
         fallback = get_fallback_question(session, dimension)
         if fallback.get("question") or fallback.get("completed"):
             fallback["detail"] = "AI 返回内容无法稳定解析，已切换为备用题目"
+            _record_question_generation_fallback("parse_invalid")
             return jsonify(fallback)
 
         return jsonify({
@@ -21479,6 +22220,7 @@ def get_next_question(session_id):
         fallback = get_fallback_question(session, dimension)
         if fallback.get("question") or fallback.get("completed"):
             fallback["detail"] = "AI 生成过程中发生异常，已切换为备用题目"
+            _record_question_generation_fallback("exception")
             return jsonify(fallback)
 
         # 根据异常类型提供更具体的错误信息
@@ -21507,6 +22249,12 @@ def get_next_question(session_id):
                 "error": "生成问题失败",
                 "detail": f"发生未知错误: {error_msg}"
             }), 503
+    finally:
+        if question_generation_slot_acquired:
+            try:
+                QUESTION_GENERATION_SEMAPHORE.release()
+            except ValueError:
+                pass
 
 
 def get_fallback_question(session: dict, dimension: str) -> dict:
@@ -21947,6 +22695,12 @@ def submit_answer(session_id):
 
     session["updated_at"] = get_utc_now()
     save_session_json_and_sync(session_file, session)
+    session_signature = get_file_signature(session_file)
+
+    try:
+        trigger_current_dimension_prefetch(session, dimension, session_signature=session_signature)
+    except Exception as e:
+        print(f"⚠️ 当前维度预生成触发失败: {e}")
 
     # 异步更新上下文摘要（超过阈值且满足节流时触发）
     if len(session.get("interview_log", [])) >= SUMMARY_THRESHOLD:
@@ -34332,6 +35086,8 @@ def get_metrics():
     last_n = request.args.get('last_n', type=int)
     stats = metrics_collector.get_statistics(last_n=last_n)
     stats["list_endpoints"] = get_list_metrics_snapshot()
+    stats["question_generation"] = get_question_generation_stats_snapshot()
+    stats["search_decision"] = get_search_decision_stats_snapshot()
     stats["report_generation_queue"] = get_report_generation_worker_snapshot(include_positions=False)
     with list_overload_stats_lock:
         stats["list_overload"] = {
@@ -34348,6 +35104,8 @@ def reset_metrics():
     try:
         metrics_collector.reset()
         reset_list_metrics()
+        reset_question_generation_stats()
+        reset_search_decision_stats()
         with list_overload_stats_lock:
             for endpoint_key in list_overload_stats.keys():
                 list_overload_stats[endpoint_key]["rejected"] = 0
@@ -34510,6 +35268,12 @@ if __name__ == '__main__':
             f"(delay={QUESTION_HEDGED_DELAY_SECONDS}s,lane={QUESTION_HEDGED_SECONDARY_LANE},"
             f"adaptive={'on' if QUESTION_HEDGE_ADAPTIVE_ENABLED else 'off'},"
             f"p={QUESTION_HEDGE_ADAPTIVE_PERCENTILE:.2f},samples>={QUESTION_HEDGE_ADAPTIVE_MIN_SAMPLES})"
+        )
+        print(
+            "问题并发保护: "
+            f"max_inflight={QUESTION_GENERATION_MAX_INFLIGHT}, "
+            f"retry_after={QUESTION_GENERATION_RETRY_AFTER_SECONDS}s, "
+            f"high_evidence_hedge={'on' if QUESTION_HIGH_EVIDENCE_HEDGED_ENABLED else 'off'}"
         )
         print(
             "V3 配置: "

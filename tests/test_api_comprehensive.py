@@ -136,7 +136,9 @@ class ComprehensiveApiTests(unittest.TestCase):
         cls.server.question_ai_client = None
         cls.server.report_ai_client = None
         cls.server.prefetch_first_question = lambda _session_id: None
+        cls.real_trigger_current_dimension_prefetch = cls.server.trigger_current_dimension_prefetch
         cls.server.trigger_prefetch_if_needed = lambda *_args, **_kwargs: None
+        cls.server.trigger_current_dimension_prefetch = lambda *_args, **_kwargs: None
 
         # 使用测试沙箱内的场景存储，避免污染仓库数据。
         from scripts import scenario_loader as scenario_loader_module
@@ -174,6 +176,8 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.server.question_prefetch_inflight.clear()
         self.server.SESSIONS_LIST_SEMAPHORE = threading.BoundedSemaphore(self.server.SESSIONS_LIST_MAX_INFLIGHT)
         self.server.REPORTS_LIST_SEMAPHORE = threading.BoundedSemaphore(self.server.REPORTS_LIST_MAX_INFLIGHT)
+        self.server.QUESTION_GENERATION_SEMAPHORE = threading.BoundedSemaphore(self.server.QUESTION_GENERATION_MAX_INFLIGHT)
+        self.server.reset_question_generation_stats()
 
     def _register(self, client=None):
         target = client or self.client
@@ -716,6 +720,103 @@ class ComprehensiveApiTests(unittest.TestCase):
         undo_payload = undo_resp.get_json()
         self.assertEqual(len(undo_payload.get("interview_log", [])), 0)
 
+    def test_submit_answer_triggers_current_dimension_prefetch_with_latest_signature(self):
+        self._register()
+        created = self._create_session(topic="提交答案触发预取")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        captured = {}
+        old_trigger = self.server.trigger_current_dimension_prefetch
+        try:
+            def _capture(session, target_dimension, session_signature=None):
+                captured["session_id"] = session.get("session_id")
+                captured["dimension"] = target_dimension
+                captured["signature"] = session_signature
+
+            self.server.trigger_current_dimension_prefetch = _capture
+            self._submit_answer(
+                session_id=session_id,
+                dimension=dimension,
+                question="Q1",
+                answer="A1",
+            )
+        finally:
+            self.server.trigger_current_dimension_prefetch = old_trigger
+
+        session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+        self.assertEqual(captured.get("session_id"), session_id)
+        self.assertEqual(captured.get("dimension"), dimension)
+        self.assertEqual(captured.get("signature"), self.server.get_file_signature(session_file))
+
+    def test_submit_answer_prefetches_current_dimension_next_question(self):
+        self._register()
+        created = self._create_session(topic="当前维度下一题预取")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        old_trigger = self.server.trigger_current_dimension_prefetch
+        old_generate_question = self.server.generate_question_with_tiered_strategy
+        old_evaluate_completion = self.server.evaluate_dimension_completion_v2
+        generate_calls = []
+
+        try:
+            self.server.trigger_current_dimension_prefetch = self.__class__.real_trigger_current_dimension_prefetch
+            self.server.evaluate_dimension_completion_v2 = lambda *_args, **_kwargs: {"can_complete": False}
+
+            def _generate_prefetched_question(*_args, **kwargs):
+                generate_calls.append(kwargs.get("base_call_type"))
+                return (
+                    '{"question":"预取后的下一题","options":["选项A","选项B"],"multi_select":false}',
+                    {
+                        "question": "预取后的下一题",
+                        "options": ["选项A", "选项B"],
+                        "multi_select": False,
+                    },
+                    "fast:summary",
+                )
+
+            self.server.generate_question_with_tiered_strategy = _generate_prefetched_question
+
+            submit_resp = self.client.post(
+                f"/api/sessions/{session_id}/submit-answer",
+                json={
+                    "question": "当前题",
+                    "answer": "当前回答",
+                    "dimension": dimension,
+                    "options": ["A", "B"],
+                    "is_follow_up": False,
+                },
+            )
+            self.assertEqual(submit_resp.status_code, 200, submit_resp.get_data(as_text=True))
+
+            session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+            expected_signature = self.server.get_file_signature(session_file)
+            deadline = time.time() + 1.0
+            while time.time() < deadline:
+                with self.server.prefetch_cache_lock:
+                    cached = self.server.prefetch_cache.get(session_id, {}).get(dimension)
+                    if cached and cached.get("session_signature") == expected_signature:
+                        break
+                time.sleep(0.02)
+            else:
+                self.fail("提交答案后未生成当前维度预取缓存")
+
+            next_q = self.client.post(
+                f"/api/sessions/{session_id}/next-question",
+                json={"dimension": dimension},
+            )
+            self.assertEqual(next_q.status_code, 200, next_q.get_data(as_text=True))
+            payload = next_q.get_json() or {}
+            self.assertEqual(payload.get("question"), "预取后的下一题")
+            self.assertTrue(payload.get("prefetched") or payload.get("cached"))
+            self.assertEqual(payload.get("dimension"), dimension)
+            self.assertEqual(generate_calls, ["prefetch_current"])
+        finally:
+            self.server.trigger_current_dimension_prefetch = old_trigger
+            self.server.generate_question_with_tiered_strategy = old_generate_question
+            self.server.evaluate_dimension_completion_v2 = old_evaluate_completion
+
     def test_next_question_uses_fallback_when_ai_disabled(self):
         self._register()
         created = self._create_session(topic="fallback链路")
@@ -733,6 +834,39 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertTrue(payload.get("question"))
         self.assertIsInstance(payload.get("options"), list)
         self.assertGreater(len(payload.get("options", [])), 0)
+        stats = self.server.get_question_generation_stats_snapshot()
+        self.assertEqual(stats.get("fallback_served"), 1)
+        self.assertEqual(stats.get("fallback_reasons", {}).get("ai_disabled"), 1)
+
+    def test_next_question_returns_429_when_generation_slots_exhausted(self):
+        self._register()
+        created = self._create_session(topic="问题并发闸门")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        acquired_tokens = []
+        for _ in range(self.server.QUESTION_GENERATION_MAX_INFLIGHT):
+            acquired = self.server.QUESTION_GENERATION_SEMAPHORE.acquire(blocking=False)
+            self.assertTrue(acquired)
+            acquired_tokens.append(True)
+        old_resolve_ai_client = self.server.resolve_ai_client
+        try:
+            self.server.resolve_ai_client = lambda call_type="question": object()
+            next_q = self.client.post(
+                f"/api/sessions/{session_id}/next-question",
+                json={"dimension": dimension},
+            )
+            self.assertEqual(next_q.status_code, 429, next_q.get_data(as_text=True))
+            payload = next_q.get_json() or {}
+            self.assertEqual(payload.get("code"), "overloaded")
+            self.assertEqual(payload.get("endpoint"), "question_generation")
+            self.assertEqual(next_q.headers.get("Retry-After"), str(self.server.QUESTION_GENERATION_RETRY_AFTER_SECONDS))
+            stats = self.server.get_question_generation_stats_snapshot()
+            self.assertEqual(stats.get("overloaded"), 1)
+        finally:
+            self.server.resolve_ai_client = old_resolve_ai_client
+            for _ in acquired_tokens:
+                self.server.QUESTION_GENERATION_SEMAPHORE.release()
 
     def test_next_question_repairs_truncated_ai_response(self):
         self._register()
@@ -852,6 +986,71 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.assertEqual(payload.get("dimension"), dimension)
         finally:
             self.server.QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = old_wait
+            self.server.resolve_ai_client = old_resolve_ai_client
+            self.server.generate_question_with_tiered_strategy = old_generate_question
+            self.server._end_question_prefetch_inflight(cache_key, owner_event)
+
+    def test_next_question_prefers_longer_wait_for_submit_prefetch(self):
+        self._register()
+        created = self._create_session(topic="提交后优先等待预取")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+        session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+        session_signature = self.server.get_file_signature(session_file)
+        cache_key = self.server._build_question_result_cache_key(session_id, dimension, session_signature)
+        owner_event, is_owner = self.server._begin_question_prefetch_inflight(cache_key)
+        self.assertTrue(is_owner)
+
+        old_wait = self.server.QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS
+        old_submit_wait = self.server.QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS
+        old_resolve_ai_client = self.server.resolve_ai_client
+        old_generate_question = self.server.generate_question_with_tiered_strategy
+        try:
+            self.server.QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = 0.05
+            self.server.QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS = 0.4
+            self.server.resolve_ai_client = lambda call_type="question": object()
+
+            def _should_not_generate(*_args, **_kwargs):
+                raise AssertionError("提交后优先等待预取命中时不应再触发实时出题")
+
+            self.server.generate_question_with_tiered_strategy = _should_not_generate
+
+            def _complete_prefetch():
+                time.sleep(0.12)
+                prefetched_question = {
+                    "question": "提交后命中的预取题",
+                    "options": ["选项A", "选项B"],
+                    "multi_select": False,
+                    "dimension": dimension,
+                    "ai_generated": True,
+                }
+                self.server._set_question_result_cache(cache_key, prefetched_question)
+                with self.server.prefetch_cache_lock:
+                    self.server.prefetch_cache.setdefault(session_id, {})[dimension] = {
+                        "question_data": prefetched_question,
+                        "created_at": time.time(),
+                        "topic": created.get("topic"),
+                        "session_signature": session_signature,
+                        "valid": True,
+                    }
+                self.server._end_question_prefetch_inflight(cache_key, owner_event)
+
+            worker = threading.Thread(target=_complete_prefetch, daemon=True)
+            worker.start()
+
+            next_q = self.client.post(
+                f"/api/sessions/{session_id}/next-question",
+                json={"dimension": dimension, "prefer_prefetch": True},
+            )
+            worker.join(timeout=1.0)
+
+            self.assertEqual(next_q.status_code, 200, next_q.get_data(as_text=True))
+            payload = next_q.get_json() or {}
+            self.assertEqual(payload.get("question"), "提交后命中的预取题")
+            self.assertTrue(payload.get("cached"))
+        finally:
+            self.server.QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = old_wait
+            self.server.QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS = old_submit_wait
             self.server.resolve_ai_client = old_resolve_ai_client
             self.server.generate_question_with_tiered_strategy = old_generate_question
             self.server._end_question_prefetch_inflight(cache_key, owner_event)

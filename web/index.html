@@ -3690,7 +3690,9 @@
                 <div class="settings-modal-header px-5 py-4 border-b border-border flex items-center justify-between">
                     <div>
                         <h3 id="dv-dialog-settings-title" class="dv-modal-title">设置中心</h3>
-                        <p id="dv-dialog-settings-desc" class="dv-modal-body text-sm mt-1">管理外观偏好与账号绑定关系</p>
+                        <p id="dv-dialog-settings-desc"
+                           class="dv-modal-body text-sm mt-1"
+                           x-text="canViewOpsMetrics() ? '管理外观偏好、账号绑定与运行观测' : '管理外观偏好与账号绑定关系'"></p>
                     </div>
                     <button @click="closeSettingsModal()"
                             data-dialog-autofocus
@@ -3704,16 +3706,23 @@
                 <div class="settings-layout flex flex-col md:flex-row min-h-[24rem]">
                     <aside class="settings-sidebar w-full md:w-52 border-b md:border-b-0 md:border-r border-border p-3 space-y-2">
                         <button id="dv-settings-tab-appearance"
-                                @click="settingsTab = 'appearance'"
+                                @click="switchSettingsTab('appearance')"
                                 :class="settingsTab === 'appearance' ? 'settings-tab-btn settings-tab-btn--active' : 'settings-tab-btn'"
                                 class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium">
                             外观设置
                         </button>
                         <button id="dv-settings-tab-account"
-                                @click="settingsTab = 'account'"
+                                @click="switchSettingsTab('account')"
                                 :class="settingsTab === 'account' ? 'settings-tab-btn settings-tab-btn--active' : 'settings-tab-btn'"
                                 class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium">
                             账号与绑定
+                        </button>
+                        <button id="dv-settings-tab-ops"
+                                x-show="currentUser?.is_admin"
+                                @click="switchSettingsTab('ops')"
+                                :class="settingsTab === 'ops' ? 'settings-tab-btn settings-tab-btn--active' : 'settings-tab-btn'"
+                                class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium">
+                            运行监控
                         </button>
                     </aside>
                     <section class="settings-content flex-1 p-4 md:p-5 space-y-5">
@@ -3778,6 +3787,163 @@
                                         class="account-menu-logout-btn w-full text-left px-3 py-2.5 text-sm rounded-lg border border-transparent font-medium">
                                     退出登录
                                 </button>
+                            </div>
+                        </div>
+                        <div x-show="settingsTab === 'ops' && currentUser?.is_admin" x-cloak class="space-y-4">
+                            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                <div>
+                                    <h4 class="text-sm font-semibold text-primary">问题链路监控</h4>
+                                    <p class="text-xs text-muted mt-1">
+                                        最近 <span x-text="opsMetricsLastN"></span> 次服务端样本，<span x-text="getOpsMetricsFreshnessText()"></span>
+                                    </p>
+                                </div>
+                                <button @click="loadOpsMetrics({ force: true })"
+                                        :disabled="opsMetricsLoading"
+                                        class="settings-action-btn px-3 py-2 rounded-lg border text-sm font-medium self-start sm:self-auto">
+                                    <span x-text="opsMetricsLoading ? '刷新中...' : '刷新监控'"></span>
+                                </button>
+                            </div>
+
+                            <div x-show="opsMetricsError" x-cloak class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+                                <p x-text="opsMetricsError"></p>
+                            </div>
+
+                            <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                                <div class="settings-group rounded-xl border border-border p-4 space-y-3">
+                                    <div>
+                                        <h5 class="text-sm font-semibold text-primary">问题链路概览</h5>
+                                        <p class="text-xs text-muted mt-1">区分真实 AI 成功、备用题目和过载拒绝。</p>
+                                    </div>
+                                    <div class="grid grid-cols-2 gap-3 text-sm">
+                                        <div class="rounded-lg bg-slate-50 px-3 py-3">
+                                            <div class="text-xs text-muted">AI 成功</div>
+                                            <div class="text-lg font-semibold text-primary mt-1" x-text="opsMetrics?.question_generation?.ai_success ?? 0"></div>
+                                        </div>
+                                        <div class="rounded-lg bg-slate-50 px-3 py-3">
+                                            <div class="text-xs text-muted">备用题目</div>
+                                            <div class="text-lg font-semibold text-primary mt-1" x-text="opsMetrics?.question_generation?.fallback_served ?? 0"></div>
+                                            <div class="text-xs text-muted mt-1" x-text="formatOpsPercent(opsMetrics?.question_generation?.fallback_rate ?? 0)"></div>
+                                        </div>
+                                        <div class="rounded-lg bg-slate-50 px-3 py-3">
+                                            <div class="text-xs text-muted">过载拒绝</div>
+                                            <div class="text-lg font-semibold text-primary mt-1" x-text="opsMetrics?.question_generation?.overloaded ?? 0"></div>
+                                        </div>
+                                        <div class="rounded-lg bg-slate-50 px-3 py-3">
+                                            <div class="text-xs text-muted">Question Fast 样本</div>
+                                            <div class="text-lg font-semibold text-primary mt-1" x-text="getQuestionFastStageSummary().count"></div>
+                                            <div class="text-xs text-muted mt-1" x-text="formatOpsPercent(getQuestionFastStageSummary().success_rate)"></div>
+                                        </div>
+                                    </div>
+                                    <div class="rounded-lg border border-border px-3 py-3 text-xs text-muted space-y-1">
+                                        <div class="flex items-center justify-between gap-3">
+                                            <span>搜索决策 AI 成功</span>
+                                            <span class="font-medium text-primary" x-text="opsMetrics?.search_decision?.ai_success ?? 0"></span>
+                                        </div>
+                                        <div class="flex items-center justify-between gap-3">
+                                            <span>搜索决策降级</span>
+                                            <span class="font-medium text-primary" x-text="opsMetrics?.search_decision?.degraded ?? 0"></span>
+                                        </div>
+                                        <div class="flex items-center justify-between gap-3">
+                                            <span>搜索决策缓存命中</span>
+                                            <span class="font-medium text-primary" x-text="opsMetrics?.search_decision?.cache_hit ?? 0"></span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="settings-group rounded-xl border border-border p-4 space-y-3">
+                                    <div>
+                                        <h5 class="text-sm font-semibold text-primary">Fast 命中观察</h5>
+                                        <p class="text-xs text-muted mt-1">按 lane / model 聚合最近的 `question_fast` 样本。</p>
+                                    </div>
+                                    <div class="grid grid-cols-2 gap-3 text-sm">
+                                        <div class="rounded-lg bg-slate-50 px-3 py-3">
+                                            <div class="text-xs text-muted">p50</div>
+                                            <div class="text-lg font-semibold text-primary mt-1" x-text="formatOpsDurationMs(getQuestionFastStageSummary().p50_ms)"></div>
+                                        </div>
+                                        <div class="rounded-lg bg-slate-50 px-3 py-3">
+                                            <div class="text-xs text-muted">p95</div>
+                                            <div class="text-lg font-semibold text-primary mt-1" x-text="formatOpsDurationMs(getQuestionFastStageSummary().p95_ms)"></div>
+                                        </div>
+                                    </div>
+                                    <div class="space-y-2" x-show="getQuestionFastStageGroups().length > 0">
+                                        <template x-for="group in getQuestionFastStageGroups()" :key="`${group.stage}-${group.lane}-${group.model}`">
+                                            <div class="rounded-lg border border-border px-3 py-3">
+                                                <div class="flex items-start justify-between gap-3">
+                                                    <div>
+                                                        <div class="text-sm font-medium text-primary" x-text="group.lane || 'unknown'"></div>
+                                                        <div class="text-xs text-muted mt-1" x-text="group.model || 'unknown model'"></div>
+                                                    </div>
+                                                    <div class="text-right text-xs text-muted">
+                                                        <div><span x-text="group.count"></span> 次</div>
+                                                        <div class="mt-1" x-text="formatOpsPercent(group.success_rate)"></div>
+                                                    </div>
+                                                </div>
+                                                <div class="grid grid-cols-2 gap-2 text-xs text-muted mt-3">
+                                                    <div>p50：<span class="text-primary font-medium" x-text="formatOpsDurationMs(group.p50_ms)"></span></div>
+                                                    <div>p95：<span class="text-primary font-medium" x-text="formatOpsDurationMs(group.p95_ms)"></span></div>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                    <p x-show="getQuestionFastStageGroups().length === 0" x-cloak class="text-xs text-muted">
+                                        暂无 `question_fast` 聚合样本。
+                                    </p>
+                                </div>
+
+                                <div class="settings-group rounded-xl border border-border p-4 space-y-3">
+                                    <div>
+                                        <h5 class="text-sm font-semibold text-primary">当前前端状态</h5>
+                                        <p class="text-xs text-muted mt-1">展示最近一次取题请求的本地观察结果。</p>
+                                    </div>
+                                    <div class="rounded-lg bg-slate-50 px-3 py-3 space-y-2 text-sm">
+                                        <div class="flex items-center justify-between gap-3">
+                                            <span class="text-muted">最近状态</span>
+                                            <span class="font-medium text-primary" x-text="getQuestionOpsStatusLabel(questionOpsLocalState.lastResultStatus)"></span>
+                                        </div>
+                                        <div class="flex items-center justify-between gap-3">
+                                            <span class="text-muted">最近维度</span>
+                                            <span class="font-medium text-primary" x-text="questionOpsLocalState.lastDimension ? getDimensionName(questionOpsLocalState.lastDimension) : '-'"></span>
+                                        </div>
+                                        <div class="flex items-center justify-between gap-3">
+                                            <span class="text-muted">最近时间</span>
+                                            <span class="font-medium text-primary" x-text="questionOpsLocalState.lastRequestAt ? formatDate(questionOpsLocalState.lastRequestAt) : '-'"></span>
+                                        </div>
+                                    </div>
+                                    <div class="rounded-lg border border-border px-3 py-3 text-sm space-y-2">
+                                        <div class="flex items-center justify-between gap-3">
+                                            <span class="text-muted">Tier</span>
+                                            <span class="font-medium text-primary" x-text="questionOpsLocalState.lastTier || '-'"></span>
+                                        </div>
+                                        <div class="flex items-center justify-between gap-3">
+                                            <span class="text-muted">Lane</span>
+                                            <span class="font-medium text-primary" x-text="questionOpsLocalState.lastLane || '-'"></span>
+                                        </div>
+                                        <div class="flex items-center justify-between gap-3">
+                                            <span class="text-muted">Profile</span>
+                                            <span class="font-medium text-primary text-right" x-text="questionOpsLocalState.lastProfile || '-'"></span>
+                                        </div>
+                                        <div class="flex items-center justify-between gap-3">
+                                            <span class="text-muted">Fast Hedge</span>
+                                            <span class="font-medium text-primary" x-text="formatOpsBool(questionOpsLocalState.lastFastHedge)"></span>
+                                        </div>
+                                        <div class="flex items-center justify-between gap-3">
+                                            <span class="text-muted">Full Hedge</span>
+                                            <span class="font-medium text-primary" x-text="formatOpsBool(questionOpsLocalState.lastFullHedge)"></span>
+                                        </div>
+                                        <div class="flex items-center justify-between gap-3">
+                                            <span class="text-muted">429 自动重试</span>
+                                            <span class="font-medium text-primary" x-text="`${questionOpsLocalState.lastOverloadRetryCount || 0} 次 / ${formatOpsDurationMs(questionOpsLocalState.lastOverloadWaitMs || 0)}`"></span>
+                                        </div>
+                                        <div class="flex items-center justify-between gap-3">
+                                            <span class="text-muted">预取优先</span>
+                                            <span class="font-medium text-primary" x-text="questionOpsLocalState.lastPreferPrefetch ? '是' : '否'"></span>
+                                        </div>
+                                        <div x-show="questionOpsLocalState.lastError" x-cloak class="pt-2 border-t border-border">
+                                            <div class="text-xs text-muted">最近错误</div>
+                                            <div class="text-sm text-red-600 mt-1" x-text="questionOpsLocalState.lastError"></div>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </section>
