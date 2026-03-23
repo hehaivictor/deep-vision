@@ -3013,21 +3013,25 @@
              @click.self="showCustomScenarioModal = false"
              @keydown.escape.window="showCustomScenarioModal = false">
             <div x-bind="getDialogPanelAttrs('showCustomScenarioModal')"
-                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-3xl p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95"
                  x-transition:enter-end="opacity-100 scale-100">
-                <div class="flex items-center justify-between mb-4">
-                    <h3 id="dv-dialog-custom-scenario-title" class="text-xl font-semibold text-primary">创建自定义场景</h3>
-                    <button @click="showCustomScenarioModal = false" class="text-gray-500 hover:text-gray-700 cursor-pointer" aria-label="关闭">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <div class="settings-modal-header px-5 py-4 border-b border-border flex items-center justify-between">
+                    <div>
+                        <h3 id="dv-dialog-custom-scenario-title" class="dv-modal-title">创建自定义场景</h3>
+                        <p id="dv-dialog-custom-scenario-desc" class="dv-modal-body text-sm mt-1">手动配置场景名称、访谈维度和方案页目录，保存后可直接用于新建访谈。</p>
+                    </div>
+                    <button @click="showCustomScenarioModal = false"
+                            class="settings-close-btn"
+                            aria-label="关闭">
+                        <svg class="settings-close-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                         </svg>
                     </button>
                 </div>
-
+                <div class="p-4 sm:p-5 max-h-[calc(90vh-88px)] overflow-y-auto">
                 <!-- 场景基本信息 -->
-                <p id="dv-dialog-custom-scenario-desc" class="sr-only">可自定义场景名称、描述、维度和方案页目录生成方式，保存后用于新建会话。</p>
                 <div class="space-y-4">
                     <div>
                         <label class="block text-sm font-medium text-secondary mb-1">场景名称 <span class="required-asterisk">*</span></label>
@@ -3181,7 +3185,7 @@
                 <!-- 操作按钮 -->
                 <div class="flex gap-3 justify-end mt-6 pt-4 border-t border-gray-100">
                     <button type="button" @click="showCustomScenarioModal = false"
-                            class="px-4 py-2 border border-gray-300 rounded-lg font-medium hover:bg-gray-50 transition-colors cursor-pointer">
+                            class="report-action-secondary px-4 py-2 rounded-lg font-medium transition-colors cursor-pointer">
                         取消
                     </button>
                     <button type="button"
@@ -3197,6 +3201,7 @@
                         </template>
                         <span x-text="savingCustomScenario ? '保存中...' : '创建场景'"></span>
                     </button>
+                </div>
                 </div>
             </div>
         </div>
@@ -3215,66 +3220,72 @@
              @click.self="showAiGenerateModal = false"
              @keydown.escape.window="showAiGenerateModal = false">
             <div x-bind="getDialogPanelAttrs('showAiGenerateModal')"
-                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-md p-4 sm:p-6"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95 translate-y-1"
                  x-transition:enter-end="opacity-100 scale-100 translate-y-0"
                  x-transition:leave="transition ease-in duration-150"
                  x-transition:leave-start="opacity-100 scale-100 translate-y-0"
                  x-transition:leave-end="opacity-0 scale-95 translate-y-1">
-                <div class="flex items-center justify-between mb-4">
-                    <div class="flex items-center gap-2">
-                        <div class="w-8 h-8 bg-gradient-to-br from-[#357BE2] to-[#6366f1] rounded-lg flex items-center justify-center">
-                            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                            </svg>
+                <div class="settings-modal-header px-5 py-4 border-b border-border flex items-center justify-between">
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <div class="w-8 h-8 bg-gradient-to-br from-[#357BE2] to-[#6366f1] rounded-lg flex items-center justify-center">
+                                <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                                </svg>
+                            </div>
+                            <h3 id="dv-dialog-ai-generate-title" class="dv-modal-title">AI 智能创建场景</h3>
                         </div>
-                        <h3 id="dv-dialog-ai-generate-title" class="text-xl font-semibold text-primary">AI 智能创建场景</h3>
+                        <p id="dv-dialog-ai-generate-desc" class="dv-modal-body text-sm mt-1">输入业务目标、行业背景和关注点，AI 会生成可继续编辑的访谈场景。</p>
                     </div>
-                    <button @click="showAiGenerateModal = false" class="text-gray-500 hover:text-gray-700 cursor-pointer" aria-label="关闭">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <button @click="showAiGenerateModal = false"
+                            class="settings-close-btn"
+                            aria-label="关闭">
+                        <svg class="settings-close-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                         </svg>
                     </button>
                 </div>
 
-                <p id="dv-dialog-ai-generate-desc" class="sr-only">输入场景需求描述，AI 将生成可编辑的访谈场景结构。</p>
-                <div class="space-y-4">
-                    <div>
-                        <label class="block text-sm font-medium text-secondary mb-2">描述您想做什么</label>
-                        <textarea id="aiScenarioDescription" data-dialog-autofocus x-model="aiScenarioDescription"
-                                  placeholder="例如：我想做一个餐饮行业客户满意度调研，了解顾客对菜品、服务、环境的评价&#10;&#10;或：需要对候选人进行技术能力评估，包括编程、系统设计、问题解决等方面"
-                                  rows="5"
-                                  :disabled="aiGenerating"
-                                  class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#357BE2]/20 focus:border-[#357BE2] resize-none disabled:bg-gray-100"></textarea>
-                        <p class="text-xs text-muted mt-1.5">描述越详细，生成的场景越准确。可以包含行业、目的、关注点等。</p>
+                <div class="p-4 sm:p-5">
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-secondary mb-2">描述您想做什么</label>
+                            <textarea id="aiScenarioDescription" data-dialog-autofocus x-model="aiScenarioDescription"
+                                      placeholder="例如：我想做一个餐饮行业客户满意度调研，了解顾客对菜品、服务、环境的评价&#10;&#10;或：需要对候选人进行技术能力评估，包括编程、系统设计、问题解决等方面"
+                                      rows="5"
+                                      :disabled="aiGenerating"
+                                      class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#357BE2]/20 focus:border-[#357BE2] resize-none disabled:bg-gray-100"></textarea>
+                            <p class="text-xs text-muted mt-1.5">描述越详细，生成的场景越准确。可以包含行业、目的、关注点等。</p>
+                        </div>
                     </div>
-                </div>
 
-                <div class="flex gap-3 justify-between mt-6 pt-4 border-t border-gray-100">
-                    <button type="button"
-                            @click="openCustomScenarioEditor(); showAiGenerateModal = false"
-                            class="text-sm text-muted hover:text-[#357BE2] cursor-pointer">
-                        手动创建 →
-                    </button>
-                    <div class="flex gap-3">
-                        <button type="button" @click="showAiGenerateModal = false"
-                                class="px-4 py-2 border border-gray-300 rounded-lg font-medium hover:bg-gray-50 transition-colors cursor-pointer">
-                            取消
-                        </button>
+                    <div class="flex gap-3 justify-between mt-6 pt-4 border-t border-gray-100">
                         <button type="button"
-                                @click="generateScenarioWithAi()"
-                                :disabled="aiGenerating || !aiScenarioDescription.trim()"
-                                :class="aiGenerating || !aiScenarioDescription.trim() ? 'report-action-disabled cursor-not-allowed' : 'btn-sage-blue text-white cursor-pointer'"
-                                class="px-5 py-2 rounded-lg font-medium transition-colors flex items-center gap-2">
-                            <template x-if="aiGenerating">
-                                <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                </svg>
-                            </template>
-                            <span x-text="aiGenerating ? '生成中...' : 'AI 生成'"></span>
+                                @click="openCustomScenarioEditor(); showAiGenerateModal = false"
+                                class="text-sm text-muted hover:text-[#357BE2] cursor-pointer">
+                            手动创建 →
                         </button>
+                        <div class="flex gap-3">
+                            <button type="button" @click="showAiGenerateModal = false"
+                                    class="report-action-secondary px-4 py-2 rounded-lg font-medium transition-colors cursor-pointer">
+                                取消
+                            </button>
+                            <button type="button"
+                                    @click="generateScenarioWithAi()"
+                                    :disabled="aiGenerating || !aiScenarioDescription.trim()"
+                                    :class="aiGenerating || !aiScenarioDescription.trim() ? 'report-action-disabled cursor-not-allowed' : 'btn-sage-blue text-white cursor-pointer'"
+                                    class="px-5 py-2 rounded-lg font-medium transition-colors flex items-center gap-2">
+                                <template x-if="aiGenerating">
+                                    <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                </template>
+                                <span x-text="aiGenerating ? '生成中...' : 'AI 生成'"></span>
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -3294,30 +3305,35 @@
              @click.self="showAiPreviewModal = false"
              @keydown.escape.window="showAiPreviewModal = false">
             <div x-bind="getDialogPanelAttrs('showAiPreviewModal')"
-                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-4 sm:p-6 max-h-[90vh] overflow-y-auto"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden"
                  x-transition:enter="transition ease-out duration-200"
                  x-transition:enter-start="opacity-0 scale-95 translate-y-1"
                  x-transition:enter-end="opacity-100 scale-100 translate-y-0"
                  x-transition:leave="transition ease-in duration-150"
                  x-transition:leave-start="opacity-100 scale-100 translate-y-0"
                  x-transition:leave-end="opacity-0 scale-95 translate-y-1">
-                <div class="flex items-center justify-between mb-4">
-                    <div class="flex items-center gap-2">
-                        <div class="w-8 h-8 bg-gradient-to-br from-green-500 to-emerald-600 rounded-lg flex items-center justify-center">
-                            <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
-                            </svg>
+                <div class="settings-modal-header px-5 py-4 border-b border-border flex items-center justify-between">
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <div class="w-8 h-8 bg-gradient-to-br from-green-500 to-emerald-600 rounded-lg flex items-center justify-center">
+                                <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                </svg>
+                            </div>
+                            <h3 id="dv-dialog-ai-preview-title" class="dv-modal-title">预览生成的场景</h3>
                         </div>
-                        <h3 id="dv-dialog-ai-preview-title" class="text-xl font-semibold text-primary">预览生成的场景</h3>
+                        <p id="dv-dialog-ai-preview-desc" class="dv-modal-body text-sm mt-1">先确认场景名称、维度和目录结构，再保存到自定义场景列表。</p>
                     </div>
-                    <button @click="showAiPreviewModal = false" class="text-gray-500 hover:text-gray-700 cursor-pointer" aria-label="关闭">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <button @click="showAiPreviewModal = false"
+                            class="settings-close-btn"
+                            aria-label="关闭">
+                        <svg class="settings-close-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                         </svg>
                     </button>
                 </div>
 
-                <p id="dv-dialog-ai-preview-desc" class="sr-only">可预览并编辑 AI 生成的场景内容，确认后保存。</p>
+                <div class="p-4 sm:p-5 max-h-[calc(90vh-88px)] overflow-y-auto">
                 <!-- AI 设计说明 - 可折叠 -->
                 <template x-if="aiExplanation">
                     <div class="mb-4 rounded-lg border border-blue-100 overflow-hidden">
@@ -3485,6 +3501,7 @@
                         </template>
                         <span x-text="savingCustomScenario ? '保存中...' : '确认创建'"></span>
                     </button>
+                </div>
                 </div>
             </div>
         </div>

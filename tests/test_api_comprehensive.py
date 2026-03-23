@@ -1516,6 +1516,73 @@ class ComprehensiveApiTests(unittest.TestCase):
         delete_resp = self.client.delete(f"/api/scenarios/custom/{scenario_id}")
         self.assertEqual(delete_resp.status_code, 200)
 
+    def test_custom_scenario_persists_after_loader_reinitialize(self):
+        self._register()
+        create_resp = self.client.post(
+            "/api/scenarios/custom",
+            json={
+                "name": "跨重载场景",
+                "description": "验证应用更新后自定义场景不会被覆盖",
+                "dimensions": [
+                    {"name": "现状判断", "description": "确认当前状态", "key_aspects": ["问题", "影响"]},
+                    {"name": "推进路径", "description": "确定下一步动作", "key_aspects": ["目标", "节奏"]},
+                ],
+                "solution": {
+                    "mode": "schema",
+                    "schema": {
+                        "version": "v1",
+                        "hero": {"focus": "推进判断"},
+                        "sections": [
+                            "推进判断",
+                            "风险边界",
+                            "下一步动作",
+                        ],
+                    },
+                },
+            },
+        )
+        self.assertEqual(create_resp.status_code, 200, create_resp.get_data(as_text=True))
+        payload = create_resp.get_json() or {}
+        scenario_id = payload.get("scenario_id")
+        self.assertTrue(scenario_id)
+
+        from scripts import scenario_loader as scenario_loader_module
+
+        reloaded_loader = scenario_loader_module.ScenarioLoader(
+            scenarios_dir=self.server.scenario_loader.scenarios_dir,
+            builtin_dir=self.server.scenario_loader.builtin_dir,
+            custom_dir=self.server.scenario_loader.custom_dir,
+            migrate_legacy_custom_dir=self.server.scenario_loader.legacy_custom_dir,
+        )
+        scenario_loader_module._scenario_loader = reloaded_loader
+        self.server.scenario_loader = reloaded_loader
+
+        detail_resp = self.client.get(f"/api/scenarios/{scenario_id}")
+        self.assertEqual(detail_resp.status_code, 200, detail_resp.get_data(as_text=True))
+        detail_payload = detail_resp.get_json() or {}
+        self.assertEqual(detail_payload.get("name"), "跨重载场景")
+        self.assertEqual((detail_payload.get("solution", {}) or {}).get("mode"), "schema")
+        self.assertEqual(
+            (((detail_payload.get("solution", {}) or {}).get("schema", {}) or {}).get("sections") or [])[:3],
+            ["推进判断", "风险边界", "下一步动作"],
+        )
+        compiled_schema = detail_payload.get("compiled_solution_schema", {}) or {}
+        self.assertEqual(
+            [item.get("title") for item in compiled_schema.get("sections", [])[:3]],
+            ["推进判断", "风险边界", "下一步推进"],
+        )
+
+        list_resp = self.client.get("/api/scenarios")
+        self.assertEqual(list_resp.status_code, 200, list_resp.get_data(as_text=True))
+        matched = next((item for item in (list_resp.get_json() or []) if item.get("id") == scenario_id), None)
+        self.assertIsNotNone(matched)
+        self.assertEqual(matched.get("scenario_source"), "user_defined")
+        self.assertEqual(matched.get("solution_mode"), "schema")
+        self.assertEqual(int(matched.get("solution_sections_count") or 0), 3)
+
+        delete_resp = self.client.delete(f"/api/scenarios/custom/{scenario_id}")
+        self.assertEqual(delete_resp.status_code, 200)
+
     def test_report_template_validate_and_preview_api(self):
         self._register()
 
