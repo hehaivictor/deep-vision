@@ -3159,21 +3159,21 @@
                             <p class="text-xs text-muted mt-2">支持直接填写 `version / hero / sections`，`sections` 可以是字符串数组，也可以是完整章节对象。</p>
                         </div>
 
-                        <div class="rounded-xl bg-gray-50 border border-gray-100 p-4 space-y-3">
+                        <div class="dv-solution-preview-card space-y-3">
                             <div class="flex items-center justify-between">
                                 <div>
-                                    <div class="text-sm font-medium text-secondary">目录预览</div>
-                                    <div class="text-xs text-muted">创建前先确认方案页的章节顺序和聚焦点。</div>
+                                    <div class="dv-solution-preview-title">目录预览</div>
+                                    <div class="dv-solution-preview-subtitle">创建前先确认方案页的章节顺序和聚焦点。</div>
                                 </div>
-                                <span class="text-xs text-muted" x-text="`${getScenarioSolutionPreview(customScenario).sections.length} 个章节`"></span>
+                                <span class="dv-solution-preview-meta" x-text="`${getScenarioSolutionPreview(customScenario).sections.length} 个章节`"></span>
                             </div>
                             <template x-if="getScenarioSolutionPreview(customScenario).error">
                                 <div class="rounded-lg bg-amber-50 border border-amber-200 text-amber-700 text-xs px-3 py-2" x-text="getScenarioSolutionPreview(customScenario).error"></div>
                             </template>
                             <div class="flex flex-wrap gap-2">
                                 <template x-for="(section, sectionIndex) in getScenarioSolutionPreview(customScenario).sections" :key="`${section}-${sectionIndex}`">
-                                    <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white border border-gray-200 text-sm text-secondary">
-                                        <span class="text-[11px] text-[#357BE2]" x-text="String(sectionIndex + 1).padStart(2, '0')"></span>
+                                    <span class="dv-solution-preview-pill">
+                                        <span class="dv-solution-preview-pill-index" x-text="String(sectionIndex + 1).padStart(2, '0')"></span>
                                         <span x-text="section"></span>
                                     </span>
                                 </template>
@@ -3458,18 +3458,18 @@
                             </div>
                         </div>
 
-                        <div class="rounded-xl border border-emerald-100 bg-emerald-50/60 p-4 space-y-3">
+                        <div class="dv-solution-preview-card dv-solution-preview-card--accent space-y-3">
                             <div class="flex items-center justify-between">
                                 <div>
-                                    <div class="text-sm font-medium text-secondary">方案页目录预览</div>
-                                    <div class="text-xs text-muted">AI 生成后会默认按自动推导模式创建方案页目录。</div>
+                                    <div class="dv-solution-preview-title">方案页目录预览</div>
+                                    <div class="dv-solution-preview-subtitle">AI 生成后会默认按自动推导模式创建方案页目录。</div>
                                 </div>
-                                <span class="text-xs text-emerald-700" x-text="getScenarioSolutionModeLabel(aiGeneratedPreview?.solution?.mode || 'auto')"></span>
+                                <span class="dv-solution-preview-meta dv-solution-preview-meta--accent" x-text="getScenarioSolutionModeLabel(aiGeneratedPreview?.solution?.mode || 'auto')"></span>
                             </div>
                             <div class="flex flex-wrap gap-2">
                                 <template x-for="(section, sectionIndex) in (Array.isArray(aiGeneratedPreview?.compiled_solution_schema?.sections) && aiGeneratedPreview.compiled_solution_schema.sections.length ? aiGeneratedPreview.compiled_solution_schema.sections.map(item => normalizeScenarioPreviewLabel(item)) : getScenarioSolutionPreview(aiGeneratedPreview).sections)" :key="`ai-solution-${sectionIndex}`">
-                                    <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/90 border border-emerald-100 text-sm text-secondary">
-                                        <span class="text-[11px] text-emerald-600" x-text="String(sectionIndex + 1).padStart(2, '0')"></span>
+                                    <span class="dv-solution-preview-pill">
+                                        <span class="dv-solution-preview-pill-index" x-text="String(sectionIndex + 1).padStart(2, '0')"></span>
                                         <span x-text="section"></span>
                                     </span>
                                 </template>

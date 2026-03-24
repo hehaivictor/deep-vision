@@ -7791,60 +7791,284 @@ def parse_generated_scenario_response(raw_text: str) -> Optional[dict]:
 
     partial = parse_structured_json_response(
         raw_text,
-        required_keys=["name"],
-        require_all_keys=False,
+        required_keys=None,
     )
-    if not isinstance(partial, dict):
+    if isinstance(partial, dict):
+        return partial
+
+    return parse_generated_scenario_text_fallback(raw_text)
+
+
+def _pick_generated_scenario_text_value(source: dict, keys: list[str]) -> str:
+    if not isinstance(source, dict):
+        return ""
+    for key in keys:
+        value = source.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _split_generated_scenario_aspects(raw_value: object) -> list[str]:
+    candidates = []
+
+    def _append_text(value: object) -> None:
+        if value is None:
+            return
+        if isinstance(value, dict):
+            text = _pick_generated_scenario_text_value(
+                value,
+                ["name", "title", "label", "text", "content", "description", "desc"],
+            )
+            if text:
+                candidates.append(text)
+            return
+        text = str(value).strip()
+        if text:
+            candidates.append(text)
+
+    if isinstance(raw_value, list):
+        for item in raw_value:
+            _append_text(item)
+    else:
+        _append_text(raw_value)
+
+    aspects = []
+    seen = set()
+    for candidate in candidates:
+        parts = re.split(r"[,，、；;\n]+", candidate)
+        for part in parts:
+            aspect = str(part or "").strip(" -•·\t")
+            if not aspect or aspect in seen:
+                continue
+            seen.add(aspect)
+            aspects.append(aspect[:30])
+    return aspects
+
+
+def _build_generated_dimension_payload(raw_dim: object, index: int) -> Optional[dict]:
+    if isinstance(raw_dim, str):
+        dim_name = str(raw_dim).strip()
+        dim_description = ""
+        key_aspects = []
+    elif isinstance(raw_dim, dict):
+        dim_name = _pick_generated_scenario_text_value(
+            raw_dim,
+            ["name", "title", "label", "dimension", "dimension_name", "section_name", "topic", "维度名称", "维度"],
+        )
+        dim_description = _pick_generated_scenario_text_value(
+            raw_dim,
+            ["description", "desc", "summary", "focus", "goal", "note", "说明", "描述"],
+        )
+        key_aspects = _split_generated_scenario_aspects(
+            raw_dim.get("key_aspects")
+            or raw_dim.get("keyPoints")
+            or raw_dim.get("key_points")
+            or raw_dim.get("aspects")
+            or raw_dim.get("points")
+            or raw_dim.get("keywords")
+            or raw_dim.get("关注点")
+            or raw_dim.get("关键点")
+        )
+    else:
         return None
 
-    raw_dimensions = partial.get("dimensions", [])
-    if not isinstance(raw_dimensions, list):
-        raw_dimensions = []
-    partial["dimensions"] = raw_dimensions
-    return partial
+    dim_name = str(dim_name or "").strip()
+    if not dim_name:
+        return None
+
+    dim_description = str(dim_description or "").strip()
+    if not dim_description and key_aspects:
+        dim_description = f"围绕「{dim_name}」了解{ '、'.join(key_aspects[:2]) }等重点内容"
+
+    return {
+        "id": f"dim_{index}",
+        "name": dim_name[:24],
+        "description": dim_description[:120],
+        "key_aspects": key_aspects[:6],
+        "min_questions": 2,
+        "max_questions": 4,
+    }
+
+
+def _extract_generated_dimension_header(line: str) -> tuple[str, str]:
+    text = re.sub(r"^\s*(?:[-*•]+|#{1,6}\s*)", "", str(line or "").strip()).strip()
+    if not text:
+        return "", ""
+
+    patterns = [
+        r"^维度\s*[一二三四五六七八九十0-9]+\s*[:：\-、.]?\s*(.+)$",
+        r"^[一二三四五六七八九十0-9]+\s*[.、:：-]\s*(.+)$",
+    ]
+    candidate = ""
+    for pattern in patterns:
+        match = re.match(pattern, text)
+        if match:
+            candidate = str(match.group(1) or "").strip()
+            break
+    if not candidate:
+        return "", ""
+
+    parts = re.split(r"\s*[:：]\s*", candidate, maxsplit=1)
+    name = str(parts[0] or "").strip(" -•·\t")
+    inline_description = str(parts[1] or "").strip() if len(parts) > 1 else ""
+    return name, inline_description
+
+
+def parse_generated_scenario_text_fallback(raw_text: str) -> Optional[dict]:
+    text = re.sub(r"^\s*```(?:json)?\s*", "", str(raw_text or "").strip(), flags=re.IGNORECASE).strip()
+    text = re.sub(r"\s*```\s*$", "", text).strip()
+    if not text:
+        return None
+
+    def _extract_labeled_value(patterns: list[str]) -> str:
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE)
+            if match:
+                return str(match.group(1) or "").strip()
+        return ""
+
+    name = _extract_labeled_value([
+        r"^(?:场景名称|名称|Scenario Name)\s*[:：]\s*(.+)$",
+    ])
+    description = _extract_labeled_value([
+        r"^(?:场景描述|描述|简介|Description)\s*[:：]\s*(.+)$",
+    ])
+    explanation = _extract_labeled_value([
+        r"^(?:设计思路|设计说明|说明|解释|Explanation)\s*[:：]\s*(.+)$",
+    ])
+
+    inline_dimensions = []
+    inline_match = re.search(
+        r"^(?:访谈维度|维度列表|维度设计|维度)\s*[:：]\s*(.+)$",
+        text,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    if inline_match:
+        inline_dimensions = [
+            item.strip(" -•·\t")
+            for item in re.split(r"[,，、/]+", str(inline_match.group(1) or "").strip())
+            if item.strip(" -•·\t")
+        ]
+
+    dimension_blocks = []
+    current_block = None
+
+    def _flush_dimension() -> None:
+        nonlocal current_block
+        if current_block:
+            dimension_blocks.append(current_block)
+        current_block = None
+
+    for raw_line in text.splitlines():
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+
+        line = re.sub(r"^\s*(?:[-*•]+|#{1,6}\s*)", "", line).strip()
+        if not line:
+            continue
+
+        if re.match(r"^(?:场景名称|名称|场景描述|描述|简介|设计思路|设计说明|说明|解释)\s*[:：]", line, flags=re.IGNORECASE):
+            continue
+
+        dim_name, inline_desc = _extract_generated_dimension_header(line)
+        if dim_name:
+            _flush_dimension()
+            current_block = {
+                "name": dim_name,
+                "description": inline_desc,
+                "key_aspects": [],
+            }
+            continue
+
+        if not current_block:
+            continue
+
+        aspects_match = re.match(
+            r"^(?:关键点|关键方面|要点|关注点|Key Aspects?)\s*[:：]\s*(.+)$",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if aspects_match:
+            current_block["key_aspects"].extend(_split_generated_scenario_aspects(aspects_match.group(1)))
+            continue
+
+        desc_match = re.match(
+            r"^(?:描述|说明|关注|重点|目的)\s*[:：]\s*(.+)$",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if desc_match:
+            detail = str(desc_match.group(1) or "").strip()
+            if detail:
+                merged = "；".join([part for part in [current_block.get("description", ""), detail] if part])
+                current_block["description"] = merged[:120]
+            continue
+
+        if not current_block.get("description"):
+            current_block["description"] = line[:120]
+        else:
+            current_block["key_aspects"].extend(_split_generated_scenario_aspects(line))
+
+    _flush_dimension()
+
+    raw_dimensions: object = dimension_blocks or inline_dimensions
+    if not name or not raw_dimensions:
+        return None
+
+    payload = {
+        "name": name,
+        "description": description,
+        "dimensions": raw_dimensions,
+    }
+    if explanation:
+        payload["explanation"] = explanation
+    return payload
 
 
 def normalize_generated_scenario_payload(generated: dict) -> Optional[dict]:
     if not isinstance(generated, dict):
         return None
 
-    name = str(generated.get("name") or "").strip()
+    name = _pick_generated_scenario_text_value(
+        generated,
+        ["name", "scenario_name", "scene_name", "title", "label", "场景名称", "名称"],
+    )
     if not name:
         return None
 
-    description = str(generated.get("description") or "").strip()
-    raw_dimensions = generated.get("dimensions", [])
+    description = _pick_generated_scenario_text_value(
+        generated,
+        ["description", "desc", "summary", "scene_description", "场景描述", "描述", "简介"],
+    )
+    raw_dimensions = (
+        generated.get("dimensions")
+        or generated.get("dimension_list")
+        or generated.get("dims")
+        or generated.get("dimensionList")
+        or generated.get("访谈维度")
+        or []
+    )
+    if isinstance(raw_dimensions, dict):
+        raw_dimensions = list(raw_dimensions.values())
+    if isinstance(raw_dimensions, str):
+        raw_dimensions = [
+            item.strip(" -•·\t")
+            for item in re.split(r"[,，、/;\n]+", raw_dimensions)
+            if item.strip(" -•·\t")
+        ]
     if not isinstance(raw_dimensions, list):
         raw_dimensions = []
 
     normalized_dimensions = []
     for index, raw_dim in enumerate(raw_dimensions, start=1):
-        if not isinstance(raw_dim, dict):
-            continue
-        dim_name = str(raw_dim.get("name") or "").strip()
-        if not dim_name:
-            continue
-        raw_aspects = raw_dim.get("key_aspects", [])
-        if isinstance(raw_aspects, str):
-            raw_aspects = re.split(r"[,，、\n]+", raw_aspects)
-        if not isinstance(raw_aspects, list):
-            raw_aspects = []
-        key_aspects = []
-        seen_aspects = set()
-        for item in raw_aspects:
-            aspect = str(item or "").strip()
-            if not aspect or aspect in seen_aspects:
-                continue
-            seen_aspects.add(aspect)
-            key_aspects.append(aspect[:30])
-        normalized_dimensions.append({
-            "id": f"dim_{index}",
-            "name": dim_name[:24],
-            "description": str(raw_dim.get("description") or "").strip()[:120],
-            "key_aspects": key_aspects[:6],
-            "min_questions": 2,
-            "max_questions": 4,
-        })
+        normalized_dim = _build_generated_dimension_payload(raw_dim, index)
+        if normalized_dim:
+            normalized_dimensions.append(normalized_dim)
 
     if not normalized_dimensions:
         return None
@@ -7854,10 +8078,92 @@ def normalize_generated_scenario_payload(generated: dict) -> Optional[dict]:
         "description": description[:120],
         "dimensions": normalized_dimensions,
     }
-    explanation = str(generated.get("explanation") or "").strip()
+    explanation = _pick_generated_scenario_text_value(
+        generated,
+        ["explanation", "design_thinking", "rationale", "设计思路", "设计说明", "说明"],
+    )
     if explanation:
         normalized["explanation"] = explanation[:240]
     return normalized
+
+
+SCENARIO_GENERATION_FALLBACK_PRESETS = {
+    "evaluation": [
+        ("评判目标", "明确本次评分或判断希望解决的问题、对象和使用场景", ["评价对象", "判断目标", "使用场景", "输出形式"]),
+        ("评分标准", "梳理评分维度、权重侧重和分档标准", ["评分维度", "权重侧重", "打分阈值", "对比基准"]),
+        ("风格特征", "沉淀需要重点关注的风格元素和差异点", ["核心特征", "偏好取向", "差异点", "典型示例"]),
+        ("应用建议", "归纳最终建议、风险提醒和下一步动作", ["推荐结论", "适用边界", "风险提醒", "后续动作"]),
+    ],
+    "creation": [
+        ("创建目标", "明确本次创建的动机、目标和预期达成效果", ["创建动机", "目标边界", "预期成果", "成功标准"]),
+        ("创建内容", "界定创建内容、范围和优先级", ["核心内容", "范围边界", "优先级", "交付形式"]),
+        ("创建过程", "梳理创建步骤、关键方法和里程碑", ["关键步骤", "协作方式", "阶段里程碑", "决策节点"]),
+        ("资源支持", "确认人员、时间、预算和工具条件", ["人员角色", "时间窗口", "资源约束", "工具支持"]),
+        ("风险与收益", "评估实施过程中的主要风险和预期收益", ["主要风险", "收益预期", "应对策略", "复盘指标"]),
+    ],
+    "generic": [
+        ("访谈背景", "了解本次访谈的背景、目标和期望达成结果", ["背景动因", "访谈目标", "重点范围", "预期成果"]),
+        ("受访者画像", "明确受访对象的角色、经验和相关背景", ["身份角色", "相关经历", "职责范围", "决策影响"]),
+        ("核心议题", "聚焦需要深入讨论的核心问题和判断点", ["关键问题", "主要诉求", "判断依据", "优先方向"]),
+        ("细节深挖", "针对关键观点继续追问细节、原因和例子", ["具体案例", "原因分析", "限制因素", "补充证据"]),
+        ("总结反馈", "归纳结论、建议以及后续行动方向", ["总体结论", "改进建议", "行动计划", "风险提醒"]),
+    ],
+}
+
+
+def _infer_scenario_generation_fallback_profile(user_description: str) -> str:
+    text = str(user_description or "").lower()
+    if any(keyword in text for keyword in ("评分", "打分", "评估", "评审", "比较", "对比", "风格", "偏好", "审美")):
+        return "evaluation"
+    if any(keyword in text for keyword in ("创建", "方案", "项目", "计划", "建设", "实施", "落地", "设计")):
+        return "creation"
+    return "generic"
+
+
+def _build_generated_scenario_local_fallback(user_description: str) -> Optional[dict]:
+    topic_text = str(user_description or "").strip()
+    if not topic_text:
+        return None
+
+    primary_line = re.split(r"[。！？!?；;\n]+", topic_text, maxsplit=1)[0].strip()
+    prefix_tokens = [
+        "我想做一个", "我想做一套", "我想做个", "我想创建一个", "我想生成一个",
+        "我想要", "我想做", "我想", "想要", "需要", "请帮我", "帮我",
+        "请生成", "生成", "请创建", "创建", "做一个", "做一套", "做个", "做",
+    ]
+    changed = True
+    while changed and primary_line:
+        changed = False
+        for token in prefix_tokens:
+            if primary_line.startswith(token):
+                primary_line = primary_line[len(token):].lstrip()
+                changed = True
+                break
+    primary_line = re.sub(r"^(一个|一套|个)\s*", "", primary_line).strip()
+    primary_line = re.sub(r"(的访谈场景|访谈场景|调研场景|访谈提纲|调研提纲|访谈|调研)$", "", primary_line).strip("，,。 ")
+    if len(primary_line) > 12:
+        primary_line = primary_line[:12].rstrip("，,。 ")
+    name = primary_line or "通用访谈"
+
+    profile = _infer_scenario_generation_fallback_profile(topic_text)
+    preset = SCENARIO_GENERATION_FALLBACK_PRESETS.get(profile) or SCENARIO_GENERATION_FALLBACK_PRESETS["generic"]
+    dimensions = []
+    for index, (dim_name, dim_desc, key_aspects) in enumerate(preset, start=1):
+        dimensions.append({
+            "id": f"dim_{index}",
+            "name": dim_name,
+            "description": dim_desc,
+            "key_aspects": list(key_aspects[:4]),
+            "min_questions": 2,
+            "max_questions": 4,
+        })
+
+    return {
+        "name": name,
+        "description": f"根据主题「{topic_text[:40]}」自动生成的初始访谈场景，可继续编辑调整。",
+        "dimensions": dimensions,
+        "explanation": "AI 返回结构异常，已根据主题生成可编辑草案，你可以继续调整维度和方案目录。",
+    }
 
 
 def parse_scenario_recognition_response(raw_text: str, valid_scenario_ids: set) -> Optional[dict]:
@@ -18836,6 +19142,7 @@ def generate_scenario_with_ai():
         generated = None
         ai_explanation = ""
         last_error = None
+        generation_mode = "ai"
         for attempt_index, strict_json in enumerate((False, True), start=1):
             try:
                 response = ai_client.messages.create(
@@ -18863,7 +19170,13 @@ def generate_scenario_with_ai():
                     print(f"⚠️ AI 生成场景第{attempt_index}次解析失败: {exc}")
 
         if not isinstance(generated, dict):
-            raise ValueError(str(last_error or "AI 场景生成失败"))
+            fallback_generated = _build_generated_scenario_local_fallback(user_description)
+            if not isinstance(fallback_generated, dict):
+                raise ValueError(str(last_error or "AI 场景生成失败"))
+            generated = fallback_generated
+            ai_explanation = str(fallback_generated.get("explanation") or "").strip()
+            generation_mode = "local_fallback"
+            print(f"⚠️ AI 场景生成失败，已切换本地草案兜底: {last_error or 'unknown'}")
 
         # 添加默认的 report / solution 配置
         generated["report"] = {"type": "standard", "template": "default"}
@@ -18876,7 +19189,8 @@ def generate_scenario_with_ai():
         return jsonify({
             "success": True,
             "generated_scenario": generated,
-            "ai_explanation": ai_explanation
+            "ai_explanation": ai_explanation,
+            "generation_mode": generation_mode,
         })
 
     except ValueError as e:

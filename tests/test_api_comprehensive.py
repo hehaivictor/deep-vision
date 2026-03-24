@@ -1309,6 +1309,170 @@ class ComprehensiveApiTests(unittest.TestCase):
         finally:
             self.server.resolve_ai_client = old_resolve_ai_client
 
+    def test_generate_scenario_with_ai_accepts_plain_text_fallback(self):
+        self._register()
+
+        class FakeMessages:
+            def __init__(self, responses):
+                self.responses = list(responses)
+                self.calls = 0
+
+            def create(self, **_kwargs):
+                self.calls += 1
+                text = self.responses[min(self.calls - 1, len(self.responses) - 1)]
+                return types.SimpleNamespace(
+                    content=[types.SimpleNamespace(type="text", text=text)]
+                )
+
+        class FakeClient:
+            def __init__(self, responses):
+                self.messages = FakeMessages(responses)
+
+        fake_client = FakeClient([
+            """场景名称：创建访谈
+场景描述：适用于方案、项目和产品创建阶段的通用访谈配置
+维度1：创建目标
+关键点：创建动机、目标边界、预期成果
+维度2：创建内容
+描述：明确本次创建涉及的内容范围和优先级
+关键点：核心内容、交付范围、优先级
+维度3：实施条件
+关键点：资源准备、协作机制、时间约束
+设计思路：先明确目标和范围，再确认执行条件。"""
+        ])
+
+        old_resolve_ai_client = self.server.resolve_ai_client
+        try:
+            self.server.resolve_ai_client = lambda call_type="scenario_generate": fake_client
+            response = self.client.post(
+                "/api/scenarios/generate",
+                json={"user_description": "我想生成一个用于项目和方案创建阶段的访谈场景"},
+            )
+            self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+            payload = response.get_json() or {}
+            generated = payload.get("generated_scenario") or {}
+            self.assertTrue(payload.get("success"))
+            self.assertEqual(fake_client.messages.calls, 1)
+            self.assertEqual(generated.get("name"), "创建访谈")
+            self.assertEqual(len(generated.get("dimensions") or []), 3)
+            self.assertEqual(generated.get("dimensions", [])[0].get("name"), "创建目标")
+            self.assertEqual(
+                generated.get("dimensions", [])[0].get("key_aspects"),
+                ["创建动机", "目标边界", "预期成果"],
+            )
+            self.assertTrue(payload.get("ai_explanation"))
+        finally:
+            self.server.resolve_ai_client = old_resolve_ai_client
+
+    def test_generate_scenario_with_ai_normalizes_alias_fields(self):
+        self._register()
+
+        class FakeMessages:
+            def __init__(self, responses):
+                self.responses = list(responses)
+                self.calls = 0
+
+            def create(self, **_kwargs):
+                self.calls += 1
+                text = self.responses[min(self.calls - 1, len(self.responses) - 1)]
+                return types.SimpleNamespace(
+                    content=[types.SimpleNamespace(type="text", text=text)]
+                )
+
+        class FakeClient:
+            def __init__(self, responses):
+                self.messages = FakeMessages(responses)
+
+        fake_client = FakeClient([
+            json.dumps(
+                {
+                    "scene_name": "技术评审",
+                    "summary": "用于技术方案评审与风险识别的访谈配置",
+                    "dims": [
+                        {
+                            "title": "风险识别",
+                            "desc": "确认潜在技术风险与阻塞点",
+                            "points": ["架构风险", "依赖风险", "交付风险"],
+                        },
+                        {
+                            "label": "落地条件",
+                            "focus": "评估资源、时间和协作条件",
+                            "keywords": "资源约束,时间窗口,协作机制",
+                        },
+                    ],
+                    "design_thinking": "先识别风险，再评估落地条件。",
+                },
+                ensure_ascii=False,
+            )
+        ])
+
+        old_resolve_ai_client = self.server.resolve_ai_client
+        try:
+            self.server.resolve_ai_client = lambda call_type="scenario_generate": fake_client
+            response = self.client.post(
+                "/api/scenarios/generate",
+                json={"user_description": "我想做一个技术方案评审和落地风险识别的访谈场景"},
+            )
+            self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+            payload = response.get_json() or {}
+            generated = payload.get("generated_scenario") or {}
+            self.assertEqual(generated.get("name"), "技术评审")
+            self.assertEqual(generated.get("description"), "用于技术方案评审与风险识别的访谈配置")
+            self.assertEqual(generated.get("dimensions", [])[0].get("name"), "风险识别")
+            self.assertEqual(generated.get("dimensions", [])[1].get("name"), "落地条件")
+            self.assertEqual(
+                generated.get("dimensions", [])[1].get("key_aspects"),
+                ["资源约束", "时间窗口", "协作机制"],
+            )
+            self.assertEqual(payload.get("ai_explanation"), "先识别风险，再评估落地条件。")
+        finally:
+            self.server.resolve_ai_client = old_resolve_ai_client
+
+    def test_generate_scenario_with_ai_falls_back_to_local_draft_when_invalid(self):
+        self._register()
+
+        class FakeMessages:
+            def __init__(self, responses):
+                self.responses = list(responses)
+                self.calls = 0
+
+            def create(self, **_kwargs):
+                self.calls += 1
+                text = self.responses[min(self.calls - 1, len(self.responses) - 1)]
+                return types.SimpleNamespace(
+                    content=[types.SimpleNamespace(type="text", text=text)]
+                )
+
+        class FakeClient:
+            def __init__(self, responses):
+                self.messages = FakeMessages(responses)
+
+        fake_client = FakeClient([
+            "这是一次解释说明，但没有任何结构化内容。",
+            "还是没有 JSON，也没有维度列表，请自由发挥。",
+        ])
+
+        old_resolve_ai_client = self.server.resolve_ai_client
+        try:
+            self.server.resolve_ai_client = lambda call_type="scenario_generate": fake_client
+            response = self.client.post(
+                "/api/scenarios/generate",
+                json={"user_description": "我想做一个古典风格偏好评分和判断标准的访谈场景"},
+            )
+            self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+            payload = response.get_json() or {}
+            generated = payload.get("generated_scenario") or {}
+            self.assertTrue(payload.get("success"))
+            self.assertEqual(payload.get("generation_mode"), "local_fallback")
+            self.assertEqual(fake_client.messages.calls, 2)
+            self.assertTrue(str(generated.get("name") or "").startswith("古典风格"))
+            self.assertEqual(len(generated.get("dimensions") or []), 4)
+            self.assertEqual(generated.get("dimensions", [])[0].get("name"), "评判目标")
+            self.assertEqual(generated.get("report", {}).get("type"), "standard")
+            self.assertIn("可编辑草案", payload.get("ai_explanation", ""))
+        finally:
+            self.server.resolve_ai_client = old_resolve_ai_client
+
     def test_custom_scenario_create_and_delete(self):
         self._register()
         create_resp = self.client.post(
