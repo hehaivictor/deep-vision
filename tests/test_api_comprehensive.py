@@ -720,6 +720,53 @@ class ComprehensiveApiTests(unittest.TestCase):
         undo_payload = undo_resp.get_json()
         self.assertEqual(len(undo_payload.get("interview_log", [])), 0)
 
+    def test_submit_answer_persists_ai_recommendation_for_undo_restore(self):
+        self._register()
+        created = self._create_session(topic="AI推荐持久化")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        response = self.client.post(
+            f"/api/sessions/{session_id}/submit-answer",
+            json={
+                "question": "优先推进哪个方向？",
+                "answer": "方案A",
+                "dimension": dimension,
+                "options": ["方案A", "方案B", "方案C"],
+                "is_follow_up": False,
+                "ai_recommendation": {
+                    "recommended_options": ["方案A"],
+                    "summary": "现阶段建议优先验证方案A",
+                    "confidence": "high",
+                    "reasons": [
+                        {"text": "与已确认目标更贴近", "evidence": ["Q1", "Q2"]},
+                    ],
+                },
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        payload = response.get_json() or {}
+        log = (payload.get("interview_log") or [])[-1]
+        self.assertEqual(
+            log.get("ai_recommendation"),
+            {
+                "recommended_options": ["方案A"],
+                "summary": "现阶段建议优先验证方案A",
+                "confidence": "high",
+                "reasons": [
+                    {"text": "与已确认目标更贴近", "evidence": ["Q1", "Q2"]},
+                ],
+            },
+        )
+
+        detail_resp = self.client.get(f"/api/sessions/{session_id}")
+        self.assertEqual(detail_resp.status_code, 200, detail_resp.get_data(as_text=True))
+        detail_payload = detail_resp.get_json() or {}
+        self.assertEqual(
+            ((detail_payload.get("interview_log") or [])[-1] or {}).get("ai_recommendation", {}),
+            log.get("ai_recommendation"),
+        )
+
     def test_submit_answer_triggers_current_dimension_prefetch_with_latest_signature(self):
         self._register()
         created = self._create_session(topic="提交答案触发预取")

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "2cbed4a",
+  "committedAt": "2026-03-24T10:02:18+08:00",
+  "versionType": "patch",
+  "title": "保留 AI 推荐并统一问题选项格式",
+  "changes": [
+    "后端：提交回答时持久化 ai_recommendation，返回上一题时可从历史记录恢复推荐信息。",
+    "后端：统一清洗问题选项的字母和数字序号前缀，收敛 fast、full、repair 链路的展示格式。",
+    "前端：提交答案时携带当前题 AI 推荐，并增强历史推荐与带前缀选项的匹配兼容性。",
+    "测试：补充 AI 推荐持久化回归和选项前缀清洗用例，覆盖问题解析与生成链路。"
+  ],
+  "changedFiles": [
+    "tests/test_api_comprehensive.py",
+    "tests/test_runtime_token_config.py",
+    "web/app.js",
+    "web/server.py"
+  ]
+}

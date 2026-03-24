@@ -443,6 +443,50 @@ class RuntimeTokenConfigTests(unittest.TestCase):
         self.assertEqual(parsed.get("question"), "你当前推进项目最卡的环节是什么？")
         self.assertEqual(parsed.get("options"), ["需求频繁变化", "资源协调困难", "上线节奏不稳"])
 
+    def test_normalize_generated_question_result_strips_option_prefixes(self):
+        module = load_server_module()
+        normalized = module.normalize_generated_question_result(
+            {
+                "question": "当前最需要优先确认哪一项？",
+                "options": ["A. 成本控制", "B、实施周期", "（3）数据质量", "4) 组织协同"],
+                "multi_select": False,
+                "is_follow_up": False,
+            }
+        )
+
+        self.assertEqual(
+            normalized.get("options"),
+            ["成本控制", "实施周期", "数据质量", "组织协同"],
+        )
+
+    def test_generate_question_strategy_strips_prefixed_options(self):
+        module = load_server_module()
+
+        response_text = """
+{"question":"当前最优先推进哪一项？","options":["A. 成本控制","B、实施周期","（3）数据质量","4) 组织协同"],"multi_select":false,"is_follow_up":false}
+"""
+
+        def _fake_question_call(*_args, **kwargs):
+            lane = kwargs.get("primary_lane", "question")
+            return response_text, lane, {"selected_lane": lane, "attempts": [{"lane": lane, "success": True}]}
+
+        with patch.object(module, "_call_question_with_optional_hedge", new=_fake_question_call):
+            _question_raw, question_result, generation_mode = module.generate_question_with_tiered_strategy(
+                prompt="请生成一个问题",
+                allow_fast_path=False,
+                runtime_profile={
+                    "allow_fast_path": False,
+                    "primary_lane": "question",
+                    "secondary_lane": "summary",
+                },
+            )
+
+        self.assertEqual(generation_mode, "full:question")
+        self.assertEqual(
+            question_result.get("options"),
+            ["成本控制", "实施周期", "数据质量", "组织协同"],
+        )
+
     def test_mocked_end_to_end_question_scoring_and_report_review_repair(self):
         module = load_server_module(
             {

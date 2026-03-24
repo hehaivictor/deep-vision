@@ -20241,6 +20241,42 @@ def _normalize_generated_question_text(question: str) -> str:
     return re.sub(r"\s+", "", str(question or "")).strip().lower()
 
 
+def _normalize_generated_option_label(option: str) -> str:
+    """统一移除模型常见的选项序号前缀，避免不同 lane 混用 A/B/C/D 或数字编号。"""
+    text = str(option or "").strip()
+    if not text:
+        return ""
+
+    prefix_patterns = [
+        r"^[A-Ha-h][\.\)、:：]\s*",
+        r"^[（(][A-Ha-h][）)]\s*",
+        r"^\d{1,2}[\.\)、:：]\s*",
+        r"^[（(]\d{1,2}[）)]\s*",
+        r"^[①②③④⑤⑥⑦⑧⑨⑩]\s*",
+    ]
+    normalized = text
+    for pattern in prefix_patterns:
+        normalized = re.sub(pattern, "", normalized)
+
+    normalized = normalized.strip()
+    return normalized or text
+
+
+def _normalize_generated_option_list(option_list) -> list[str]:
+    normalized_options = []
+    seen_options = set()
+    raw_options = option_list if isinstance(option_list, list) else []
+
+    for item in raw_options:
+        option = _normalize_generated_option_label(item)
+        if not option or option in seen_options:
+            continue
+        seen_options.add(option)
+        normalized_options.append(option[:40])
+
+    return normalized_options
+
+
 def _should_force_generated_multi_select(question: str, option_list: list[str]) -> bool:
     normalized_question = _normalize_generated_question_text(question)
     normalized_options = [str(option or "").strip() for option in option_list if str(option or "").strip()]
@@ -20317,7 +20353,8 @@ def normalize_generated_question_result(result: Optional[dict], fallback_contrac
 
     original_multi_select = bool(result.get("multi_select", False))
     option_list = result.get("options") if isinstance(result.get("options"), list) else []
-    normalized_options = [str(option or "").strip() for option in option_list if str(option or "").strip()]
+    normalized_options = _normalize_generated_option_list(option_list)
+    result["options"] = normalized_options[:6]
     result["question_multi_select"] = original_multi_select
 
     if not original_multi_select and _should_force_generated_multi_select(result.get("question", ""), normalized_options):
@@ -20395,14 +20432,8 @@ def repair_generated_question_result_from_response(
     if not isinstance(raw_options, list):
         raw_options = []
 
-    normalized_options = []
-    seen_options = set()
-    for item in raw_options:
-        option = str(item or "").strip()
-        if not option or option in seen_options:
-            continue
-        seen_options.add(option)
-        normalized_options.append(option[:40])
+    normalized_options = _normalize_generated_option_list(raw_options)
+    seen_options = set(normalized_options)
 
     if len(normalized_options) < 2:
         for option in get_dimension_fallback_options(session, dimension, limit=4):
@@ -22342,6 +22373,67 @@ def get_fallback_question(session: dict, dimension: str) -> dict:
 OTHER_RESOLUTION_MODES = {"reference", "mixed", "custom"}
 
 
+def normalize_ai_recommendation_payload(payload) -> Optional[dict]:
+    """规范化当前题 AI 推荐，便于写入 interview_log 并在撤销时恢复。"""
+    if payload is None:
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError("ai_recommendation必须是对象")
+
+    recommended_options = []
+    seen_options = set()
+    raw_options = payload.get("recommended_options")
+    if isinstance(raw_options, list):
+        for item in raw_options:
+            normalized_item = str(item or "").strip()
+            if not normalized_item or normalized_item in seen_options:
+                continue
+            recommended_options.append(normalized_item[:200])
+            seen_options.add(normalized_item)
+    elif isinstance(payload.get("recommended_option"), str):
+        normalized_item = str(payload.get("recommended_option") or "").strip()
+        if normalized_item:
+            recommended_options = [normalized_item[:200]]
+
+    summary = str(payload.get("summary", "") or "").strip()
+    confidence = str(payload.get("confidence", "") or "").strip().lower()
+    if confidence not in {"high", "medium", "low"}:
+        confidence = ""
+
+    reasons = []
+    raw_reasons = payload.get("reasons")
+    if isinstance(raw_reasons, list):
+        for reason in raw_reasons[:4]:
+            if not isinstance(reason, dict):
+                continue
+            text = str(reason.get("text", "") or "").strip()
+            if not text:
+                continue
+            evidence_values = []
+            raw_evidence = reason.get("evidence")
+            if isinstance(raw_evidence, list):
+                for item in raw_evidence[:4]:
+                    normalized_item = str(item or "").strip()
+                    if normalized_item:
+                        evidence_values.append(normalized_item[:120])
+            reason_payload = {"text": text[:240]}
+            if evidence_values:
+                reason_payload["evidence"] = evidence_values
+            reasons.append(reason_payload)
+
+    if not recommended_options and not summary and not reasons:
+        return None
+
+    normalized = {
+        "recommended_options": recommended_options,
+        "summary": summary[:240],
+        "reasons": reasons,
+    }
+    if confidence:
+        normalized["confidence"] = confidence
+    return normalized
+
+
 def normalize_other_resolution_payload(
     payload,
     option_list: list[str],
@@ -22509,6 +22601,7 @@ def submit_answer(session_id):
     question_runtime_profile = data.get("question_runtime_profile", "")
     question_hedge_triggered = data.get("question_hedge_triggered", False)
     question_fallback_triggered = data.get("question_fallback_triggered", False)
+    ai_recommendation_payload = data.get("ai_recommendation")
     preflight_intervened = data.get("preflight_intervened", False)
     preflight_fingerprint = data.get("preflight_fingerprint", "")
     preflight_planner_mode = data.get("preflight_planner_mode", "")
@@ -22586,6 +22679,11 @@ def submit_answer(session_id):
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
+    try:
+        ai_recommendation = normalize_ai_recommendation_payload(ai_recommendation_payload)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
     # 使用增强版评估函数判断回答是否需要追问
     eval_result = evaluate_answer_depth(
         question=question,
@@ -22641,6 +22739,7 @@ def submit_answer(session_id):
         "question_runtime_profile": str(question_runtime_profile or "").strip(),
         "question_hedge_triggered": bool(question_hedge_triggered),
         "question_fallback_triggered": bool(question_fallback_triggered),
+        "ai_recommendation": ai_recommendation,
         "preflight_intervened": bool(preflight_intervened),
         "preflight_fingerprint": str(preflight_fingerprint or "").strip(),
         "preflight_planner_mode": str(preflight_planner_mode or "").strip(),

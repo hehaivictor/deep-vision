@@ -4000,6 +4000,41 @@ function deepVision() {
             return { recommendedOptions, summary, reasons, confidence };
         },
 
+        serializeAiRecommendation(recommendation) {
+            if (this.isAssessmentSession()) return null;
+            if (!recommendation || typeof recommendation !== 'object') return null;
+
+            const recommendedOptions = Array.isArray(recommendation.recommendedOptions)
+                ? recommendation.recommendedOptions.map(item => String(item || '').trim()).filter(Boolean)
+                : [];
+            const summary = String(recommendation.summary || '').trim();
+            const confidence = String(recommendation.confidence || '').trim().toLowerCase();
+            const reasons = Array.isArray(recommendation.reasons)
+                ? recommendation.reasons
+                    .filter(item => item && typeof item === 'object' && String(item.text || '').trim())
+                    .map(item => ({
+                        text: String(item.text || '').trim(),
+                        evidence: Array.isArray(item.evidence)
+                            ? item.evidence.map(value => String(value || '').trim()).filter(Boolean)
+                            : []
+                    }))
+                : [];
+
+            if (recommendedOptions.length === 0 && !summary && reasons.length === 0) {
+                return null;
+            }
+
+            const payload = {
+                recommended_options: recommendedOptions,
+                summary,
+                reasons,
+            };
+            if (confidence) {
+                payload.confidence = confidence;
+            }
+            return payload;
+        },
+
         clearAiRecommendationApplied() {
             if (!this.aiRecommendationApplied) return;
             this.aiRecommendationApplied = false;
@@ -4080,6 +4115,11 @@ function deepVision() {
 
         normalizeOptionText(text) {
             return (text || '')
+                .replace(/^[A-Ha-h][\.\)、:：]\s*/, '')
+                .replace(/^[（(][A-Ha-h][）)]\s*/, '')
+                .replace(/^\d{1,2}[\.\)、:：]\s*/, '')
+                .replace(/^[（(]\d{1,2}[）)]\s*/, '')
+                .replace(/^[①②③④⑤⑥⑦⑧⑨⑩]\s*/, '')
                 .toLowerCase()
                 .replace(/\s+/g, '')
                 .replace(/[（）()，,。．.]/g, '');
@@ -4615,6 +4655,7 @@ function deepVision() {
                             question_runtime_profile: this.currentQuestion.questionRuntimeProfile || '',
                             question_hedge_triggered: !!this.currentQuestion.questionHedgeTriggered,
                             question_fallback_triggered: !!this.currentQuestion.questionFallbackTriggered,
+                            ai_recommendation: this.serializeAiRecommendation(this.currentQuestion.aiRecommendation),
                             preflight_intervened: !!this.currentQuestion.preflightIntervened,
                             preflight_fingerprint: this.currentQuestion.preflightFingerprint || '',
                             preflight_planner_mode: this.currentQuestion.preflightPlannerMode || '',
@@ -4699,6 +4740,7 @@ function deepVision() {
                     questionRuntimeProfile: lastLog.question_runtime_profile || '',
                     questionHedgeTriggered: !!lastLog.question_hedge_triggered,
                     questionFallbackTriggered: !!lastLog.question_fallback_triggered,
+                    aiRecommendation: this.normalizeAiRecommendation({ ai_recommendation: lastLog.ai_recommendation }),
                     preflightIntervened: !!lastLog.preflight_intervened,
                     preflightFingerprint: lastLog.preflight_fingerprint || '',
                     preflightPlannerMode: lastLog.preflight_planner_mode || '',
