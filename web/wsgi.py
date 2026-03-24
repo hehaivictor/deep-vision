@@ -3,8 +3,10 @@
 Gunicorn WSGI 入口。
 
 生产环境示例：
-  uv run --with gunicorn gunicorn -c web/gunicorn.conf.py web.wsgi:app
+  python3 scripts/run_gunicorn.py
 """
 
-from server import app
-
+try:
+    from web.server import app
+except ModuleNotFoundError:
+    from server import app
