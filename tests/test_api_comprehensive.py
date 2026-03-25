@@ -8,7 +8,7 @@ import time
 import types
 import unittest
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -149,6 +149,9 @@ class ComprehensiveApiTests(unittest.TestCase):
 
     def setUp(self):
         self.client = self.server.app.test_client()
+        self.server.LICENSE_ENFORCEMENT_ENABLED = False
+        self.server.set_license_enforcement_override(None)
+        self.server.SMS_PROVIDER = "mock"
         self.server.reset_list_metrics()
         self.server.report_owners_cache["signature"] = None
         self.server.report_owners_cache["data"] = {}
@@ -201,6 +204,105 @@ class ComprehensiveApiTests(unittest.TestCase):
         with client.session_transaction() as sess:
             sess["user_id"] = int(user["id"])
             sess["auth_instance_id"] = str(self.server.get_auth_instance_id() or "")
+
+    def _generate_license_batch(
+        self,
+        *,
+        count=1,
+        duration_days=30,
+        use_absolute_window=False,
+        starts_in_days=-1,
+        expires_in_days=30,
+        note="测试 License 批次",
+    ):
+        kwargs = {
+            "count": count,
+            "note": note,
+            "actor_user_id": None,
+        }
+        if use_absolute_window:
+            now = datetime.utcnow().replace(microsecond=0)
+            kwargs["not_before_at"] = (now + timedelta(days=starts_in_days)).isoformat()
+            kwargs["expires_at"] = (now + timedelta(days=expires_in_days)).isoformat()
+        else:
+            kwargs["duration_days"] = duration_days
+        return self.server.generate_license_batch(**kwargs)
+
+    def _create_wechat_user(
+        self,
+        *,
+        app_id="wx-test-app",
+        openid=None,
+        unionid=None,
+        nickname="微信用户",
+        avatar_url="https://example.com/avatar.png",
+    ):
+        openid_value = openid or f"openid-{uuid.uuid4().hex[:8]}"
+        unionid_value = unionid or f"unionid-{uuid.uuid4().hex[:8]}"
+        return self.server.resolve_user_for_wechat_identity(
+            app_id=app_id,
+            openid=openid_value,
+            unionid=unionid_value,
+            nickname=nickname,
+            avatar_url=avatar_url,
+        )
+
+    def _create_owned_merge_fixture(self, user_id: int, prefix: str) -> dict:
+        now_iso = datetime.utcnow().isoformat()
+        session_id = f"{prefix}-session"
+        session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+        self.server.save_session_json_and_sync(
+            session_file,
+            {
+                "session_id": session_id,
+                "topic": f"{prefix} 会话",
+                "status": "in_progress",
+                "created_at": now_iso,
+                "updated_at": now_iso,
+                "owner_user_id": int(user_id),
+                "dimensions": {},
+                "interview_log": [],
+            },
+        )
+
+        report_name = f"{prefix}-report.md"
+        (self.server.REPORTS_DIR / report_name).write_text("# 报告\n", encoding="utf-8")
+        self.server.set_report_owner_id(report_name, int(user_id))
+        share_record = self.server.create_or_get_solution_share(report_name, int(user_id))
+
+        scenario_id = self.server.scenario_loader.save_custom_scenario(
+            {
+                "name": f"{prefix} 场景",
+                "description": "测试场景",
+                "keywords": [prefix, "测试"],
+                "dimensions": [
+                    {
+                        "id": "dim_1",
+                        "name": "维度1",
+                        "description": "描述",
+                        "key_aspects": ["A", "B"],
+                        "min_questions": 2,
+                        "max_questions": 4,
+                    }
+                ],
+                "report": {"type": "standard", "template": "default"},
+                "owner_user_id": int(user_id),
+            }
+        )
+
+        license_batch = self._generate_license_batch(count=1, note=f"{prefix} License")
+        activation_code = license_batch["licenses"][0]["code"]
+        ok, status_code, payload = self.server.activate_license_for_user(activation_code, int(user_id))
+        self.assertTrue(ok, payload)
+        self.assertEqual(200, status_code)
+
+        return {
+            "session_file": session_file,
+            "report_name": report_name,
+            "share_token": share_record["share_token"],
+            "scenario_id": scenario_id,
+            "license_status": payload,
+        }
 
     def _create_session(self, topic="综合测试会话", description="测试描述"):
         response = self.client.post(
@@ -304,6 +406,576 @@ class ComprehensiveApiTests(unittest.TestCase):
 
         me_after_login = self.client.get("/api/auth/me")
         self.assertEqual(me_after_login.status_code, 200)
+
+    def test_license_activation_and_status_summary(self):
+        self._register()
+
+        current_before = self.client.get("/api/licenses/current")
+        self.assertEqual(current_before.status_code, 200, current_before.get_data(as_text=True))
+        current_before_payload = current_before.get_json()
+        self.assertFalse(current_before_payload.get("has_valid_license"))
+        self.assertEqual("missing", current_before_payload.get("status"))
+
+        generated = self._generate_license_batch()
+        code = generated["licenses"][0]["code"]
+
+        activate_resp = self.client.post("/api/licenses/activate", json={"code": code})
+        self.assertEqual(activate_resp.status_code, 200, activate_resp.get_data(as_text=True))
+        activate_payload = activate_resp.get_json()
+        self.assertTrue(activate_payload.get("has_valid_license"))
+        self.assertEqual("active", activate_payload.get("status"))
+        self.assertTrue((activate_payload.get("license") or {}).get("masked_code"))
+        self.assertEqual(30, (activate_payload.get("license") or {}).get("duration_days"))
+        self.assertTrue((activate_payload.get("license") or {}).get("not_before_at"))
+        self.assertTrue((activate_payload.get("license") or {}).get("expires_at"))
+
+        current_after = self.client.get("/api/licenses/current")
+        self.assertEqual(current_after.status_code, 200, current_after.get_data(as_text=True))
+        current_after_payload = current_after.get_json()
+        self.assertTrue(current_after_payload.get("has_valid_license"))
+        self.assertEqual("active", current_after_payload.get("status"))
+
+        status_resp = self.client.get("/api/status")
+        self.assertEqual(status_resp.status_code, 200, status_resp.get_data(as_text=True))
+        status_payload = status_resp.get_json()
+        self.assertIn("license", status_payload)
+        self.assertTrue(status_payload["license"].get("has_valid_license"))
+        self.assertEqual("active", status_payload["license"].get("status"))
+
+    def test_admin_license_routes_require_valid_license_even_when_gate_disabled(self):
+        user = self._register()
+        old_admin_ids = set(self.server.ADMIN_USER_IDS)
+        old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
+        try:
+            self.server.ADMIN_USER_IDS = {int(user["id"])}
+            self.server.ADMIN_PHONE_NUMBERS = set()
+
+            denied_resp = self.client.post(
+                "/api/admin/licenses/batch",
+                json={
+                    "count": 1,
+                    "duration_days": 30,
+                    "note": "管理员测试",
+                },
+            )
+            self.assertEqual(denied_resp.status_code, 403, denied_resp.get_data(as_text=True))
+            self.assertEqual("license_required", denied_resp.get_json().get("error_code"))
+
+            activation_code = self._generate_license_batch(note="管理员激活")["licenses"][0]["code"]
+            activate_resp = self.client.post("/api/licenses/activate", json={"code": activation_code})
+            self.assertEqual(activate_resp.status_code, 200, activate_resp.get_data(as_text=True))
+
+            batch_resp = self.client.post(
+                "/api/admin/licenses/batch",
+                json={
+                    "count": 2,
+                    "duration_days": 60,
+                    "note": "管理员测试",
+                },
+            )
+            self.assertEqual(batch_resp.status_code, 200, batch_resp.get_data(as_text=True))
+            batch_payload = batch_resp.get_json()
+            self.assertEqual(2, batch_payload.get("count"))
+            self.assertEqual(2, len(batch_payload.get("licenses", [])))
+
+            list_resp = self.client.get(f"/api/admin/licenses?batch_id={batch_payload['batch_id']}")
+            self.assertEqual(list_resp.status_code, 200, list_resp.get_data(as_text=True))
+            self.assertEqual(2, list_resp.get_json().get("count"))
+        finally:
+            self.server.ADMIN_USER_IDS = old_admin_ids
+            self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
+
+    def test_admin_can_toggle_license_enforcement_runtime(self):
+        user = self._register()
+        old_admin_ids = set(self.server.ADMIN_USER_IDS)
+        old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
+        old_get_env_file_path = self.server.get_admin_env_file_path
+        env_path = self.server.DATA_DIR / f"license-enforcement-{uuid.uuid4().hex}.env"
+        try:
+            self.server.ADMIN_USER_IDS = {int(user["id"])}
+            self.server.ADMIN_PHONE_NUMBERS = set()
+            env_path.write_text("LICENSE_ENFORCEMENT_ENABLED=false\n", encoding="utf-8")
+            self.server.get_admin_env_file_path = lambda: env_path
+
+            activation_code = self._generate_license_batch(note="管理员开关激活")["licenses"][0]["code"]
+            activate_resp = self.client.post("/api/licenses/activate", json={"code": activation_code})
+            self.assertEqual(activate_resp.status_code, 200, activate_resp.get_data(as_text=True))
+
+            current_setting_resp = self.client.get("/api/admin/license-enforcement")
+            self.assertEqual(current_setting_resp.status_code, 200, current_setting_resp.get_data(as_text=True))
+            self.assertFalse(current_setting_resp.get_json().get("enabled"))
+            self.assertEqual("env_default", current_setting_resp.get_json().get("source"))
+
+            enable_resp = self.client.post("/api/admin/license-enforcement", json={"enabled": True, "sync_default": True})
+            self.assertEqual(enable_resp.status_code, 200, enable_resp.get_data(as_text=True))
+            enable_payload = enable_resp.get_json()
+            self.assertTrue(enable_payload.get("enabled"))
+            self.assertEqual("runtime_override", enable_payload.get("source"))
+            self.assertEqual(int(user["id"]), enable_payload.get("updated_by_user_id"))
+            self.assertTrue(enable_payload.get("default_enabled"))
+            self.assertTrue(enable_payload.get("default_sync_written"))
+            self.assertIn("LICENSE_ENFORCEMENT_ENABLED=true", env_path.read_text(encoding="utf-8"))
+
+            status_resp = self.client.get("/api/status")
+            self.assertEqual(status_resp.status_code, 200, status_resp.get_data(as_text=True))
+            self.assertTrue(status_resp.get_json().get("license_enforcement_enabled"))
+            self.assertEqual("runtime_override", status_resp.get_json().get("license_enforcement_source"))
+
+            other_client = self.server.app.test_client()
+            self._register(client=other_client)
+            blocked_resp = other_client.post("/api/sessions", json={"topic": "运行时开关拦截"})
+            self.assertEqual(blocked_resp.status_code, 403, blocked_resp.get_data(as_text=True))
+            self.assertEqual("license_required", blocked_resp.get_json().get("error_code"))
+
+            follow_resp = self.client.post("/api/admin/license-enforcement/follow-default", json={})
+            self.assertEqual(follow_resp.status_code, 200, follow_resp.get_data(as_text=True))
+            follow_payload = follow_resp.get_json()
+            self.assertTrue(follow_payload.get("enabled"))
+            self.assertEqual("env_default", follow_payload.get("source"))
+            self.assertIsNone(follow_payload.get("override_enabled"))
+
+            env_path.write_text("LICENSE_ENFORCEMENT_ENABLED=false\n", encoding="utf-8")
+            synced_setting_resp = self.client.get("/api/admin/license-enforcement")
+            self.assertEqual(synced_setting_resp.status_code, 200, synced_setting_resp.get_data(as_text=True))
+            self.assertFalse(synced_setting_resp.get_json().get("enabled"))
+            self.assertFalse(synced_setting_resp.get_json().get("default_enabled"))
+            self.assertEqual("env_default", synced_setting_resp.get_json().get("source"))
+
+            unblocked_resp = other_client.post("/api/sessions", json={"topic": "运行时开关放行"})
+            self.assertEqual(unblocked_resp.status_code, 200, unblocked_resp.get_data(as_text=True))
+        finally:
+            self.server.set_license_enforcement_override(None)
+            self.server.ADMIN_USER_IDS = old_admin_ids
+            self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
+            self.server.get_admin_env_file_path = old_get_env_file_path
+
+    def test_admin_license_management_endpoints_cover_summary_detail_search_and_bulk_actions(self):
+        user = self._register()
+        old_admin_ids = set(self.server.ADMIN_USER_IDS)
+        old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
+        try:
+            self.server.ADMIN_USER_IDS = {int(user["id"])}
+            self.server.ADMIN_PHONE_NUMBERS = set()
+
+            activation_code = self._generate_license_batch(note="管理员 License 管理激活")["licenses"][0]["code"]
+            activate_resp = self.client.post("/api/licenses/activate", json={"code": activation_code})
+            self.assertEqual(activate_resp.status_code, 200, activate_resp.get_data(as_text=True))
+
+            generated = self._generate_license_batch(count=3, note="后台测试批次")
+            generated_ids = [int(item["id"]) for item in generated["licenses"]]
+            raw_code = generated["licenses"][0]["code"]
+
+            summary_resp = self.client.get("/api/admin/licenses/summary")
+            self.assertEqual(summary_resp.status_code, 200, summary_resp.get_data(as_text=True))
+            summary_payload = summary_resp.get_json()
+            self.assertIn("counts", summary_payload)
+            self.assertIn("recent_events", summary_payload)
+            self.assertGreaterEqual(summary_payload.get("total", 0), 4)
+
+            query_resp = self.client.get(f"/api/admin/licenses?code={quote(raw_code)}")
+            self.assertEqual(query_resp.status_code, 200, query_resp.get_data(as_text=True))
+            query_payload = query_resp.get_json()
+            self.assertEqual(1, query_payload.get("count"))
+            queried_item = query_payload["items"][0]
+            self.assertEqual(generated_ids[0], queried_item["id"])
+            self.assertNotEqual(raw_code, queried_item["masked_code"])
+            self.assertNotIn("code", queried_item)
+
+            sorted_resp = self.client.get(
+                f"/api/admin/licenses?batch_id={quote(generated['batch_id'])}&sort_by=id&sort_order=asc&page_size=2&page=2"
+            )
+            self.assertEqual(sorted_resp.status_code, 200, sorted_resp.get_data(as_text=True))
+            sorted_payload = sorted_resp.get_json()
+            self.assertEqual(3, sorted_payload.get("count"))
+            self.assertEqual(2, sorted_payload.get("total_pages"))
+            self.assertEqual(2, sorted_payload.get("page"))
+            self.assertEqual("id", sorted_payload.get("sort_by"))
+            self.assertEqual("asc", sorted_payload.get("sort_order"))
+            self.assertEqual(1, len(sorted_payload.get("items", [])))
+            self.assertEqual(max(generated_ids), sorted_payload["items"][0]["id"])
+
+            detail_resp = self.client.get(f"/api/admin/licenses/{generated_ids[0]}")
+            self.assertEqual(detail_resp.status_code, 200, detail_resp.get_data(as_text=True))
+            detail_payload = detail_resp.get_json()
+            self.assertEqual(generated_ids[0], detail_payload["id"])
+            self.assertEqual("后台测试批次", detail_payload["note"])
+
+            events_resp = self.client.get(f"/api/admin/licenses/{generated_ids[0]}/events")
+            self.assertEqual(events_resp.status_code, 200, events_resp.get_data(as_text=True))
+            events_payload = events_resp.get_json()
+            self.assertTrue(any(item.get("event_type") == "generated" for item in events_payload.get("items", [])))
+
+            extend_resp = self.client.post(
+                "/api/admin/licenses/bulk-extend",
+                json={"license_ids": generated_ids[:2], "duration_days": 90},
+            )
+            self.assertEqual(extend_resp.status_code, 200, extend_resp.get_data(as_text=True))
+            extend_payload = extend_resp.get_json()
+            self.assertEqual(2, len(extend_payload.get("succeeded", [])))
+            self.assertEqual([], extend_payload.get("failed", []))
+            self.assertTrue(all(item.get("duration_days") == 90 for item in extend_payload.get("succeeded", [])))
+
+            revoke_resp = self.client.post(
+                "/api/admin/licenses/bulk-revoke",
+                json={"license_ids": [generated_ids[2]], "reason": "批量撤销测试"},
+            )
+            self.assertEqual(revoke_resp.status_code, 200, revoke_resp.get_data(as_text=True))
+            revoke_payload = revoke_resp.get_json()
+            self.assertEqual(1, len(revoke_payload.get("succeeded", [])))
+            self.assertEqual("revoked", revoke_payload["succeeded"][0]["status"])
+
+            revoked_detail = self.client.get(f"/api/admin/licenses/{generated_ids[2]}")
+            self.assertEqual(revoked_detail.status_code, 200, revoked_detail.get_data(as_text=True))
+            self.assertEqual("revoked", revoked_detail.get_json().get("status"))
+            self.assertEqual("批量撤销测试", revoked_detail.get_json().get("revoked_reason"))
+        finally:
+            self.server.ADMIN_USER_IDS = old_admin_ids
+            self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
+
+    def test_admin_can_bootstrap_first_seed_license_without_existing_license(self):
+        old_admin_ids = set(self.server.ADMIN_USER_IDS)
+        old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
+        old_auth_dir = self.server.AUTH_DIR
+        old_auth_db_path = self.server.AUTH_DB_PATH
+        old_enforcement_enabled = self.server.LICENSE_ENFORCEMENT_ENABLED
+        bootstrap_auth_dir = self.server.DATA_DIR / f"bootstrap-auth-{uuid.uuid4().hex}"
+        bootstrap_auth_db = bootstrap_auth_dir / "users.db"
+        try:
+            bootstrap_auth_dir.mkdir(parents=True, exist_ok=True)
+            self.server.AUTH_DIR = bootstrap_auth_dir
+            self.server.AUTH_DB_PATH = bootstrap_auth_db
+            self.server.init_auth_db()
+            self.server.LICENSE_ENFORCEMENT_ENABLED = True
+
+            client = self.server.app.test_client()
+            user = self._register(client=client)
+            self.server.ADMIN_USER_IDS = {int(user["id"])}
+            self.server.ADMIN_PHONE_NUMBERS = set()
+
+            status_resp = client.get("/api/admin/licenses/bootstrap/status")
+            self.assertEqual(status_resp.status_code, 200, status_resp.get_data(as_text=True))
+            status_payload = status_resp.get_json()
+            self.assertTrue(status_payload.get("eligible"))
+            self.assertEqual("seed_available", status_payload.get("reason"))
+            self.assertEqual(0, status_payload.get("total_license_count"))
+
+            bootstrap_resp = client.post(
+                "/api/admin/licenses/bootstrap",
+                json={
+                    "duration_days": 365,
+                    "note": "首个种子 License 测试",
+                },
+            )
+            self.assertEqual(bootstrap_resp.status_code, 200, bootstrap_resp.get_data(as_text=True))
+            bootstrap_payload = bootstrap_resp.get_json()
+            self.assertTrue(bootstrap_payload.get("has_valid_license"))
+            self.assertEqual("active", bootstrap_payload.get("status"))
+            self.assertTrue(bootstrap_payload.get("bootstrap_seeded"))
+            self.assertTrue(bootstrap_payload.get("license", {}).get("masked_code"))
+
+            post_status_resp = client.get("/api/admin/licenses/bootstrap/status")
+            self.assertEqual(post_status_resp.status_code, 200, post_status_resp.get_data(as_text=True))
+            self.assertEqual("already_has_valid_license", post_status_resp.get_json().get("reason"))
+
+            summary_resp = client.get("/api/admin/licenses/summary")
+            self.assertEqual(summary_resp.status_code, 200, summary_resp.get_data(as_text=True))
+            self.assertGreaterEqual(summary_resp.get_json().get("total", 0), 1)
+        finally:
+            self.server.ADMIN_USER_IDS = old_admin_ids
+            self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
+            self.server.AUTH_DIR = old_auth_dir
+            self.server.AUTH_DB_PATH = old_auth_db_path
+            self.server.LICENSE_ENFORCEMENT_ENABLED = old_enforcement_enabled
+            self.server.init_auth_db()
+
+    def test_admin_ownership_migration_endpoints_cover_search_preview_apply_and_rollback(self):
+        admin_user = self._register()
+        target_client = self.server.app.test_client()
+        target_user = self._register(client=target_client)
+        old_admin_ids = set(self.server.ADMIN_USER_IDS)
+        old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
+        try:
+            self.server.ADMIN_USER_IDS = {int(admin_user["id"])}
+            self.server.ADMIN_PHONE_NUMBERS = set()
+            activation_code = self._generate_license_batch(note="归属迁移管理员 License")["licenses"][0]["code"]
+            ok, status_code, payload = self.server.activate_license_for_user(activation_code, int(admin_user["id"]))
+            self.assertTrue(ok, payload)
+            self.assertEqual(200, status_code)
+
+            session_file = self.server.SESSIONS_DIR / "ownership-preview-session.json"
+            session_file.write_text(
+                json.dumps(
+                    {
+                        "session_id": "ownership-preview-session",
+                        "topic": "迁移预览会话",
+                        "owner_user_id": 0,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            report_name = "ownership-preview-report.md"
+            (self.server.REPORTS_DIR / report_name).write_text("# 测试报告\n", encoding="utf-8")
+            if self.server.REPORT_OWNERS_FILE.exists():
+                self.server.REPORT_OWNERS_FILE.unlink()
+
+            user_search = self.client.get(f"/api/admin/users?q={target_user['account']}")
+            self.assertEqual(user_search.status_code, 200, user_search.get_data(as_text=True))
+            self.assertTrue(any(item.get("id") == int(target_user["id"]) for item in user_search.get_json().get("items", [])))
+
+            audit_before = self.client.post(
+                "/api/admin/ownership-migrations/audit",
+                json={"user_id": int(target_user["id"]), "kinds": ["sessions", "reports"]},
+            )
+            self.assertEqual(audit_before.status_code, 200, audit_before.get_data(as_text=True))
+            self.assertEqual(0, audit_before.get_json()["sessions"]["owned"])
+            self.assertEqual(0, audit_before.get_json()["reports"]["owned"])
+
+            preview_resp = self.client.post(
+                "/api/admin/ownership-migrations/preview",
+                json={
+                    "to_user_id": int(target_user["id"]),
+                    "scope": "unowned",
+                    "kinds": ["sessions", "reports"],
+                    "max_examples": 5,
+                },
+            )
+            self.assertEqual(preview_resp.status_code, 200, preview_resp.get_data(as_text=True))
+            preview_payload = preview_resp.get_json()
+            self.assertEqual("dry-run", preview_payload["summary"]["mode"])
+            self.assertEqual(1, preview_payload["summary"]["sessions"]["matched"])
+            self.assertEqual(1, preview_payload["summary"]["reports"]["matched"])
+            self.assertTrue(preview_payload.get("preview_token"))
+            self.assertTrue(preview_payload.get("confirm_phrase"))
+
+            wrong_apply = self.client.post(
+                "/api/admin/ownership-migrations/apply",
+                json={
+                    "to_user_id": int(target_user["id"]),
+                    "scope": "unowned",
+                    "kinds": ["sessions", "reports"],
+                    "max_examples": 5,
+                    "preview_token": preview_payload["preview_token"],
+                    "confirm_text": "确认词错误",
+                },
+            )
+            self.assertEqual(wrong_apply.status_code, 400, wrong_apply.get_data(as_text=True))
+
+            apply_resp = self.client.post(
+                "/api/admin/ownership-migrations/apply",
+                json={
+                    "to_user_id": int(target_user["id"]),
+                    "scope": "unowned",
+                    "kinds": ["sessions", "reports"],
+                    "max_examples": 5,
+                    "preview_token": preview_payload["preview_token"],
+                    "confirm_text": preview_payload["confirm_phrase"],
+                },
+            )
+            self.assertEqual(apply_resp.status_code, 200, apply_resp.get_data(as_text=True))
+            apply_payload = apply_resp.get_json()
+            self.assertEqual("apply", apply_payload["summary"]["mode"])
+            self.assertTrue(apply_payload["summary"]["backup_dir"])
+
+            migrated_session = json.loads(session_file.read_text(encoding="utf-8"))
+            self.assertEqual(int(target_user["id"]), migrated_session["owner_user_id"])
+            report_owners_payload = json.loads(self.server.REPORT_OWNERS_FILE.read_text(encoding="utf-8"))
+            self.assertEqual(int(target_user["id"]), int(report_owners_payload[report_name]))
+
+            audit_after = self.client.post(
+                "/api/admin/ownership-migrations/audit",
+                json={"user_id": int(target_user["id"]), "kinds": ["sessions", "reports"]},
+            )
+            self.assertEqual(audit_after.status_code, 200, audit_after.get_data(as_text=True))
+            self.assertEqual(1, audit_after.get_json()["sessions"]["owned"])
+            self.assertEqual(1, audit_after.get_json()["reports"]["owned"])
+
+            history_resp = self.client.get("/api/admin/ownership-migrations")
+            self.assertEqual(history_resp.status_code, 200, history_resp.get_data(as_text=True))
+            history_payload = history_resp.get_json()
+            self.assertGreaterEqual(history_payload.get("count", 0), 1)
+            backup_id = history_payload["items"][0]["backup_id"]
+            self.assertTrue(backup_id)
+
+            rollback_resp = self.client.post(
+                "/api/admin/ownership-migrations/rollback",
+                json={"backup_id": backup_id},
+            )
+            self.assertEqual(rollback_resp.status_code, 200, rollback_resp.get_data(as_text=True))
+            rollback_payload = rollback_resp.get_json()
+            self.assertEqual(backup_id, rollback_payload["backup_id"])
+
+            rolled_back_session = json.loads(session_file.read_text(encoding="utf-8"))
+            self.assertEqual(0, rolled_back_session["owner_user_id"])
+            self.assertFalse(self.server.REPORT_OWNERS_FILE.exists())
+        finally:
+            self.server.ADMIN_USER_IDS = old_admin_ids
+            self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
+
+    def test_admin_config_center_endpoints_cover_catalog_and_file_persistence(self):
+        admin_user = self._register()
+        old_admin_ids = set(self.server.ADMIN_USER_IDS)
+        old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
+        old_get_env_file_path = self.server.get_admin_env_file_path
+        old_get_config_file_path = self.server.get_admin_config_file_path
+        old_get_site_config_file_path = self.server.get_admin_site_config_file_path
+        old_runtime_config = self.server.runtime_config
+        env_path = self.server.DATA_DIR / "admin-center.env"
+        config_path = self.server.DATA_DIR / "admin-center-config.py"
+        site_config_path = self.server.DATA_DIR / "admin-center-site-config.js"
+        env_path.write_text(
+            "\n".join(
+                [
+                    "ENABLE_AI=false",
+                    "SERVER_PORT=5001",
+                    "SECRET_KEY=env-secret",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        config_path.write_text(
+            "\n".join(
+                [
+                    'MODEL_NAME = "legacy-model"',
+                    "REPORT_V3_PROFILE = 'balanced'",
+                    "OTHER_UNRELATED_FLAG = True",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        site_config_path.write_text(
+            "\n".join(
+                [
+                    "const SITE_CONFIG = {",
+                    '  quotes: { enabled: true, interval: 5000, items: [{ text: "旧诗句", source: "——旧来源" }] },',
+                    '  researchTips: ["旧提示"],',
+                    '  colors: { primary: "#357BE2", success: "#22C55E", progressComplete: "#357BE2" },',
+                    '  theme: { defaultMode: "system" },',
+                    '  visualPresets: { default: "rational", locked: true, options: { rational: { label: "科技理性" } } },',
+                    '  designTokens: { light: { colors: { brand: "#357BE2" } }, dark: { colors: { brand: "#5C98FF" } } },',
+                    '  motion: { durations: { fast: 140, base: 180, slow: 240, progress: 420 }, easing: { standard: "ease", emphasized: "ease-in-out" }, reducedMotion: { disableTypingEffect: true, disableNonEssentialPulse: true } },',
+                    '  a11y: { minContrastAA: 4.5, toast: { defaultLive: "polite", errorLive: "assertive" }, dialogs: {} },',
+                    '  api: { baseUrl: "http://localhost:5001/api", webSearchPollInterval: 200 },',
+                    '  version: { configFile: "version.json" },',
+                    '  presentation: { enabled: false },',
+                    '  solution: { enabled: true }',
+                    "};",
+                    "if (typeof module !== 'undefined' && module.exports) {",
+                    "  module.exports = SITE_CONFIG;",
+                    "}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        try:
+            self.server.ADMIN_USER_IDS = {int(admin_user["id"])}
+            self.server.ADMIN_PHONE_NUMBERS = set()
+            self.server.get_admin_env_file_path = lambda: env_path
+            self.server.get_admin_config_file_path = lambda: config_path
+            self.server.get_admin_site_config_file_path = lambda: site_config_path
+            self.server.runtime_config = types.SimpleNamespace(
+                MODEL_NAME="legacy-model",
+                REPORT_V3_PROFILE="balanced",
+            )
+
+            catalog_resp = self.client.get("/api/admin/config-center")
+            self.assertEqual(catalog_resp.status_code, 200, catalog_resp.get_data(as_text=True))
+            catalog_payload = catalog_resp.get_json()
+            self.assertIn("env", catalog_payload)
+            self.assertIn("config", catalog_payload)
+            self.assertIn("site", catalog_payload)
+            self.assertTrue(any(group.get("id") == "env_resolution" for group in catalog_payload["env"]["groups"]))
+            self.assertTrue(any(group.get("id") == "config_models" for group in catalog_payload["config"]["groups"]))
+            self.assertTrue(any(group.get("id") == "site_home_copy" for group in catalog_payload["site"]["groups"]))
+
+            save_env_resp = self.client.post(
+                "/api/admin/config-center/save",
+                json={
+                    "source": "env",
+                    "group_id": "env_resolution",
+                    "values": {
+                        "CONFIG_RESOLUTION_MODE": "env_only",
+                        "DEBUG_MODE": "false",
+                        "ENABLE_AI": "true",
+                        "ENABLE_WEB_SEARCH": "true",
+                        "ENABLE_VISION": "false",
+                        "ENABLE_DEBUG_LOG": "false",
+                        "FOCUS_GENERATION_ACCESS_LOG": "true",
+                        "SUPPRESS_STATUS_POLL_ACCESS_LOG": "true",
+                        "LICENSE_ENFORCEMENT_ENABLED": "false",
+                    },
+                },
+            )
+            self.assertEqual(save_env_resp.status_code, 200, save_env_resp.get_data(as_text=True))
+            env_text = env_path.read_text(encoding="utf-8")
+            self.assertIn("CONFIG_RESOLUTION_MODE=env_only", env_text)
+            self.assertIn("ENABLE_AI=true", env_text)
+            self.assertIn("ENABLE_WEB_SEARCH=true", env_text)
+            self.assertIn("DEBUG_MODE=false", env_text)
+
+            save_config_resp = self.client.post(
+                "/api/admin/config-center/save",
+                json={
+                    "source": "config",
+                    "group_id": "config_models",
+                    "values": {
+                        "MODEL_NAME": "gpt-5.4",
+                        "QUESTION_MODEL_NAME": "gpt-5.4",
+                        "REPORT_MODEL_NAME": "gpt-5.4-mini",
+                    },
+                },
+            )
+            self.assertEqual(save_config_resp.status_code, 200, save_config_resp.get_data(as_text=True))
+            config_text = config_path.read_text(encoding="utf-8")
+            self.assertIn("OTHER_UNRELATED_FLAG = True", config_text)
+            self.assertIn("DEEPVISION ADMIN UI MANAGED CONFIG BEGIN", config_text)
+            self.assertIn("MODEL_NAME = 'gpt-5.4'", config_text)
+            self.assertIn("QUESTION_MODEL_NAME = 'gpt-5.4'", config_text)
+            self.assertIn("REPORT_MODEL_NAME = 'gpt-5.4-mini'", config_text)
+
+            refreshed_payload = save_config_resp.get_json().get("config_center", {})
+            config_groups = refreshed_payload.get("config", {}).get("groups", [])
+            config_models_group = next(group for group in config_groups if group.get("id") == "config_models")
+            config_items = {item["key"]: item for item in config_models_group.get("items", [])}
+            self.assertEqual("gpt-5.4", config_items["MODEL_NAME"]["value"])
+            self.assertEqual("gpt-5.4-mini", config_items["REPORT_MODEL_NAME"]["value"])
+
+            save_site_resp = self.client.post(
+                "/api/admin/config-center/save",
+                json={
+                    "source": "site",
+                    "group_id": "site_home_copy",
+                    "values": {
+                        "quotes.enabled": "false",
+                        "quotes.interval": "3000",
+                        "quotes.items": json.dumps(
+                            [{"text": "新的诗句", "source": "——测试来源"}],
+                            ensure_ascii=False,
+                        ),
+                        "researchTips": "第一条提示\n第二条提示",
+                    },
+                },
+            )
+            self.assertEqual(save_site_resp.status_code, 200, save_site_resp.get_data(as_text=True))
+            saved_site_values = self.server._read_admin_site_config_values(site_config_path)
+            self.assertFalse(saved_site_values["quotes"]["enabled"])
+            self.assertEqual(3000, saved_site_values["quotes"]["interval"])
+            self.assertEqual("新的诗句", saved_site_values["quotes"]["items"][0]["text"])
+            self.assertEqual(["第一条提示", "第二条提示"], saved_site_values["researchTips"])
+            site_text = site_config_path.read_text(encoding="utf-8")
+            self.assertIn("const SITE_CONFIG = {", site_text)
+            self.assertIn("\"新的诗句\"", site_text)
+        finally:
+            self.server.ADMIN_USER_IDS = old_admin_ids
+            self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
+            self.server.get_admin_env_file_path = old_get_env_file_path
+            self.server.get_admin_config_file_path = old_get_config_file_path
+            self.server.get_admin_site_config_file_path = old_get_site_config_file_path
+            self.server.runtime_config = old_runtime_config
 
     def test_wechat_auth_lifecycle_success(self):
         old_enabled = self.server.WECHAT_LOGIN_ENABLED
@@ -485,6 +1157,311 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.server.WECHAT_APP_ID = old_app_id
             self.server.WECHAT_APP_SECRET = old_secret
             self.server.WECHAT_REDIRECT_URI = old_redirect
+
+    def test_account_merge_preview_requires_login_and_candidate_context(self):
+        unauth_client = self.server.app.test_client()
+        unauth_resp = unauth_client.post("/api/auth/account-merge/preview", json={})
+        self.assertEqual(unauth_resp.status_code, 401, unauth_resp.get_data(as_text=True))
+
+        self._register()
+        missing_candidate_resp = self.client.post("/api/auth/account-merge/preview", json={})
+        self.assertEqual(missing_candidate_resp.status_code, 409, missing_candidate_resp.get_data(as_text=True))
+        self.assertIn("合并上下文已失效", missing_candidate_resp.get_json().get("error", ""))
+
+    def test_account_merge_apply_requires_login_and_active_preview(self):
+        unauth_client = self.server.app.test_client()
+        unauth_resp = unauth_client.post(
+            "/api/auth/account-merge/apply",
+            json={"preview_token": "missing", "confirm_text": "确认合并"},
+        )
+        self.assertEqual(unauth_resp.status_code, 401, unauth_resp.get_data(as_text=True))
+
+        self._register()
+        missing_preview_resp = self.client.post(
+            "/api/auth/account-merge/apply",
+            json={"preview_token": "missing", "confirm_text": "确认合并"},
+        )
+        self.assertEqual(missing_preview_resp.status_code, 409, missing_preview_resp.get_data(as_text=True))
+        self.assertIn("预览已失效", missing_preview_resp.get_json().get("error", ""))
+
+    def test_bind_phone_directly_takes_over_empty_phone_account(self):
+        target_row = self._create_wechat_user(nickname="当前微信账号")
+        self.assertIsNotNone(target_row)
+        self._set_authenticated_client(self.client, {"id": int(target_row["id"])})
+
+        source_client = self.server.app.test_client()
+        source_user = self._register(client=source_client)
+
+        send_resp = self.client.post(
+            "/api/auth/sms/send-code",
+            json={"phone": source_user["phone"], "scene": "bind"},
+        )
+        self.assertEqual(send_resp.status_code, 200, send_resp.get_data(as_text=True))
+        bind_code = send_resp.get_json()["test_code"]
+
+        bind_resp = self.client.post(
+            "/api/auth/bind/phone",
+            json={"phone": source_user["phone"], "code": bind_code},
+        )
+        self.assertEqual(bind_resp.status_code, 200, bind_resp.get_data(as_text=True))
+        payload = bind_resp.get_json()
+        self.assertTrue(payload.get("merge_applied"))
+        self.assertEqual(source_user["phone"], payload["user"]["phone"])
+        self.assertTrue(payload["user"]["wechat_bound"])
+
+        me_resp = self.client.get("/api/auth/me")
+        self.assertEqual(me_resp.status_code, 200, me_resp.get_data(as_text=True))
+        self.assertEqual(source_user["phone"], me_resp.get_json()["user"]["phone"])
+
+        source_row_after = self.server.query_user_by_id(int(source_user["id"]))
+        self.assertIsNotNone(source_row_after)
+        self.assertEqual(int(target_row["id"]), int(source_row_after["merged_into_user_id"] or 0))
+        self.assertIsNone(source_row_after["phone"])
+
+    def test_bind_phone_conflict_requires_preview_apply_and_admin_rollback(self):
+        target_row = self._create_wechat_user(nickname="微信主账号")
+        self.assertIsNotNone(target_row)
+        self._set_authenticated_client(self.client, {"id": int(target_row["id"])})
+
+        source_client = self.server.app.test_client()
+        source_user = self._register(client=source_client)
+        fixture = self._create_owned_merge_fixture(int(source_user["id"]), f"phone-merge-{uuid.uuid4().hex[:6]}")
+
+        send_resp = self.client.post(
+            "/api/auth/sms/send-code",
+            json={"phone": source_user["phone"], "scene": "bind"},
+        )
+        self.assertEqual(send_resp.status_code, 200, send_resp.get_data(as_text=True))
+        bind_code = send_resp.get_json()["test_code"]
+
+        bind_resp = self.client.post(
+            "/api/auth/bind/phone",
+            json={"phone": source_user["phone"], "code": bind_code},
+        )
+        self.assertEqual(bind_resp.status_code, 409, bind_resp.get_data(as_text=True))
+        bind_payload = bind_resp.get_json()
+        self.assertTrue(bind_payload.get("merge_required"))
+        self.assertEqual("phone", bind_payload.get("conflict_identity_type"))
+        self.assertEqual(int(source_user["id"]), int(bind_payload["conflict_account_summary"]["id"]))
+
+        preview_resp = self.client.post("/api/auth/account-merge/preview", json={})
+        self.assertEqual(preview_resp.status_code, 200, preview_resp.get_data(as_text=True))
+        preview_payload = preview_resp.get_json()
+        self.assertEqual(1, preview_payload["source_account"]["asset_counts"]["sessions"])
+        self.assertEqual(1, preview_payload["source_account"]["asset_counts"]["reports"])
+        self.assertEqual(1, preview_payload["source_account"]["asset_counts"]["custom_scenarios"])
+        self.assertEqual(1, preview_payload["source_account"]["asset_counts"]["solution_shares"])
+        self.assertEqual(1, preview_payload["source_account"]["asset_counts"]["licenses"])
+        self.assertTrue(preview_payload.get("preview_token"))
+        self.assertTrue(preview_payload.get("confirm_phrase"))
+
+        invalid_token_resp = self.client.post(
+            "/api/auth/account-merge/apply",
+            json={"preview_token": "wrong-token", "confirm_text": preview_payload["confirm_phrase"]},
+        )
+        self.assertEqual(invalid_token_resp.status_code, 409, invalid_token_resp.get_data(as_text=True))
+
+        wrong_confirm_resp = self.client.post(
+            "/api/auth/account-merge/apply",
+            json={"preview_token": preview_payload["preview_token"], "confirm_text": "确认词错误"},
+        )
+        self.assertEqual(wrong_confirm_resp.status_code, 400, wrong_confirm_resp.get_data(as_text=True))
+
+        apply_resp = self.client.post(
+            "/api/auth/account-merge/apply",
+            json={
+                "preview_token": preview_payload["preview_token"],
+                "confirm_text": preview_payload["confirm_phrase"],
+            },
+        )
+        self.assertEqual(apply_resp.status_code, 200, apply_resp.get_data(as_text=True))
+        apply_payload = apply_resp.get_json()
+        self.assertEqual(source_user["phone"], apply_payload["user"]["phone"])
+        self.assertTrue(apply_payload["user"]["wechat_bound"])
+
+        migrated_session = json.loads(fixture["session_file"].read_text(encoding="utf-8"))
+        self.assertEqual(int(target_row["id"]), int(migrated_session["owner_user_id"]))
+        report_owners = json.loads(self.server.REPORT_OWNERS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(int(target_row["id"]), int(report_owners[fixture["report_name"]]))
+        shares = self.server.load_solution_share_map()
+        self.assertEqual(int(target_row["id"]), int(shares[fixture["share_token"]]["owner_user_id"]))
+        merged_scenario = self.server.scenario_loader.get_scenario(fixture["scenario_id"])
+        self.assertEqual(int(target_row["id"]), int(merged_scenario["owner_user_id"]))
+        self.assertEqual("active", self.server.get_user_license_state(int(target_row["id"]))["status"])
+
+        source_row_after = self.server.query_user_by_id(int(source_user["id"]))
+        self.assertEqual(int(target_row["id"]), int(source_row_after["merged_into_user_id"] or 0))
+
+        old_admin_ids = set(self.server.ADMIN_USER_IDS)
+        old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
+        try:
+            self.server.ADMIN_USER_IDS = {int(target_row["id"])}
+            self.server.ADMIN_PHONE_NUMBERS = set()
+            history_resp = self.client.get("/api/admin/ownership-migrations?limit=20")
+            self.assertEqual(history_resp.status_code, 200, history_resp.get_data(as_text=True))
+            history_payload = history_resp.get_json()
+            backup_item = next(
+                item
+                for item in history_payload.get("items", [])
+                if item.get("operation_type") == "account_merge"
+                and int((item.get("source_user") or {}).get("id") or 0) == int(source_user["id"])
+            )
+            rollback_resp = self.client.post(
+                "/api/admin/ownership-migrations/rollback",
+                json={"backup_id": backup_item["backup_id"]},
+            )
+            self.assertEqual(rollback_resp.status_code, 200, rollback_resp.get_data(as_text=True))
+        finally:
+            self.server.ADMIN_USER_IDS = old_admin_ids
+            self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
+
+        rolled_back_session = json.loads(fixture["session_file"].read_text(encoding="utf-8"))
+        self.assertEqual(int(source_user["id"]), int(rolled_back_session["owner_user_id"]))
+        rolled_back_owners = json.loads(self.server.REPORT_OWNERS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(int(source_user["id"]), int(rolled_back_owners[fixture["report_name"]]))
+        rolled_back_shares = self.server.load_solution_share_map()
+        self.assertEqual(int(source_user["id"]), int(rolled_back_shares[fixture["share_token"]]["owner_user_id"]))
+        self.server.scenario_loader.reload()
+        rolled_back_scenario = self.server.scenario_loader.get_scenario(fixture["scenario_id"])
+        self.assertEqual(int(source_user["id"]), int(rolled_back_scenario["owner_user_id"]))
+        source_license_state = self.server.get_user_license_state(int(source_user["id"]))
+        self.assertEqual("active", source_license_state["status"])
+
+    def test_bind_wechat_directly_takes_over_empty_wechat_shadow_account(self):
+        target_user = self._register()
+        source_wechat = self._create_wechat_user(
+            app_id="wx-test-app",
+            openid="mock-openid-direct",
+            unionid="mock-unionid-direct",
+            nickname="直接绑定微信",
+        )
+        self.assertIsNotNone(source_wechat)
+
+        old_enabled = self.server.WECHAT_LOGIN_ENABLED
+        old_app_id = self.server.WECHAT_APP_ID
+        old_secret = self.server.WECHAT_APP_SECRET
+        old_redirect = self.server.WECHAT_REDIRECT_URI
+        old_scope = self.server.WECHAT_OAUTH_SCOPE
+        old_exchange = self.server.exchange_wechat_code_for_token
+        old_profile = self.server.fetch_wechat_user_profile
+        try:
+            self.server.WECHAT_LOGIN_ENABLED = True
+            self.server.WECHAT_APP_ID = "wx-test-app"
+            self.server.WECHAT_APP_SECRET = "wx-test-secret"
+            self.server.WECHAT_REDIRECT_URI = "http://localhost:5001/api/auth/wechat/callback"
+            self.server.WECHAT_OAUTH_SCOPE = "snsapi_login"
+
+            self.server.exchange_wechat_code_for_token = lambda _code: ({
+                "access_token": "bind-token",
+                "openid": "mock-openid-direct",
+                "unionid": "mock-unionid-direct",
+            }, "")
+            self.server.fetch_wechat_user_profile = lambda _token, _openid: ({
+                "nickname": "直接绑定微信",
+                "headimgurl": "https://example.com/direct.png",
+                "unionid": "mock-unionid-direct",
+            }, "")
+
+            start_resp = self.client.get("/api/auth/bind/wechat/start?return_to=/")
+            self.assertEqual(start_resp.status_code, 302, start_resp.get_data(as_text=True))
+            with self.client.session_transaction() as sess:
+                bind_state = sess.get("wechat_bind_state")
+            callback_resp = self.client.get(f"/api/auth/wechat/callback?code=bind-code&state={bind_state}")
+            self.assertEqual(callback_resp.status_code, 302, callback_resp.get_data(as_text=True))
+            self.assertIn("auth_result=wechat_bind_success", callback_resp.headers.get("Location", ""))
+
+            me_resp = self.client.get("/api/auth/me")
+            self.assertEqual(me_resp.status_code, 200, me_resp.get_data(as_text=True))
+            self.assertTrue(me_resp.get_json()["user"]["wechat_bound"])
+            source_row_after = self.server.query_user_by_id(int(source_wechat["id"]))
+            self.assertEqual(int(target_user["id"]), int(source_row_after["merged_into_user_id"] or 0))
+        finally:
+            self.server.WECHAT_LOGIN_ENABLED = old_enabled
+            self.server.WECHAT_APP_ID = old_app_id
+            self.server.WECHAT_APP_SECRET = old_secret
+            self.server.WECHAT_REDIRECT_URI = old_redirect
+            self.server.WECHAT_OAUTH_SCOPE = old_scope
+            self.server.exchange_wechat_code_for_token = old_exchange
+            self.server.fetch_wechat_user_profile = old_profile
+
+    def test_bind_wechat_conflict_redirects_to_merge_preview_and_apply(self):
+        target_user = self._register()
+        source_wechat = self._create_wechat_user(
+            app_id="wx-test-app",
+            openid="mock-openid-merge",
+            unionid="mock-unionid-merge",
+            nickname="微信历史账号",
+        )
+        fixture = self._create_owned_merge_fixture(int(source_wechat["id"]), f"wechat-merge-{uuid.uuid4().hex[:6]}")
+
+        old_enabled = self.server.WECHAT_LOGIN_ENABLED
+        old_app_id = self.server.WECHAT_APP_ID
+        old_secret = self.server.WECHAT_APP_SECRET
+        old_redirect = self.server.WECHAT_REDIRECT_URI
+        old_scope = self.server.WECHAT_OAUTH_SCOPE
+        old_exchange = self.server.exchange_wechat_code_for_token
+        old_profile = self.server.fetch_wechat_user_profile
+        try:
+            self.server.WECHAT_LOGIN_ENABLED = True
+            self.server.WECHAT_APP_ID = "wx-test-app"
+            self.server.WECHAT_APP_SECRET = "wx-test-secret"
+            self.server.WECHAT_REDIRECT_URI = "http://localhost:5001/api/auth/wechat/callback"
+            self.server.WECHAT_OAUTH_SCOPE = "snsapi_login"
+
+            self.server.exchange_wechat_code_for_token = lambda _code: ({
+                "access_token": "bind-token",
+                "openid": "mock-openid-merge",
+                "unionid": "mock-unionid-merge",
+            }, "")
+            self.server.fetch_wechat_user_profile = lambda _token, _openid: ({
+                "nickname": "微信历史账号",
+                "headimgurl": "https://example.com/merge.png",
+                "unionid": "mock-unionid-merge",
+            }, "")
+
+            start_resp = self.client.get("/api/auth/bind/wechat/start?return_to=/")
+            self.assertEqual(start_resp.status_code, 302, start_resp.get_data(as_text=True))
+            with self.client.session_transaction() as sess:
+                bind_state = sess.get("wechat_bind_state")
+            callback_resp = self.client.get(f"/api/auth/wechat/callback?code=bind-code&state={bind_state}")
+            self.assertEqual(callback_resp.status_code, 302, callback_resp.get_data(as_text=True))
+            self.assertIn("auth_result=wechat_bind_merge_required", callback_resp.headers.get("Location", ""))
+
+            preview_resp = self.client.post("/api/auth/account-merge/preview", json={})
+            self.assertEqual(preview_resp.status_code, 200, preview_resp.get_data(as_text=True))
+            preview_payload = preview_resp.get_json()
+            self.assertEqual("wechat", preview_payload.get("identity_type"))
+            self.assertEqual(1, preview_payload["source_account"]["asset_counts"]["sessions"])
+            self.assertEqual(1, preview_payload["source_account"]["asset_counts"]["reports"])
+
+            apply_resp = self.client.post(
+                "/api/auth/account-merge/apply",
+                json={
+                    "preview_token": preview_payload["preview_token"],
+                    "confirm_text": preview_payload["confirm_phrase"],
+                },
+            )
+            self.assertEqual(apply_resp.status_code, 200, apply_resp.get_data(as_text=True))
+            me_resp = self.client.get("/api/auth/me")
+            self.assertEqual(me_resp.status_code, 200, me_resp.get_data(as_text=True))
+            me_payload = me_resp.get_json()["user"]
+            self.assertTrue(me_payload["wechat_bound"])
+            self.assertEqual("微信历史账号", me_payload["wechat_nickname"])
+
+            migrated_session = json.loads(fixture["session_file"].read_text(encoding="utf-8"))
+            self.assertEqual(int(target_user["id"]), int(migrated_session["owner_user_id"]))
+            shares = self.server.load_solution_share_map()
+            self.assertEqual(int(target_user["id"]), int(shares[fixture["share_token"]]["owner_user_id"]))
+            source_row_after = self.server.query_user_by_id(int(source_wechat["id"]))
+            self.assertEqual(int(target_user["id"]), int(source_row_after["merged_into_user_id"] or 0))
+        finally:
+            self.server.WECHAT_LOGIN_ENABLED = old_enabled
+            self.server.WECHAT_APP_ID = old_app_id
+            self.server.WECHAT_APP_SECRET = old_secret
+            self.server.WECHAT_REDIRECT_URI = old_redirect
+            self.server.WECHAT_OAUTH_SCOPE = old_scope
+            self.server.exchange_wechat_code_for_token = old_exchange
+            self.server.fetch_wechat_user_profile = old_profile
 
     def test_session_crud(self):
         self._register()
@@ -2082,6 +3059,45 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertTrue(report_meta.get("scenario_name"))
         self.assertTrue(report_meta.get("report_template"))
         self.assertEqual(report_meta.get("report_type"), "standard")
+
+    def test_reports_list_uses_indexed_binding_metadata_without_runtime_session_scan(self):
+        user = self._register()
+        created = self._create_session(topic="报告索引绑定元数据")
+        session_id = created["session_id"]
+        report_name = self._build_scoped_report_name(created["topic"], session_id=session_id)
+        report_path = self.server.REPORTS_DIR / report_name
+        report_path.write_text("# 索引绑定测试报告\n", encoding="utf-8")
+        self.server.set_report_owner_id(report_name, int(user["id"]))
+
+        session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+        session_data = self.server.safe_load_session(session_file)
+        session_data["current_report_name"] = report_name
+        session_data["current_report_path"] = str(report_path.resolve())
+        self.server.save_session_json_and_sync(session_file, session_data)
+
+        with self.server.meta_index_state_lock:
+            self.server.meta_index_state["reports_bootstrapped"] = False
+        with self.server.get_meta_index_connection() as conn:
+            conn.execute("DELETE FROM report_index")
+
+        old_find_direct_bound = self.server.find_direct_bound_session_for_report
+        try:
+            def _should_not_scan(*_args, **_kwargs):
+                raise AssertionError("报告列表不应在运行时扫描会话文件补元数据")
+
+            self.server.find_direct_bound_session_for_report = _should_not_scan
+
+            reports_resp = self.client.get("/api/reports")
+            self.assertEqual(reports_resp.status_code, 200, reports_resp.get_data(as_text=True))
+            report_items = reports_resp.get_json() or []
+            report_meta = next(item for item in report_items if item.get("name") == report_name)
+            self.assertEqual(report_meta.get("session_id"), session_id)
+            self.assertEqual(report_meta.get("topic"), created["topic"])
+            self.assertTrue(report_meta.get("scenario_name"))
+            self.assertTrue(report_meta.get("report_template"))
+            self.assertEqual(report_meta.get("report_type"), "standard")
+        finally:
+            self.server.find_direct_bound_session_for_report = old_find_direct_bound
 
     def test_regenerate_report_overwrites_current_session_report(self):
         self._register()

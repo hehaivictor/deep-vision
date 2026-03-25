@@ -30,6 +30,7 @@ import queue
 import re
 import secrets
 import sqlite3
+import subprocess
 import threading
 import time as _time
 import requests
@@ -37,7 +38,7 @@ from functools import wraps
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import quote, unquote, urlparse, parse_qsl, urlencode, urlunparse
 
 from flask import Flask, jsonify, request, send_from_directory, redirect, session, send_file, make_response, url_for
@@ -224,6 +225,8 @@ ENV_MANAGED_CONFIG_EXACT_KEYS = {
     "ENABLE_WEB_SEARCH",
     "FOCUS_GENERATION_ACCESS_LOG",
     "INSTANCE_SCOPE_KEY",
+    "LICENSE_CODE_SIGNING_SECRET",
+    "LICENSE_ENFORCEMENT_ENABLED",
     "REFLY_API_URL",
     "REFLY_FILES_FIELD",
     "REFLY_INPUT_FIELD",
@@ -1807,6 +1810,8 @@ SMS_MAX_VERIFY_ATTEMPTS = max(1, min(SMS_MAX_VERIFY_ATTEMPTS, 20))
 SMS_TEST_CODE = _cfg_text("SMS_TEST_CODE", "")
 ADMIN_USER_IDS_RAW = _cfg_text_list("ADMIN_USER_IDS", [])
 ADMIN_PHONE_NUMBERS_RAW = _cfg_text_list("ADMIN_PHONE_NUMBERS", [])
+LICENSE_ENFORCEMENT_ENABLED = _cfg_bool("LICENSE_ENFORCEMENT_ENABLED", False)
+LICENSE_CODE_SIGNING_SECRET = _cfg_text("LICENSE_CODE_SIGNING_SECRET", "")
 
 JD_SMS_ACCESS_KEY_ID = _cfg_text("JD_SMS_ACCESS_KEY_ID", "")
 JD_SMS_ACCESS_KEY_SECRET = _cfg_text("JD_SMS_ACCESS_KEY_SECRET", "")
@@ -2110,6 +2115,10 @@ ALLOWED_STATIC_EXTENSIONS = {
     ".woff", ".woff2", ".ttf", ".eot",
 }
 
+
+def get_admin_ownership_backup_root() -> Path:
+    return DATA_DIR / "operations" / "ownership-migrations"
+
 named_lock_registry = {}
 named_lock_registry_guard = threading.Lock()
 
@@ -2297,11 +2306,1101 @@ for d in [SESSIONS_DIR, REPORTS_DIR, CONVERTED_DIR, TEMP_DIR, METRICS_DIR, SUMMA
 
 validate_runtime_security_config()
 
+ADMIN_SETTINGS_WRITE_LOCK = threading.RLock()
+ADMIN_CONFIG_MANAGED_BEGIN = "# === DEEPVISION ADMIN UI MANAGED CONFIG BEGIN ==="
+ADMIN_CONFIG_MANAGED_END = "# === DEEPVISION ADMIN UI MANAGED CONFIG END ==="
+
+
+def _admin_setting(
+    key: str,
+    label: str,
+    field_type: str = "text",
+    *,
+    description: str = "",
+    secret: bool = False,
+    placeholder: str = "",
+    options: Optional[list[dict[str, str]]] = None,
+    list_value_kind: str = "text",
+    requires_restart: bool = True,
+    value_codec: str = "",
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "type": field_type,
+        "description": description,
+        "secret": bool(secret),
+        "placeholder": placeholder,
+        "options": list(options or []),
+        "list_value_kind": list_value_kind,
+        "requires_restart": bool(requires_restart),
+        "value_codec": str(value_codec or ""),
+    }
+
+
+def _admin_bool(key: str, label: str, **kwargs) -> dict[str, Any]:
+    return _admin_setting(key, label, "boolean", **kwargs)
+
+
+def _admin_int(key: str, label: str, **kwargs) -> dict[str, Any]:
+    return _admin_setting(key, label, "integer", **kwargs)
+
+
+def _admin_float(key: str, label: str, **kwargs) -> dict[str, Any]:
+    return _admin_setting(key, label, "float", **kwargs)
+
+
+def _admin_select(key: str, label: str, options: list[dict[str, str]], **kwargs) -> dict[str, Any]:
+    return _admin_setting(key, label, "select", options=options, **kwargs)
+
+
+def _admin_password(key: str, label: str, **kwargs) -> dict[str, Any]:
+    return _admin_setting(key, label, "password", secret=True, **kwargs)
+
+
+def _admin_list(key: str, label: str, *, list_value_kind: str = "text", **kwargs) -> dict[str, Any]:
+    return _admin_setting(key, label, "list", list_value_kind=list_value_kind, **kwargs)
+
+
+def _admin_textarea(key: str, label: str, **kwargs) -> dict[str, Any]:
+    return _admin_setting(key, label, "textarea", **kwargs)
+
+
+ADMIN_ENV_SETTINGS_GROUPS: list[dict[str, Any]] = [
+    {
+        "id": "env_resolution",
+        "title": "配置解析与运行开关",
+        "description": "控制 .env / config.py 的优先级，以及常见运行期开关。",
+        "source": "env",
+        "items": [
+            _admin_select(
+                "CONFIG_RESOLUTION_MODE",
+                "配置解析模式",
+                [
+                    {"value": "auto", "label": "auto"},
+                    {"value": "hybrid", "label": "hybrid"},
+                    {"value": "env_only", "label": "env_only"},
+                ],
+                description="决定环境变量与 config.py 的覆盖关系。",
+            ),
+            _admin_bool("DEBUG_MODE", "调试模式", description="影响 Flask 会话、热更新与安全校验策略。"),
+            _admin_bool("ENABLE_AI", "启用 AI", description="总开关，关闭后只保留非 AI 功能。"),
+            _admin_bool("ENABLE_WEB_SEARCH", "启用联网搜索", description="控制是否允许外部搜索。"),
+            _admin_bool("ENABLE_VISION", "启用视觉能力", description="控制图片理解链路。"),
+            _admin_bool("ENABLE_DEBUG_LOG", "输出调试日志", description="打开后会记录更多排查日志。"),
+            _admin_bool("FOCUS_GENERATION_ACCESS_LOG", "保留关键访问日志", description="只保留问题/报告关键接口访问日志。"),
+            _admin_bool("SUPPRESS_STATUS_POLL_ACCESS_LOG", "隐藏状态轮询日志", description="减少状态轮询接口噪音。"),
+            _admin_bool(
+                "LICENSE_ENFORCEMENT_ENABLED",
+                "License 校验默认值",
+                description="仅影响重启后的默认开关；运行时切换仍请使用 License 页。",
+            ),
+        ],
+    },
+    {
+        "id": "env_deploy",
+        "title": "部署与实例路径",
+        "description": "服务监听、Gunicorn 参数、实例隔离与场景目录。",
+        "source": "env",
+        "items": [
+            _admin_setting("SERVER_HOST", "监听地址", description="服务监听地址。"),
+            _admin_int("SERVER_PORT", "监听端口", description="服务监听端口。"),
+            _admin_int("GUNICORN_WORKERS", "Gunicorn Workers", description="进程数。"),
+            _admin_int("GUNICORN_THREADS", "Gunicorn Threads", description="每个 worker 的线程数。"),
+            _admin_int("GUNICORN_TIMEOUT", "Gunicorn Timeout", description="请求超时秒数。"),
+            _admin_int("GUNICORN_GRACEFUL_TIMEOUT", "优雅关闭超时", description="平滑退出等待时长。"),
+            _admin_int("GUNICORN_KEEPALIVE", "Keep-Alive", description="长连接保活秒数。"),
+            _admin_setting("GUNICORN_WORKER_CLASS", "Worker 类型", description="常见值如 gthread。"),
+            _admin_setting("GUNICORN_LOG_LEVEL", "Gunicorn 日志级别", description="如 info / warning / error。"),
+            _admin_bool("GUNICORN_PRELOAD_APP", "预加载应用", description="启动时预加载应用。"),
+            _admin_setting("BUILTIN_SCENARIOS_DIR", "内置场景目录", description="系统场景配置目录。"),
+            _admin_setting("CUSTOM_SCENARIOS_DIR", "自定义场景目录", description="用户自定义场景目录。"),
+            _admin_setting("INSTANCE_SCOPE_KEY", "实例作用域标识", description="多实例共享数据目录时必须区分。"),
+        ],
+    },
+    {
+        "id": "env_security",
+        "title": "鉴权与安全",
+        "description": "登录会话、License 签名、管理员白名单与用户库路径。",
+        "source": "env",
+        "items": [
+            _admin_password("SECRET_KEY", "SECRET_KEY", description="Flask 会话与签名密钥。"),
+            _admin_setting("AUTH_DB_PATH", "鉴权数据库路径", description="用户与 License 数据库路径。"),
+            _admin_password("LICENSE_CODE_SIGNING_SECRET", "License 签名密钥", description="留空时回落到 SECRET_KEY。"),
+            _admin_list("ADMIN_USER_IDS", "管理员用户 ID", list_value_kind="int", description="逗号分隔。"),
+            _admin_list("ADMIN_PHONE_NUMBERS", "管理员手机号", description="逗号分隔。"),
+        ],
+    },
+    {
+        "id": "env_sms",
+        "title": "短信登录",
+        "description": "短信验证码通道、测试码与京东云短信配置。",
+        "source": "env",
+        "items": [
+            _admin_select(
+                "SMS_PROVIDER",
+                "短信通道",
+                [
+                    {"value": "jdcloud", "label": "jdcloud"},
+                    {"value": "mock", "label": "mock"},
+                ],
+                description="生产建议使用 jdcloud，本地调试可用 mock。",
+            ),
+            _admin_password("SMS_TEST_CODE", "测试验证码", description="仅测试环境使用。"),
+            _admin_password("SMS_CODE_SIGNING_SECRET", "短信签名密钥", description="验证码签名使用。"),
+            _admin_setting("JD_SMS_ACCESS_KEY_ID", "JD Access Key ID", description="京东云短信 Access Key ID。"),
+            _admin_password("JD_SMS_ACCESS_KEY_SECRET", "JD Access Key Secret", description="京东云短信 Access Key Secret。"),
+            _admin_setting("JD_SMS_REGION_ID", "JD Region ID", description="如 cn-north-1。"),
+            _admin_setting("JD_SMS_SIGN_ID", "JD 签名 ID", description="短信签名 ID。"),
+            _admin_setting("JD_SMS_TEMPLATE_ID_LOGIN", "登录模板 ID", description="登录验证码模板。"),
+            _admin_setting("JD_SMS_TEMPLATE_ID_BIND", "绑定模板 ID", description="绑定手机号模板。"),
+            _admin_setting("JD_SMS_TEMPLATE_ID_RECOVER", "恢复模板 ID", description="找回账号模板。"),
+            _admin_float("JD_SMS_TIMEOUT", "短信接口超时", description="短信接口调用超时秒数。"),
+        ],
+    },
+    {
+        "id": "env_default_gateway",
+        "title": "默认网关",
+        "description": "全局默认 Anthropic 兼容网关，未单独配置 lane 时回落到这里。",
+        "source": "env",
+        "items": [
+            _admin_password("ANTHROPIC_API_KEY", "默认 API Key", description="全局默认网关密钥。"),
+            _admin_setting("ANTHROPIC_BASE_URL", "默认 Base URL", description="全局默认网关地址。"),
+            _admin_bool("ANTHROPIC_USE_BEARER_AUTH", "默认 Bearer 鉴权", description="控制默认网关鉴权方式。"),
+        ],
+    },
+    {
+        "id": "env_lane_gateways",
+        "title": "分 Lane 网关",
+        "description": "问题、报告、摘要、搜索决策和评分链路的独立网关配置。",
+        "source": "env",
+        "items": [
+            _admin_password("QUESTION_API_KEY", "问题 API Key"),
+            _admin_setting("QUESTION_BASE_URL", "问题 Base URL"),
+            _admin_bool("QUESTION_USE_BEARER_AUTH", "问题 Bearer 鉴权"),
+            _admin_password("REPORT_API_KEY", "报告 API Key"),
+            _admin_setting("REPORT_BASE_URL", "报告 Base URL"),
+            _admin_bool("REPORT_USE_BEARER_AUTH", "报告 Bearer 鉴权"),
+            _admin_password("REPORT_DRAFT_API_KEY", "草案 API Key"),
+            _admin_setting("REPORT_DRAFT_BASE_URL", "草案 Base URL"),
+            _admin_bool("REPORT_DRAFT_USE_BEARER_AUTH", "草案 Bearer 鉴权"),
+            _admin_password("REPORT_REVIEW_API_KEY", "审稿 API Key"),
+            _admin_setting("REPORT_REVIEW_BASE_URL", "审稿 Base URL"),
+            _admin_bool("REPORT_REVIEW_USE_BEARER_AUTH", "审稿 Bearer 鉴权"),
+            _admin_password("SUMMARY_API_KEY", "摘要 API Key"),
+            _admin_setting("SUMMARY_BASE_URL", "摘要 Base URL"),
+            _admin_bool("SUMMARY_USE_BEARER_AUTH", "摘要 Bearer 鉴权"),
+            _admin_password("SEARCH_DECISION_API_KEY", "搜索决策 API Key"),
+            _admin_setting("SEARCH_DECISION_BASE_URL", "搜索决策 Base URL"),
+            _admin_bool("SEARCH_DECISION_USE_BEARER_AUTH", "搜索决策 Bearer 鉴权"),
+            _admin_password("ASSESSMENT_API_KEY", "评分 API Key"),
+            _admin_setting("ASSESSMENT_BASE_URL", "评分 Base URL"),
+            _admin_bool("ASSESSMENT_USE_BEARER_AUTH", "评分 Bearer 鉴权"),
+        ],
+    },
+    {
+        "id": "env_search_vision_refly",
+        "title": "搜索、视觉与 Refly",
+        "description": "联网搜索、视觉接口和 Refly 工作流接入。",
+        "source": "env",
+        "items": [
+            _admin_password("ZHIPU_API_KEY", "智谱 API Key"),
+            _admin_setting("ZHIPU_SEARCH_ENGINE", "智谱搜索引擎", description="如 search_pro。"),
+            _admin_setting("VISION_API_URL", "视觉接口地址", description="图片理解服务地址。"),
+            _admin_setting("REFLY_API_URL", "Refly API 地址"),
+            _admin_password("REFLY_API_KEY", "Refly API Key"),
+            _admin_setting("REFLY_WORKFLOW_ID", "Refly Workflow ID"),
+            _admin_setting("REFLY_INPUT_FIELD", "Refly 主输入字段"),
+            _admin_setting("REFLY_FILES_FIELD", "Refly 文件字段"),
+            _admin_int("REFLY_TIMEOUT", "Refly 请求超时"),
+            _admin_int("REFLY_POLL_TIMEOUT", "Refly 轮询超时"),
+            _admin_float("REFLY_POLL_INTERVAL", "Refly 轮询间隔"),
+        ],
+    },
+    {
+        "id": "env_wechat",
+        "title": "微信登录",
+        "description": "微信开放平台扫码登录与绑定配置。",
+        "source": "env",
+        "items": [
+            _admin_bool("WECHAT_LOGIN_ENABLED", "启用微信登录"),
+            _admin_setting("WECHAT_APP_ID", "微信 AppID"),
+            _admin_password("WECHAT_APP_SECRET", "微信 AppSecret"),
+            _admin_setting("WECHAT_REDIRECT_URI", "微信回调地址"),
+            _admin_setting("WECHAT_OAUTH_SCOPE", "微信 OAuth Scope"),
+        ],
+    },
+]
+
+ADMIN_CONFIG_SETTINGS_GROUPS: list[dict[str, Any]] = [
+    {
+        "id": "config_models",
+        "title": "模型分工",
+        "description": "定义问题、报告、摘要、搜索决策和评分链路的默认模型。",
+        "source": "config",
+        "items": [
+            _admin_setting("MODEL_NAME", "默认模型", description="兼容历史回落。"),
+            _admin_setting("QUESTION_MODEL_NAME", "问题模型"),
+            _admin_setting("REPORT_MODEL_NAME", "报告模型"),
+            _admin_setting("REPORT_DRAFT_MODEL_NAME", "报告草案模型"),
+            _admin_setting("REPORT_REVIEW_MODEL_NAME", "报告审稿模型"),
+            _admin_setting("SUMMARY_MODEL_NAME", "摘要模型"),
+            _admin_setting("SEARCH_DECISION_MODEL_NAME", "搜索决策模型"),
+            _admin_setting("ASSESSMENT_MODEL_NAME", "评分模型"),
+        ],
+    },
+    {
+        "id": "config_summary",
+        "title": "上下文与摘要",
+        "description": "控制上下文窗口、摘要阈值、缓存与压缩目标。",
+        "source": "config",
+        "items": [
+            _admin_int("CONTEXT_WINDOW_SIZE", "上下文窗口"),
+            _admin_int("SUMMARY_THRESHOLD", "摘要触发阈值"),
+            _admin_bool("ENABLE_SMART_SUMMARY", "启用智能摘要"),
+            _admin_int("SMART_SUMMARY_THRESHOLD", "智能摘要触发阈值"),
+            _admin_int("SMART_SUMMARY_TARGET", "智能摘要目标长度"),
+            _admin_bool("SUMMARY_CACHE_ENABLED", "启用摘要缓存"),
+            _admin_int("SUMMARY_UPDATE_DEBOUNCE_SECONDS", "摘要更新防抖秒数"),
+            _admin_int("MAX_DOC_LENGTH", "单文档最大长度"),
+            _admin_int("MAX_TOTAL_DOCS", "参考资料总长度"),
+        ],
+    },
+    {
+        "id": "config_question",
+        "title": "问题链路",
+        "description": "控制问题生成并发、快档、动态 lane 与竞速策略。",
+        "source": "config",
+        "items": [
+            _admin_int("QUESTION_GENERATION_MAX_INFLIGHT", "问题生成最大并发"),
+            _admin_int("QUESTION_GENERATION_RETRY_AFTER_SECONDS", "问题过载重试秒数"),
+            _admin_bool("QUESTION_FAST_PATH_ENABLED", "启用问题快档"),
+            _admin_float("QUESTION_FAST_TIMEOUT", "问题快档超时"),
+            _admin_int("QUESTION_FAST_MAX_TOKENS", "问题快档最大 Token"),
+            _admin_int("QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS", "轻量 Prompt 上限"),
+            _admin_bool("QUESTION_LANE_DYNAMIC_ENABLED", "启用动态 Lane"),
+            _admin_bool("QUESTION_HEDGED_ENABLED", "启用 Hedge 竞速"),
+            _admin_float("QUESTION_HEDGED_DELAY_SECONDS", "Hedge 延迟秒数"),
+            _admin_int("QUESTION_SESSION_HEDGE_BUDGET", "会话 Hedge 预算"),
+            _admin_int("QUESTION_DIMENSION_HEDGE_BUDGET", "维度 Hedge 预算"),
+        ],
+    },
+    {
+        "id": "config_report",
+        "title": "报告链路",
+        "description": "控制报告档位、双阶段流程、超时、事实注入与审稿轮次。",
+        "source": "config",
+        "items": [
+            _admin_select(
+                "REPORT_V3_PROFILE",
+                "报告默认档位",
+                [
+                    {"value": "balanced", "label": "balanced"},
+                    {"value": "quality", "label": "quality"},
+                ],
+            ),
+            _admin_float("REPORT_API_TIMEOUT", "报告总超时"),
+            _admin_float("REPORT_DRAFT_API_TIMEOUT", "报告草案超时"),
+            _admin_float("REPORT_REVIEW_API_TIMEOUT", "报告审稿超时"),
+            _admin_bool("REPORT_V3_DUAL_STAGE_ENABLED", "启用双阶段"),
+            _admin_int("REPORT_V3_DRAFT_MAX_TOKENS", "草案最大 Token"),
+            _admin_int("REPORT_V3_DRAFT_FACTS_LIMIT", "草案事实条数"),
+            _admin_int("REPORT_V3_REVIEW_MAX_TOKENS", "审稿最大 Token"),
+            _admin_int("REPORT_V3_REVIEW_BASE_ROUNDS", "基础审稿轮数"),
+            _admin_bool("REPORT_V3_FAILOVER_ENABLED", "启用 Failover"),
+            _admin_bool("REPORT_V3_RENDER_MERMAID_FROM_DATA", "渲染 Mermaid 图表"),
+        ],
+    },
+    {
+        "id": "config_runtime_capacity",
+        "title": "容量与接口性能",
+        "description": "控制列表分页、任务池、搜索和视觉容量参数。",
+        "source": "config",
+        "items": [
+            _admin_int("LIST_API_DEFAULT_PAGE_SIZE", "列表默认分页"),
+            _admin_int("LIST_API_MAX_PAGE_SIZE", "列表最大分页"),
+            _admin_int("SESSIONS_LIST_MAX_INFLIGHT", "会话列表最大并发"),
+            _admin_int("REPORTS_LIST_MAX_INFLIGHT", "报告列表最大并发"),
+            _admin_int("REPORT_GENERATION_MAX_WORKERS", "报告生成 Worker"),
+            _admin_int("REPORT_GENERATION_MAX_PENDING", "报告队列上限"),
+            _admin_int("SEARCH_MAX_RESULTS", "搜索结果数"),
+            _admin_int("SEARCH_TIMEOUT", "搜索超时"),
+            _admin_int("MAX_IMAGE_SIZE_MB", "图片大小上限 MB"),
+            _admin_float("API_TIMEOUT", "通用 API 超时"),
+        ],
+    },
+    {
+        "id": "config_gateway_guard",
+        "title": "网关熔断保护",
+        "description": "控制网关熔断阈值与冷却窗口。",
+        "source": "config",
+        "items": [
+            _admin_bool("GATEWAY_CIRCUIT_BREAKER_ENABLED", "启用熔断保护"),
+            _admin_int("GATEWAY_CIRCUIT_FAIL_THRESHOLD", "熔断失败阈值"),
+            _admin_float("GATEWAY_CIRCUIT_COOLDOWN_SECONDS", "熔断冷却秒数"),
+            _admin_float("GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS", "失败统计窗口"),
+        ],
+    },
+]
+
+ADMIN_SITE_SETTINGS_GROUPS: list[dict[str, Any]] = [
+    {
+        "id": "site_home_copy",
+        "title": "首页文案与提示",
+        "description": "管理首页诗句轮播与访谈提示文案。",
+        "source": "site",
+        "items": [
+            _admin_bool("quotes.enabled", "启用诗句轮播", description="关闭后首页不再轮播诗句。", requires_restart=False),
+            _admin_int("quotes.interval", "诗句轮播间隔（毫秒）", description="控制诗句切换频率。", requires_restart=False),
+            _admin_textarea(
+                "quotes.items",
+                "诗句列表（JSON）",
+                description="使用 JSON 数组，每项包含 text 和 source 字段。",
+                placeholder='[\n  {\n    "text": "浮冰之上是表象，深渊之下是答案",\n    "source": ""\n  }\n]',
+                requires_restart=False,
+                value_codec="json",
+            ),
+            _admin_textarea(
+                "researchTips",
+                "访谈提示语（每行一条）",
+                description="展示在访谈过程中的提示文案。",
+                placeholder="回答越具体，生成的问题越精准",
+                requires_restart=False,
+                value_codec="newline_list",
+            ),
+        ],
+    },
+    {
+        "id": "site_theme_brand",
+        "title": "主题与品牌",
+        "description": "管理前端默认主题、品牌色和视觉预设。",
+        "source": "site",
+        "items": [
+            _admin_select(
+                "theme.defaultMode",
+                "默认主题模式",
+                [
+                    {"value": "system", "label": "system"},
+                    {"value": "light", "label": "light"},
+                    {"value": "dark", "label": "dark"},
+                ],
+                requires_restart=False,
+            ),
+            _admin_setting("colors.primary", "主强调色", description="用于按钮、链接等主视觉元素。", requires_restart=False),
+            _admin_setting("colors.success", "成功状态色", description="用于成功提示与状态标识。", requires_restart=False),
+            _admin_setting("colors.progressComplete", "进度完成色", description="用于进度条完成状态。", requires_restart=False),
+            _admin_setting("visualPresets.default", "默认视觉预设", description="页面初始化时使用的视觉预设。", requires_restart=False),
+            _admin_bool("visualPresets.locked", "锁定视觉预设", description="开启后忽略 URL 和本地存储中的其他预设。", requires_restart=False),
+            _admin_textarea(
+                "designTokens",
+                "设计 Token（JSON）",
+                description="控制 light/dark 语义色、圆角、间距和阴影等设计变量。",
+                requires_restart=False,
+                value_codec="json",
+            ),
+            _admin_textarea(
+                "visualPresets.options",
+                "视觉预设定义（JSON）",
+                description="管理视觉预设选项及其 light/dark 扩展。",
+                requires_restart=False,
+                value_codec="json",
+            ),
+        ],
+    },
+    {
+        "id": "site_motion_a11y",
+        "title": "动效与可访问性",
+        "description": "管理前端动效节奏与无障碍相关配置。",
+        "source": "site",
+        "items": [
+            _admin_textarea(
+                "motion",
+                "动效配置（JSON）",
+                description="包含 durations、easing 和 reducedMotion 设置。",
+                requires_restart=False,
+                value_codec="json",
+            ),
+            _admin_textarea(
+                "a11y",
+                "无障碍配置（JSON）",
+                description="包含焦点环、Toast 播报与弹窗辅助元信息。",
+                requires_restart=False,
+                value_codec="json",
+            ),
+        ],
+    },
+    {
+        "id": "site_frontend_integration",
+        "title": "前端接入与功能入口",
+        "description": "管理前端 API 地址、版本文件和功能开关。",
+        "source": "site",
+        "items": [
+            _admin_setting("api.baseUrl", "API 基础地址", description="前端请求后端接口的基础地址。", requires_restart=False),
+            _admin_int("api.webSearchPollInterval", "Web Search 轮询间隔", description="控制呼吸灯状态轮询频率。", requires_restart=False),
+            _admin_setting("version.configFile", "版本信息文件", description="前端启动后用于加载版本信息的文件名。", requires_restart=False),
+            _admin_bool("presentation.enabled", "启用演示文稿入口", description="是否显示“一键生成演示文稿”按钮。", requires_restart=False),
+            _admin_bool("solution.enabled", "启用方案页入口", description="是否显示“查看方案”按钮。", requires_restart=False),
+        ],
+    },
+]
+
+ADMIN_SETTINGS_GROUPS_BY_SOURCE: dict[str, list[dict[str, Any]]] = {
+    "env": ADMIN_ENV_SETTINGS_GROUPS,
+    "config": ADMIN_CONFIG_SETTINGS_GROUPS,
+    "site": ADMIN_SITE_SETTINGS_GROUPS,
+}
+ADMIN_SETTINGS_GROUP_INDEX: dict[str, dict[str, dict[str, Any]]] = {
+    source: {group["id"]: group for group in groups}
+    for source, groups in ADMIN_SETTINGS_GROUPS_BY_SOURCE.items()
+}
+ADMIN_SETTINGS_FIELD_INDEX: dict[str, dict[str, dict[str, Any]]] = {
+    source: {
+        item["key"]: item
+        for group in groups
+        for item in group.get("items", [])
+    }
+    for source, groups in ADMIN_SETTINGS_GROUPS_BY_SOURCE.items()
+}
+
+
+def get_admin_env_file_path() -> Path:
+    explicit_env_file = str(ENV_LOAD_METADATA.get("explicit_env_file") or "").strip()
+    if explicit_env_file:
+        env_path = Path(explicit_env_file).expanduser()
+        if not env_path.is_absolute():
+            env_path = (SKILL_DIR / env_path).resolve()
+        return env_path
+    if LOADED_ENV_FILES:
+        return Path(LOADED_ENV_FILES[0]).resolve()
+    return (WEB_DIR / ".env").resolve()
+
+
+def get_admin_config_file_path() -> Path:
+    return (WEB_DIR / "config.py").resolve()
+
+
+def get_admin_site_config_file_path() -> Path:
+    return (WEB_DIR / "site-config.js").resolve()
+
+
+def _get_admin_nested_setting_value(container: Any, dotted_key: str) -> Any:
+    current = container
+    for segment in [part.strip() for part in str(dotted_key or "").split(".") if part.strip()]:
+        if not isinstance(current, dict) or segment not in current:
+            return None
+        current = current.get(segment)
+    return current
+
+
+def _set_admin_nested_setting_value(container: dict[str, Any], dotted_key: str, value: Any) -> None:
+    segments = [part.strip() for part in str(dotted_key or "").split(".") if part.strip()]
+    if not segments:
+        return
+    current = container
+    for segment in segments[:-1]:
+        next_value = current.get(segment)
+        if not isinstance(next_value, dict):
+            next_value = {}
+            current[segment] = next_value
+        current = next_value
+    current[segments[-1]] = value
+
+
+def _read_env_file_map(env_path: Path) -> dict[str, str]:
+    if not env_path.exists() or not env_path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            parsed = _parse_env_assignment(raw_line)
+            if not parsed:
+                continue
+            key, value = parsed
+            values[key] = value
+    except Exception:
+        return {}
+    return values
+
+
+def _read_admin_managed_config_values(config_path: Path) -> dict[str, Any]:
+    if not config_path.exists() or not config_path.is_file():
+        return {}
+    try:
+        content = config_path.read_text(encoding="utf-8")
+    except Exception:
+        return {}
+    if ADMIN_CONFIG_MANAGED_BEGIN not in content or ADMIN_CONFIG_MANAGED_END not in content:
+        return {}
+    try:
+        section = content.split(ADMIN_CONFIG_MANAGED_BEGIN, 1)[1].split(ADMIN_CONFIG_MANAGED_END, 1)[0]
+        tree = ast.parse(section, mode="exec")
+    except Exception:
+        return {}
+
+    values: dict[str, Any] = {}
+    for node in getattr(tree, "body", []):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        key = str(target.id or "").strip()
+        if not key:
+            continue
+        try:
+            values[key] = ast.literal_eval(node.value)
+        except Exception:
+            continue
+    return values
+
+
+def _read_admin_site_config_values(site_config_path: Path, *, strict: bool = False) -> dict[str, Any]:
+    if not site_config_path.exists() or not site_config_path.is_file():
+        return {}
+    node_script = (
+        "const path = require('path');"
+        "const file = process.argv[process.argv.length - 1];"
+        "try {"
+        "  const config = require(path.resolve(file));"
+        "  process.stdout.write(JSON.stringify(config));"
+        "} catch (error) {"
+        "  console.error(error && error.stack ? error.stack : String(error));"
+        "  process.exit(1);"
+        "}"
+    )
+    try:
+        result = subprocess.run(
+            ["node", "-e", node_script, str(site_config_path)],
+            cwd=str(WEB_DIR),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as exc:
+        if strict:
+            raise ValueError("site-config.js 解析失败，请确认文件语法正确") from exc
+        return {}
+    if result.returncode != 0:
+        if strict:
+            raise ValueError("site-config.js 解析失败，请确认文件语法正确")
+        return {}
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except Exception as exc:
+        if strict:
+            raise ValueError("site-config.js 解析失败，请确认文件语法正确") from exc
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _mask_admin_sensitive_value(value: object) -> str:
+    text = str(value or "")
+    if not text:
+        return "未设置"
+    if len(text) <= 6:
+        return "*" * len(text)
+    return f"{text[:2]}{'*' * max(4, len(text) - 4)}{text[-2:]}"
+
+
+def _format_admin_setting_form_value(setting_meta: dict[str, Any], value: object) -> str:
+    field_type = str(setting_meta.get("type") or "text")
+    value_codec = str(setting_meta.get("value_codec") or "")
+    if value_codec == "json":
+        if value is None:
+            return ""
+        return json.dumps(value, ensure_ascii=False, indent=2)
+    if value_codec == "newline_list":
+        if value is None:
+            return ""
+        if isinstance(value, (list, tuple, set)):
+            return "\n".join(str(item).strip() for item in value if str(item).strip())
+        return str(value)
+    if value is None:
+        return "false" if field_type == "boolean" else ""
+    if field_type == "boolean":
+        return "true" if bool(value) else "false"
+    if field_type == "list":
+        if isinstance(value, (list, tuple, set)):
+            return ", ".join(str(item).strip() for item in value if str(item).strip())
+        return str(value).strip()
+    if field_type in {"integer", "float"}:
+        return str(value)
+    return str(value)
+
+
+def _format_admin_setting_display_value(setting_meta: dict[str, Any], value: object, *, mask_secret: bool = False) -> str:
+    field_type = str(setting_meta.get("type") or "text")
+    value_codec = str(setting_meta.get("value_codec") or "")
+    if value_codec == "json":
+        if value is None:
+            return "未设置"
+        if isinstance(value, list):
+            return f"{len(value)} 项"
+        if isinstance(value, dict):
+            return f"{len(value)} 个字段"
+        serialized = json.dumps(value, ensure_ascii=False)
+        return serialized if len(serialized) <= 120 else f"{serialized[:117]}..."
+    if value_codec == "newline_list":
+        if value is None:
+            return "未设置"
+        if isinstance(value, (list, tuple, set)):
+            cleaned = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            cleaned = [line.strip() for line in str(value).splitlines() if line.strip()]
+        return f"{len(cleaned)} 项" if cleaned else "未设置"
+    if field_type == "boolean":
+        return "已开启" if bool(value) else "已关闭"
+    if value is None:
+        return "未设置"
+    if field_type == "list":
+        if isinstance(value, (list, tuple, set)):
+            cleaned = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            cleaned = [item.strip() for item in str(value).split(",") if item.strip()]
+        return "，".join(cleaned) if cleaned else "未设置"
+    if isinstance(value, Path):
+        return str(value)
+    text = str(value)
+    if text == "":
+        return "空值"
+    if mask_secret and setting_meta.get("secret"):
+        return _mask_admin_sensitive_value(text)
+    return text
+
+
+def _parse_admin_list_value(raw_value: object, list_value_kind: str = "text") -> list[Any]:
+    if isinstance(raw_value, (list, tuple, set)):
+        segments = [str(item).strip() for item in raw_value if str(item).strip()]
+    else:
+        text = str(raw_value or "").strip()
+        if not text:
+            return []
+        segments = [item.strip() for item in re.split(r"[\n,]", text) if item.strip()]
+    if list_value_kind == "int":
+        parsed_ints = []
+        for segment in segments:
+            parsed_ints.append(int(segment))
+        return parsed_ints
+    return segments
+
+
+def _coerce_admin_env_storage_value(setting_meta: dict[str, Any], raw_value: str) -> Any:
+    field_type = str(setting_meta.get("type") or "text")
+    if field_type == "boolean":
+        parsed = _parse_bool_like(raw_value)
+        return bool(parsed) if parsed is not None else False
+    if field_type == "integer":
+        if raw_value == "":
+            return None
+        return int(raw_value)
+    if field_type == "float":
+        if raw_value == "":
+            return None
+        return float(raw_value)
+    if field_type == "list":
+        return _parse_admin_list_value(raw_value, str(setting_meta.get("list_value_kind") or "text"))
+    return raw_value
+
+
+def _coerce_admin_request_value(setting_meta: dict[str, Any], raw_value: object) -> Any:
+    field_type = str(setting_meta.get("type") or "text")
+    value_codec = str(setting_meta.get("value_codec") or "")
+    label = str(setting_meta.get("label") or setting_meta.get("key") or "配置项")
+
+    if value_codec == "json":
+        text = str(raw_value or "").strip()
+        if not text:
+            raise ValueError(f"{label} 不能为空")
+        try:
+            return json.loads(text)
+        except Exception as exc:
+            raise ValueError(f"{label} 必须为合法 JSON") from exc
+
+    if value_codec == "newline_list":
+        if isinstance(raw_value, (list, tuple, set)):
+            return [str(item).strip() for item in raw_value if str(item).strip()]
+        return [line.strip() for line in str(raw_value or "").splitlines() if line.strip()]
+
+    if field_type == "boolean":
+        parsed = _parse_bool_like(raw_value)
+        if parsed is None:
+            raise ValueError(f"{label} 必须为布尔值")
+        return bool(parsed)
+
+    if field_type == "integer":
+        text = str(raw_value or "").strip()
+        if not text:
+            raise ValueError(f"{label} 不能为空")
+        return int(text)
+
+    if field_type == "float":
+        text = str(raw_value or "").strip()
+        if not text:
+            raise ValueError(f"{label} 不能为空")
+        return float(text)
+
+    if field_type == "list":
+        return _parse_admin_list_value(raw_value, str(setting_meta.get("list_value_kind") or "text"))
+
+    return str(raw_value or "")
+
+
+def _serialize_env_assignment_value(value: object) -> str:
+    text = str(value or "")
+    if text == "":
+        return ""
+    if re.fullmatch(r"[A-Za-z0-9_./:@,+\-]+", text):
+        return text
+    escaped = text.replace("\\", "\\\\").replace("\"", "\\\"")
+    return f"\"{escaped}\""
+
+
+def _serialize_admin_env_value(setting_meta: dict[str, Any], value: Any) -> str:
+    field_type = str(setting_meta.get("type") or "text")
+    if field_type == "boolean":
+        return "true" if bool(value) else "false"
+    if field_type == "list":
+        if isinstance(value, (list, tuple, set)):
+            return ",".join(str(item).strip() for item in value if str(item).strip())
+        return str(value or "").strip()
+    return str(value or "")
+
+
+def _serialize_admin_python_value(value: Any) -> str:
+    return repr(value)
+
+
+def _write_admin_env_updates(updates: dict[str, Any]) -> Path:
+    env_path = get_admin_env_file_path()
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with ADMIN_SETTINGS_WRITE_LOCK:
+        existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+        updated_keys: set[str] = set()
+        result_lines: list[str] = []
+
+        for line in existing_lines:
+            parsed = _parse_env_assignment(line)
+            if not parsed:
+                result_lines.append(line)
+                continue
+            key, _ = parsed
+            if key not in updates:
+                result_lines.append(line)
+                continue
+            setting_meta = ADMIN_SETTINGS_FIELD_INDEX["env"].get(key)
+            if not setting_meta:
+                result_lines.append(line)
+                continue
+            rendered = _serialize_env_assignment_value(_serialize_admin_env_value(setting_meta, updates[key]))
+            result_lines.append(f"{key}={rendered}")
+            updated_keys.add(key)
+
+        if result_lines and result_lines[-1].strip():
+            result_lines.append("")
+
+        for key, value in updates.items():
+            if key in updated_keys:
+                continue
+            setting_meta = ADMIN_SETTINGS_FIELD_INDEX["env"].get(key)
+            if not setting_meta:
+                continue
+            rendered = _serialize_env_assignment_value(_serialize_admin_env_value(setting_meta, value))
+            result_lines.append(f"{key}={rendered}")
+
+        content = "\n".join(result_lines).rstrip("\n")
+        env_path.write_text(f"{content}\n" if content else "", encoding="utf-8")
+
+    return env_path
+
+
+def _render_admin_managed_config_block(values: dict[str, Any]) -> str:
+    lines = [
+        ADMIN_CONFIG_MANAGED_BEGIN,
+        "# 本区块由管理员中心维护，若需手工调整，请修改区块外内容或在保存后重新覆盖。",
+    ]
+    for key in sorted(values.keys()):
+        lines.append(f"{key} = {_serialize_admin_python_value(values[key])}")
+    lines.append(ADMIN_CONFIG_MANAGED_END)
+    return "\n".join(lines)
+
+
+def _write_admin_config_updates(updates: dict[str, Any]) -> Path:
+    config_path = get_admin_config_file_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with ADMIN_SETTINGS_WRITE_LOCK:
+        existing_text = config_path.read_text(encoding="utf-8") if config_path.exists() else (
+            "\"\"\"Deep Vision 本地策略配置（由管理员中心可选覆盖）\"\"\"\n"
+        )
+        managed_values = _read_admin_managed_config_values(config_path)
+        managed_values.update(updates)
+        managed_block = _render_admin_managed_config_block(managed_values)
+
+        if ADMIN_CONFIG_MANAGED_BEGIN in existing_text and ADMIN_CONFIG_MANAGED_END in existing_text:
+            before, remainder = existing_text.split(ADMIN_CONFIG_MANAGED_BEGIN, 1)
+            _, after = remainder.split(ADMIN_CONFIG_MANAGED_END, 1)
+            merged = before.rstrip() + "\n\n" + managed_block + after
+        else:
+            merged = existing_text.rstrip() + "\n\n" + managed_block + "\n"
+
+        config_path.write_text(merged.rstrip() + "\n", encoding="utf-8")
+
+    return config_path
+
+
+def _render_admin_site_config_file(values: dict[str, Any]) -> str:
+    serialized = json.dumps(values, ensure_ascii=False, indent=2)
+    return (
+        "/**\n"
+        " * Deep Vision 前端配置文件\n"
+        " *\n"
+        " * 此文件由管理员中心维护。\n"
+        " * 修改后请刷新浏览器页面生效。\n"
+        " */\n\n"
+        f"const SITE_CONFIG = {serialized};\n\n"
+        "// 如果在 Node.js 环境中，导出配置\n"
+        "if (typeof module !== \"undefined\" && module.exports) {\n"
+        "  module.exports = SITE_CONFIG;\n"
+        "}\n"
+    )
+
+
+def _write_admin_site_config_updates(updates: dict[str, Any]) -> Path:
+    site_config_path = get_admin_site_config_file_path()
+    site_config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with ADMIN_SETTINGS_WRITE_LOCK:
+        existing_values = _read_admin_site_config_values(site_config_path, strict=site_config_path.exists())
+        merged_values = copy.deepcopy(existing_values) if isinstance(existing_values, dict) else {}
+        for key, value in updates.items():
+            _set_admin_nested_setting_value(merged_values, key, value)
+        site_config_path.write_text(_render_admin_site_config_file(merged_values), encoding="utf-8")
+
+    return site_config_path
+
+
+def _get_admin_runtime_source_label(source: str, key: str) -> str:
+    if source == "site":
+        return "site-config.js（刷新页面后生效）"
+    if os.environ.get(f"DEEPVISION_{key}") is not None:
+        return "DEEPVISION_ 环境变量"
+    if os.environ.get(key) is not None:
+        if key in LOADED_ENV_KEYS:
+            return ".env 文件"
+        return "进程环境变量"
+    if _should_use_runtime_config_fallback(key):
+        return "config.py"
+    return "内置默认"
+
+
+def _get_admin_runtime_setting_value(source: str, key: str, *, site_values: Optional[dict[str, Any]] = None) -> Any:
+    if source == "site":
+        return _get_admin_nested_setting_value(site_values or {}, key)
+    if key == "SECRET_KEY":
+        return app.config.get("SECRET_KEY", "")
+    if key == "AUTH_DB_PATH":
+        return str(AUTH_DB_PATH)
+    if key == "ADMIN_USER_IDS":
+        return sorted(int(item) for item in ADMIN_USER_IDS)
+    if key == "ADMIN_PHONE_NUMBERS":
+        return sorted(str(item) for item in ADMIN_PHONE_NUMBERS)
+    value = globals().get(key)
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, set):
+        return sorted(str(item) for item in value)
+    return value
+
+
+def _get_admin_file_setting_value(
+    source: str,
+    key: str,
+    *,
+    env_values: dict[str, str],
+    config_managed_values: dict[str, Any],
+    site_values: dict[str, Any],
+) -> Any:
+    if source == "env":
+        if key not in env_values:
+            return None
+        setting_meta = ADMIN_SETTINGS_FIELD_INDEX["env"].get(key, {})
+        return _coerce_admin_env_storage_value(setting_meta, env_values.get(key, ""))
+
+    if source == "site":
+        return _get_admin_nested_setting_value(site_values, key)
+
+    if key in config_managed_values:
+        return config_managed_values.get(key)
+    if runtime_config and hasattr(runtime_config, key):
+        return getattr(runtime_config, key)
+    return None
+
+
+def _build_admin_setting_payload(
+    source: str,
+    setting_meta: dict[str, Any],
+    *,
+    env_values: dict[str, str],
+    config_managed_values: dict[str, Any],
+    site_values: dict[str, Any],
+) -> dict[str, Any]:
+    key = str(setting_meta.get("key") or "").strip()
+    file_value = _get_admin_file_setting_value(
+        source,
+        key,
+        env_values=env_values,
+        config_managed_values=config_managed_values,
+        site_values=site_values,
+    )
+    runtime_value = _get_admin_runtime_setting_value(source, key, site_values=site_values)
+    return {
+        **setting_meta,
+        "value": _format_admin_setting_form_value(setting_meta, file_value),
+        "file_value_display": _format_admin_setting_display_value(setting_meta, file_value, mask_secret=True),
+        "runtime_value_display": _format_admin_setting_display_value(setting_meta, runtime_value, mask_secret=True),
+        "runtime_source_label": _get_admin_runtime_source_label(source, key),
+        "value_in_file": file_value is not None,
+        "runtime_matches_file": runtime_value == file_value,
+    }
+
+
+def _build_admin_settings_source_payload(source: str) -> dict[str, Any]:
+    source = source if source in {"env", "config", "site"} else "env"
+    env_path = get_admin_env_file_path()
+    config_path = get_admin_config_file_path()
+    site_config_path = get_admin_site_config_file_path()
+    env_values = _read_env_file_map(env_path)
+    config_managed_values = _read_admin_managed_config_values(config_path)
+    site_values = _read_admin_site_config_values(site_config_path)
+    groups_payload = []
+    for group in ADMIN_SETTINGS_GROUPS_BY_SOURCE[source]:
+        groups_payload.append({
+            "id": group["id"],
+            "title": group["title"],
+            "description": group.get("description", ""),
+            "source": source,
+            "items": [
+                _build_admin_setting_payload(
+                    source,
+                    item,
+                    env_values=env_values,
+                    config_managed_values=config_managed_values,
+                    site_values=site_values,
+                )
+                for item in group.get("items", [])
+            ],
+        })
+
+    if source == "env":
+        file_meta = {
+            "path": str(env_path),
+            "exists": env_path.exists(),
+            "loaded_files": list(LOADED_ENV_FILES),
+            "override_existing": bool(ENV_LOAD_METADATA.get("override_existing")),
+        }
+    else:
+        if source == "config":
+            file_meta = {
+                "path": str(config_path),
+                "exists": config_path.exists(),
+                "has_runtime_config": bool(runtime_config),
+                "managed_block_keys": sorted(config_managed_values.keys()),
+            }
+        else:
+            file_meta = {
+                "path": str(site_config_path),
+                "exists": site_config_path.exists(),
+                "top_level_keys": sorted(site_values.keys()),
+            }
+
+    return {
+        "file": file_meta,
+        "groups": groups_payload,
+    }
+
+
+def build_admin_config_center_payload() -> dict[str, Any]:
+    return {
+        "meta": {
+            "config_resolution_mode": CONFIG_RESOLUTION_MODE,
+            "restart_hint": "配置会写入 .env / config.py。除少量动态读取项外，大多数改动需要重启服务后完全生效。",
+            "source_meta": {
+                "env": {
+                    "mode_label": CONFIG_RESOLUTION_MODE,
+                    "hint": "配置会写入 .env。除少量动态读取项外，大多数改动需要重启服务后完全生效。",
+                },
+                "config": {
+                    "mode_label": CONFIG_RESOLUTION_MODE,
+                    "hint": "配置会写入 config.py 的托管区块。大多数改动需要重启服务后完全生效。",
+                },
+                "site": {
+                    "mode_label": "前端静态配置",
+                    "hint": "配置会写入 site-config.js。保存后请刷新浏览器页面以应用最新前端配置。",
+                },
+            },
+        },
+        "env": _build_admin_settings_source_payload("env"),
+        "config": _build_admin_settings_source_payload("config"),
+        "site": _build_admin_settings_source_payload("site"),
+    }
+
+
+def save_admin_config_group(source: str, group_id: str, values: Optional[dict[str, Any]]) -> dict[str, Any]:
+    normalized_source = str(source or "").strip().lower()
+    if normalized_source not in {"env", "config", "site"}:
+        normalized_source = "env"
+    group = ADMIN_SETTINGS_GROUP_INDEX.get(normalized_source, {}).get(str(group_id or "").strip())
+    if not group:
+        raise ValueError("未知的配置分组")
+    if not isinstance(values, dict):
+        raise ValueError("values 必须为对象")
+
+    parsed_updates: dict[str, Any] = {}
+    for item in group.get("items", []):
+        key = str(item.get("key") or "").strip()
+        if not key or key not in values:
+            continue
+        parsed_updates[key] = _coerce_admin_request_value(item, values.get(key))
+
+    if not parsed_updates:
+        raise ValueError("至少需要提交一个配置项")
+
+    if normalized_source == "env":
+        target_path = _write_admin_env_updates(parsed_updates)
+        source_label = ".env"
+    elif normalized_source == "config":
+        target_path = _write_admin_config_updates(parsed_updates)
+        source_label = "config.py"
+    else:
+        target_path = _write_admin_site_config_updates(parsed_updates)
+        source_label = "site-config.js"
+
+    return {
+        "success": True,
+        "message": (
+            f"已写入 {source_label}，刷新浏览器页面后生效"
+            if normalized_source == "site"
+            else f"已写入 {source_label}，建议按需重启服务"
+        ),
+        "saved_keys": sorted(parsed_updates.keys()),
+        "source": normalized_source,
+        "group_id": group["id"],
+        "target_path": str(target_path),
+        "config_center": build_admin_config_center_payload(),
+    }
+
+
 AUTH_PHONE_PATTERN = re.compile(r"^1\d{10}$")
+LICENSE_CODE_PATTERN = re.compile(r"^[A-Z2-7]{24,40}$")
+DEFAULT_LICENSE_DURATION_DAYS = 30
+DEFAULT_BOOTSTRAP_LICENSE_DURATION_DAYS = 365
+MAX_LICENSE_DURATION_DAYS = 3650
 
 # ============ 场景配置加载器 ============
 import sys
 sys.path.insert(0, str(SKILL_DIR))
+from scripts import admin_ownership_service as ownership_admin_service
 from scripts.scenario_loader import get_scenario_loader
 scenario_loader = get_scenario_loader(
     builtin_dir=BUILTIN_SCENARIOS_DIR,
@@ -3769,6 +4868,11 @@ def ensure_meta_index_schema() -> None:
                     deleted INTEGER NOT NULL DEFAULT 0,
                     size INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT '',
+                    session_id TEXT NOT NULL DEFAULT '',
+                    topic TEXT NOT NULL DEFAULT '',
+                    scenario_name TEXT NOT NULL DEFAULT '',
+                    report_template TEXT NOT NULL DEFAULT '',
+                    report_type TEXT NOT NULL DEFAULT '',
                     file_mtime_ns INTEGER NOT NULL DEFAULT 0,
                     file_size INTEGER NOT NULL DEFAULT 0,
                     indexed_at TEXT NOT NULL
@@ -3782,6 +4886,16 @@ def ensure_meta_index_schema() -> None:
             }
             if "instance_scope_key" not in report_columns:
                 conn.execute("ALTER TABLE report_index ADD COLUMN instance_scope_key TEXT NOT NULL DEFAULT ''")
+            if "session_id" not in report_columns:
+                conn.execute("ALTER TABLE report_index ADD COLUMN session_id TEXT NOT NULL DEFAULT ''")
+            if "topic" not in report_columns:
+                conn.execute("ALTER TABLE report_index ADD COLUMN topic TEXT NOT NULL DEFAULT ''")
+            if "scenario_name" not in report_columns:
+                conn.execute("ALTER TABLE report_index ADD COLUMN scenario_name TEXT NOT NULL DEFAULT ''")
+            if "report_template" not in report_columns:
+                conn.execute("ALTER TABLE report_index ADD COLUMN report_template TEXT NOT NULL DEFAULT ''")
+            if "report_type" not in report_columns:
+                conn.execute("ALTER TABLE report_index ADD COLUMN report_type TEXT NOT NULL DEFAULT ''")
 
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_report_index_owner_scope_deleted_created ON report_index(owner_user_id, instance_scope_key, deleted, created_at DESC)"
@@ -3945,6 +5059,21 @@ def save_session_json_and_sync(session_file: Path, session_data: dict) -> None:
         if ENABLE_DEBUG_LOG:
             _safe_log(f"⚠️ 同步 session_index 失败: {session_file.name}, 错误: {exc}")
 
+    try:
+        owner_user_id = int(session_data.get("owner_user_id") or 0)
+    except (TypeError, ValueError):
+        owner_user_id = 0
+    if owner_user_id > 0:
+        scope_key = get_session_instance_scope_key(session_data)
+        binding_metadata = build_report_binding_metadata_from_session(session_data)
+        for report_name in _collect_direct_bound_report_names(session_data):
+            sync_report_index_for_filename(
+                report_name,
+                owner_user_id=owner_user_id,
+                instance_scope_key=scope_key,
+                binding_metadata=binding_metadata,
+            )
+
 
 def remove_session_index_record(session_id: str = "", file_name: str = "") -> None:
     sid = str(session_id or "").strip()
@@ -4062,11 +5191,91 @@ def query_session_index_for_user(owner_user_id: int, page: int, page_size: int) 
     return result, total
 
 
+def empty_report_binding_metadata() -> dict:
+    return {
+        "session_id": "",
+        "topic": "",
+        "scenario_name": "",
+        "report_template": "",
+        "report_type": "",
+    }
+
+
+def normalize_report_binding_metadata(metadata: Optional[dict] = None) -> dict:
+    base = empty_report_binding_metadata()
+    if not isinstance(metadata, dict):
+        return base
+
+    base["session_id"] = str(metadata.get("session_id") or "").strip()
+    base["topic"] = str(metadata.get("topic") or "").strip()
+    base["scenario_name"] = str(metadata.get("scenario_name") or "").strip()
+    raw_report_type = str(metadata.get("report_type") or "").strip().lower()
+    if raw_report_type not in {"standard", "assessment"}:
+        raw_report_type = ""
+    base["report_type"] = raw_report_type
+    base["report_template"] = normalize_report_template_name(
+        metadata.get("report_template", ""),
+        report_type=raw_report_type or "standard",
+    ) if str(metadata.get("report_template") or "").strip() else ""
+    return base
+
+
+def build_report_binding_metadata_from_session(session_data: dict, report_name: str = "") -> dict:
+    metadata = empty_report_binding_metadata()
+    if not isinstance(session_data, dict):
+        return metadata
+
+    normalized_report_name = normalize_solution_report_filename(report_name)
+    if normalized_report_name:
+        direct_names = _collect_direct_bound_report_names(session_data)
+        if normalized_report_name not in direct_names:
+            return metadata
+
+    scenario_config = session_data.get("scenario_config", {}) if isinstance(session_data.get("scenario_config", {}), dict) else {}
+    report_cfg = scenario_config.get("report", {}) if isinstance(scenario_config.get("report", {}), dict) else {}
+    report_type = str(report_cfg.get("type") or "standard").strip().lower()
+    if report_type not in {"standard", "assessment"}:
+        report_type = "standard"
+
+    metadata.update({
+        "session_id": str(session_data.get("session_id") or "").strip(),
+        "topic": str(session_data.get("topic") or "").strip(),
+        "scenario_name": str(scenario_config.get("name") or "").strip(),
+        "report_type": report_type,
+        "report_template": normalize_report_template_name(
+            report_cfg.get("template", ""),
+            report_type=report_type,
+        ),
+    })
+    return normalize_report_binding_metadata(metadata)
+
+
+def collect_direct_bound_report_metadata_from_sessions() -> dict:
+    metadata_map = {}
+    expected_scope = get_active_instance_scope_key()
+    for session_file in SESSIONS_DIR.glob("*.json"):
+        session_data = safe_load_session(session_file)
+        if not isinstance(session_data, dict):
+            continue
+        if not is_instance_scope_visible(get_session_instance_scope_key(session_data), expected_scope=expected_scope):
+            continue
+        metadata = build_report_binding_metadata_from_session(session_data)
+        if not any(metadata.values()):
+            continue
+        for report_name in _collect_direct_bound_report_names(session_data):
+            normalized_report_name = normalize_solution_report_filename(report_name)
+            if not normalized_report_name or normalized_report_name in metadata_map:
+                continue
+            metadata_map[normalized_report_name] = dict(metadata)
+    return metadata_map
+
+
 def _build_report_index_record(
     file_name: str,
     owner_user_id: int,
     deleted: bool,
     instance_scope_key: object = "",
+    binding_metadata: Optional[dict] = None,
 ) -> Optional[dict]:
     name = str(file_name or "").strip()
     if not name or not name.endswith(".md"):
@@ -4084,6 +5293,24 @@ def _build_report_index_record(
         return None
 
     stat = report_path.stat()
+    normalized_binding = normalize_report_binding_metadata(binding_metadata)
+    sidecar_binding = empty_report_binding_metadata()
+    sidecar = read_solution_sidecar(name)
+    if isinstance(sidecar, dict) and sidecar:
+        normalized_snapshot = _normalize_solution_snapshot(sidecar)
+        sidecar_binding = normalize_report_binding_metadata({
+            "session_id": normalized_snapshot.get("session_id", ""),
+            "topic": normalized_snapshot.get("topic", ""),
+            "scenario_name": normalized_snapshot.get("scenario_name", ""),
+            "report_template": normalized_snapshot.get("report_template", ""),
+            "report_type": normalized_snapshot.get("report_type", ""),
+        })
+
+    merged_binding = dict(normalized_binding)
+    for key, value in sidecar_binding.items():
+        if value:
+            merged_binding[key] = value
+
     return {
         "file_name": name,
         "owner_user_id": int(owner_user_id),
@@ -4091,6 +5318,11 @@ def _build_report_index_record(
         "deleted": 1 if deleted else 0,
         "size": int(stat.st_size),
         "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        "session_id": merged_binding.get("session_id", ""),
+        "topic": merged_binding.get("topic", ""),
+        "scenario_name": merged_binding.get("scenario_name", ""),
+        "report_template": merged_binding.get("report_template", ""),
+        "report_type": merged_binding.get("report_type", ""),
         "file_mtime_ns": int(signature[0]),
         "file_size": int(signature[1]),
         "indexed_at": get_utc_now(),
@@ -4106,14 +5338,20 @@ def _upsert_report_index_record(record: dict) -> None:
             """
             INSERT INTO report_index (
                 file_name, owner_user_id, instance_scope_key, deleted, size, created_at,
+                session_id, topic, scenario_name, report_template, report_type,
                 file_mtime_ns, file_size, indexed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(file_name) DO UPDATE SET
                 owner_user_id=excluded.owner_user_id,
                 instance_scope_key=excluded.instance_scope_key,
                 deleted=excluded.deleted,
                 size=excluded.size,
                 created_at=excluded.created_at,
+                session_id=excluded.session_id,
+                topic=excluded.topic,
+                scenario_name=excluded.scenario_name,
+                report_template=excluded.report_template,
+                report_type=excluded.report_type,
                 file_mtime_ns=excluded.file_mtime_ns,
                 file_size=excluded.file_size,
                 indexed_at=excluded.indexed_at
@@ -4125,6 +5363,11 @@ def _upsert_report_index_record(record: dict) -> None:
                 record["deleted"],
                 record["size"],
                 record["created_at"],
+                record["session_id"],
+                record["topic"],
+                record["scenario_name"],
+                record["report_template"],
+                record["report_type"],
                 record["file_mtime_ns"],
                 record["file_size"],
                 record["indexed_at"],
@@ -4145,6 +5388,7 @@ def sync_report_index_for_filename(
     owner_user_id: Optional[int] = None,
     deleted: Optional[bool] = None,
     instance_scope_key: Optional[object] = None,
+    binding_metadata: Optional[dict] = None,
 ) -> None:
     name = str(file_name or "").strip()
     if not name:
@@ -4159,7 +5403,7 @@ def sync_report_index_for_filename(
 
     scope_key = get_report_scope_key(name) if instance_scope_key is None else get_record_instance_scope_key(instance_scope_key)
     is_deleted = bool(deleted) if deleted is not None else (name in get_deleted_reports())
-    record = _build_report_index_record(name, owner_id, is_deleted, scope_key)
+    record = _build_report_index_record(name, owner_id, is_deleted, scope_key, binding_metadata=binding_metadata)
     if not record:
         remove_report_index_record(name)
         return
@@ -4170,6 +5414,7 @@ def rebuild_report_index_from_sources() -> None:
     owner_map = load_report_owners()
     scope_map = load_report_scopes()
     deleted_set = get_deleted_reports()
+    binding_map = collect_direct_bound_report_metadata_from_sessions()
     records = []
     for report_name, owner_id in owner_map.items():
         record = _build_report_index_record(
@@ -4177,6 +5422,7 @@ def rebuild_report_index_from_sources() -> None:
             int(owner_id),
             report_name in deleted_set,
             scope_map.get(report_name, ""),
+            binding_metadata=binding_map.get(report_name),
         )
         if record:
             records.append(record)
@@ -4188,8 +5434,9 @@ def rebuild_report_index_from_sources() -> None:
                 """
                 INSERT INTO report_index (
                     file_name, owner_user_id, instance_scope_key, deleted, size, created_at,
+                    session_id, topic, scenario_name, report_template, report_type,
                     file_mtime_ns, file_size, indexed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -4199,6 +5446,11 @@ def rebuild_report_index_from_sources() -> None:
                         record["deleted"],
                         record["size"],
                         record["created_at"],
+                        record["session_id"],
+                        record["topic"],
+                        record["scenario_name"],
+                        record["report_template"],
+                        record["report_type"],
                         record["file_mtime_ns"],
                         record["file_size"],
                         record["indexed_at"],
@@ -4236,7 +5488,9 @@ def query_report_index_for_user(owner_user_id: int, page: int, page_size: int) -
 
         rows = conn.execute(
             """
-            SELECT file_name, size, created_at
+            SELECT
+                file_name, size, created_at,
+                session_id, topic, scenario_name, report_template, report_type
             FROM report_index
             WHERE owner_user_id = ? AND instance_scope_key = ? AND deleted = 0
             ORDER BY created_at DESC
@@ -4250,7 +5504,13 @@ def query_report_index_for_user(owner_user_id: int, page: int, page_size: int) -
             row["file_name"],
             int(row["size"] or 0),
             str(row["created_at"] or ""),
-            owner_user_id=int(owner_user_id),
+            binding_metadata={
+                "session_id": row["session_id"],
+                "topic": row["topic"],
+                "scenario_name": row["scenario_name"],
+                "report_template": row["report_template"],
+                "report_type": row["report_type"],
+            },
         )
         for row in rows
     ], total)
@@ -4263,11 +5523,209 @@ def get_auth_db_connection() -> sqlite3.Connection:
 
 
 AUTH_META_INSTANCE_KEY = "auth_instance_id"
+AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY = "license_enforcement_enabled"
+AUTH_META_LICENSE_ENFORCEMENT_UPDATED_BY_KEY = "license_enforcement_updated_by"
+AUTH_META_LICENSE_ENFORCEMENT_UPDATED_AT_KEY = "license_enforcement_updated_at"
+ADMIN_OWNERSHIP_PREVIEW_SESSION_KEY = "admin_ownership_preview"
+ADMIN_OWNERSHIP_PREVIEW_TTL_SECONDS = 900
+ACCOUNT_MERGE_CANDIDATE_SESSION_KEY = "account_merge_candidate"
+ACCOUNT_MERGE_PREVIEW_SESSION_KEY = "account_merge_preview"
+ACCOUNT_MERGE_PREVIEW_TTL_SECONDS = 900
 auth_instance_cache = {
     "db_path": "",
     "value": "",
 }
 auth_instance_cache_lock = threading.Lock()
+
+
+def ensure_auth_meta_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS auth_meta (
+            meta_key TEXT PRIMARY KEY,
+            meta_value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _parse_bool_like(value: object) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return None
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return None
+
+
+def get_license_enforcement_default_state() -> dict[str, Any]:
+    env_path = get_admin_env_file_path()
+    env_values = _read_env_file_map(env_path)
+    file_enabled = _parse_bool_like(env_values.get("LICENSE_ENFORCEMENT_ENABLED"))
+    if file_enabled is not None:
+        return {
+            "enabled": bool(file_enabled),
+            "source": "env_file",
+            "source_label": ".env 默认值",
+            "path": str(env_path),
+            "value_in_file": True,
+        }
+    return {
+        "enabled": bool(LICENSE_ENFORCEMENT_ENABLED),
+        "source": "startup_default",
+        "source_label": "启动默认值",
+        "path": str(env_path),
+        "value_in_file": False,
+    }
+
+
+def get_license_enforcement_state() -> dict:
+    default_state = get_license_enforcement_default_state()
+    default_enabled = bool(default_state.get("enabled"))
+    with get_auth_db_connection() as conn:
+        ensure_auth_meta_table(conn)
+        rows = conn.execute(
+            """
+            SELECT meta_key, meta_value
+            FROM auth_meta
+            WHERE meta_key IN (?, ?, ?)
+            """,
+            (
+                AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY,
+                AUTH_META_LICENSE_ENFORCEMENT_UPDATED_BY_KEY,
+                AUTH_META_LICENSE_ENFORCEMENT_UPDATED_AT_KEY,
+            ),
+        ).fetchall()
+
+    meta_map = {
+        str(row["meta_key"] or ""): str(row["meta_value"] or "")
+        for row in rows
+    }
+    override_enabled = _parse_bool_like(meta_map.get(AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY))
+    updated_by_user_id = None
+    raw_updated_by = str(meta_map.get(AUTH_META_LICENSE_ENFORCEMENT_UPDATED_BY_KEY) or "").strip()
+    if raw_updated_by:
+        try:
+            updated_by_user_id = int(raw_updated_by)
+        except (TypeError, ValueError):
+            updated_by_user_id = None
+
+    enabled = default_enabled if override_enabled is None else bool(override_enabled)
+    return {
+        "enabled": bool(enabled),
+        "default_enabled": default_enabled,
+        "default_source": str(default_state.get("source") or "startup_default"),
+        "default_source_label": str(default_state.get("source_label") or "启动默认值"),
+        "default_path": str(default_state.get("path") or ""),
+        "default_value_in_file": bool(default_state.get("value_in_file")),
+        "override_enabled": override_enabled,
+        "override_present": override_enabled is not None,
+        "source": "runtime_override" if override_enabled is not None else "env_default",
+        "updated_at": str(meta_map.get(AUTH_META_LICENSE_ENFORCEMENT_UPDATED_AT_KEY) or "").strip() or None,
+        "updated_by_user_id": updated_by_user_id,
+    }
+
+
+def is_license_enforcement_enabled() -> bool:
+    return bool(get_license_enforcement_state().get("enabled"))
+
+
+def set_license_enforcement_override(
+    enabled: Optional[bool],
+    actor_user_id: Optional[int] = None,
+    *,
+    sync_default: bool = False,
+) -> dict:
+    previous_state = get_license_enforcement_state()
+    default_write_path = None
+    next_default_enabled = bool(previous_state.get("default_enabled"))
+    with get_auth_db_connection() as conn:
+        ensure_auth_meta_table(conn)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if enabled is None:
+            conn.executemany(
+                "DELETE FROM auth_meta WHERE meta_key = ?",
+                [
+                    (AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY,),
+                    (AUTH_META_LICENSE_ENFORCEMENT_UPDATED_BY_KEY,),
+                    (AUTH_META_LICENSE_ENFORCEMENT_UPDATED_AT_KEY,),
+                ],
+            )
+        else:
+            updates = [
+                (
+                    AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY,
+                    "true" if bool(enabled) else "false",
+                    now_iso,
+                ),
+                (
+                    AUTH_META_LICENSE_ENFORCEMENT_UPDATED_AT_KEY,
+                    now_iso,
+                    now_iso,
+                ),
+            ]
+            if actor_user_id is not None:
+                updates.append(
+                    (
+                        AUTH_META_LICENSE_ENFORCEMENT_UPDATED_BY_KEY,
+                        str(int(actor_user_id)),
+                        now_iso,
+                    )
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM auth_meta WHERE meta_key = ?",
+                    (AUTH_META_LICENSE_ENFORCEMENT_UPDATED_BY_KEY,),
+                )
+            conn.executemany(
+                """
+                INSERT INTO auth_meta (meta_key, meta_value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(meta_key) DO UPDATE SET
+                    meta_value = excluded.meta_value,
+                    updated_at = excluded.updated_at
+                """,
+                updates,
+            )
+            if sync_default:
+                default_write_path = _write_admin_env_updates({
+                    "LICENSE_ENFORCEMENT_ENABLED": bool(enabled),
+                })
+                next_default_enabled = bool(enabled)
+        _record_license_event(
+            conn,
+            license_id=None,
+            actor_user_id=actor_user_id,
+            event_type="enforcement_changed",
+            payload={
+                "previous_enabled": bool(previous_state.get("enabled")),
+                "next_enabled": next_default_enabled if enabled is None else bool(enabled),
+                "source": "env_default" if enabled is None else "runtime_override",
+                "default_enabled": next_default_enabled,
+                "default_synced": bool(sync_default and enabled is not None),
+                "default_path": str(default_write_path) if default_write_path else None,
+            },
+            created_at=now_iso,
+        )
+        conn.commit()
+    state = get_license_enforcement_state()
+    if default_write_path:
+        state["default_sync_written"] = True
+        state["default_sync_path"] = str(default_write_path)
+    else:
+        state["default_sync_written"] = False
+    return state
 
 
 def get_auth_instance_id(force_refresh: bool = False) -> str:
@@ -4279,15 +5737,7 @@ def get_auth_instance_id(force_refresh: bool = False) -> str:
                 return str(auth_instance_cache.get("value"))
 
     with get_auth_db_connection() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS auth_meta (
-                meta_key TEXT PRIMARY KEY,
-                meta_value TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
+        ensure_auth_meta_table(conn)
         row = conn.execute(
             "SELECT meta_value FROM auth_meta WHERE meta_key = ? LIMIT 1",
             (AUTH_META_INSTANCE_KEY,),
@@ -4316,6 +5766,7 @@ def get_auth_instance_id(force_refresh: bool = False) -> str:
 
 def init_auth_db() -> None:
     with get_auth_db_connection() as conn:
+        ensure_auth_meta_table(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -4329,8 +5780,17 @@ def init_auth_db() -> None:
             )
             """
         )
+        user_columns = {
+            str(row[1]): True
+            for row in conn.execute("PRAGMA table_info(users)").fetchall()
+        }
+        if "merged_into_user_id" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN merged_into_user_id INTEGER")
+        if "merged_at" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN merged_at TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_merged_into_user_id ON users(merged_into_user_id)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS wechat_identities (
@@ -4369,6 +5829,57 @@ def init_auth_db() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sms_codes_phone_scene ON auth_sms_codes(phone, scene)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sms_codes_created_at ON auth_sms_codes(created_at)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS licenses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id TEXT NOT NULL,
+                code_hash TEXT NOT NULL UNIQUE,
+                code_mask TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'issued',
+                not_before_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                duration_days INTEGER NOT NULL DEFAULT 0,
+                bound_user_id INTEGER,
+                bound_at TEXT,
+                replaced_by_license_id INTEGER,
+                revoked_at TEXT,
+                revoked_reason TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (bound_user_id) REFERENCES users(id) ON DELETE SET NULL,
+                FOREIGN KEY (replaced_by_license_id) REFERENCES licenses(id) ON DELETE SET NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_licenses_batch_id ON licenses(batch_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_licenses_status ON licenses(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_licenses_bound_user_id ON licenses(bound_user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_licenses_expires_at ON licenses(expires_at)")
+        license_columns = {
+            str(row[1]): True
+            for row in conn.execute("PRAGMA table_info(licenses)").fetchall()
+        }
+        if "duration_days" not in license_columns:
+            conn.execute("ALTER TABLE licenses ADD COLUMN duration_days INTEGER NOT NULL DEFAULT 0")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS license_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                license_id INTEGER,
+                actor_user_id INTEGER,
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (license_id) REFERENCES licenses(id) ON DELETE SET NULL,
+                FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_license_events_license_id ON license_events(license_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_license_events_actor_user_id ON license_events(actor_user_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_license_events_event_type ON license_events(event_type)")
         conn.commit()
     # 初始化并缓存鉴权库实例标识（多实例时用于识别“错库会话”）。
     get_auth_instance_id(force_refresh=True)
@@ -4451,6 +5962,1386 @@ def _parse_iso_datetime(text: str) -> Optional[datetime]:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _parse_license_duration_days(
+    raw_value: object,
+    *,
+    field_name: str = "duration_days",
+    required: bool = False,
+) -> Optional[int]:
+    raw_text = str(raw_value or "").strip()
+    if not raw_text:
+        if required:
+            raise ValueError(f"{field_name} 必须为正整数")
+        return None
+    try:
+        value = int(raw_text)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} 必须为正整数") from None
+    if value <= 0:
+        raise ValueError(f"{field_name} 必须为正整数")
+    if value > MAX_LICENSE_DURATION_DAYS:
+        raise ValueError(f"{field_name} 不能超过 {MAX_LICENSE_DURATION_DAYS}")
+    return value
+
+
+def _resolve_license_issue_timing(
+    duration_days: object = None,
+    not_before_at: str = "",
+    expires_at: str = "",
+    *,
+    allow_legacy: bool = True,
+) -> dict:
+    parsed_duration_days = _parse_license_duration_days(duration_days, required=False)
+    if parsed_duration_days is not None:
+        return {
+            "mode": "relative",
+            "duration_days": parsed_duration_days,
+            "not_before_at": "",
+            "expires_at": "",
+            "start_at": None,
+            "end_at": None,
+            "activation_starts_validity": True,
+        }
+
+    if not allow_legacy:
+        raise ValueError("请填写有效期天数")
+
+    start_at = _parse_iso_datetime(not_before_at)
+    end_at = _parse_iso_datetime(expires_at)
+    if not start_at:
+        raise ValueError("not_before_at 格式无效，请使用 ISO-8601 时间")
+    if not end_at:
+        raise ValueError("expires_at 格式无效，请使用 ISO-8601 时间")
+    if end_at <= start_at:
+        raise ValueError("expires_at 必须晚于 not_before_at")
+    return {
+        "mode": "absolute",
+        "duration_days": 0,
+        "not_before_at": start_at.isoformat(),
+        "expires_at": end_at.isoformat(),
+        "start_at": start_at,
+        "end_at": end_at,
+        "activation_starts_validity": False,
+    }
+
+
+def _build_license_validity_fields(
+    *,
+    duration_days: object = 0,
+    bound_user_id: object = 0,
+    not_before_at: object = "",
+    expires_at: object = "",
+) -> dict:
+    normalized_duration_days = 0
+    try:
+        normalized_duration_days = max(0, int(duration_days or 0))
+    except (TypeError, ValueError):
+        normalized_duration_days = 0
+    activation_starts_validity = normalized_duration_days > 0
+    not_before_text = str(not_before_at or "").strip()
+    expires_text = str(expires_at or "").strip()
+    bound = int(bound_user_id or 0) > 0
+    validity_text = ""
+    if activation_starts_validity:
+        validity_text = (
+            f"自激活起 {normalized_duration_days} 天"
+            if bound and not_before_text and expires_text
+            else f"激活后 {normalized_duration_days} 天"
+        )
+    elif not_before_text or expires_text:
+        validity_text = "固定时间窗"
+    return {
+        "duration_days": normalized_duration_days,
+        "activation_starts_validity": activation_starts_validity,
+        "validity_text": validity_text,
+    }
+
+
+def _license_signing_secret() -> str:
+    configured = _first_non_empty(
+        LICENSE_CODE_SIGNING_SECRET,
+        CONFIG_SECRET_KEY,
+        str(app.secret_key or ""),
+        "deepvision-dev-license-secret",
+    )
+    return configured
+
+
+def normalize_license_code(raw_code: object) -> str:
+    text = str(raw_code or "").strip().upper()
+    if not text:
+        return ""
+    text = re.sub(r"[^A-Z2-7]", "", text)
+    return text
+
+
+def format_license_code(raw_code: object) -> str:
+    normalized = normalize_license_code(raw_code)
+    if not normalized:
+        return ""
+    return "-".join(
+        normalized[index:index + 5]
+        for index in range(0, len(normalized), 5)
+        if normalized[index:index + 5]
+    )
+
+
+def mask_license_code(raw_code: object) -> str:
+    formatted = format_license_code(raw_code)
+    if not formatted:
+        return ""
+    segments = formatted.split("-")
+    if len(segments) <= 2:
+        return formatted
+    masked_segments = [segments[0]]
+    masked_segments.extend("*" * len(segment) for segment in segments[1:-1])
+    masked_segments.append(segments[-1])
+    return "-".join(masked_segments)
+
+
+def hash_license_code(raw_code: object) -> str:
+    normalized = normalize_license_code(raw_code)
+    payload = f"{normalized}|{_license_signing_secret()}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def generate_license_code() -> str:
+    raw = base64.b32encode(secrets.token_bytes(15)).decode("ascii").rstrip("=")
+    normalized = normalize_license_code(raw)
+    return format_license_code(normalized)
+
+
+def generate_license_batch_id() -> str:
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    return f"lic-{timestamp}-{secrets.token_hex(3)}"
+
+
+def _license_row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    if not row:
+        return None
+    return {key: row[key] for key in row.keys()}
+
+
+def _record_license_event(
+    conn: sqlite3.Connection,
+    *,
+    license_id: Optional[int],
+    actor_user_id: Optional[int],
+    event_type: str,
+    payload: Optional[dict] = None,
+    created_at: Optional[str] = None,
+) -> None:
+    payload_text = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True)
+    conn.execute(
+        """
+        INSERT INTO license_events (license_id, actor_user_id, event_type, payload_json, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            int(license_id) if license_id else None,
+            int(actor_user_id) if actor_user_id else None,
+            str(event_type or "").strip() or "unknown",
+            payload_text,
+            str(created_at or datetime.now(timezone.utc).isoformat()),
+        ),
+    )
+
+
+def _compute_license_effective_status(row: Optional[dict], *, now: Optional[datetime] = None) -> str:
+    row = row if isinstance(row, dict) else {}
+    status = str(row.get("status") or "issued").strip().lower() or "issued"
+    if status in {"revoked", "replaced"}:
+        return status
+
+    now_value = now or datetime.now(timezone.utc)
+    expires_at = _parse_iso_datetime(row.get("expires_at"))
+    if expires_at and now_value > expires_at:
+        return "expired"
+    if int(row.get("bound_user_id") or 0) > 0:
+        return "active"
+    return "issued"
+
+
+def _sync_license_row_status(
+    conn: sqlite3.Connection,
+    row: Optional[dict],
+    *,
+    now: Optional[datetime] = None,
+    commit: bool = False,
+) -> Optional[dict]:
+    row = row if isinstance(row, dict) else None
+    if not row:
+        return None
+
+    effective_status = _compute_license_effective_status(row, now=now)
+    current_status = str(row.get("status") or "issued").strip().lower() or "issued"
+    if current_status != effective_status and current_status not in {"revoked", "replaced"}:
+        row["status"] = effective_status
+        row["updated_at"] = str((now or datetime.now(timezone.utc)).isoformat())
+        conn.execute(
+            "UPDATE licenses SET status = ?, updated_at = ? WHERE id = ?",
+            (row["status"], row["updated_at"], int(row["id"])),
+        )
+        if commit:
+            conn.commit()
+    return row
+
+
+def _build_license_summary(row: Optional[dict]) -> Optional[dict]:
+    row = row if isinstance(row, dict) else None
+    if not row:
+        return None
+    validity_fields = _build_license_validity_fields(
+        duration_days=row.get("duration_days"),
+        bound_user_id=row.get("bound_user_id"),
+        not_before_at=row.get("not_before_at"),
+        expires_at=row.get("expires_at"),
+    )
+    return {
+        "id": int(row["id"]),
+        "batch_id": str(row.get("batch_id") or "").strip(),
+        "masked_code": str(row.get("code_mask") or "").strip(),
+        "not_before_at": str(row.get("not_before_at") or "").strip(),
+        "expires_at": str(row.get("expires_at") or "").strip(),
+        "bound_at": str(row.get("bound_at") or "").strip(),
+        **validity_fields,
+    }
+
+
+def _license_status_error_code(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized == "expired":
+        return "license_expired"
+    if normalized == "not_yet_active":
+        return "license_not_yet_active"
+    if normalized == "revoked":
+        return "license_revoked"
+    if normalized == "replaced":
+        return "license_replaced"
+    return "license_required"
+
+
+def _license_status_message(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized == "expired":
+        return "当前 License 已过期，请联系管理员续期或更换"
+    if normalized == "not_yet_active":
+        return "当前 License 尚未到生效时间"
+    if normalized == "revoked":
+        return "当前 License 已被撤销，请联系管理员"
+    if normalized == "replaced":
+        return "当前 License 已被替换，请重新输入新的 License"
+    return "当前账号尚未绑定有效 License"
+
+
+def _get_latest_bound_license_for_user(conn: sqlite3.Connection, user_id: int) -> Optional[dict]:
+    row = conn.execute(
+        """
+        SELECT id, batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+               bound_user_id, bound_at, replaced_by_license_id, revoked_at,
+               revoked_reason, note, created_at, updated_at
+        FROM licenses
+        WHERE bound_user_id = ?
+        ORDER BY
+            COALESCE(bound_at, updated_at, created_at) DESC,
+            id DESC
+        LIMIT 1
+        """,
+        (int(user_id),),
+    ).fetchone()
+    return _license_row_to_dict(row)
+
+
+def get_user_license_state(user_id: int) -> dict:
+    normalized_user_id = int(user_id or 0)
+    enforcement_enabled = is_license_enforcement_enabled()
+    if normalized_user_id <= 0:
+        return {
+            "enforcement_enabled": enforcement_enabled,
+            "has_valid_license": False,
+            "status": "missing",
+            "license": None,
+        }
+
+    with get_auth_db_connection() as conn:
+        row = _get_latest_bound_license_for_user(conn, normalized_user_id)
+        row = _sync_license_row_status(conn, row, now=datetime.now(timezone.utc), commit=True)
+
+    if not row:
+        return {
+            "enforcement_enabled": enforcement_enabled,
+            "has_valid_license": False,
+            "status": "missing",
+            "license": None,
+        }
+
+    status = str(row.get("status") or "issued").strip().lower() or "issued"
+    if status == "active":
+        not_before_at = _parse_iso_datetime(row.get("not_before_at"))
+        if not_before_at and datetime.now(timezone.utc) < not_before_at:
+            status = "not_yet_active"
+    elif status == "issued":
+        status = "missing"
+
+    return {
+        "enforcement_enabled": enforcement_enabled,
+        "has_valid_license": status == "active",
+        "status": status,
+        "license": _build_license_summary(row),
+    }
+
+
+def build_license_status_payload_for_user(user_row: Optional[sqlite3.Row]) -> dict:
+    if not user_row:
+        return {
+            "enforcement_enabled": is_license_enforcement_enabled(),
+            "has_valid_license": False,
+            "status": "missing",
+            "license": None,
+        }
+    return get_user_license_state(int(user_row["id"]))
+
+
+def _count_license_records(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(1) AS count FROM licenses").fetchone()
+    if not row:
+        return 0
+    try:
+        return max(0, int(row["count"]))
+    except Exception:
+        return 0
+
+
+def get_admin_license_bootstrap_status(user_row: Optional[sqlite3.Row]) -> dict:
+    if not user_row:
+        return {
+            "eligible": False,
+            "reason": "login_required",
+            "message": "请先登录管理员账号",
+            "total_license_count": 0,
+        }
+
+    if not is_user_admin(user_row):
+        return {
+            "eligible": False,
+            "reason": "admin_required",
+            "message": "仅管理员可初始化首个种子 License",
+            "total_license_count": 0,
+        }
+
+    license_state = build_license_status_payload_for_user(user_row)
+    with get_auth_db_connection() as conn:
+        total_license_count = _count_license_records(conn)
+
+    if license_state.get("has_valid_license"):
+        return {
+            "eligible": False,
+            "reason": "already_has_valid_license",
+            "message": "当前账号已绑定有效 License，无需初始化首个种子 License",
+            "total_license_count": total_license_count,
+        }
+
+    if total_license_count > 0:
+        return {
+            "eligible": False,
+            "reason": "licenses_exist",
+            "message": "系统内已有 License 记录，请使用现有码绑定；若全部丢失，请改用运维脚本生成新的 License。",
+            "total_license_count": total_license_count,
+        }
+
+    return {
+        "eligible": True,
+        "reason": "seed_available",
+        "message": "系统尚未生成任何 License，可为当前管理员账号创建首个种子 License。",
+        "total_license_count": 0,
+    }
+
+
+def bootstrap_first_admin_license(
+    *,
+    user_id: int,
+    duration_days: object = None,
+    not_before_at: str = "",
+    expires_at: str = "",
+    note: str = "",
+    actor_user_id: Optional[int] = None,
+) -> dict:
+    normalized_user_id = int(user_id or 0)
+    if normalized_user_id <= 0:
+        raise ValueError("请先登录管理员账号")
+
+    now = datetime.now(timezone.utc)
+    timing = _resolve_license_issue_timing(duration_days, not_before_at, expires_at, allow_legacy=True)
+    if timing["mode"] == "relative":
+        start_at = now
+        end_at = now + timedelta(days=int(timing["duration_days"]))
+    else:
+        start_at = timing["start_at"]
+        end_at = timing["end_at"]
+        if start_at and start_at > now:
+            raise ValueError("首个种子 License 的生效时间不能晚于当前时间")
+
+    now_iso = now.isoformat()
+    batch_id = generate_license_batch_id()
+    bootstrap_note = str(note or "").strip() or "管理员首个种子 License"
+    normalized_duration_days = int(timing["duration_days"] or 0)
+
+    with get_auth_db_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if _count_license_records(conn) > 0:
+            conn.rollback()
+            raise RuntimeError("系统内已有 License 记录，不能再创建首个种子 License")
+
+        for _attempt in range(12):
+            raw_code = generate_license_code()
+            normalized_code = normalize_license_code(raw_code)
+            code_hash = hash_license_code(normalized_code)
+            exists = conn.execute(
+                "SELECT 1 FROM licenses WHERE code_hash = ? LIMIT 1",
+                (code_hash,),
+            ).fetchone()
+            if exists:
+                continue
+
+            cursor = conn.execute(
+                """
+                INSERT INTO licenses (
+                    batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+                    bound_user_id, bound_at, replaced_by_license_id, revoked_at,
+                    revoked_reason, note, created_at, updated_at
+                )
+                VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, NULL, NULL, '', ?, ?, ?)
+                """,
+                (
+                    batch_id,
+                    code_hash,
+                    mask_license_code(normalized_code),
+                    start_at.isoformat(),
+                    end_at.isoformat(),
+                    normalized_duration_days,
+                    normalized_user_id,
+                    now_iso,
+                    bootstrap_note,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            license_id = int(cursor.lastrowid)
+            _record_license_event(
+                conn,
+                license_id=license_id,
+                actor_user_id=actor_user_id,
+                event_type="generated",
+                payload={
+                    "batch_id": batch_id,
+                    "not_before_at": start_at.isoformat(),
+                    "expires_at": end_at.isoformat(),
+                    "duration_days": normalized_duration_days,
+                    "activation_starts_validity": bool(normalized_duration_days > 0),
+                    "bootstrap": True,
+                },
+                created_at=now_iso,
+            )
+            _record_license_event(
+                conn,
+                license_id=license_id,
+                actor_user_id=normalized_user_id,
+                event_type="activated",
+                payload={
+                    "bootstrap": True,
+                    "bound_user_id": normalized_user_id,
+                    "not_before_at": start_at.isoformat(),
+                    "expires_at": end_at.isoformat(),
+                    "duration_days": normalized_duration_days,
+                    "activation_starts_validity": bool(normalized_duration_days > 0),
+                },
+                created_at=now_iso,
+            )
+            _record_license_event(
+                conn,
+                license_id=license_id,
+                actor_user_id=actor_user_id or normalized_user_id,
+                event_type="bootstrap_seeded",
+                payload={"batch_id": batch_id},
+                created_at=now_iso,
+            )
+            conn.commit()
+
+            payload = get_user_license_state(normalized_user_id)
+            return {
+                "success": True,
+                "message": "已为当前管理员账号生成并绑定首个种子 License",
+                "batch_id": batch_id,
+                "bootstrap_seeded": True,
+                **payload,
+            }
+
+        conn.rollback()
+        raise RuntimeError("生成首个种子 License 失败，请重试")
+
+
+def generate_license_batch(
+    *,
+    count: int,
+    duration_days: object = None,
+    not_before_at: str = "",
+    expires_at: str = "",
+    note: str = "",
+    actor_user_id: Optional[int] = None,
+) -> dict:
+    requested_count = max(1, min(int(count or 0), 500))
+    timing = _resolve_license_issue_timing(duration_days, not_before_at, expires_at, allow_legacy=True)
+    normalized_duration_days = int(timing["duration_days"] or 0)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    batch_id = generate_license_batch_id()
+    generated_items: list[dict] = []
+    with get_auth_db_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for _ in range(requested_count):
+            for _attempt in range(12):
+                raw_code = generate_license_code()
+                normalized_code = normalize_license_code(raw_code)
+                code_hash = hash_license_code(normalized_code)
+                exists = conn.execute(
+                    "SELECT 1 FROM licenses WHERE code_hash = ? LIMIT 1",
+                    (code_hash,),
+                ).fetchone()
+                if exists:
+                    continue
+                cursor = conn.execute(
+                    """
+                    INSERT INTO licenses (
+                        batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+                        bound_user_id, bound_at, replaced_by_license_id, revoked_at,
+                        revoked_reason, note, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, 'issued', ?, ?, ?, NULL, NULL, NULL, NULL, '', ?, ?, ?)
+                    """,
+                    (
+                        batch_id,
+                        code_hash,
+                        mask_license_code(normalized_code),
+                        timing["not_before_at"],
+                        timing["expires_at"],
+                        normalized_duration_days,
+                        str(note or "").strip(),
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                license_id = int(cursor.lastrowid)
+                _record_license_event(
+                    conn,
+                    license_id=license_id,
+                    actor_user_id=actor_user_id,
+                    event_type="generated",
+                    payload={
+                        "batch_id": batch_id,
+                        "not_before_at": timing["not_before_at"],
+                        "expires_at": timing["expires_at"],
+                        "duration_days": normalized_duration_days,
+                        "activation_starts_validity": bool(normalized_duration_days > 0),
+                    },
+                    created_at=now_iso,
+                )
+                generated_items.append(
+                    {
+                        "id": license_id,
+                        "code": format_license_code(normalized_code),
+                        "masked_code": mask_license_code(normalized_code),
+                        "not_before_at": timing["not_before_at"],
+                        "expires_at": timing["expires_at"],
+                        "duration_days": normalized_duration_days,
+                        "activation_starts_validity": bool(normalized_duration_days > 0),
+                    }
+                )
+                break
+            else:
+                raise RuntimeError("生成 License 失败，请重试")
+        conn.commit()
+
+    return {
+        "batch_id": batch_id,
+        "count": len(generated_items),
+        "licenses": generated_items,
+    }
+
+
+def activate_license_for_user(code: object, user_id: int) -> tuple[bool, int, dict]:
+    normalized_code = normalize_license_code(code)
+    if not normalized_code or not LICENSE_CODE_PATTERN.match(normalized_code):
+        return False, 400, {"error": "请输入有效的 License", "error_code": "license_invalid"}
+
+    normalized_user_id = int(user_id or 0)
+    if normalized_user_id <= 0:
+        return False, 401, {"error": "请先登录", "error_code": "license_login_required"}
+
+    code_hash = hash_license_code(normalized_code)
+    lock_key = f"{code_hash}:{normalized_user_id}"
+    with named_file_lock("license-activate", lock_key):
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        with get_auth_db_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT id, batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+                       bound_user_id, bound_at, replaced_by_license_id, revoked_at,
+                       revoked_reason, note, created_at, updated_at
+                FROM licenses
+                WHERE code_hash = ?
+                LIMIT 1
+                """,
+                (code_hash,),
+            ).fetchone()
+            license_row = _license_row_to_dict(row)
+            license_row = _sync_license_row_status(conn, license_row, now=now, commit=False)
+
+            if not license_row:
+                _record_license_event(
+                    conn,
+                    license_id=None,
+                    actor_user_id=normalized_user_id,
+                    event_type="activate_failed",
+                    payload={"reason": "invalid_code"},
+                    created_at=now_iso,
+                )
+                conn.commit()
+                return False, 400, {"error": "License 无效，请检查后重试", "error_code": "license_invalid"}
+
+            license_id = int(license_row["id"])
+            status = str(license_row.get("status") or "issued").strip().lower() or "issued"
+            bound_user_id = int(license_row.get("bound_user_id") or 0)
+            not_before_at = _parse_iso_datetime(license_row.get("not_before_at"))
+            expires_at = _parse_iso_datetime(license_row.get("expires_at"))
+            duration_days = max(0, int(license_row.get("duration_days") or 0))
+            activation_based_unbound = duration_days > 0 and bound_user_id <= 0 and not not_before_at and not expires_at
+
+            if status in {"revoked", "replaced"}:
+                error_code = _license_status_error_code(status)
+                _record_license_event(
+                    conn,
+                    license_id=license_id,
+                    actor_user_id=normalized_user_id,
+                    event_type="activate_failed",
+                    payload={"reason": error_code},
+                    created_at=now_iso,
+                )
+                conn.commit()
+                return False, 403, {"error": _license_status_message(status), "error_code": error_code, "license_status": status}
+
+            if bound_user_id > 0 and bound_user_id != normalized_user_id:
+                _record_license_event(
+                    conn,
+                    license_id=license_id,
+                    actor_user_id=normalized_user_id,
+                    event_type="activate_failed",
+                    payload={"reason": "license_bound_to_other_user", "bound_user_id": bound_user_id},
+                    created_at=now_iso,
+                )
+                conn.commit()
+                return False, 409, {
+                    "error": "该 License 已绑定其他账号，无法重复使用",
+                    "error_code": "license_bound_to_other_user",
+                }
+
+            if not activation_based_unbound:
+                if not_before_at and now < not_before_at:
+                    _record_license_event(
+                        conn,
+                        license_id=license_id,
+                        actor_user_id=normalized_user_id,
+                        event_type="activate_failed",
+                        payload={"reason": "license_not_yet_active"},
+                        created_at=now_iso,
+                    )
+                    conn.commit()
+                    return False, 403, {
+                        "error": _license_status_message("not_yet_active"),
+                        "error_code": "license_not_yet_active",
+                        "license_status": "not_yet_active",
+                    }
+
+                if not expires_at or now > expires_at:
+                    conn.execute(
+                        "UPDATE licenses SET status = 'expired', updated_at = ? WHERE id = ?",
+                        (now_iso, license_id),
+                    )
+                    _record_license_event(
+                        conn,
+                        license_id=license_id,
+                        actor_user_id=normalized_user_id,
+                        event_type="activate_failed",
+                        payload={"reason": "license_expired"},
+                        created_at=now_iso,
+                    )
+                    conn.commit()
+                    return False, 403, {
+                        "error": _license_status_message("expired"),
+                        "error_code": "license_expired",
+                        "license_status": "expired",
+                    }
+
+            if bound_user_id == normalized_user_id and status == "active":
+                _record_license_event(
+                    conn,
+                    license_id=license_id,
+                    actor_user_id=normalized_user_id,
+                    event_type="activate_reused",
+                    payload={},
+                    created_at=now_iso,
+                )
+                conn.commit()
+                payload = get_user_license_state(normalized_user_id)
+                return True, 200, {
+                    "success": True,
+                    "message": "License 已生效",
+                    **payload,
+                }
+
+            old_rows = conn.execute(
+                """
+                SELECT id
+                FROM licenses
+                WHERE bound_user_id = ? AND id != ? AND status IN ('issued', 'active', 'expired')
+                """,
+                (normalized_user_id, license_id),
+            ).fetchall()
+            for old_row in old_rows:
+                old_license_id = int(old_row["id"])
+                conn.execute(
+                    """
+                    UPDATE licenses
+                    SET status = 'replaced', replaced_by_license_id = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (license_id, now_iso, old_license_id),
+                )
+                _record_license_event(
+                    conn,
+                    license_id=old_license_id,
+                    actor_user_id=normalized_user_id,
+                    event_type="replaced",
+                    payload={"replaced_by_license_id": license_id},
+                    created_at=now_iso,
+                )
+
+            next_not_before_at = not_before_at.isoformat() if not_before_at else ""
+            next_expires_at = expires_at.isoformat() if expires_at else ""
+            if activation_based_unbound:
+                next_not_before_at = now_iso
+                next_expires_at = (now + timedelta(days=duration_days)).isoformat()
+
+            conn.execute(
+                """
+                UPDATE licenses
+                SET status = 'active', not_before_at = ?, expires_at = ?,
+                    bound_user_id = ?, bound_at = ?, replaced_by_license_id = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (next_not_before_at, next_expires_at, normalized_user_id, now_iso, now_iso, license_id),
+            )
+            _record_license_event(
+                conn,
+                license_id=license_id,
+                actor_user_id=normalized_user_id,
+                event_type="activated",
+                payload={
+                    "bound_user_id": normalized_user_id,
+                    "not_before_at": next_not_before_at,
+                    "expires_at": next_expires_at,
+                    "duration_days": duration_days,
+                    "activation_starts_validity": bool(duration_days > 0),
+                },
+                created_at=now_iso,
+            )
+            conn.commit()
+
+    payload = get_user_license_state(normalized_user_id)
+    return True, 200, {
+        "success": True,
+        "message": "License 绑定成功",
+        **payload,
+    }
+
+
+def unique_positive_ints(items) -> list[int]:
+    if not isinstance(items, (list, tuple, set)):
+        return []
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for item in items:
+        try:
+            value = int(item)
+        except (TypeError, ValueError):
+            continue
+        if value <= 0 or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _parse_admin_filter_datetime(raw_value: object, *, field_name: str) -> Optional[datetime]:
+    value = str(raw_value or "").strip()
+    if not value:
+        return None
+    parsed = _parse_iso_datetime(value)
+    if not parsed:
+        raise ValueError(f"{field_name} 格式无效，请使用 ISO-8601 时间")
+    return parsed
+
+
+def _fetch_admin_license_rows() -> list[dict]:
+    with get_auth_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT l.id, l.batch_id, l.code_mask, l.code_hash, l.status, l.not_before_at, l.expires_at,
+                   l.duration_days,
+                   l.bound_user_id, l.bound_at, l.replaced_by_license_id, l.revoked_at,
+                   l.revoked_reason, l.note, l.created_at, l.updated_at,
+                   u.phone AS bound_phone, u.email AS bound_email,
+                   wi.nickname AS bound_wechat_nickname
+            FROM licenses l
+            LEFT JOIN users u ON u.id = l.bound_user_id
+            LEFT JOIN wechat_identities wi ON wi.user_id = l.bound_user_id
+            ORDER BY l.id DESC
+            """
+        ).fetchall()
+    return [_license_row_to_dict(row) or {} for row in rows]
+
+
+def _build_admin_license_item(item: dict, *, now: datetime) -> dict:
+    stored_row = {
+        "id": item.get("id"),
+        "status": item.get("status"),
+        "expires_at": item.get("expires_at"),
+        "bound_user_id": item.get("bound_user_id"),
+    }
+    effective_status = _compute_license_effective_status(stored_row, now=now)
+    not_before_at = _parse_iso_datetime(item.get("not_before_at"))
+    effective_status_display = effective_status
+    if effective_status == "active" and not_before_at and now < not_before_at:
+        effective_status_display = "not_yet_active"
+
+    account_parts = [
+        str(item.get("bound_phone") or "").strip(),
+        str(item.get("bound_wechat_nickname") or "").strip(),
+        str(item.get("bound_email") or "").strip(),
+    ]
+    account_values = [part for part in account_parts if part]
+    bound_account_text = account_values[0] if account_values else ""
+    validity_fields = _build_license_validity_fields(
+        duration_days=item.get("duration_days"),
+        bound_user_id=item.get("bound_user_id"),
+        not_before_at=item.get("not_before_at"),
+        expires_at=item.get("expires_at"),
+    )
+
+    return {
+        "id": int(item["id"]),
+        "batch_id": str(item.get("batch_id") or "").strip(),
+        "masked_code": str(item.get("code_mask") or "").strip(),
+        "status": effective_status_display,
+        "stored_status": str(item.get("status") or "").strip(),
+        "not_before_at": str(item.get("not_before_at") or "").strip(),
+        "expires_at": str(item.get("expires_at") or "").strip(),
+        "bound_user_id": int(item.get("bound_user_id") or 0) or None,
+        "bound_at": str(item.get("bound_at") or "").strip(),
+        "bound_account": bound_account_text,
+        "bound_phone": str(item.get("bound_phone") or "").strip(),
+        "bound_email": str(item.get("bound_email") or "").strip(),
+        "bound_wechat_nickname": str(item.get("bound_wechat_nickname") or "").strip(),
+        "revoked_at": str(item.get("revoked_at") or "").strip(),
+        "revoked_reason": str(item.get("revoked_reason") or "").strip(),
+        "replaced_by_license_id": int(item.get("replaced_by_license_id") or 0) or None,
+        "note": str(item.get("note") or "").strip(),
+        "created_at": str(item.get("created_at") or "").strip(),
+        "updated_at": str(item.get("updated_at") or "").strip(),
+        **validity_fields,
+    }
+
+
+def _filter_admin_license_items(
+    *,
+    batch_id: str = "",
+    status: str = "",
+    bound_account: str = "",
+    note: str = "",
+    created_from: str = "",
+    created_to: str = "",
+    expires_from: str = "",
+    expires_to: str = "",
+    is_bound: object = "",
+    code: object = "",
+) -> list[dict]:
+    batch_id_filter = str(batch_id or "").strip()
+    status_filter = str(status or "").strip().lower()
+    account_filter = str(bound_account or "").strip().lower()
+    note_filter = str(note or "").strip().lower()
+    created_from_dt = _parse_admin_filter_datetime(created_from, field_name="created_from")
+    created_to_dt = _parse_admin_filter_datetime(created_to, field_name="created_to")
+    expires_from_dt = _parse_admin_filter_datetime(expires_from, field_name="expires_from")
+    expires_to_dt = _parse_admin_filter_datetime(expires_to, field_name="expires_to")
+    bound_flag = _parse_bool_like(is_bound)
+    code_filter = str(code or "").strip()
+    code_hash_filter = ""
+    if code_filter:
+        normalized_code = normalize_license_code(code_filter)
+        if not normalized_code or not LICENSE_CODE_PATTERN.match(normalized_code):
+            raise ValueError("code 格式无效，请输入完整 License")
+        code_hash_filter = hash_license_code(normalized_code)
+
+    now = datetime.now(timezone.utc)
+    items: list[dict] = []
+    for raw_item in _fetch_admin_license_rows():
+        if code_hash_filter and str(raw_item.get("code_hash") or "").strip() != code_hash_filter:
+            continue
+        item = _build_admin_license_item(raw_item, now=now)
+        if batch_id_filter and item["batch_id"] != batch_id_filter:
+            continue
+        if status_filter and item["status"] != status_filter:
+            continue
+        if account_filter:
+            haystack = " ".join(
+                part for part in [
+                    item.get("bound_account"),
+                    item.get("bound_phone"),
+                    item.get("bound_email"),
+                    item.get("bound_wechat_nickname"),
+                ] if part
+            ).lower()
+            if account_filter not in haystack:
+                continue
+        if note_filter and note_filter not in str(item.get("note") or "").lower():
+            continue
+        if bound_flag is not None:
+            item_is_bound = bool(item.get("bound_user_id"))
+            if item_is_bound != bool(bound_flag):
+                continue
+        created_at_dt = _parse_iso_datetime(item.get("created_at"))
+        expires_at_dt = _parse_iso_datetime(item.get("expires_at"))
+        if created_from_dt and (not created_at_dt or created_at_dt < created_from_dt):
+            continue
+        if created_to_dt and (not created_at_dt or created_at_dt > created_to_dt):
+            continue
+        if expires_from_dt and (not expires_at_dt or expires_at_dt < expires_from_dt):
+            continue
+        if expires_to_dt and (not expires_at_dt or expires_at_dt > expires_to_dt):
+            continue
+        items.append(item)
+    return items
+
+
+def _admin_license_sort_key(item: dict, sort_by: str):
+    normalized_sort_by = str(sort_by or "id").strip().lower()
+    if normalized_sort_by == "id":
+        return int(item.get("id") or 0)
+    if normalized_sort_by in {"created_at", "updated_at", "bound_at", "expires_at"}:
+        parsed = _parse_iso_datetime(item.get(normalized_sort_by))
+        return parsed.timestamp() if parsed else None
+    if normalized_sort_by == "duration_days":
+        return int(item.get("duration_days") or 0)
+    if normalized_sort_by == "status":
+        order = {
+            "active": 0,
+            "not_yet_active": 1,
+            "issued": 2,
+            "expired": 3,
+            "revoked": 4,
+            "replaced": 5,
+        }
+        return order.get(str(item.get("status") or "").strip().lower(), 99)
+    if normalized_sort_by in {"batch_id", "bound_account", "masked_code", "note"}:
+        return str(item.get(normalized_sort_by) or "").strip().lower()
+    return int(item.get("id") or 0)
+
+
+def _sort_admin_license_items(items: list[dict], *, sort_by: str = "id", sort_order: str = "desc") -> list[dict]:
+    normalized_sort_order = "asc" if str(sort_order or "").strip().lower() == "asc" else "desc"
+    reverse = normalized_sort_order == "desc"
+    valued_items: list[tuple[object, dict]] = []
+    missing_items: list[dict] = []
+    for item in items:
+        key = _admin_license_sort_key(item, sort_by)
+        if key is None:
+            missing_items.append(item)
+            continue
+        valued_items.append((key, item))
+    valued_items.sort(key=lambda pair: pair[0], reverse=reverse)
+    return [item for _, item in valued_items] + missing_items
+
+
+def query_licenses_admin(
+    *,
+    page: int = 1,
+    page_size: int = 20,
+    max_page_size: int = 100,
+    sort_by: str = "id",
+    sort_order: str = "desc",
+    batch_id: str = "",
+    status: str = "",
+    bound_account: str = "",
+    note: str = "",
+    created_from: str = "",
+    created_to: str = "",
+    expires_from: str = "",
+    expires_to: str = "",
+    is_bound: object = "",
+    code: object = "",
+) -> dict:
+    normalized_page_size = max(1, min(int(page_size or 20), max(1, int(max_page_size or 100))))
+    items = _filter_admin_license_items(
+        batch_id=batch_id,
+        status=status,
+        bound_account=bound_account,
+        note=note,
+        created_from=created_from,
+        created_to=created_to,
+        expires_from=expires_from,
+        expires_to=expires_to,
+        is_bound=is_bound,
+        code=code,
+    )
+    items = _sort_admin_license_items(items, sort_by=sort_by, sort_order=sort_order)
+    total_count = len(items)
+    total_pages = (total_count + normalized_page_size - 1) // normalized_page_size if total_count else 0
+    normalized_page = max(1, int(page or 1))
+    if total_pages:
+        normalized_page = min(normalized_page, total_pages)
+    start = (normalized_page - 1) * normalized_page_size
+    end = start + normalized_page_size
+    return {
+        "items": items[start:end],
+        "count": total_count,
+        "page": normalized_page,
+        "page_size": normalized_page_size,
+        "total_pages": total_pages,
+        "sort_by": str(sort_by or "id").strip().lower() or "id",
+        "sort_order": "asc" if str(sort_order or "").strip().lower() == "asc" else "desc",
+    }
+
+
+def list_licenses_admin(*, batch_id: str = "", status: str = "", bound_account: str = "") -> list[dict]:
+    return query_licenses_admin(
+        page=1,
+        page_size=100000,
+        max_page_size=100000,
+        batch_id=batch_id,
+        status=status,
+        bound_account=bound_account,
+    )["items"]
+
+
+def get_license_admin_detail(license_id: int) -> dict:
+    target_license_id = int(license_id or 0)
+    if target_license_id <= 0:
+        raise ValueError("license_id 无效")
+    items = _filter_admin_license_items()
+    for item in items:
+        if int(item.get("id") or 0) == target_license_id:
+            return item
+    raise ValueError("License 不存在")
+
+
+def list_license_events_admin(*, license_id: Optional[int] = None, limit: int = 20) -> list[dict]:
+    normalized_limit = max(1, min(int(limit or 20), 100))
+    params: list[object] = []
+    where_clause = ""
+    if license_id is not None:
+        where_clause = "WHERE e.license_id = ?"
+        params.append(int(license_id))
+
+    with get_auth_db_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT e.id, e.license_id, e.actor_user_id, e.event_type, e.payload_json, e.created_at,
+                   l.code_mask AS masked_code, l.batch_id,
+                   u.phone AS actor_phone, u.email AS actor_email
+            FROM license_events e
+            LEFT JOIN licenses l ON l.id = e.license_id
+            LEFT JOIN users u ON u.id = e.actor_user_id
+            {where_clause}
+            ORDER BY e.id DESC
+            LIMIT ?
+            """,
+            tuple(params + [normalized_limit]),
+        ).fetchall()
+
+    items: list[dict] = []
+    for row in rows:
+        payload = {}
+        try:
+            payload = json.loads(str(row["payload_json"] or "{}"))
+        except Exception:
+            payload = {}
+        items.append(
+            {
+                "id": int(row["id"]),
+                "license_id": int(row["license_id"] or 0) or None,
+                "masked_code": str(row["masked_code"] or "").strip(),
+                "batch_id": str(row["batch_id"] or "").strip(),
+                "actor_user_id": int(row["actor_user_id"] or 0) or None,
+                "actor_account": str(row["actor_phone"] or row["actor_email"] or "").strip(),
+                "event_type": str(row["event_type"] or "").strip(),
+                "payload": payload,
+                "created_at": str(row["created_at"] or "").strip(),
+            }
+        )
+    return items
+
+
+def summarize_licenses_admin() -> dict:
+    items = _filter_admin_license_items()
+    counts = {
+        "issued": 0,
+        "active": 0,
+        "not_yet_active": 0,
+        "expired": 0,
+        "revoked": 0,
+        "replaced": 0,
+    }
+    expiring_soon = 0
+    now = datetime.now(timezone.utc)
+    soon_deadline = now + timedelta(days=7)
+    for item in items:
+        status = str(item.get("status") or "").strip().lower()
+        if status in counts:
+            counts[status] += 1
+        expires_at = _parse_iso_datetime(item.get("expires_at"))
+        if expires_at and now <= expires_at <= soon_deadline and status not in {"revoked", "replaced", "expired"}:
+            expiring_soon += 1
+
+    return {
+        "counts": counts,
+        "total": len(items),
+        "bound_count": sum(1 for item in items if item.get("bound_user_id")),
+        "unbound_count": sum(1 for item in items if not item.get("bound_user_id")),
+        "expiring_soon_count": expiring_soon,
+        "recent_events": list_license_events_admin(limit=10),
+        "enforcement": get_license_enforcement_state(),
+    }
+
+
+def bulk_revoke_licenses(license_ids: list[int], *, reason: str = "", actor_user_id: Optional[int] = None) -> dict:
+    requested_ids = unique_positive_ints(license_ids)
+    if not requested_ids:
+        raise ValueError("license_ids 不能为空")
+
+    succeeded: list[dict] = []
+    failed: list[dict] = []
+    for license_id in requested_ids:
+        try:
+            succeeded.append(revoke_license_by_id(license_id, reason=reason, actor_user_id=actor_user_id))
+        except ValueError as exc:
+            failed.append({"id": license_id, "error": str(exc)})
+    return {
+        "requested": len(requested_ids),
+        "succeeded": succeeded,
+        "failed": failed,
+    }
+
+
+def bulk_extend_licenses(
+    license_ids: list[int],
+    *,
+    expires_at: str = "",
+    duration_days: object = None,
+    actor_user_id: Optional[int] = None,
+) -> dict:
+    requested_ids = unique_positive_ints(license_ids)
+    if not requested_ids:
+        raise ValueError("license_ids 不能为空")
+
+    succeeded: list[dict] = []
+    failed: list[dict] = []
+    for license_id in requested_ids:
+        try:
+            succeeded.append(
+                extend_license_by_id(
+                    license_id,
+                    expires_at=expires_at,
+                    duration_days=duration_days,
+                    actor_user_id=actor_user_id,
+                )
+            )
+        except ValueError as exc:
+            failed.append({"id": license_id, "error": str(exc)})
+    return {
+        "requested": len(requested_ids),
+        "succeeded": succeeded,
+        "failed": failed,
+    }
+
+
+def revoke_license_by_id(license_id: int, *, reason: str = "", actor_user_id: Optional[int] = None) -> dict:
+    target_license_id = int(license_id or 0)
+    if target_license_id <= 0:
+        raise ValueError("license_id 无效")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with get_auth_db_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT id, batch_id, code_mask, status, not_before_at, expires_at, bound_user_id,
+                   bound_at, replaced_by_license_id, revoked_at, revoked_reason, note, created_at, updated_at
+            FROM licenses
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (target_license_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("License 不存在")
+        license_row = _license_row_to_dict(row) or {}
+        status = str(license_row.get("status") or "").strip().lower()
+        if status == "replaced":
+            raise ValueError("已被替换的 License 不允许再撤销")
+        if status != "revoked":
+            conn.execute(
+                """
+                UPDATE licenses
+                SET status = 'revoked', revoked_at = ?, revoked_reason = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now_iso, str(reason or "").strip(), now_iso, target_license_id),
+            )
+            _record_license_event(
+                conn,
+                license_id=target_license_id,
+                actor_user_id=actor_user_id,
+                event_type="revoked",
+                payload={"reason": str(reason or "").strip()},
+                created_at=now_iso,
+            )
+            conn.commit()
+
+    return {
+        "id": target_license_id,
+        "status": "revoked",
+        "revoked_reason": str(reason or "").strip(),
+    }
+
+
+def extend_license_by_id(
+    license_id: int,
+    *,
+    expires_at: str = "",
+    duration_days: object = None,
+    actor_user_id: Optional[int] = None,
+) -> dict:
+    target_license_id = int(license_id or 0)
+    if target_license_id <= 0:
+        raise ValueError("license_id 无效")
+
+    parsed_duration_days = _parse_license_duration_days(duration_days, required=False)
+    expires_at_text = str(expires_at or "").strip()
+    new_expires_at = _parse_iso_datetime(expires_at_text) if expires_at_text else None
+    if parsed_duration_days is None and not new_expires_at:
+        raise ValueError("请填写新的有效期天数或 expires_at")
+    if parsed_duration_days is None and expires_at_text and not new_expires_at:
+        raise ValueError("expires_at 格式无效，请使用 ISO-8601 时间")
+
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    with get_auth_db_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT id, batch_id, code_mask, status, not_before_at, expires_at, duration_days, bound_user_id,
+                   bound_at, replaced_by_license_id, revoked_at, revoked_reason, note, created_at, updated_at
+            FROM licenses
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (target_license_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("License 不存在")
+        license_row = _license_row_to_dict(row) or {}
+        status = str(license_row.get("status") or "").strip().lower()
+        if status in {"revoked", "replaced"}:
+            raise ValueError("当前 License 状态不允许延期")
+
+        not_before_at = _parse_iso_datetime(license_row.get("not_before_at"))
+        bound_user_id = int(license_row.get("bound_user_id") or 0)
+        current_duration_days = max(0, int(license_row.get("duration_days") or 0))
+        update_payload = {
+            "not_before_at": str(license_row.get("not_before_at") or "").strip(),
+            "expires_at": str(license_row.get("expires_at") or "").strip(),
+            "duration_days": current_duration_days,
+            "status": "issued",
+        }
+
+        if parsed_duration_days is not None:
+            update_payload["duration_days"] = parsed_duration_days
+            if bound_user_id > 0:
+                anchor_at = not_before_at or _parse_iso_datetime(license_row.get("bound_at")) or now
+                update_payload["not_before_at"] = anchor_at.isoformat()
+                update_payload["expires_at"] = (anchor_at + timedelta(days=parsed_duration_days)).isoformat()
+                update_payload["status"] = "active" if _parse_iso_datetime(update_payload["expires_at"]) > now else "expired"
+            else:
+                update_payload["not_before_at"] = ""
+                update_payload["expires_at"] = ""
+                update_payload["status"] = "issued"
+        else:
+            if not not_before_at:
+                raise ValueError("License 生效时间异常")
+            if not new_expires_at or new_expires_at <= not_before_at:
+                raise ValueError("新的 expires_at 必须晚于 not_before_at")
+            update_payload["expires_at"] = new_expires_at.isoformat()
+            if current_duration_days > 0:
+                delta_seconds = (new_expires_at - not_before_at).total_seconds()
+                update_payload["duration_days"] = max(1, int(math.ceil(delta_seconds / (24 * 60 * 60))))
+            if bound_user_id > 0 and new_expires_at > now:
+                update_payload["status"] = "active"
+            elif new_expires_at <= now:
+                update_payload["status"] = "expired"
+            else:
+                update_payload["status"] = "issued"
+
+        conn.execute(
+            """
+            UPDATE licenses
+            SET not_before_at = ?, expires_at = ?, duration_days = ?, status = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                update_payload["not_before_at"],
+                update_payload["expires_at"],
+                int(update_payload["duration_days"]),
+                update_payload["status"],
+                now_iso,
+                target_license_id,
+            ),
+        )
+        _record_license_event(
+            conn,
+            license_id=target_license_id,
+            actor_user_id=actor_user_id,
+            event_type="extended",
+            payload={
+                "not_before_at": update_payload["not_before_at"],
+                "expires_at": update_payload["expires_at"],
+                "duration_days": int(update_payload["duration_days"]),
+                "activation_starts_validity": bool(int(update_payload["duration_days"]) > 0),
+            },
+            created_at=now_iso,
+        )
+        conn.commit()
+
+    return {
+        "id": target_license_id,
+        "status": str(update_payload["status"]),
+        "not_before_at": str(update_payload["not_before_at"]),
+        "expires_at": str(update_payload["expires_at"]),
+        "duration_days": int(update_payload["duration_days"]),
+        "activation_starts_validity": bool(int(update_payload["duration_days"]) > 0),
+    }
 
 
 def _sms_signing_secret() -> str:
@@ -4730,7 +7621,6 @@ def verify_sms_code(phone: str, scene: str, code: str, consume: bool = True) -> 
     return True, ""
 
 
-
 _WECHAT_MOJIBAKE_MARKERS = (
     "Ã", "Â", "ä", "å", "æ", "ç", "è", "é", "ê", "ë", "ì", "í", "î", "ï",
     "ð", "ñ", "ò", "ó", "ô", "õ", "ö", "ø", "ù", "ú", "û", "ü", "ý", "þ",
@@ -4813,7 +7703,12 @@ def build_user_payload(row: sqlite3.Row) -> dict:
 def query_user_by_id(user_id: int) -> Optional[sqlite3.Row]:
     with get_auth_db_connection() as conn:
         return conn.execute(
-            "SELECT id, email, phone, password_hash, created_at, updated_at FROM users WHERE id = ? LIMIT 1",
+            """
+            SELECT id, email, phone, password_hash, created_at, updated_at, merged_into_user_id, merged_at
+            FROM users
+            WHERE id = ?
+            LIMIT 1
+            """,
             (user_id,)
         ).fetchone()
 
@@ -4822,7 +7717,12 @@ def query_user_by_account(phone: str) -> Optional[sqlite3.Row]:
     with get_auth_db_connection() as conn:
         if phone:
             return conn.execute(
-                "SELECT id, email, phone, password_hash, created_at, updated_at FROM users WHERE phone = ? LIMIT 1",
+                """
+                SELECT id, email, phone, password_hash, created_at, updated_at, merged_into_user_id, merged_at
+                FROM users
+                WHERE phone = ?
+                LIMIT 1
+                """,
                 (phone,)
             ).fetchone()
     return None
@@ -4841,6 +7741,344 @@ def query_wechat_identity_by_user_id(user_id: int) -> Optional[dict]:
             (int(user_id),)
         ).fetchone()
         return dict(row) if row else None
+
+
+def query_wechat_identities_by_user_id(user_id: int) -> list[dict]:
+    with get_auth_db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, user_id, app_id, openid, unionid, nickname, avatar_url, created_at, updated_at
+            FROM wechat_identities
+            WHERE user_id = ?
+            ORDER BY updated_at DESC, id DESC
+            """,
+            (int(user_id),)
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _mask_phone_number(raw_phone: object) -> str:
+    phone = normalize_phone_number(str(raw_phone or "").strip())
+    if not phone or len(phone) < 7:
+        return phone
+    return f"{phone[:3]}****{phone[-4:]}"
+
+
+def _build_account_merge_user_summary(user_id: int) -> Optional[dict]:
+    user_row = query_user_by_id(int(user_id or 0))
+    if not user_row:
+        return None
+
+    wechat_identity = query_wechat_identity_by_user_id(int(user_row["id"]))
+    license_state = get_user_license_state(int(user_row["id"]))
+    asset_counts = ownership_admin_service.build_account_merge_asset_counts(
+        auth_db_path=AUTH_DB_PATH,
+        sessions_dir=SESSIONS_DIR,
+        reports_dir=REPORTS_DIR,
+        report_owners_file=REPORT_OWNERS_FILE,
+        custom_scenarios_dir=Path(getattr(scenario_loader, "custom_dir", DATA_DIR / "scenarios" / "custom")),
+        report_solution_shares_file=REPORT_SOLUTION_SHARES_FILE,
+        user_id=int(user_row["id"]),
+    )
+    phone = str(user_row["phone"] or "").strip()
+    nickname = normalize_wechat_nickname((wechat_identity or {}).get("nickname") or "")
+    display_name = nickname or _mask_phone_number(phone) or f"用户 {int(user_row['id'])}"
+    data_count_total = (
+        int(asset_counts.get("sessions", 0) or 0)
+        + int(asset_counts.get("reports", 0) or 0)
+        + int(asset_counts.get("custom_scenarios", 0) or 0)
+        + int(asset_counts.get("solution_shares", 0) or 0)
+        + int(asset_counts.get("licenses", 0) or 0)
+    )
+    return {
+        "id": int(user_row["id"]),
+        "display_name": display_name,
+        "phone_masked": _mask_phone_number(phone),
+        "has_phone": bool(phone),
+        "wechat_bound": bool(wechat_identity),
+        "wechat_nickname": nickname,
+        "is_wechat_shadow_account": bool(str(user_row["email"] or "").endswith("@wechat.local") and not phone),
+        "has_valid_license": bool(license_state.get("has_valid_license")),
+        "license_status": str(license_state.get("status") or "missing").strip() or "missing",
+        "asset_counts": {
+            "sessions": int(asset_counts.get("sessions", 0) or 0),
+            "reports": int(asset_counts.get("reports", 0) or 0),
+            "custom_scenarios": int(asset_counts.get("custom_scenarios", 0) or 0),
+            "solution_shares": int(asset_counts.get("solution_shares", 0) or 0),
+            "licenses": int(asset_counts.get("licenses", 0) or 0),
+        },
+        "has_history": data_count_total > 0,
+        "data_count_total": data_count_total,
+    }
+
+
+def _build_account_merge_conflict_payload(
+    *,
+    identity_type: str,
+    target_user_id: int,
+    source_user_id: int,
+    message: str,
+) -> dict:
+    source_summary = _build_account_merge_user_summary(source_user_id) or {"id": int(source_user_id)}
+    return {
+        "error": message,
+        "error_code": "identity_already_bound",
+        "merge_required": True,
+        "conflict_identity_type": str(identity_type or "").strip(),
+        "conflict_account_summary": source_summary,
+        "has_history": bool(source_summary.get("has_history")),
+        "target_user_id": int(target_user_id),
+        "source_user_id": int(source_user_id),
+    }
+
+
+def _can_auto_takeover_conflict_identity(
+    *,
+    identity_type: str,
+    target_summary: Optional[dict],
+    source_summary: Optional[dict],
+) -> bool:
+    if not isinstance(target_summary, dict) or not isinstance(source_summary, dict):
+        return False
+    counts = source_summary.get("asset_counts") or {}
+    source_has_data = any(int(counts.get(key, 0) or 0) > 0 for key in ("sessions", "reports", "custom_scenarios", "solution_shares", "licenses"))
+    if source_has_data:
+        return False
+
+    if identity_type == "phone":
+        return not bool(target_summary.get("has_phone")) and not bool(source_summary.get("wechat_bound"))
+    if identity_type == "wechat":
+        return not bool(target_summary.get("wechat_bound")) and not bool(source_summary.get("has_phone"))
+    return False
+
+
+def _store_account_merge_candidate(payload: dict) -> dict:
+    candidate = copy.deepcopy(payload if isinstance(payload, dict) else {})
+    candidate["issued_at"] = int(_time.time())
+    session[ACCOUNT_MERGE_CANDIDATE_SESSION_KEY] = candidate
+    session.modified = True
+    return candidate
+
+
+def _get_account_merge_candidate() -> Optional[dict]:
+    candidate = session.get(ACCOUNT_MERGE_CANDIDATE_SESSION_KEY)
+    if not isinstance(candidate, dict):
+        return None
+    issued_at = int(candidate.get("issued_at") or 0)
+    if issued_at <= 0 or (int(_time.time()) - issued_at) > ACCOUNT_MERGE_PREVIEW_TTL_SECONDS:
+        session.pop(ACCOUNT_MERGE_CANDIDATE_SESSION_KEY, None)
+        session.modified = True
+        return None
+    return copy.deepcopy(candidate)
+
+
+def _pop_account_merge_candidate() -> Optional[dict]:
+    payload = session.pop(ACCOUNT_MERGE_CANDIDATE_SESSION_KEY, None)
+    session.modified = True
+    return copy.deepcopy(payload) if isinstance(payload, dict) else None
+
+
+def _serialize_account_merge_preview_signature(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _store_account_merge_preview(payload: dict) -> dict:
+    token = secrets.token_urlsafe(18)
+    confirm_phrase = "确认合并到当前账号"
+    preview_payload = copy.deepcopy(payload if isinstance(payload, dict) else {})
+    preview_payload["token"] = token
+    preview_payload["issued_at"] = int(_time.time())
+    preview_payload["confirm_phrase"] = confirm_phrase
+    session[ACCOUNT_MERGE_PREVIEW_SESSION_KEY] = preview_payload
+    session.modified = True
+    return {
+        "preview_token": token,
+        "confirm_phrase": confirm_phrase,
+        "expires_in_seconds": ACCOUNT_MERGE_PREVIEW_TTL_SECONDS,
+    }
+
+
+def _get_account_merge_preview() -> Optional[dict]:
+    preview = session.get(ACCOUNT_MERGE_PREVIEW_SESSION_KEY)
+    if not isinstance(preview, dict):
+        return None
+    issued_at = int(preview.get("issued_at") or 0)
+    if issued_at <= 0 or (int(_time.time()) - issued_at) > ACCOUNT_MERGE_PREVIEW_TTL_SECONDS:
+        session.pop(ACCOUNT_MERGE_PREVIEW_SESSION_KEY, None)
+        session.modified = True
+        return None
+    return copy.deepcopy(preview)
+
+
+def _pop_account_merge_preview() -> Optional[dict]:
+    preview = session.pop(ACCOUNT_MERGE_PREVIEW_SESSION_KEY, None)
+    session.modified = True
+    return copy.deepcopy(preview) if isinstance(preview, dict) else None
+
+
+def _clear_account_merge_session_state() -> None:
+    session.pop(ACCOUNT_MERGE_CANDIDATE_SESSION_KEY, None)
+    session.pop(ACCOUNT_MERGE_PREVIEW_SESSION_KEY, None)
+    session.modified = True
+
+
+def _validate_account_merge_candidate(candidate: dict, *, current_user_id: int) -> tuple[bool, str]:
+    if not isinstance(candidate, dict):
+        return False, "账号合并上下文不存在，请重新发起绑定"
+    if int(candidate.get("target_user_id") or 0) != int(current_user_id):
+        return False, "账号合并上下文已失效，请重新发起绑定"
+    source_user_id = int(candidate.get("source_user_id") or 0)
+    if source_user_id <= 0:
+        return False, "待合并账号不存在，请重新发起绑定"
+
+    identity_type = str(candidate.get("identity_type") or "").strip()
+    if identity_type == "phone":
+        expected_phone = normalize_phone_number(str(candidate.get("phone") or "").strip())
+        source_user = query_user_by_id(source_user_id)
+        target_user = query_user_by_id(int(current_user_id))
+        if not source_user or not target_user:
+            return False, "待合并账号不存在，请重新发起绑定"
+        source_phone = normalize_phone_number(str(source_user["phone"] or "").strip())
+        target_phone = normalize_phone_number(str(target_user["phone"] or "").strip())
+        if not expected_phone or source_phone != expected_phone:
+            return False, "手机号归属已变化，请重新发起绑定"
+        if target_phone and target_phone != expected_phone:
+            return False, "当前账号已绑定其他手机号，请刷新页面后重试"
+        return True, ""
+
+    if identity_type == "wechat":
+        app_id = str(candidate.get("app_id") or "").strip()
+        openid = str(candidate.get("openid") or "").strip()
+        unionid = str(candidate.get("unionid") or "").strip()
+        with get_auth_db_connection() as conn:
+            identity_row = None
+            if unionid:
+                identity_row = conn.execute(
+                    "SELECT user_id FROM wechat_identities WHERE unionid = ? LIMIT 1",
+                    (unionid,),
+                ).fetchone()
+            if not identity_row and app_id and openid:
+                identity_row = conn.execute(
+                    "SELECT user_id FROM wechat_identities WHERE app_id = ? AND openid = ? LIMIT 1",
+                    (app_id, openid),
+                ).fetchone()
+        if not identity_row:
+            return False, "微信归属已变化，请重新发起绑定"
+        if int(identity_row["user_id"] or 0) != source_user_id:
+            return False, "微信归属已变化，请重新发起绑定"
+        return True, ""
+
+    return False, "账号合并上下文无效，请重新发起绑定"
+
+
+def _build_account_merge_preview_payload(candidate: dict, current_user_id: int) -> tuple[dict, dict]:
+    ok, error_message = _validate_account_merge_candidate(candidate, current_user_id=current_user_id)
+    if not ok:
+        raise ValueError(error_message)
+
+    source_user_id = int(candidate.get("source_user_id") or 0)
+    target_user_id = int(candidate.get("target_user_id") or 0)
+    target_summary = _build_account_merge_user_summary(target_user_id)
+    source_summary = _build_account_merge_user_summary(source_user_id)
+    if not isinstance(target_summary, dict) or not isinstance(source_summary, dict):
+        raise ValueError("待合并账号不存在，请重新发起绑定")
+
+    merge_summary = ownership_admin_service.run_account_merge(
+        auth_db_path=AUTH_DB_PATH,
+        sessions_dir=SESSIONS_DIR,
+        reports_dir=REPORTS_DIR,
+        report_owners_file=REPORT_OWNERS_FILE,
+        report_solution_shares_file=REPORT_SOLUTION_SHARES_FILE,
+        custom_scenarios_dir=Path(getattr(scenario_loader, "custom_dir", DATA_DIR / "scenarios" / "custom")),
+        backup_root=get_admin_ownership_backup_root(),
+        target_user_id=target_user_id,
+        source_user_id=source_user_id,
+        identity_type=str(candidate.get("identity_type") or "").strip(),
+        identity_value=str(candidate.get("identity_value") or "").strip(),
+        actor_user_id=target_user_id,
+        apply_mode=False,
+    )
+    public_summary = {
+        "operation_type": str(merge_summary.get("operation_type") or "account_merge"),
+        "sessions": merge_summary.get("sessions") or {},
+        "reports": merge_summary.get("reports") or {},
+        "custom_scenarios": merge_summary.get("custom_scenarios") or {},
+        "solution_shares": merge_summary.get("solution_shares") or {},
+        "licenses": merge_summary.get("licenses") or {},
+        "wechat_identities": merge_summary.get("wechat_identities") or {},
+        "user_record": merge_summary.get("user_record") or {},
+    }
+    preview_payload = {
+        "merge_required": True,
+        "identity_type": str(candidate.get("identity_type") or "").strip(),
+        "identity_label": "手机号" if str(candidate.get("identity_type") or "").strip() == "phone" else "微信",
+        "target_account": target_summary,
+        "source_account": source_summary,
+        "summary": public_summary,
+        "warning_message": "合并后，另一账号的历史数据将并入当前账号，原账号不再单独持有这些数据。",
+    }
+    signature_payload = {
+        "candidate": {
+            "target_user_id": target_user_id,
+            "source_user_id": source_user_id,
+            "identity_type": preview_payload["identity_type"],
+            "identity_value": str(candidate.get("identity_value") or "").strip(),
+        },
+        "summary": {
+            "sessions": public_summary.get("sessions") or {},
+            "reports": public_summary.get("reports") or {},
+            "custom_scenarios": public_summary.get("custom_scenarios") or {},
+            "solution_shares": public_summary.get("solution_shares") or {},
+            "licenses": public_summary.get("licenses") or {},
+            "wechat_identities": public_summary.get("wechat_identities") or {},
+            "user_record": public_summary.get("user_record") or {},
+        },
+        "target_phone_masked": target_summary.get("phone_masked"),
+        "target_wechat_bound": bool(target_summary.get("wechat_bound")),
+        "source_phone_masked": source_summary.get("phone_masked"),
+        "source_wechat_bound": bool(source_summary.get("wechat_bound")),
+        "source_has_valid_license": bool(source_summary.get("has_valid_license")),
+    }
+    return preview_payload, signature_payload
+
+
+def _refresh_account_merge_runtime_state() -> None:
+    scenario_loader.reload()
+    report_owners_cache["signature"] = None
+    report_owners_cache["data"] = {}
+    report_solution_shares_cache["signature"] = None
+    report_solution_shares_cache["data"] = {}
+    report_scopes_cache["signature"] = None
+    report_scopes_cache["data"] = {}
+    session_list_cache.clear()
+    rebuild_session_index_from_disk()
+    rebuild_report_index_from_sources()
+    get_auth_instance_id(force_refresh=True)
+
+
+def _execute_account_merge_apply(candidate: dict, *, actor_user_id: int, reason: str = "self_service_account_merge") -> tuple[dict, sqlite3.Row]:
+    target_user_id = int(candidate.get("target_user_id") or 0)
+    source_user_id = int(candidate.get("source_user_id") or 0)
+    summary = ownership_admin_service.run_account_merge(
+        auth_db_path=AUTH_DB_PATH,
+        sessions_dir=SESSIONS_DIR,
+        reports_dir=REPORTS_DIR,
+        report_owners_file=REPORT_OWNERS_FILE,
+        report_solution_shares_file=REPORT_SOLUTION_SHARES_FILE,
+        custom_scenarios_dir=Path(getattr(scenario_loader, "custom_dir", DATA_DIR / "scenarios" / "custom")),
+        backup_root=get_admin_ownership_backup_root(),
+        target_user_id=target_user_id,
+        source_user_id=source_user_id,
+        identity_type=str(candidate.get("identity_type") or "").strip(),
+        identity_value=str(candidate.get("identity_value") or "").strip() or reason,
+        actor_user_id=int(actor_user_id),
+        apply_mode=True,
+    )
+    _refresh_account_merge_runtime_state()
+    updated_user = query_user_by_id(target_user_id)
+    if not updated_user:
+        raise RuntimeError("账号合并完成，但目标账号状态刷新失败")
+    return summary, updated_user
 
 
 def sanitize_return_to_path(raw_return_to: str) -> str:
@@ -5158,11 +8396,11 @@ def resolve_user_for_wechat_identity(
     return query_user_by_id(user_id)
 
 
-def bind_phone_to_user(user_id: int, phone: str) -> tuple[Optional[sqlite3.Row], str]:
+def bind_phone_to_user(user_id: int, phone: str) -> dict:
     target_user_id = int(user_id)
     normalized_phone = normalize_phone_number(phone)
     if not AUTH_PHONE_PATTERN.match(normalized_phone):
-        return None, "请输入有效的手机号（中国大陆 11 位）"
+        return {"success": False, "error": "请输入有效的手机号（中国大陆 11 位）", "status_code": 400}
 
     now_iso = datetime.now(timezone.utc).isoformat()
     with get_auth_db_connection() as conn:
@@ -5176,13 +8414,13 @@ def bind_phone_to_user(user_id: int, phone: str) -> tuple[Optional[sqlite3.Row],
             (target_user_id,)
         ).fetchone()
         if not current_user:
-            return None, "当前登录用户不存在"
+            return {"success": False, "error": "当前登录用户不存在", "status_code": 404}
 
         current_phone = str(current_user["phone"] or "").strip()
         if current_phone and current_phone == normalized_phone:
-            return current_user, ""
+            return {"success": True, "user": current_user, "merge_applied": False}
         if current_phone and current_phone != normalized_phone:
-            return None, "当前账号已绑定其他手机号，暂不支持直接更换"
+            return {"success": False, "error": "当前账号已绑定其他手机号，暂不支持直接更换", "status_code": 409}
 
         conflict_user = conn.execute(
             """
@@ -5194,7 +8432,35 @@ def bind_phone_to_user(user_id: int, phone: str) -> tuple[Optional[sqlite3.Row],
             (normalized_phone,)
         ).fetchone()
         if conflict_user and int(conflict_user["id"]) != target_user_id:
-            return None, "该手机号已绑定到其他账号"
+            source_user_id = int(conflict_user["id"])
+            target_summary = _build_account_merge_user_summary(target_user_id)
+            source_summary = _build_account_merge_user_summary(source_user_id)
+            candidate_payload = {
+                "target_user_id": target_user_id,
+                "source_user_id": source_user_id,
+                "identity_type": "phone",
+                "identity_value": normalized_phone,
+                "phone": normalized_phone,
+            }
+            if _can_auto_takeover_conflict_identity(
+                identity_type="phone",
+                target_summary=target_summary,
+                source_summary=source_summary,
+            ):
+                return {
+                    "success": False,
+                    "auto_takeover": True,
+                    "candidate_payload": candidate_payload,
+                }
+            conflict_payload = _build_account_merge_conflict_payload(
+                identity_type="phone",
+                target_user_id=target_user_id,
+                source_user_id=source_user_id,
+                message="该手机号已绑定到其他账号，需要确认合并历史数据后才能继续绑定",
+            )
+            conflict_payload["status_code"] = 409
+            conflict_payload["candidate_payload"] = candidate_payload
+            return conflict_payload
 
         conn.execute(
             """
@@ -5208,8 +8474,8 @@ def bind_phone_to_user(user_id: int, phone: str) -> tuple[Optional[sqlite3.Row],
 
     updated_user = query_user_by_id(target_user_id)
     if not updated_user:
-        return None, "绑定手机号失败，请稍后重试"
-    return updated_user, ""
+        return {"success": False, "error": "绑定手机号失败，请稍后重试", "status_code": 500}
+    return {"success": True, "user": updated_user, "merge_applied": False}
 
 
 def bind_wechat_identity_to_user(
@@ -5219,7 +8485,8 @@ def bind_wechat_identity_to_user(
     unionid: str = "",
     nickname: str = "",
     avatar_url: str = "",
-) -> tuple[Optional[sqlite3.Row], str]:
+) -> dict:
+    # 返回统一结构，兼容普通绑定、自动接管和自助合并预览。
     target_user_id = int(user_id)
     app_id_value = str(app_id or "").strip()
     openid_value = str(openid or "").strip()
@@ -5228,7 +8495,7 @@ def bind_wechat_identity_to_user(
     avatar_url_value = str(avatar_url or "").strip()
 
     if not app_id_value or not openid_value:
-        return None, "微信身份信息不完整"
+        return {"success": False, "error": "微信身份信息不完整", "status_code": 400}
 
     now_iso = datetime.now(timezone.utc).isoformat()
     with get_auth_db_connection() as conn:
@@ -5237,7 +8504,7 @@ def bind_wechat_identity_to_user(
             (target_user_id,)
         ).fetchone()
         if not current_user:
-            return None, "当前登录用户不存在"
+            return {"success": False, "error": "当前登录用户不存在", "status_code": 404}
 
         bound_for_user = conn.execute(
             """
@@ -5259,7 +8526,7 @@ def bind_wechat_identity_to_user(
                 and str(bound_for_user["unionid"] or "").strip() == unionid_value
             )
             if not (same_openid or same_unionid):
-                return None, "当前账号已绑定其他微信，请先解绑后再绑定"
+                return {"success": False, "error": "当前账号已绑定其他微信，请先解绑后再绑定", "status_code": 409}
 
         identity_row = None
         if unionid_value:
@@ -5284,7 +8551,39 @@ def bind_wechat_identity_to_user(
             ).fetchone()
 
         if identity_row and int(identity_row["user_id"]) != target_user_id:
-            return None, "该微信已绑定到其他账号"
+            source_user_id = int(identity_row["user_id"])
+            target_summary = _build_account_merge_user_summary(target_user_id)
+            source_summary = _build_account_merge_user_summary(source_user_id)
+            candidate_payload = {
+                "target_user_id": target_user_id,
+                "source_user_id": source_user_id,
+                "identity_type": "wechat",
+                "identity_value": unionid_value or f"{app_id_value}:{openid_value}",
+                "app_id": app_id_value,
+                "openid": openid_value,
+                "unionid": unionid_value,
+                "nickname": nickname_value,
+                "avatar_url": avatar_url_value,
+            }
+            if _can_auto_takeover_conflict_identity(
+                identity_type="wechat",
+                target_summary=target_summary,
+                source_summary=source_summary,
+            ):
+                return {
+                    "success": False,
+                    "auto_takeover": True,
+                    "candidate_payload": candidate_payload,
+                }
+            conflict_payload = _build_account_merge_conflict_payload(
+                identity_type="wechat",
+                target_user_id=target_user_id,
+                source_user_id=source_user_id,
+                message="该微信已绑定到其他账号，需要确认合并历史数据后才能继续绑定",
+            )
+            conflict_payload["status_code"] = 409
+            conflict_payload["candidate_payload"] = candidate_payload
+            return conflict_payload
 
         if identity_row:
             conn.execute(
@@ -5323,12 +8622,12 @@ def bind_wechat_identity_to_user(
                 )
                 conn.commit()
             except sqlite3.IntegrityError:
-                return None, "该微信已绑定到其他账号"
+                return {"success": False, "error": "该微信已绑定到其他账号", "status_code": 409}
 
     updated_user = query_user_by_id(target_user_id)
     if not updated_user:
-        return None, "绑定微信失败，请稍后重试"
-    return updated_user, ""
+        return {"success": False, "error": "绑定微信失败，请稍后重试", "status_code": 500}
+    return {"success": True, "user": updated_user, "merge_applied": False}
 
 
 def get_current_user() -> Optional[sqlite3.Row]:
@@ -5357,6 +8656,13 @@ def get_current_user() -> Optional[sqlite3.Row]:
 
     user_row = query_user_by_id(user_id_int)
     if not user_row:
+        session.clear()
+        return None
+    try:
+        merged_into_user_id = int(user_row["merged_into_user_id"] or 0)
+    except (TypeError, ValueError, KeyError):
+        merged_into_user_id = 0
+    if merged_into_user_id > 0:
         session.clear()
         return None
 
@@ -5412,6 +8718,25 @@ def require_admin(func):
     return wrapper
 
 
+def require_valid_license(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        user = get_current_user()
+        if not user:
+            return jsonify({"error": "请先登录"}), 401
+        license_payload = build_license_status_payload_for_user(user)
+        if not license_payload.get("has_valid_license"):
+            license_status = str(license_payload.get("status") or "missing")
+            return jsonify({
+                "error": _license_status_message(license_status),
+                "error_code": _license_status_error_code(license_status),
+                "license_status": license_status,
+            }), 403
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
 PUBLIC_API_EXACT_PATHS = {
     "/api/auth/sms/send-code",
     "/api/auth/login/code",
@@ -5425,6 +8750,28 @@ PUBLIC_API_EXACT_PATHS = {
     "/api/status",
     "/api/status/web-search",
 }
+
+LICENSE_PUBLIC_API_EXACT_PATHS = {
+    "/api/status",
+    "/api/status/web-search",
+    "/api/licenses/current",
+    "/api/licenses/activate",
+    "/api/admin/licenses/bootstrap/status",
+    "/api/admin/licenses/bootstrap",
+}
+
+
+def is_license_protected_route(path: str) -> bool:
+    normalized = str(path or "").strip()
+    if not normalized.startswith("/api/"):
+        return False
+    if normalized in LICENSE_PUBLIC_API_EXACT_PATHS:
+        return False
+    if normalized.startswith("/api/public/"):
+        return False
+    if normalized.startswith("/api/auth/"):
+        return False
+    return True
 
 
 @app.before_request
@@ -5446,8 +8793,19 @@ def enforce_auth_for_protected_routes():
     if request.method == "GET" and path.startswith("/api/scenarios"):
         return None
 
-    if not get_current_user():
+    current_user = get_current_user()
+    if not current_user:
         return jsonify({"error": "请先登录"}), 401
+
+    if is_license_enforcement_enabled() and is_license_protected_route(path):
+        license_payload = build_license_status_payload_for_user(current_user)
+        if not license_payload.get("has_valid_license"):
+            license_status = str(license_payload.get("status") or "missing")
+            return jsonify({
+                "error": _license_status_message(license_status),
+                "error_code": _license_status_error_code(license_status),
+                "license_status": license_status,
+            }), 403
 
     return None
 
@@ -19800,7 +23158,7 @@ def auth_wechat_callback():
     avatar_url = str(profile_payload.get("headimgurl", "")).strip()
 
     if is_bind_flow:
-        user_row, bind_error = bind_wechat_identity_to_user(
+        bind_result = bind_wechat_identity_to_user(
             user_id=int(bind_user_row["id"]),
             app_id=WECHAT_APP_ID,
             openid=openid,
@@ -19808,12 +23166,44 @@ def auth_wechat_callback():
             nickname=nickname,
             avatar_url=avatar_url,
         )
-        if bind_error or not user_row:
+        if bind_result.get("auto_takeover"):
+            try:
+                _, auto_user = _execute_account_merge_apply(
+                    bind_result.get("candidate_payload") or {},
+                    actor_user_id=int(bind_user_row["id"]),
+                    reason="bind_wechat_auto_takeover",
+                )
+            except Exception as exc:
+                return redirect(
+                    build_auth_redirect_url(return_to, "wechat_bind_error", str(exc) or "微信绑定失败，请稍后重试"),
+                    code=302,
+                )
+            _clear_account_merge_session_state()
+            login_user(auto_user)
+            return redirect(build_auth_redirect_url(return_to, "wechat_bind_success", "微信绑定成功"), code=302)
+        if not bind_result.get("success"):
+            if bind_result.get("merge_required"):
+                _clear_account_merge_session_state()
+                _store_account_merge_candidate(bind_result.get("candidate_payload") or {})
+                return redirect(
+                    build_auth_redirect_url(
+                        return_to,
+                        "wechat_bind_merge_required",
+                        bind_result.get("error") or "发现另一个微信账号已有历史数据，请确认合并后继续绑定",
+                    ),
+                    code=302,
+                )
             return redirect(
-                build_auth_redirect_url(return_to, "wechat_bind_error", bind_error or "微信绑定失败，请稍后重试"),
+                build_auth_redirect_url(
+                    return_to,
+                    "wechat_bind_error",
+                    bind_result.get("error") or "微信绑定失败，请稍后重试",
+                ),
                 code=302,
             )
 
+        user_row = bind_result.get("user")
+        _clear_account_merge_session_state()
         login_user(user_row)
         return redirect(build_auth_redirect_url(return_to, "wechat_bind_success", "微信绑定成功"), code=302)
 
@@ -19879,13 +23269,171 @@ def auth_bind_phone():
             status_code = 429
         return jsonify({"error": verify_error or "验证码校验失败"}), status_code
 
-    updated_user, bind_error = bind_phone_to_user(int(user_row["id"]), phone)
-    if bind_error or not updated_user:
-        status_code = 409 if "已绑定" in (bind_error or "") else 400
-        return jsonify({"error": bind_error or "绑定手机号失败"}), status_code
+    bind_result = bind_phone_to_user(int(user_row["id"]), phone)
+    if bind_result.get("auto_takeover"):
+        try:
+            merge_summary, updated_user = _execute_account_merge_apply(
+                bind_result.get("candidate_payload") or {},
+                actor_user_id=int(user_row["id"]),
+                reason="bind_phone_auto_takeover",
+            )
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 409
+        _clear_account_merge_session_state()
+        login_user(updated_user)
+        public_summary = {
+            "operation_type": str(merge_summary.get("operation_type") or "account_merge"),
+            "sessions": merge_summary.get("sessions") or {},
+            "reports": merge_summary.get("reports") or {},
+            "custom_scenarios": merge_summary.get("custom_scenarios") or {},
+            "solution_shares": merge_summary.get("solution_shares") or {},
+            "licenses": merge_summary.get("licenses") or {},
+            "wechat_identities": merge_summary.get("wechat_identities") or {},
+            "user_record": merge_summary.get("user_record") or {},
+        }
+        return jsonify({
+            "success": True,
+            "user": build_user_payload(updated_user),
+            "merge_applied": True,
+            "merge_summary": public_summary,
+        })
+    if not bind_result.get("success"):
+        if bind_result.get("merge_required"):
+            _clear_account_merge_session_state()
+            _store_account_merge_candidate(bind_result.get("candidate_payload") or {})
+            response_payload = {
+                "error": bind_result.get("error") or "发现另一个手机号账号已有历史数据，请确认合并后继续绑定",
+                "error_code": bind_result.get("error_code") or "identity_already_bound",
+                "merge_required": True,
+                "conflict_identity_type": bind_result.get("conflict_identity_type") or "phone",
+                "conflict_account_summary": bind_result.get("conflict_account_summary") or {},
+                "has_history": bool(bind_result.get("has_history")),
+            }
+            return jsonify(response_payload), int(bind_result.get("status_code") or 409)
+        return jsonify({"error": bind_result.get("error") or "绑定手机号失败"}), int(bind_result.get("status_code") or 400)
 
+    updated_user = bind_result.get("user")
+    _clear_account_merge_session_state()
     login_user(updated_user)
-    return jsonify({"success": True, "user": build_user_payload(updated_user)})
+    response_payload = {"success": True, "user": build_user_payload(updated_user)}
+    if bind_result.get("merge_applied"):
+        response_payload["merge_applied"] = True
+        response_payload["merge_summary"] = bind_result.get("merge_summary") or {}
+    return jsonify(response_payload)
+
+
+@app.route('/api/auth/account-merge/preview', methods=['POST'])
+@require_login
+def auth_account_merge_preview():
+    user_row = get_current_user()
+    if not user_row:
+        return jsonify({"error": "请先登录"}), 401
+
+    candidate = _get_account_merge_candidate()
+    if not candidate:
+        return jsonify({"error": "合并上下文已失效，请重新发起绑定"}), 409
+
+    try:
+        preview_payload, signature_payload = _build_account_merge_preview_payload(candidate, int(user_row["id"]))
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 409
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 409
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    preview_meta = _store_account_merge_preview(
+        {
+            "candidate": candidate,
+            "signature": _serialize_account_merge_preview_signature(signature_payload),
+            "payload": preview_payload,
+        }
+    )
+    return jsonify({"success": True, **preview_payload, **preview_meta})
+
+
+@app.route('/api/auth/account-merge/apply', methods=['POST'])
+@require_login
+def auth_account_merge_apply():
+    user_row = get_current_user()
+    if not user_row:
+        return jsonify({"error": "请先登录"}), 401
+
+    preview = _get_account_merge_preview()
+    if not preview:
+        return jsonify({"error": "预览已失效，请重新确认合并内容"}), 409
+
+    data = request.get_json(silent=True) or {}
+    preview_token = str(data.get("preview_token") or "").strip()
+    if preview_token != str(preview.get("token") or "").strip():
+        return jsonify({"error": "preview_token 无效，请重新确认合并内容"}), 409
+
+    confirm_phrase = str(preview.get("confirm_phrase") or "").strip()
+    if str(data.get("confirm_text") or "").strip() != confirm_phrase:
+        return jsonify({"error": "确认短语不匹配"}), 400
+
+    candidate = preview.get("candidate") or {}
+    try:
+        _, signature_payload = _build_account_merge_preview_payload(candidate, int(user_row["id"]))
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 409
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 409
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    current_signature = _serialize_account_merge_preview_signature(signature_payload)
+    if current_signature != str(preview.get("signature") or "").strip():
+        return jsonify({"error": "预览数据已变化，请重新确认合并内容"}), 409
+
+    try:
+        merge_summary, updated_user = _execute_account_merge_apply(
+            candidate,
+            actor_user_id=int(user_row["id"]),
+            reason="self_service_account_merge",
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 409
+
+    _clear_account_merge_session_state()
+    login_user(updated_user)
+    public_summary = {
+        "operation_type": str(merge_summary.get("operation_type") or "account_merge"),
+        "sessions": merge_summary.get("sessions") or {},
+        "reports": merge_summary.get("reports") or {},
+        "custom_scenarios": merge_summary.get("custom_scenarios") or {},
+        "solution_shares": merge_summary.get("solution_shares") or {},
+        "licenses": merge_summary.get("licenses") or {},
+        "wechat_identities": merge_summary.get("wechat_identities") or {},
+        "user_record": merge_summary.get("user_record") or {},
+    }
+    return jsonify({
+        "success": True,
+        "user": build_user_payload(updated_user),
+        "summary": public_summary,
+        "message": "账号历史已并入当前账号",
+    })
+
+
+@app.route('/api/licenses/current', methods=['GET'])
+@require_login
+def get_current_license():
+    user_row = get_current_user()
+    if not user_row:
+        return jsonify({"error": "请先登录"}), 401
+    return jsonify(build_license_status_payload_for_user(user_row))
+
+
+@app.route('/api/licenses/activate', methods=['POST'])
+@require_login
+def activate_current_user_license():
+    user_row = get_current_user()
+    if not user_row:
+        return jsonify({"error": "请先登录"}), 401
+
+    data = request.get_json(silent=True) or {}
+    ok, status_code, payload = activate_license_for_user(data.get("code"), int(user_row["id"]))
+    return jsonify(payload), status_code
 
 
 # ============ 会话 API ============
@@ -25827,6 +29375,7 @@ def load_reports_for_user_from_files(user_id_int: int) -> list[dict]:
     owner_map = load_report_owners()
     expected_scope = get_active_instance_scope_key()
     reports_root = REPORTS_DIR.resolve()
+    binding_map = collect_direct_bound_report_metadata_from_sessions()
     reports = []
     for report_name, owner_id in owner_map.items():
         if owner_id != int(user_id_int):
@@ -25850,7 +29399,7 @@ def load_reports_for_user_from_files(user_id_int: int) -> list[dict]:
                 report_name,
                 int(stat.st_size),
                 datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                owner_user_id=int(user_id_int),
+                binding_metadata=binding_map.get(report_name),
             )
         )
 
@@ -26862,53 +30411,31 @@ def find_direct_bound_session_for_report(report_name: str, owner_user_id: int) -
     return None
 
 
-def build_report_binding_metadata(report_name: str, owner_user_id: int = 0) -> dict:
+def build_report_binding_metadata(report_name: str, binding_metadata: Optional[dict] = None) -> dict:
     normalized_report_name = normalize_solution_report_filename(report_name)
-    metadata = {
-        "session_id": "",
-        "topic": "",
-        "scenario_name": "",
-        "report_template": "",
-        "report_type": "",
-    }
+    metadata = empty_report_binding_metadata()
     if not normalized_report_name:
         return metadata
 
     sidecar = read_solution_sidecar(normalized_report_name)
     if isinstance(sidecar, dict) and sidecar:
         normalized_snapshot = _normalize_solution_snapshot(sidecar)
-        metadata.update({
-            "session_id": str(normalized_snapshot.get("session_id") or "").strip(),
-            "topic": str(normalized_snapshot.get("topic") or "").strip(),
-            "scenario_name": str(normalized_snapshot.get("scenario_name") or "").strip(),
-            "report_template": str(normalized_snapshot.get("report_template") or "").strip(),
-            "report_type": str(normalized_snapshot.get("report_type") or "").strip(),
-        })
+        metadata.update(normalize_report_binding_metadata({
+            "session_id": normalized_snapshot.get("session_id", ""),
+            "topic": normalized_snapshot.get("topic", ""),
+            "scenario_name": normalized_snapshot.get("scenario_name", ""),
+            "report_template": normalized_snapshot.get("report_template", ""),
+            "report_type": normalized_snapshot.get("report_type", ""),
+        }))
 
-    if all(metadata.values()):
-        return metadata
-
-    if int(owner_user_id or 0) <= 0:
-        return metadata
-
-    session_data = find_direct_bound_session_for_report(normalized_report_name, int(owner_user_id))
-    if not isinstance(session_data, dict):
-        return metadata
-
-    metadata["session_id"] = metadata["session_id"] or str(session_data.get("session_id") or "").strip()
-    metadata["topic"] = metadata["topic"] or str(session_data.get("topic") or "").strip()
-    scenario_config = session_data.get("scenario_config", {}) if isinstance(session_data.get("scenario_config", {}), dict) else {}
-    report_cfg = scenario_config.get("report", {}) if isinstance(scenario_config.get("report", {}), dict) else {}
-    metadata["scenario_name"] = metadata["scenario_name"] or str(scenario_config.get("name") or "").strip()
-    metadata["report_type"] = metadata["report_type"] or str(report_cfg.get("type") or "standard").strip().lower()
-    metadata["report_template"] = metadata["report_template"] or normalize_report_template_name(
-        report_cfg.get("template", ""),
-        report_type=metadata["report_type"] or "standard",
-    )
+    fallback_metadata = normalize_report_binding_metadata(binding_metadata)
+    for key, value in fallback_metadata.items():
+        if value and not metadata.get(key):
+            metadata[key] = value
     return metadata
 
 
-def build_report_list_item(report_name: str, size: int, created_at: str, owner_user_id: int = 0) -> dict:
+def build_report_list_item(report_name: str, size: int, created_at: str, binding_metadata: Optional[dict] = None) -> dict:
     path = str((REPORTS_DIR / report_name).resolve())
     payload = {
         "name": report_name,
@@ -26916,7 +30443,7 @@ def build_report_list_item(report_name: str, size: int, created_at: str, owner_u
         "size": int(size or 0),
         "created_at": str(created_at or ""),
     }
-    payload.update(build_report_binding_metadata(report_name, owner_user_id=owner_user_id))
+    payload.update(build_report_binding_metadata(report_name, binding_metadata=binding_metadata))
     return payload
 
 
@@ -35421,6 +38948,7 @@ def get_status():
     """获取服务状态"""
     wechat_enabled = bool(WECHAT_LOGIN_ENABLED and WECHAT_APP_ID and WECHAT_APP_SECRET)
     sms_enabled = bool(SMS_PROVIDER in {"mock", "jdcloud"})
+    license_enforcement_state = get_license_enforcement_state()
     if not get_current_user():
         return jsonify({
             "status": "running",
@@ -35430,10 +38958,13 @@ def get_status():
             "sms_provider": SMS_PROVIDER,
             "sms_code_length": SMS_CODE_LENGTH,
             "sms_cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
+            "license_enforcement_enabled": bool(license_enforcement_state.get("enabled")),
+            "license_enforcement_source": str(license_enforcement_state.get("source") or "env_default"),
             "report_profile_default": REPORT_V3_PROFILE,
             "report_profile_options": ["balanced", "quality"],
         })
 
+    current_user = get_current_user()
     question_available = resolve_ai_client(call_type="question") is not None
     report_draft_available = resolve_ai_client(call_type="report_v3_draft", preferred_lane="report") is not None
     report_review_available = resolve_ai_client(call_type="report_v3_review_round_1", preferred_lane="report") is not None
@@ -35444,6 +38975,7 @@ def get_status():
         mode: get_interview_mode_display_config(mode)
         for mode in mode_names
     }
+    license_payload = build_license_status_payload_for_user(current_user)
     return jsonify({
         "status": "running",
         "authenticated": True,
@@ -35452,6 +38984,9 @@ def get_status():
         "sms_provider": SMS_PROVIDER,
         "sms_code_length": SMS_CODE_LENGTH,
         "sms_cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
+        "license_enforcement_enabled": bool(license_enforcement_state.get("enabled")),
+        "license_enforcement_source": str(license_enforcement_state.get("source") or "env_default"),
+        "license": license_payload,
         "ai_available": ai_available,
         "question_ai_available": question_available,
         "report_ai_available": report_available,
@@ -35528,6 +39063,485 @@ def get_report_generation_status(session_id):
         return jsonify(build_report_generation_payload(status))
 
     return jsonify({"active": False, "processing": False})
+
+
+def _build_admin_ownership_request_payload(data: Optional[dict]) -> dict:
+    payload = data if isinstance(data, dict) else {}
+    kinds = ownership_admin_service.parse_kinds(payload.get("kinds") or "sessions,reports")
+    return {
+        "to_user_id": int(payload["to_user_id"]) if payload.get("to_user_id") not in (None, "") else None,
+        "to_account": str(payload.get("to_account") or "").strip(),
+        "scope": str(payload.get("scope") or "unowned").strip(),
+        "from_user_id": int(payload["from_user_id"]) if payload.get("from_user_id") not in (None, "") else None,
+        "kinds": sorted(list(kinds)),
+        "max_examples": max(1, min(int(payload.get("max_examples") or 20), 50)),
+    }
+
+
+def _serialize_admin_ownership_request_payload(payload: dict) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _store_admin_ownership_preview(payload: dict) -> dict:
+    token = secrets.token_urlsafe(18)
+    target_label = str(payload.get("to_account") or payload.get("to_user_id") or "").strip() or "目标用户"
+    confirm_phrase = f"确认迁移到 {target_label}"
+    session[ADMIN_OWNERSHIP_PREVIEW_SESSION_KEY] = {
+        "token": token,
+        "issued_at": int(_time.time()),
+        "payload": payload,
+        "confirm_phrase": confirm_phrase,
+    }
+    session.modified = True
+    return {
+        "preview_token": token,
+        "confirm_phrase": confirm_phrase,
+        "expires_in_seconds": ADMIN_OWNERSHIP_PREVIEW_TTL_SECONDS,
+    }
+
+
+def _pop_admin_ownership_preview() -> Optional[dict]:
+    preview = session.pop(ADMIN_OWNERSHIP_PREVIEW_SESSION_KEY, None)
+    session.modified = True
+    return preview if isinstance(preview, dict) else None
+
+
+def _get_admin_ownership_preview() -> Optional[dict]:
+    preview = session.get(ADMIN_OWNERSHIP_PREVIEW_SESSION_KEY)
+    if not isinstance(preview, dict):
+        return None
+    issued_at = int(preview.get("issued_at") or 0)
+    if issued_at <= 0 or (int(_time.time()) - issued_at) > ADMIN_OWNERSHIP_PREVIEW_TTL_SECONDS:
+        session.pop(ADMIN_OWNERSHIP_PREVIEW_SESSION_KEY, None)
+        session.modified = True
+        return None
+    return preview
+
+
+@app.route('/api/admin/licenses/batch', methods=['POST'])
+@require_admin
+@require_valid_license
+def admin_generate_licenses():
+    user_row = get_current_user()
+    data = request.get_json(silent=True) or {}
+
+    try:
+        count = int(data.get("count") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    duration_days = data.get("duration_days")
+    not_before_at = str(data.get("not_before_at") or "").strip()
+    expires_at = str(data.get("expires_at") or "").strip()
+    note = str(data.get("note") or "").strip()
+
+    if count <= 0:
+        return jsonify({"error": "count 必须为正整数"}), 400
+    if count > 500:
+        return jsonify({"error": "count 不能超过 500"}), 400
+
+    try:
+        payload = generate_license_batch(
+            count=count,
+            duration_days=duration_days,
+            not_before_at=not_before_at,
+            expires_at=expires_at,
+            note=note,
+            actor_user_id=int(user_row["id"]) if user_row else None,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    return jsonify({"success": True, **payload})
+
+
+@app.route('/api/admin/licenses/bootstrap/status', methods=['GET'])
+@require_admin
+def admin_get_license_bootstrap_status():
+    return jsonify(get_admin_license_bootstrap_status(get_current_user()))
+
+
+@app.route('/api/admin/licenses/bootstrap', methods=['POST'])
+@require_admin
+def admin_bootstrap_first_license():
+    user_row = get_current_user()
+    bootstrap_status = get_admin_license_bootstrap_status(user_row)
+    if not bootstrap_status.get("eligible"):
+        return jsonify({
+            "error": bootstrap_status.get("message") or "当前不可创建首个种子 License",
+            "error_code": "license_bootstrap_unavailable",
+            "bootstrap_status": bootstrap_status,
+        }), 409
+
+    data = request.get_json(silent=True) or {}
+    duration_days = data.get("duration_days")
+    not_before_at = str(data.get("not_before_at") or "").strip()
+    expires_at = str(data.get("expires_at") or "").strip()
+    note = str(data.get("note") or "").strip()
+
+    try:
+        payload = bootstrap_first_admin_license(
+            user_id=int(user_row["id"]) if user_row else 0,
+            duration_days=duration_days,
+            not_before_at=not_before_at,
+            expires_at=expires_at,
+            note=note,
+            actor_user_id=int(user_row["id"]) if user_row else None,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "error_code": "license_bootstrap_invalid"}), 400
+    except RuntimeError as exc:
+        return jsonify({
+            "error": str(exc),
+            "error_code": "license_bootstrap_unavailable",
+            "bootstrap_status": get_admin_license_bootstrap_status(user_row),
+        }), 409
+
+    return jsonify({
+        **payload,
+        "bootstrap_status": get_admin_license_bootstrap_status(user_row),
+    })
+
+
+@app.route('/api/admin/license-enforcement', methods=['GET'])
+@require_admin
+@require_valid_license
+def admin_get_license_enforcement():
+    return jsonify(get_license_enforcement_state())
+
+
+@app.route('/api/admin/license-enforcement', methods=['POST'])
+@require_admin
+@require_valid_license
+def admin_set_license_enforcement():
+    user_row = get_current_user()
+    data = request.get_json(silent=True) or {}
+    enabled = _parse_bool_like(data.get("enabled"))
+    if enabled is None:
+        return jsonify({"error": "enabled 必须为布尔值"}), 400
+    raw_sync_default = data.get("sync_default", False)
+    sync_default = _parse_bool_like(raw_sync_default)
+    if sync_default is None:
+        return jsonify({"error": "sync_default 必须为布尔值"}), 400
+    payload = set_license_enforcement_override(
+        enabled,
+        actor_user_id=int(user_row["id"]) if user_row else None,
+        sync_default=bool(sync_default),
+    )
+    return jsonify({
+        "success": True,
+        "message": "License 校验开关已更新，并同步写回 .env 默认值" if sync_default else "License 校验开关已更新",
+        **payload,
+    })
+
+
+@app.route('/api/admin/license-enforcement/follow-default', methods=['POST'])
+@require_admin
+@require_valid_license
+def admin_follow_license_enforcement_default():
+    user_row = get_current_user()
+    payload = set_license_enforcement_override(
+        None,
+        actor_user_id=int(user_row["id"]) if user_row else None,
+        sync_default=False,
+    )
+    return jsonify({
+        "success": True,
+        "message": "License 校验开关已恢复跟随默认值",
+        **payload,
+    })
+
+
+@app.route('/api/admin/licenses', methods=['GET'])
+@require_admin
+@require_valid_license
+def admin_list_licenses():
+    try:
+        payload = query_licenses_admin(
+            page=request.args.get("page", 1, type=int),
+            page_size=request.args.get("page_size", 20, type=int),
+            sort_by=request.args.get("sort_by", "id"),
+            sort_order=request.args.get("sort_order", "desc"),
+            batch_id=request.args.get("batch_id", ""),
+            status=request.args.get("status", ""),
+            bound_account=request.args.get("bound_account", ""),
+            note=request.args.get("note", ""),
+            created_from=request.args.get("created_from", ""),
+            created_to=request.args.get("created_to", ""),
+            expires_from=request.args.get("expires_from", ""),
+            expires_to=request.args.get("expires_to", ""),
+            is_bound=request.args.get("is_bound", ""),
+            code=request.args.get("code", ""),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(payload)
+
+
+@app.route('/api/admin/licenses/summary', methods=['GET'])
+@require_admin
+@require_valid_license
+def admin_get_license_summary():
+    return jsonify(summarize_licenses_admin())
+
+
+@app.route('/api/admin/licenses/<int:license_id>', methods=['GET'])
+@require_admin
+@require_valid_license
+def admin_get_license_detail(license_id: int):
+    try:
+        payload = get_license_admin_detail(license_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+    return jsonify(payload)
+
+
+@app.route('/api/admin/licenses/<int:license_id>/events', methods=['GET'])
+@require_admin
+@require_valid_license
+def admin_get_license_events(license_id: int):
+    try:
+        get_license_admin_detail(license_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+    return jsonify({
+        "items": list_license_events_admin(license_id=license_id, limit=request.args.get("limit", 50, type=int)),
+    })
+
+
+@app.route('/api/admin/licenses/bulk-revoke', methods=['POST'])
+@require_admin
+@require_valid_license
+def admin_bulk_revoke_licenses():
+    user_row = get_current_user()
+    data = request.get_json(silent=True) or {}
+    try:
+        payload = bulk_revoke_licenses(
+            unique_positive_ints(data.get("license_ids", [])),
+            reason=str(data.get("reason") or "").strip(),
+            actor_user_id=int(user_row["id"]) if user_row else None,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"success": True, **payload})
+
+
+@app.route('/api/admin/licenses/bulk-extend', methods=['POST'])
+@require_admin
+@require_valid_license
+def admin_bulk_extend_licenses():
+    user_row = get_current_user()
+    data = request.get_json(silent=True) or {}
+    try:
+        payload = bulk_extend_licenses(
+            unique_positive_ints(data.get("license_ids", [])),
+            duration_days=data.get("duration_days"),
+            expires_at=str(data.get("expires_at") or "").strip(),
+            actor_user_id=int(user_row["id"]) if user_row else None,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"success": True, **payload})
+
+
+@app.route('/api/admin/licenses/<int:license_id>/revoke', methods=['POST'])
+@require_admin
+@require_valid_license
+def admin_revoke_license(license_id: int):
+    user_row = get_current_user()
+    data = request.get_json(silent=True) or {}
+    reason = str(data.get("reason") or "").strip()
+    try:
+        payload = revoke_license_by_id(
+            license_id,
+            reason=reason,
+            actor_user_id=int(user_row["id"]) if user_row else None,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"success": True, **payload})
+
+
+@app.route('/api/admin/licenses/<int:license_id>/extend', methods=['POST'])
+@require_admin
+@require_valid_license
+def admin_extend_license(license_id: int):
+    user_row = get_current_user()
+    data = request.get_json(silent=True) or {}
+    expires_at = str(data.get("expires_at") or "").strip()
+    try:
+        payload = extend_license_by_id(
+            license_id,
+            expires_at=expires_at,
+            duration_days=data.get("duration_days"),
+            actor_user_id=int(user_row["id"]) if user_row else None,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"success": True, **payload})
+
+
+@app.route('/api/admin/users', methods=['GET'])
+@require_admin
+def admin_search_users():
+    query = request.args.get("q", "")
+    limit = request.args.get("limit", 20, type=int)
+    try:
+        items = ownership_admin_service.search_users(AUTH_DB_PATH, query=query, limit=limit)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"items": items, "count": len(items)})
+
+
+@app.route('/api/admin/ownership-migrations/audit', methods=['POST'])
+@require_admin
+def admin_audit_ownership():
+    data = request.get_json(silent=True) or {}
+    try:
+        payload = ownership_admin_service.audit_ownership(
+            auth_db_path=AUTH_DB_PATH,
+            sessions_dir=SESSIONS_DIR,
+            reports_dir=REPORTS_DIR,
+            report_owners_file=REPORT_OWNERS_FILE,
+            user_id=int(data["user_id"]) if data.get("user_id") not in (None, "") else None,
+            user_account=str(data.get("user_account") or "").strip(),
+            kinds=data.get("kinds") or "sessions,reports",
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(payload)
+
+
+@app.route('/api/admin/ownership-migrations/preview', methods=['POST'])
+@require_admin
+def admin_preview_ownership_migration():
+    data = request.get_json(silent=True) or {}
+    try:
+        payload = _build_admin_ownership_request_payload(data)
+        summary = ownership_admin_service.run_ownership_migration(
+            auth_db_path=AUTH_DB_PATH,
+            sessions_dir=SESSIONS_DIR,
+            reports_dir=REPORTS_DIR,
+            report_owners_file=REPORT_OWNERS_FILE,
+            backup_root=get_admin_ownership_backup_root(),
+            to_user_id=payload.get("to_user_id"),
+            to_account=payload.get("to_account", ""),
+            scope=payload.get("scope", "unowned"),
+            from_user_id=payload.get("from_user_id"),
+            kinds=payload.get("kinds", []),
+            apply_mode=False,
+            max_examples=payload.get("max_examples", 20),
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    preview_meta = _store_admin_ownership_preview(payload)
+    return jsonify({"success": True, "summary": summary, **preview_meta})
+
+
+@app.route('/api/admin/ownership-migrations/apply', methods=['POST'])
+@require_admin
+def admin_apply_ownership_migration():
+    data = request.get_json(silent=True) or {}
+    preview = _get_admin_ownership_preview()
+    if not preview:
+        return jsonify({"error": "预览已失效，请重新执行 dry-run"}), 409
+
+    preview_token = str(data.get("preview_token") or "").strip()
+    if preview_token != str(preview.get("token") or "").strip():
+        return jsonify({"error": "preview_token 无效，请重新执行 dry-run"}), 409
+
+    try:
+        payload = _build_admin_ownership_request_payload(data)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    if _serialize_admin_ownership_request_payload(payload) != _serialize_admin_ownership_request_payload(preview.get("payload") or {}):
+        return jsonify({"error": "迁移参数已变化，请重新执行 dry-run"}), 409
+
+    confirm_phrase = str(preview.get("confirm_phrase") or "").strip()
+    if str(data.get("confirm_text") or "").strip() != confirm_phrase:
+        return jsonify({"error": "确认词不匹配"}), 400
+
+    try:
+        summary = ownership_admin_service.run_ownership_migration(
+            auth_db_path=AUTH_DB_PATH,
+            sessions_dir=SESSIONS_DIR,
+            reports_dir=REPORTS_DIR,
+            report_owners_file=REPORT_OWNERS_FILE,
+            backup_root=get_admin_ownership_backup_root(),
+            to_user_id=payload.get("to_user_id"),
+            to_account=payload.get("to_account", ""),
+            scope=payload.get("scope", "unowned"),
+            from_user_id=payload.get("from_user_id"),
+            kinds=payload.get("kinds", []),
+            apply_mode=True,
+            max_examples=payload.get("max_examples", 20),
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    _pop_admin_ownership_preview()
+    _refresh_account_merge_runtime_state()
+    return jsonify({"success": True, "summary": summary})
+
+
+@app.route('/api/admin/ownership-migrations', methods=['GET'])
+@require_admin
+def admin_list_ownership_migrations():
+    items = ownership_admin_service.list_ownership_migrations(
+        get_admin_ownership_backup_root(),
+        limit=request.args.get("limit", 50, type=int),
+    )
+    return jsonify({"items": items, "count": len(items)})
+
+
+@app.route('/api/admin/ownership-migrations/rollback', methods=['POST'])
+@require_admin
+def admin_rollback_ownership_migration():
+    data = request.get_json(silent=True) or {}
+    backup_id = str(data.get("backup_id") or "").strip()
+    if not backup_id:
+        return jsonify({"error": "backup_id 不能为空"}), 400
+    try:
+        payload = ownership_admin_service.rollback_ownership_migration(
+            backup_root=get_admin_ownership_backup_root(),
+            sessions_dir=SESSIONS_DIR,
+            reports_dir=REPORTS_DIR,
+            report_owners_file=REPORT_OWNERS_FILE,
+            auth_db_path=AUTH_DB_PATH,
+            custom_scenarios_dir=Path(getattr(scenario_loader, "custom_dir", DATA_DIR / "scenarios" / "custom")),
+            report_solution_shares_file=REPORT_SOLUTION_SHARES_FILE,
+            backup_id=backup_id,
+        )
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+    _refresh_account_merge_runtime_state()
+    return jsonify({"success": True, **payload})
+
+
+@app.route('/api/admin/config-center', methods=['GET'])
+@require_admin
+def admin_get_config_center():
+    return jsonify(build_admin_config_center_payload())
+
+
+@app.route('/api/admin/config-center/save', methods=['POST'])
+@require_admin
+def admin_save_config_center_group():
+    data = request.get_json(silent=True) or {}
+    try:
+        payload = save_admin_config_group(
+            source=str(data.get("source") or "").strip(),
+            group_id=str(data.get("group_id") or "").strip(),
+            values=data.get("values"),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+    return jsonify(payload)
 
 
 @app.route('/api/metrics', methods=['GET'])
@@ -35756,7 +39770,7 @@ if __name__ == '__main__':
 
     if not DEBUG_MODE:
         print("⚠️  生产环境建议使用 Gunicorn 启动：")
-        print("   uv run --with gunicorn gunicorn -c web/gunicorn.conf.py web.wsgi:app")
+        print("   python3 scripts/run_gunicorn.py")
 
     print()
     print(f"访问: http://localhost:{SERVER_PORT}")

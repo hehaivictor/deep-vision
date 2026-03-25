@@ -121,12 +121,12 @@ api: {
 说明：
 
 - `api.baseUrl` 只决定前端请求哪个后端，不会改变后端自身的鉴权方式或短信供应商
-- 是否启用短信登录、微信登录、管理员运维接口权限，均由后端 `web/.env` 决定
-- 当前 `metrics` / `summaries` 仍是后端 JSON 运维接口，前端没有独立管理页面
+- 是否启用短信登录、微信登录、管理员运维接口权限，均由后端 `web/.env` 决定；登录后 License 校验默认值由 `web/.env` 决定，也可通过管理员接口在运行时动态切换
+- 当前管理员能力已经收口到前端“管理员中心”，除了 `metrics` / `summaries` / `admin/licenses*` / `admin/ownership-migrations*` 外，也支持通过 `admin/config-center*` 对 `.env`、`config.py` 与 `site-config.js` 做分组化查看和写入
 
 ## 后端相关配置入口
 
-如果你现在要改的是短信登录、管理员白名单、实例隔离、微信登录或运维接口权限，请不要继续修改 `site-config.js`，而是直接查看：
+如果你现在要改的是短信登录、登录后 License 校验、管理员白名单、实例隔离、微信登录或运维接口权限，请不要继续修改 `site-config.js`，而是直接查看：
 
 - 仓库根目录 [README.md](../README.md) 中的“关键配置项”“内测 / 演示环境建议”“运维接口”
 - 配置模板 [web/.env.example](./.env.example)

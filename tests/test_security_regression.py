@@ -8,7 +8,7 @@ import threading
 import types
 import unittest
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -121,6 +121,9 @@ class SecurityRegressionTests(unittest.TestCase):
 
     def setUp(self):
         self.client = self.server.app.test_client()
+        self.server.LICENSE_ENFORCEMENT_ENABLED = False
+        self.server.set_license_enforcement_override(None)
+        self.server.SMS_PROVIDER = "mock"
         self.server.SMS_SEND_COOLDOWN_SECONDS = 0
         self.server.SMS_TEST_CODE = ""
         self.server.report_owners_cache["signature"] = None
@@ -155,6 +158,29 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertIn("session_id", payload)
         return payload["session_id"]
 
+    def _generate_license_batch(
+        self,
+        *,
+        count=1,
+        duration_days=30,
+        use_absolute_window=False,
+        starts_in_days=-1,
+        expires_in_days=30,
+        note="安全回归 License",
+    ):
+        kwargs = {
+            "count": count,
+            "note": note,
+            "actor_user_id": None,
+        }
+        if use_absolute_window:
+            now = datetime.utcnow().replace(microsecond=0)
+            kwargs["not_before_at"] = (now + timedelta(days=starts_in_days)).isoformat()
+            kwargs["expires_at"] = (now + timedelta(days=expires_in_days)).isoformat()
+        else:
+            kwargs["duration_days"] = duration_days
+        return self.server.generate_license_batch(**kwargs)
+
     def test_anonymous_write_endpoints_are_blocked(self):
         blocked_cases = [
             ("post", "/api/scenarios/custom", {"name": "x", "dimensions": [{"name": "d"}]}),
@@ -180,6 +206,37 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual(ordinary_get_metrics.status_code, 403)
         ordinary_reset_metrics = self.client.post("/api/metrics/reset", json={})
         self.assertEqual(ordinary_reset_metrics.status_code, 403)
+        ordinary_get_license_switch = self.client.get("/api/admin/license-enforcement")
+        self.assertEqual(ordinary_get_license_switch.status_code, 403)
+        ordinary_set_license_switch = self.client.post("/api/admin/license-enforcement", json={"enabled": True})
+        self.assertEqual(ordinary_set_license_switch.status_code, 403)
+        ordinary_follow_license_switch = self.client.post("/api/admin/license-enforcement/follow-default", json={})
+        self.assertEqual(ordinary_follow_license_switch.status_code, 403)
+        ordinary_get_license_summary = self.client.get("/api/admin/licenses/summary")
+        self.assertEqual(ordinary_get_license_summary.status_code, 403)
+        ordinary_get_admin_users = self.client.get("/api/admin/users")
+        self.assertEqual(ordinary_get_admin_users.status_code, 403)
+        ordinary_get_license_bootstrap_status = self.client.get("/api/admin/licenses/bootstrap/status")
+        self.assertEqual(ordinary_get_license_bootstrap_status.status_code, 403)
+        ordinary_post_license_bootstrap = self.client.post(
+            "/api/admin/licenses/bootstrap",
+            json={
+                "duration_days": 365,
+                "note": "非法自助初始化",
+            },
+        )
+        self.assertEqual(ordinary_post_license_bootstrap.status_code, 403)
+        ordinary_get_config_center = self.client.get("/api/admin/config-center")
+        self.assertEqual(ordinary_get_config_center.status_code, 403)
+        ordinary_save_config_center = self.client.post(
+            "/api/admin/config-center/save",
+            json={"source": "env", "group_id": "env_resolution", "values": {"ENABLE_AI": "false"}},
+        )
+        self.assertEqual(ordinary_save_config_center.status_code, 403)
+        ordinary_preview_migration = self.client.post("/api/admin/ownership-migrations/preview", json={})
+        self.assertEqual(ordinary_preview_migration.status_code, 403)
+        ordinary_list_migrations = self.client.get("/api/admin/ownership-migrations")
+        self.assertEqual(ordinary_list_migrations.status_code, 403)
         ordinary_get_summaries = self.client.get("/api/summaries")
         self.assertEqual(ordinary_get_summaries.status_code, 403)
         ordinary_clear_summaries = self.client.post("/api/summaries/clear", json={})
@@ -187,14 +244,71 @@ class SecurityRegressionTests(unittest.TestCase):
 
         old_admin_ids = set(self.server.ADMIN_USER_IDS)
         old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
+        old_get_env_file_path = self.server.get_admin_env_file_path
+        old_get_config_file_path = self.server.get_admin_config_file_path
+        old_get_site_config_file_path = self.server.get_admin_site_config_file_path
         try:
             self.server.ADMIN_USER_IDS = {int(user["id"])}
             self.server.ADMIN_PHONE_NUMBERS = set()
+            env_path = self.server.DATA_DIR / "security-admin.env"
+            config_path = self.server.DATA_DIR / "security-admin-config.py"
+            site_config_path = self.server.DATA_DIR / "security-admin-site-config.js"
+            site_config_path.write_text(
+                "\n".join(
+                    [
+                        "const SITE_CONFIG = {",
+                        '  quotes: { enabled: true, interval: 5000, items: [] },',
+                        '  researchTips: [],',
+                        '  colors: { primary: "#357BE2", success: "#22C55E", progressComplete: "#357BE2" },',
+                        '  theme: { defaultMode: "system" },',
+                        '  visualPresets: { default: "rational", locked: true, options: { rational: { label: "科技理性" } } },',
+                        '  designTokens: {},',
+                        '  motion: { durations: { fast: 140, base: 180, slow: 240, progress: 420 }, easing: {}, reducedMotion: {} },',
+                        '  a11y: { dialogs: {}, toast: {} },',
+                        '  api: { baseUrl: "http://localhost:5001/api", webSearchPollInterval: 200 },',
+                        '  version: { configFile: "version.json" },',
+                        '  presentation: { enabled: false },',
+                        '  solution: { enabled: true }',
+                        "};",
+                        "if (typeof module !== 'undefined' && module.exports) { module.exports = SITE_CONFIG; }",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            self.server.get_admin_env_file_path = lambda: env_path
+            self.server.get_admin_config_file_path = lambda: config_path
+            self.server.get_admin_site_config_file_path = lambda: site_config_path
 
             admin_get_metrics = self.client.get("/api/metrics")
             self.assertEqual(admin_get_metrics.status_code, 200, admin_get_metrics.get_data(as_text=True))
             admin_reset_metrics = self.client.post("/api/metrics/reset", json={})
             self.assertEqual(admin_reset_metrics.status_code, 200, admin_reset_metrics.get_data(as_text=True))
+            admin_license_without_valid_license = self.client.get("/api/admin/license-enforcement")
+            self.assertEqual(admin_license_without_valid_license.status_code, 403, admin_license_without_valid_license.get_data(as_text=True))
+            self.assertEqual("license_required", admin_license_without_valid_license.get_json().get("error_code"))
+            admin_license_summary_without_valid_license = self.client.get("/api/admin/licenses/summary")
+            self.assertEqual(admin_license_summary_without_valid_license.status_code, 403, admin_license_summary_without_valid_license.get_data(as_text=True))
+            self.assertEqual("license_required", admin_license_summary_without_valid_license.get_json().get("error_code"))
+            admin_get_bootstrap_status = self.client.get("/api/admin/licenses/bootstrap/status")
+            self.assertEqual(admin_get_bootstrap_status.status_code, 200, admin_get_bootstrap_status.get_data(as_text=True))
+            admin_get_users = self.client.get("/api/admin/users")
+            self.assertEqual(admin_get_users.status_code, 200, admin_get_users.get_data(as_text=True))
+            admin_get_config_center = self.client.get("/api/admin/config-center")
+            self.assertEqual(admin_get_config_center.status_code, 200, admin_get_config_center.get_data(as_text=True))
+            admin_save_config_center = self.client.post(
+                "/api/admin/config-center/save",
+                json={
+                    "source": "env",
+                    "group_id": "env_resolution",
+                    "values": {
+                        "CONFIG_RESOLUTION_MODE": "auto",
+                    },
+                },
+            )
+            self.assertEqual(admin_save_config_center.status_code, 200, admin_save_config_center.get_data(as_text=True))
+            admin_list_migrations = self.client.get("/api/admin/ownership-migrations")
+            self.assertEqual(admin_list_migrations.status_code, 200, admin_list_migrations.get_data(as_text=True))
             admin_get_summaries = self.client.get("/api/summaries")
             self.assertEqual(admin_get_summaries.status_code, 200, admin_get_summaries.get_data(as_text=True))
             admin_clear_summaries = self.client.post("/api/summaries/clear", json={})
@@ -202,6 +316,9 @@ class SecurityRegressionTests(unittest.TestCase):
         finally:
             self.server.ADMIN_USER_IDS = old_admin_ids
             self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
+            self.server.get_admin_env_file_path = old_get_env_file_path
+            self.server.get_admin_config_file_path = old_get_config_file_path
+            self.server.get_admin_site_config_file_path = old_get_site_config_file_path
 
     def test_status_anonymous_response_is_minimal(self):
         response = self.client.get("/api/status")
@@ -215,6 +332,65 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertNotIn("model", payload)
         self.assertNotIn("question_model", payload)
         self.assertNotIn("report_model", payload)
+
+    def test_license_gate_blocks_business_routes_but_allows_auth_and_license_endpoints(self):
+        self._register_user()
+        self.server.LICENSE_ENFORCEMENT_ENABLED = True
+
+        blocked_resp = self.client.post("/api/sessions", json={"topic": "License 门禁"})
+        self.assertEqual(blocked_resp.status_code, 403, blocked_resp.get_data(as_text=True))
+        blocked_payload = blocked_resp.get_json()
+        self.assertEqual("license_required", blocked_payload.get("error_code"))
+        self.assertEqual("missing", blocked_payload.get("license_status"))
+
+        me_resp = self.client.get("/api/auth/me")
+        self.assertEqual(me_resp.status_code, 200, me_resp.get_data(as_text=True))
+
+        current_license_resp = self.client.get("/api/licenses/current")
+        self.assertEqual(current_license_resp.status_code, 200, current_license_resp.get_data(as_text=True))
+        self.assertEqual("missing", current_license_resp.get_json().get("status"))
+
+    def test_license_activation_enforces_time_window_and_replacement(self):
+        self._register_user()
+        future_code = self._generate_license_batch(
+            use_absolute_window=True,
+            starts_in_days=1,
+            expires_in_days=30,
+            note="未来生效",
+        )["licenses"][0]["code"]
+        future_resp = self.client.post("/api/licenses/activate", json={"code": future_code})
+        self.assertEqual(future_resp.status_code, 403, future_resp.get_data(as_text=True))
+        self.assertEqual("license_not_yet_active", future_resp.get_json().get("error_code"))
+
+        expired_code = self._generate_license_batch(
+            use_absolute_window=True,
+            starts_in_days=-10,
+            expires_in_days=-1,
+            note="已过期",
+        )["licenses"][0]["code"]
+        expired_resp = self.client.post("/api/licenses/activate", json={"code": expired_code})
+        self.assertEqual(expired_resp.status_code, 403, expired_resp.get_data(as_text=True))
+        self.assertEqual("license_expired", expired_resp.get_json().get("error_code"))
+
+        first_code = self._generate_license_batch(note="首次激活")["licenses"][0]["code"]
+        first_activate = self.client.post("/api/licenses/activate", json={"code": first_code})
+        self.assertEqual(first_activate.status_code, 200, first_activate.get_data(as_text=True))
+        self.assertEqual("active", first_activate.get_json().get("status"))
+
+        other_client = self.server.app.test_client()
+        self._register_user(client=other_client)
+        reused_resp = other_client.post("/api/licenses/activate", json={"code": first_code})
+        self.assertEqual(reused_resp.status_code, 409, reused_resp.get_data(as_text=True))
+        self.assertEqual("license_bound_to_other_user", reused_resp.get_json().get("error_code"))
+
+        replacement_code = self._generate_license_batch(note="换绑新码")["licenses"][0]["code"]
+        replacement_resp = self.client.post("/api/licenses/activate", json={"code": replacement_code})
+        self.assertEqual(replacement_resp.status_code, 200, replacement_resp.get_data(as_text=True))
+        self.assertEqual("active", replacement_resp.get_json().get("status"))
+
+        old_code_resp = self.client.post("/api/licenses/activate", json={"code": first_code})
+        self.assertEqual(old_code_resp.status_code, 403, old_code_resp.get_data(as_text=True))
+        self.assertEqual("license_replaced", old_code_resp.get_json().get("error_code"))
 
     def test_sms_send_code_cooldown_is_not_bypassed_by_parallel_requests(self):
         phone = f"1{uuid.uuid4().int % 10**10:010d}"

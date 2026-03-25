@@ -740,7 +740,7 @@
                        :key="currentQuoteIndex + '-source'">
                     </p>
                 </div>
-                <nav class="flex items-center gap-2 md:gap-3" x-show="authReady" x-cloak>
+                <nav class="flex items-center gap-2 md:gap-3" x-show="authReady && !licenseChecking && !licenseGateActive" x-cloak>
                     <button @click="switchView('sessions')"
                             :class="getHeaderNavClass(isSessionViewActive())"
                             class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium">
@@ -752,6 +752,14 @@
                             class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium">
                         <span class="hidden sm:inline">报告</span>
                         <span class="sm:hidden">报告</span>
+                    </button>
+                    <button x-show="canViewAdminCenter()"
+                            x-cloak
+                            @click="openAdminCenter('overview')"
+                            :class="getHeaderNavClass(isAdminViewActive())"
+                            class="px-3 md:px-4 py-2 rounded-lg transition-all duration-200 cursor-pointer text-sm font-medium">
+                        <span class="hidden sm:inline">管理员中心</span>
+                        <span class="sm:hidden">后台</span>
                     </button>
                     <button @click="window.location.href='help.html'"
                             :class="getHeaderNavClass(false)"
@@ -794,6 +802,12 @@
                             <button @click="openSettingsModal('appearance')"
                                     class="theme-menu-item w-full text-left px-2.5 py-2 text-sm rounded-lg border border-transparent hover:bg-gray-100 hover:text-primary transition-colors duration-150 mt-1">
                                 外观设置
+                            </button>
+                            <button x-show="canViewAdminCenter()"
+                                    x-cloak
+                                    @click="openAdminCenter('overview')"
+                                    class="theme-menu-item w-full text-left px-2.5 py-2 text-sm rounded-lg border border-transparent hover:bg-gray-100 hover:text-primary transition-colors duration-150 mt-1">
+                                管理员中心
                             </button>
                             <button @click="requestLogout()"
                                     class="account-menu-logout-btn w-full text-left px-2.5 py-2 text-sm rounded-lg border border-transparent transition-colors duration-150 mt-1">
@@ -939,7 +953,89 @@
             </main>
         </template>
 
-        <template x-if="authReady">
+        <template x-if="!authChecking && authReady && licenseChecking">
+            <main class="flex-1 max-w-7xl mx-auto w-full px-4 py-6 flex items-center justify-center">
+                <div class="bg-surface border border-border rounded-2xl p-8 shadow-sm w-full max-w-md text-center">
+                    <div class="w-10 h-10 mx-auto border-2 border-primary/20 border-t-primary rounded-full animate-spin"></div>
+                    <p class="mt-4 text-sm text-muted">正在检查 License 状态...</p>
+                </div>
+            </main>
+        </template>
+
+        <template x-if="!authChecking && authReady && !licenseChecking && licenseGateActive">
+            <main class="flex-1 max-w-7xl mx-auto w-full px-4 py-6 flex items-center justify-center">
+                <div class="w-full max-w-xl bg-surface border border-border rounded-2xl shadow-sm px-6 pb-6 pt-7 md:px-8 md:pb-8 md:pt-9 space-y-6">
+                    <div class="text-center space-y-2 pb-1">
+                        <h2 class="text-xl font-semibold text-primary" x-text="getLicenseGateTitle()"></h2>
+                        <p class="text-sm text-muted" x-text="getLicenseGateDescription()"></p>
+                    </div>
+
+                    <div class="rounded-xl border border-border bg-gray-50/80 px-4 py-4 space-y-3">
+                        <div class="flex items-center justify-between gap-3 text-sm">
+                            <span class="text-muted">当前状态</span>
+                            <span class="font-medium text-primary" x-text="getLicenseStatusLabel()"></span>
+                        </div>
+                        <div class="flex items-center justify-between gap-3 text-sm" x-show="licenseInfo?.masked_code">
+                            <span class="text-muted">当前 License</span>
+                            <span class="font-mono text-primary tracking-wide" x-text="licenseInfo?.masked_code || ''"></span>
+                        </div>
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm" x-show="licenseInfo">
+                            <div>
+                                <p class="text-muted mb-1">生效时间</p>
+                                <p class="text-primary" x-text="licenseInfo?.not_before_at ? formatDate(licenseInfo.not_before_at) : '未设置'"></p>
+                            </div>
+                            <div>
+                                <p class="text-muted mb-1">到期时间</p>
+                                <p class="text-primary" x-text="licenseInfo?.expires_at ? formatDate(licenseInfo.expires_at) : '未设置'"></p>
+                            </div>
+                            <div x-show="licenseInfo?.duration_days">
+                                <p class="text-muted mb-1">授权时长</p>
+                                <p class="text-primary" x-text="formatLicenseDurationDays(licenseInfo?.duration_days)"></p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <form class="space-y-4" @submit.prevent="submitLicenseActivation()" novalidate>
+                        <div>
+                            <label for="license-code-input" class="block text-sm font-medium text-primary mb-1">License</label>
+                            <input id="license-code-input"
+                                   x-model.trim="licenseActivationForm.code"
+                                   @input="licenseActivationError = ''"
+                                   type="text"
+                                   autocomplete="off"
+                                   placeholder="请输入管理员发放的 License"
+                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                                   :aria-invalid="licenseActivationError ? 'true' : 'false'"
+                                   required>
+                            <p x-show="licenseActivationError" x-text="licenseActivationError" role="alert" class="mt-1 text-xs text-red-500"></p>
+                        </div>
+
+                        <button type="submit"
+                                :disabled="!canSubmitLicenseActivation()"
+                                class="btn-sage-blue w-full text-white px-5 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                            <svg x-show="licenseActivationLoading" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke-width="4"></circle>
+                                <path class="opacity-75" d="M4 12a8 8 0 018-8" stroke-width="4" stroke-linecap="round"></path>
+                            </svg>
+                            <span x-text="licenseActivationLoading ? '绑定中...' : '绑定 License'"></span>
+                        </button>
+                    </form>
+
+                    <div class="flex items-center justify-between gap-3 text-sm">
+                        <div class="text-muted">
+                            <span>剩余有效期：</span>
+                            <span x-text="getLicenseRemainingText()"></span>
+                        </div>
+                        <button @click="logout()"
+                                class="text-primary hover:text-cta transition-colors font-medium">
+                            退出登录
+                        </button>
+                    </div>
+                </div>
+            </main>
+        </template>
+
+        <template x-if="!authChecking && authReady && !licenseChecking && !licenseGateActive">
             <div>
         <!-- 流程步骤指示器（仅在访谈中显示） -->
         <template x-if="currentView === 'interview' && currentSession">
@@ -2651,6 +2747,1596 @@
                     </template>
                 </div>
             </template>
+
+            <template x-if="currentView === 'admin'">
+                <div class="space-y-5 md:space-y-6">
+                    <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+                        <div>
+                            <p class="text-xs font-semibold tracking-[0.18em] text-primary/70 uppercase">Admin Center</p>
+                            <h2 class="text-2xl md:text-3xl font-semibold text-primary mt-1">管理员中心</h2>
+                            <p class="text-sm text-muted mt-2">集中管理 License 生命周期、配置中心、运行监控、摘要缓存和账号归属迁移。</p>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <button @click="switchAdminTab('overview')"
+                                    :class="adminTab === 'overview' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-secondary border-gray-200 hover:bg-gray-50'"
+                                    class="px-3.5 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer">
+                                总览
+                            </button>
+                            <button @click="switchAdminTab('license')"
+                                    :class="adminTab === 'license' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-secondary border-gray-200 hover:bg-gray-50'"
+                                    class="px-3.5 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer">
+                                License
+                            </button>
+                            <button @click="switchAdminTab('ops')"
+                                    :class="adminTab === 'ops' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-secondary border-gray-200 hover:bg-gray-50'"
+                                    class="px-3.5 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer">
+                                运行监控
+                            </button>
+                            <button @click="switchAdminTab('summaries')"
+                                    :class="adminTab === 'summaries' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-secondary border-gray-200 hover:bg-gray-50'"
+                                    class="px-3.5 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer">
+                                摘要缓存
+                            </button>
+                            <button @click="switchAdminTab('ownership')"
+                                    :class="adminTab === 'ownership' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-secondary border-gray-200 hover:bg-gray-50'"
+                                    class="px-3.5 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer">
+                                账号归属迁移
+                            </button>
+                            <button @click="switchAdminTab('config')"
+                                    :class="adminTab === 'config' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-secondary border-gray-200 hover:bg-gray-50'"
+                                    class="px-3.5 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer">
+                                配置中心
+                            </button>
+                        </div>
+                    </div>
+
+                    <div x-show="adminTab === 'overview'" x-cloak class="space-y-5">
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                            <div class="bg-surface border border-border rounded-2xl p-5 space-y-3">
+                                <div class="flex items-center justify-between gap-3">
+                                    <div>
+                                        <h3 class="text-base font-semibold text-primary">License 门禁</h3>
+                                        <p class="text-sm text-muted mt-1">运行时开关与到期风险。</p>
+                                    </div>
+                                    <span class="inline-flex items-center justify-center whitespace-nowrap leading-none min-w-[4.5rem] px-2.5 py-1 rounded-full border text-xs font-medium"
+                                          :class="licenseEnforcementEnabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-gray-50 text-gray-600'"
+                                          x-text="licenseEnforcementEnabled ? '已开启' : '未开启'"></span>
+                                </div>
+                                <template x-if="adminLicenseSummary">
+                                    <div class="space-y-3">
+                                        <div class="grid grid-cols-2 gap-3 text-sm">
+                                            <div class="rounded-xl bg-slate-50 px-3 py-3">
+                                                <div class="text-xs text-muted">有效中</div>
+                                                <div class="text-xl font-semibold text-primary mt-1" x-text="(adminLicenseSummary?.counts?.active ?? 0) + (adminLicenseSummary?.counts?.not_yet_active ?? 0)"></div>
+                                            </div>
+                                            <div class="rounded-xl bg-slate-50 px-3 py-3">
+                                                <div class="text-xs text-muted">7 天内到期</div>
+                                                <div class="text-xl font-semibold text-primary mt-1" x-text="adminLicenseSummary?.expiring_soon_count ?? 0"></div>
+                                            </div>
+                                        </div>
+                                        <div class="text-sm text-muted">
+                                            共 <span class="font-medium text-primary" x-text="adminLicenseSummary?.total ?? 0"></span> 条，
+                                            已绑定 <span class="font-medium text-primary" x-text="adminLicenseSummary?.bound_count ?? 0"></span> 条。
+                                        </div>
+                                    </div>
+                                </template>
+                                <template x-if="!adminLicenseSummary">
+                                    <div class="rounded-xl border border-dashed border-gray-200 px-4 py-4 text-sm text-muted" x-text="adminLicenseSummaryError || '当前账号绑定有效 License 后，可在这里查看 License 总览。'"></div>
+                                </template>
+                            </div>
+
+                            <div class="bg-surface border border-border rounded-2xl p-5 space-y-3">
+                                <div>
+                                    <h3 class="text-base font-semibold text-primary">摘要缓存</h3>
+                                    <p class="text-sm text-muted mt-1">智能摘要开关、缓存规模与清理入口。</p>
+                                </div>
+                                <template x-if="adminSummariesInfo">
+                                    <div class="space-y-3">
+                                        <div class="grid grid-cols-2 gap-3 text-sm">
+                                            <div class="rounded-xl bg-slate-50 px-3 py-3">
+                                                <div class="text-xs text-muted">缓存数量</div>
+                                                <div class="text-xl font-semibold text-primary mt-1" x-text="adminSummariesInfo?.cached_count ?? 0"></div>
+                                            </div>
+                                            <div class="rounded-xl bg-slate-50 px-3 py-3">
+                                                <div class="text-xs text-muted">缓存体积</div>
+                                                <div class="text-xl font-semibold text-primary mt-1" x-text="formatBytes(adminSummariesInfo?.cache_size_bytes ?? 0)"></div>
+                                            </div>
+                                        </div>
+                                        <div class="flex items-center justify-between gap-3 text-sm">
+                                            <span class="text-muted">智能摘要</span>
+                                            <span class="font-medium text-primary" x-text="adminSummariesInfo?.enabled ? '已启用' : '未启用'"></span>
+                                        </div>
+                                    </div>
+                                </template>
+                                <template x-if="!adminSummariesInfo">
+                                    <div class="rounded-xl border border-dashed border-gray-200 px-4 py-4 text-sm text-muted" x-text="adminSummariesError || '摘要缓存信息尚未加载。'"></div>
+                                </template>
+                            </div>
+
+                            <div class="bg-surface border border-border rounded-2xl p-5 space-y-3">
+                                <div>
+                                    <h3 class="text-base font-semibold text-primary">归属迁移</h3>
+                                    <p class="text-sm text-muted mt-1">最近一次迁移备份与回滚状态。</p>
+                                </div>
+                                <template x-if="adminOwnershipHistory.length > 0">
+                                    <div class="space-y-3 text-sm">
+                                        <div class="rounded-xl bg-slate-50 px-4 py-4">
+                                            <div class="flex items-center justify-between gap-3">
+                                                <span class="text-muted">最近备份</span>
+                                                <span class="font-medium text-primary" x-text="adminOwnershipHistory[0]?.backup_id || '-'"></span>
+                                            </div>
+                                            <div class="mt-2 text-muted">
+                                                <span x-text="adminOwnershipHistory[0]?.target_user?.account || adminOwnershipHistory[0]?.target_user?.phone || adminOwnershipHistory[0]?.target_user?.email || '-'"></span>
+                                                · <span x-text="adminOwnershipHistory[0]?.generated_at ? formatDate(adminOwnershipHistory[0].generated_at) : '-'"></span>
+                                            </div>
+                                        </div>
+                                        <div class="flex items-center justify-between gap-3">
+                                            <span class="text-muted">最近状态</span>
+                                            <span class="font-medium"
+                                                  :class="adminOwnershipHistory[0]?.rolled_back ? 'text-amber-700' : 'text-emerald-700'"
+                                                  x-text="adminOwnershipHistory[0]?.rolled_back ? '已回滚' : '可回滚'"></span>
+                                        </div>
+                                    </div>
+                                </template>
+                                <template x-if="adminOwnershipHistory.length === 0">
+                                    <div class="rounded-xl border border-dashed border-gray-200 px-4 py-4 text-sm text-muted">暂无迁移历史，可进入“账号归属迁移”页执行 dry-run。</div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                            <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                                <div class="flex items-center justify-between gap-3">
+                                    <div>
+                                        <h3 class="text-base font-semibold text-primary">近期 License 事件</h3>
+                                        <p class="text-sm text-muted mt-1">最近生成、激活、撤销和开关变更记录。</p>
+                                    </div>
+                                    <button @click="switchAdminTab('license')"
+                                            class="text-sm font-medium text-primary hover:text-primary/80 transition-colors cursor-pointer">
+                                        进入 License 管理
+                                    </button>
+                                </div>
+                                <div class="space-y-3">
+                                    <template x-if="adminLicenseSummary?.recent_events?.length > 0">
+                                        <div class="space-y-3">
+                                            <template x-for="event in adminLicenseSummary.recent_events" :key="`overview-event-${event.id}`">
+                                                <div class="rounded-xl border border-border px-4 py-3">
+                                                    <div class="flex items-start justify-between gap-3">
+                                                        <div>
+                                                            <div class="text-sm font-medium text-primary" x-text="formatAdminLicenseEventLabel(event.event_type)"></div>
+                                                            <div class="text-xs text-muted mt-1">
+                                                                <span x-text="event.masked_code || event.batch_id || '全局事件'"></span>
+                                                                <span x-show="event.actor_account"> · <span x-text="event.actor_account"></span></span>
+                                                            </div>
+                                                        </div>
+                                                        <div class="text-xs text-muted" x-text="event.created_at ? formatDate(event.created_at) : '-'"></div>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </template>
+                                    <template x-if="!(adminLicenseSummary?.recent_events?.length > 0)">
+                                        <div class="rounded-xl border border-dashed border-gray-200 px-4 py-4 text-sm text-muted">暂无近期 License 事件。</div>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                                <div class="flex items-center justify-between gap-3">
+                                    <div>
+                                        <h3 class="text-base font-semibold text-primary">快速入口</h3>
+                                        <p class="text-sm text-muted mt-1">常用后台动作直接跳转到对应页签。</p>
+                                    </div>
+                                </div>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <button @click="switchAdminTab('license')"
+                                            class="rounded-xl border border-border bg-white px-4 py-4 text-left hover:bg-gray-50 transition-colors cursor-pointer">
+                                        <div class="text-sm font-semibold text-primary">生成与查找 License</div>
+                                        <div class="text-xs text-muted mt-1">批量生成、筛选、延期、撤销、查看时间线。</div>
+                                    </button>
+                                    <button @click="switchAdminTab('ops')"
+                                            class="rounded-xl border border-border bg-white px-4 py-4 text-left hover:bg-gray-50 transition-colors cursor-pointer">
+                                        <div class="text-sm font-semibold text-primary">运行监控</div>
+                                        <div class="text-xs text-muted mt-1">查看问题链路、搜索决策和前端本地观察。</div>
+                                    </button>
+                                    <button @click="switchAdminTab('summaries')"
+                                            class="rounded-xl border border-border bg-white px-4 py-4 text-left hover:bg-gray-50 transition-colors cursor-pointer">
+                                        <div class="text-sm font-semibold text-primary">摘要缓存</div>
+                                        <div class="text-xs text-muted mt-1">查看缓存规模并执行清理。</div>
+                                    </button>
+                                    <button @click="switchAdminTab('ownership')"
+                                            class="rounded-xl border border-border bg-white px-4 py-4 text-left hover:bg-gray-50 transition-colors cursor-pointer">
+                                        <div class="text-sm font-semibold text-primary">账号归属迁移</div>
+                                        <div class="text-xs text-muted mt-1">dry-run、正式 apply、回滚与历史审计。</div>
+                                    </button>
+                                    <button @click="switchAdminTab('config')"
+                                            class="rounded-xl border border-border bg-white px-4 py-4 text-left hover:bg-gray-50 transition-colors cursor-pointer">
+                                        <div class="text-sm font-semibold text-primary">配置中心</div>
+                                        <div class="text-xs text-muted mt-1">分类查看并写入 .env 与 config.py。</div>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div x-show="adminTab === 'license'" x-cloak class="space-y-5">
+                        <div x-show="!canManageAdminLicenses()" x-cloak class="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-800">
+                            当前账号需先绑定有效 License，才能使用 License 生命周期管理能力。
+                        </div>
+
+                        <div x-show="!canManageAdminLicenses() && adminLicenseBootstrapLoading" x-cloak class="rounded-2xl border border-dashed border-gray-200 bg-white px-5 py-8 text-center text-sm text-muted">
+                            正在检查首个种子 License 可用性...
+                        </div>
+
+                        <div x-show="!canManageAdminLicenses() && adminLicenseBootstrapError" x-cloak class="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-600" x-text="adminLicenseBootstrapError"></div>
+
+                        <template x-if="!canManageAdminLicenses() && canBootstrapAdminLicense()">
+                            <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                                <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
+                                    <div>
+                                        <h3 class="text-base font-semibold text-primary">首个种子 License</h3>
+                                        <p class="text-sm text-muted mt-1" x-text="adminLicenseBootstrapStatus?.message || '系统尚未生成任何 License，可为当前管理员账号初始化首个种子 License。'"></p>
+                                    </div>
+                                    <span class="inline-flex items-center justify-center whitespace-nowrap leading-none px-2.5 py-1 rounded-full border border-sky-200 bg-sky-50 text-xs font-medium text-sky-700">一次性初始化入口</span>
+                                </div>
+                                <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                    <label class="space-y-1">
+                                        <span class="text-xs font-medium text-muted">有效期（天）</span>
+                                        <input type="number"
+                                               min="1"
+                                               max="3650"
+                                               x-model="adminLicenseBootstrapForm.duration_days"
+                                               class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                    </label>
+                                    <label class="space-y-1 md:col-span-2">
+                                        <span class="text-xs font-medium text-muted">备注</span>
+                                        <input type="text"
+                                               x-model.trim="adminLicenseBootstrapForm.note"
+                                               placeholder="管理员首个种子 License"
+                                               class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                    </label>
+                                </div>
+                                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                    <div class="text-xs text-muted">成功后会直接绑定到当前管理员账号，无需再手动输入激活码；有效期会从当前激活时刻开始计算。</div>
+                                    <button @click="bootstrapAdminLicenseSeed()"
+                                            :disabled="adminLicenseBootstrapSubmitting"
+                                            class="btn-sage-blue text-white px-5 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2">
+                                        <svg x-show="adminLicenseBootstrapSubmitting" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke-width="4"></circle>
+                                            <path class="opacity-75" d="M4 12a8 8 0 018-8" stroke-width="4" stroke-linecap="round"></path>
+                                        </svg>
+                                        <span x-text="adminLicenseBootstrapSubmitting ? '绑定中...' : '生成并绑定首个种子 License'"></span>
+                                    </button>
+                                </div>
+                            </div>
+                        </template>
+
+                        <div x-show="!canManageAdminLicenses() && !adminLicenseBootstrapLoading && adminLicenseBootstrapStatus && !adminLicenseBootstrapStatus.eligible" x-cloak class="rounded-2xl border border-gray-200 bg-white px-5 py-4 text-sm text-secondary">
+                            <div class="font-medium text-primary">当前不能使用首个种子入口</div>
+                            <div class="mt-1" x-text="adminLicenseBootstrapStatus?.message || '请使用已有 License 完成绑定，或改用运维脚本处理。'"></div>
+                            <div class="mt-2 text-xs text-muted">如果系统里已经有 License 记录，请直接在 License gate 输入现有码绑定；如果现有码不可得，请使用 <code>scripts/license_manager.py</code> 生成新的运维码。</div>
+                        </div>
+
+                        <template x-if="canManageAdminLicenses()">
+                            <div class="space-y-5">
+                                <div class="grid grid-cols-1 xl:grid-cols-3 items-start gap-4">
+                                    <div class="bg-surface border border-border rounded-2xl p-5 space-y-4 xl:col-span-1">
+                                        <div class="flex items-center justify-between gap-3">
+                                            <div>
+                                                <h3 class="text-base font-semibold text-primary">运行时开关</h3>
+                                                <p class="text-sm text-muted mt-1">立即决定登录后是否强制校验 License，并可同步写回 `.env` 默认值。</p>
+                                            </div>
+                                            <span class="inline-flex items-center justify-center whitespace-nowrap leading-none min-w-[4.5rem] px-2.5 py-1 rounded-full border text-xs font-medium"
+                                                  :class="licenseEnforcementEnabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-gray-50 text-gray-600'"
+                                                  x-text="licenseEnforcementEnabled ? '已开启' : '未开启'"></span>
+                                        </div>
+                                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                                            <div class="rounded-xl bg-slate-50 px-3 py-3">
+                                                <div class="text-xs text-muted">当前生效值</div>
+                                                <div class="mt-1 font-semibold text-primary" x-text="licenseEnforcementEnabled ? '已开启' : '已关闭'"></div>
+                                                <div class="mt-1 text-xs text-muted" x-text="getAdminLicenseEnforcementSourceLabel()"></div>
+                                            </div>
+                                            <div class="rounded-xl bg-slate-50 px-3 py-3">
+                                                <div class="text-xs text-muted">.env 默认值</div>
+                                                <div class="mt-1 font-semibold text-primary"
+                                                     x-text="getAdminLicenseEnforcementState()?.default_enabled ? '已开启' : '已关闭'"></div>
+                                                <div class="mt-1 text-xs text-muted"
+                                                     x-text="getAdminLicenseEnforcementState()?.default_source_label || '.env 默认值'"></div>
+                                            </div>
+                                            <div class="rounded-xl bg-slate-50 px-3 py-3 sm:col-span-2">
+                                                <div class="text-xs text-muted">运行时覆盖</div>
+                                                <div class="mt-1 font-semibold text-primary" x-text="getAdminLicenseEnforcementOverrideLabel()"></div>
+                                                <div class="mt-1 text-xs text-muted"
+                                                     x-text="getAdminLicenseEnforcementState()?.updated_at ? `最近调整：${formatDate(getAdminLicenseEnforcementState().updated_at)}` : '当前没有单独覆盖值时，将跟随默认值。'"></div>
+                                            </div>
+                                        </div>
+                                        <div class="flex flex-wrap gap-2">
+                                            <button @click="toggleAdminLicenseEnforcement(true)"
+                                                    :disabled="licenseEnforcementEnabled || adminLicenseEnforcementMutating"
+                                                    class="whitespace-nowrap px-3.5 py-2 rounded-lg text-sm font-medium transition-colors border cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    :class="licenseEnforcementEnabled ? 'border-gray-200 bg-gray-100 text-gray-400' : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'">
+                                                <span x-text="adminLicenseEnforcementMutating ? '处理中...' : '开启校验并写回默认值'"></span>
+                                            </button>
+                                            <button @click="toggleAdminLicenseEnforcement(false)"
+                                                    :disabled="!licenseEnforcementEnabled || adminLicenseEnforcementMutating"
+                                                    class="whitespace-nowrap px-3.5 py-2 rounded-lg text-sm font-medium transition-colors border cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    :class="!licenseEnforcementEnabled ? 'border-gray-200 bg-gray-100 text-gray-400' : 'border-gray-200 bg-white text-secondary hover:bg-gray-50'">
+                                                <span x-text="adminLicenseEnforcementMutating ? '处理中...' : '关闭校验并写回默认值'"></span>
+                                            </button>
+                                            <button @click="followAdminLicenseEnforcementDefault()"
+                                                    :disabled="adminLicenseEnforcementMutating || getAdminLicenseEnforcementState()?.source !== 'runtime_override'"
+                                                    class="whitespace-nowrap px-3.5 py-2 rounded-lg text-sm font-medium transition-colors border cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed border-gray-200 bg-white text-secondary hover:bg-gray-50">
+                                                恢复跟随默认值
+                                            </button>
+                                        </div>
+                                        <template x-if="adminLicenseSummary">
+                                            <div class="grid grid-cols-2 gap-3 text-sm">
+                                                <div class="rounded-xl bg-slate-50 px-3 py-3">
+                                                    <div class="text-xs text-muted">总量</div>
+                                                    <div class="text-xl font-semibold text-primary mt-1" x-text="adminLicenseSummary?.total ?? 0"></div>
+                                                </div>
+                                                <div class="rounded-xl bg-slate-50 px-3 py-3">
+                                                    <div class="text-xs text-muted">即将到期</div>
+                                                    <div class="text-xl font-semibold text-primary mt-1" x-text="adminLicenseSummary?.expiring_soon_count ?? 0"></div>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+
+                                    <div class="bg-surface border border-border rounded-2xl p-5 space-y-5 xl:col-span-2">
+                                        <div class="flex items-start justify-between gap-3">
+                                            <div>
+                                                <h3 class="text-base font-semibold text-primary">批量生成</h3>
+                                                <p class="text-sm text-muted mt-1">明文码只会在当前结果面板中展示一次，关闭后不再可见。</p>
+                                            </div>
+                                        </div>
+                                        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                                            <label class="space-y-1">
+                                                <span class="text-xs font-medium text-muted">生成数量</span>
+                                                <input type="number"
+                                                       min="1"
+                                                       max="500"
+                                                       x-model="adminLicenseGenerateForm.count"
+                                                       class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                            </label>
+                                            <label class="space-y-1">
+                                                <span class="text-xs font-medium text-muted">有效期（天）</span>
+                                                <input type="number"
+                                                       min="1"
+                                                       max="3650"
+                                                       x-model="adminLicenseGenerateForm.duration_days"
+                                                       class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                            </label>
+                                            <label class="space-y-1 md:col-span-2 xl:col-span-1">
+                                                <span class="text-xs font-medium text-muted">备注</span>
+                                                <input type="text"
+                                                       x-model.trim="adminLicenseGenerateForm.note"
+                                                       placeholder="如：Q2 内测 / 华东代理"
+                                                       class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                            </label>
+                                        </div>
+                                        <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 rounded-xl border border-dashed border-gray-200 bg-slate-50/80 px-4 py-4">
+                                            <div class="space-y-2">
+                                                <div class="text-sm font-medium text-primary">激活后起算</div>
+                                                <div class="text-xs text-muted">License 在用户激活成功后开始计时，常用时长可填写 30 / 90 / 365 天。</div>
+                                            </div>
+                                            <button @click="generateAdminLicenseBatch()"
+                                                    :disabled="adminLicenseGenerateLoading"
+                                                    class="btn-sage-blue text-white px-5 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 whitespace-nowrap self-start lg:self-auto">
+                                                <svg x-show="adminLicenseGenerateLoading" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke-width="4"></circle>
+                                                    <path class="opacity-75" d="M4 12a8 8 0 018-8" stroke-width="4" stroke-linecap="round"></path>
+                                                </svg>
+                                                <span x-text="adminLicenseGenerateLoading ? '生成中...' : '生成 License'"></span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div x-show="adminLicenseGeneratedBatch" x-cloak class="bg-surface border border-primary/15 rounded-2xl p-5 space-y-4">
+                                    <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
+                                        <div>
+                                            <h3 class="text-base font-semibold text-primary">本次生成结果</h3>
+                                            <p class="text-sm text-muted mt-1">
+                                                批次号：<span class="font-mono text-primary" x-text="adminLicenseGeneratedBatch?.batch_id || '-'"></span>
+                                            </p>
+                                        </div>
+                                        <div class="flex flex-wrap gap-2">
+                                            <button @click="copyAdminGeneratedLicenses()"
+                                                    class="px-3.5 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer">
+                                                复制全部明文
+                                            </button>
+                                            <button @click="downloadAdminGeneratedLicenses('csv')"
+                                                    class="px-3.5 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer">
+                                                下载 CSV
+                                            </button>
+                                            <button @click="downloadAdminGeneratedLicenses('txt')"
+                                                    class="px-3.5 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer">
+                                                下载纯文本
+                                            </button>
+                                            <button @click="clearAdminGeneratedLicenseBatch()"
+                                                    class="px-3.5 py-2 rounded-lg border border-transparent text-sm font-medium text-muted hover:text-primary transition-colors cursor-pointer">
+                                                我已保存，关闭
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="rounded-2xl border border-border bg-gray-50/70 px-4 py-4 max-h-64 overflow-y-auto">
+                                        <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                                            <template x-for="item in adminLicenseGeneratedBatch?.licenses || []" :key="`generated-license-${item.id}`">
+                                                <div class="rounded-xl bg-white border border-border px-3 py-3">
+                                                    <div class="font-mono text-sm font-semibold text-primary break-all" x-text="item.code"></div>
+                                                    <div class="text-xs text-muted mt-2">
+                                                        <div>生效：<span x-text="item.activation_starts_validity ? '激活后开始' : (item.not_before_at ? formatDate(item.not_before_at) : '-')"></span></div>
+                                                        <div class="mt-1" x-show="item.activation_starts_validity">有效期：<span x-text="formatLicenseDurationDays(item.duration_days)"></span></div>
+                                                        <div class="mt-1" x-show="!item.activation_starts_validity">到期：<span x-text="item.expires_at ? formatDate(item.expires_at) : '-'"></span></div>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                                    <div class="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4">
+                                        <div>
+                                            <h3 class="text-base font-semibold text-primary">License 列表</h3>
+                                            <p class="text-sm text-muted mt-1">上方适合复杂条件筛查，列表工具栏适合排序、快速筛选和跳页。</p>
+                                        </div>
+                                        <div class="flex flex-wrap items-center gap-2 text-sm text-muted">
+                                            <span>共 <span class="font-medium text-primary" x-text="adminLicensePagination.count"></span> 条</span>
+                                            <span class="hidden sm:inline text-gray-300">|</span>
+                                            <span>当前第 <span class="font-medium text-primary" x-text="adminLicensePagination.page || 1"></span> / <span class="font-medium text-primary" x-text="getAdminLicenseTotalPages()"></span> 页</span>
+                                        </div>
+                                    </div>
+
+                                    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+                                        <label class="space-y-1">
+                                            <span class="text-xs font-medium text-muted">状态</span>
+                                            <select x-model="adminLicenseFilters.status"
+                                                    class="w-full px-3 pr-10 py-2.5 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                <option value="">全部</option>
+                                                <option value="issued">未激活</option>
+                                                <option value="active">已生效</option>
+                                                <option value="not_yet_active">未生效</option>
+                                                <option value="expired">已过期</option>
+                                                <option value="revoked">已撤销</option>
+                                                <option value="replaced">已替换</option>
+                                            </select>
+                                        </label>
+                                        <label class="space-y-1">
+                                            <span class="text-xs font-medium text-muted">批次号</span>
+                                            <input type="text"
+                                                   x-model.trim="adminLicenseFilters.batch_id"
+                                                   placeholder="输入 batch_id"
+                                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                        </label>
+                                        <label class="space-y-1">
+                                            <span class="text-xs font-medium text-muted">绑定账号</span>
+                                            <input type="text"
+                                                   x-model.trim="adminLicenseFilters.bound_account"
+                                                   placeholder="手机号 / 邮箱 / 微信昵称"
+                                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                        </label>
+                                        <label class="space-y-1">
+                                            <span class="text-xs font-medium text-muted">备注</span>
+                                            <input type="text"
+                                                   x-model.trim="adminLicenseFilters.note"
+                                                   placeholder="备注关键词"
+                                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                        </label>
+                                        <label class="space-y-1">
+                                            <span class="text-xs font-medium text-muted">是否已绑定</span>
+                                            <select x-model="adminLicenseFilters.is_bound"
+                                                    class="w-full px-3 pr-10 py-2.5 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                <option value="">全部</option>
+                                                <option value="true">已绑定</option>
+                                                <option value="false">未绑定</option>
+                                            </select>
+                                        </label>
+                                        <label class="space-y-1">
+                                            <span class="text-xs font-medium text-muted">创建起始</span>
+                                            <input type="datetime-local"
+                                                   x-model="adminLicenseFilters.created_from"
+                                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                        </label>
+                                        <label class="space-y-1">
+                                            <span class="text-xs font-medium text-muted">创建结束</span>
+                                            <input type="datetime-local"
+                                                   x-model="adminLicenseFilters.created_to"
+                                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                        </label>
+                                        <label class="space-y-1">
+                                            <span class="text-xs font-medium text-muted">到期起始</span>
+                                            <input type="datetime-local"
+                                                   x-model="adminLicenseFilters.expires_from"
+                                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                        </label>
+                                        <label class="space-y-1">
+                                            <span class="text-xs font-medium text-muted">到期结束</span>
+                                            <input type="datetime-local"
+                                                   x-model="adminLicenseFilters.expires_to"
+                                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                        </label>
+                                        <label class="space-y-1">
+                                            <span class="text-xs font-medium text-muted">明文码精确查询</span>
+                                            <input type="text"
+                                                   x-model.trim="adminLicenseFilters.code"
+                                                   placeholder="输入完整明文码"
+                                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                        </label>
+                                    </div>
+                                    <div class="flex flex-wrap items-center justify-between gap-3">
+                                        <div class="text-sm text-red-600" x-show="adminLicenseListError" x-text="adminLicenseListError"></div>
+                                        <div class="flex flex-wrap gap-2 ml-auto">
+                                            <button @click="resetAdminLicenseFilters()"
+                                                    class="px-3.5 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer">
+                                                重置筛选
+                                            </button>
+                                            <button @click="applyAdminLicenseFilters()"
+                                                    class="btn-sage-blue text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer">
+                                                查询列表
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="grid grid-cols-1 2xl:grid-cols-[minmax(0,2.2fr)_minmax(340px,0.95fr)] gap-4">
+                                    <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                                        <div class="rounded-2xl border border-border bg-slate-50/70 px-4 py-4 space-y-4">
+                                            <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+                                                <div class="text-sm text-muted">
+                                                    已选 <span class="font-medium text-primary" x-text="adminLicenseSelectedIds.length"></span> 条
+                                                </div>
+                                                <button @click="toggleSelectAllAdminLicenses()"
+                                                        class="self-start lg:self-auto px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer">
+                                                    <span x-text="areAllAdminLicensesSelected() ? '取消全选' : '全选当前页'"></span>
+                                                </button>
+                                            </div>
+                                            <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,220px)_auto] gap-3 items-end">
+                                                <label class="space-y-1">
+                                                    <span class="text-xs font-medium text-muted">新的有效期（天）</span>
+                                                    <input type="number"
+                                                           min="1"
+                                                           max="3650"
+                                                           x-model="adminLicenseBulk.duration_days"
+                                                           class="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                </label>
+                                                <button @click="runAdminLicenseBulkExtend()"
+                                                        :disabled="adminLicenseSelectedIds.length === 0"
+                                                        class="self-start xl:self-auto px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                                    批量延期
+                                                </button>
+                                            </div>
+                                            <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_auto] gap-3 items-end">
+                                                <label class="space-y-1">
+                                                    <span class="text-xs font-medium text-muted">批量撤销原因</span>
+                                                    <input type="text"
+                                                           x-model.trim="adminLicenseBulk.revoke_reason"
+                                                           placeholder="撤销原因（可选）"
+                                                           class="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                </label>
+                                                <button @click="runAdminLicenseBulkRevoke()"
+                                                        :disabled="adminLicenseSelectedIds.length === 0"
+                                                        class="self-start xl:self-auto px-3 py-2 rounded-lg border border-red-200 bg-red-50 text-sm font-medium text-red-700 hover:bg-red-100 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                                    批量撤销
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div class="rounded-2xl border border-border bg-slate-50/70 px-4 py-4 space-y-3">
+                                            <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.95fr)] gap-3">
+                                                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                                                    <label class="space-y-1">
+                                                        <span class="text-xs font-medium text-muted">排序字段</span>
+                                                        <select :value="String(adminLicenseSort.by || 'id')"
+                                                                @change="setAdminLicenseSortBy($event.target.value)"
+                                                                class="w-full px-3 pr-10 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                            <option value="id">ID</option>
+                                                            <option value="created_at">创建时间</option>
+                                                            <option value="updated_at">更新时间</option>
+                                                            <option value="expires_at">到期时间</option>
+                                                            <option value="bound_at">绑定时间</option>
+                                                            <option value="status">状态</option>
+                                                            <option value="batch_id">批次号</option>
+                                                            <option value="duration_days">有效期天数</option>
+                                                        </select>
+                                                    </label>
+                                                    <label class="space-y-1">
+                                                        <span class="text-xs font-medium text-muted">排序顺序</span>
+                                                        <select :value="String(adminLicenseSort.order || 'desc')"
+                                                                @change="toggleAdminLicenseSortOrder($event.target.value)"
+                                                                class="w-full px-3 pr-10 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                            <option value="desc">降序</option>
+                                                            <option value="asc">升序</option>
+                                                        </select>
+                                                    </label>
+                                                    <label class="space-y-1">
+                                                        <span class="text-xs font-medium text-muted">每页条数</span>
+                                                        <select :value="String(adminLicensePagination.page_size || 20)"
+                                                                @change="changeAdminLicensePageSize($event.target.value)"
+                                                                class="w-full px-3 pr-10 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                            <option value="20">20 条</option>
+                                                            <option value="50">50 条</option>
+                                                            <option value="100">100 条</option>
+                                                        </select>
+                                                    </label>
+                                                </div>
+                                                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[minmax(0,160px)_minmax(0,160px)] gap-3 items-end">
+                                                    <label class="space-y-1">
+                                                        <span class="text-xs font-medium text-muted">快速状态筛选</span>
+                                                        <select x-model="adminLicenseFilters.status"
+                                                                @change="applyAdminLicenseListTools()"
+                                                                class="w-full px-3 pr-10 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                            <option value="">全部状态</option>
+                                                            <option value="issued">未激活</option>
+                                                            <option value="active">已生效</option>
+                                                            <option value="not_yet_active">未生效</option>
+                                                            <option value="expired">已过期</option>
+                                                            <option value="revoked">已撤销</option>
+                                                            <option value="replaced">已替换</option>
+                                                        </select>
+                                                    </label>
+                                                    <label class="space-y-1">
+                                                        <span class="text-xs font-medium text-muted">快速绑定筛选</span>
+                                                        <select x-model="adminLicenseFilters.is_bound"
+                                                                @change="applyAdminLicenseListTools()"
+                                                                class="w-full px-3 pr-10 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                            <option value="">全部账号</option>
+                                                            <option value="true">已绑定</option>
+                                                            <option value="false">未绑定</option>
+                                                        </select>
+                                                    </label>
+                                                </div>
+                                            </div>
+                                            <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-muted">
+                                                <div>
+                                                    列表工具栏适合高频操作，复杂条件仍可使用上方高级筛选。
+                                                </div>
+                                                <div>
+                                                    当前按 <span class="font-medium text-primary" x-text="getAdminLicenseSortLabel(adminLicenseSort.by)"></span>
+                                                    <span x-text="adminLicenseSort.order === 'asc' ? '升序' : '降序'"></span>
+                                                    排列
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div x-show="adminLicenseListLoading" x-cloak class="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-muted">
+                                            正在加载 License 列表...
+                                        </div>
+
+                                        <div x-show="!adminLicenseListLoading" x-cloak class="space-y-4">
+                                            <div class="overflow-x-auto rounded-2xl border border-border bg-white">
+                                                <table class="min-w-[1120px] w-full text-sm">
+                                                    <thead class="bg-gray-50 text-muted">
+                                                        <tr>
+                                                            <th class="w-16 px-3 py-3 text-left font-medium whitespace-nowrap">选择</th>
+                                                            <th class="w-24 px-3 py-3 text-left font-medium whitespace-nowrap">状态</th>
+                                                            <th class="min-w-[220px] px-3 py-3 text-left font-medium whitespace-nowrap">掩码 License</th>
+                                                            <th class="min-w-[180px] px-3 py-3 text-left font-medium whitespace-nowrap">批次</th>
+                                                            <th class="min-w-[160px] px-3 py-3 text-left font-medium whitespace-nowrap">绑定账号</th>
+                                                            <th class="min-w-[200px] px-3 py-3 text-left font-medium whitespace-nowrap">生效 / 到期</th>
+                                                            <th class="min-w-[180px] px-3 py-3 text-left font-medium whitespace-nowrap">备注</th>
+                                                            <th class="min-w-[7.5rem] px-3 py-3 text-left font-medium whitespace-nowrap">操作</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody class="divide-y divide-gray-100 bg-white">
+                                                        <template x-for="item in adminLicenseList" :key="`admin-license-${item.id}`">
+                                                            <tr @click="openAdminLicenseDetailFromRow(item.id)"
+                                                                class="transition-colors cursor-pointer"
+                                                                :class="isAdminLicenseDetailActive(item.id) ? 'bg-sky-50/70' : 'hover:bg-gray-50'">
+                                                                <td class="px-3 py-3 align-top">
+                                                                    <input type="checkbox"
+                                                                           :checked="adminLicenseSelectedIds.includes(item.id)"
+                                                                           @click.stop="toggleAdminLicenseSelectionAndInspect(item.id)"
+                                                                           class="batch-checkbox w-4 h-4 border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
+                                                                </td>
+                                                                <td class="px-3 py-3 align-top">
+                                                                    <span class="inline-flex items-center justify-center whitespace-nowrap leading-none min-w-[4.5rem] px-2.5 py-1 rounded-full border text-xs font-medium"
+                                                                          :class="getAdminLicenseStatusClass(item.status)"
+                                                                          x-text="getLicenseStatusLabel(item.status)"></span>
+                                                                </td>
+                                                                <td class="px-3 py-3 align-top min-w-[220px]">
+                                                                    <div class="font-mono text-primary break-all" x-text="item.masked_code || '-'"></div>
+                                                                    <div class="text-xs text-muted mt-1" x-text="`#${item.id}`"></div>
+                                                                </td>
+                                                                <td class="px-3 py-3 align-top min-w-[180px]">
+                                                                    <div class="text-primary break-all" x-text="item.batch_id || '-'"></div>
+                                                                    <div class="text-xs text-muted mt-1" x-text="item.created_at ? formatDate(item.created_at) : '-'"></div>
+                                                                </td>
+                                                                <td class="px-3 py-3 align-top min-w-[160px]">
+                                                                    <div class="text-primary break-all" x-text="item.bound_account || '未绑定'"></div>
+                                                                    <div class="text-xs text-muted mt-1" x-show="item.bound_at" x-text="item.bound_at ? formatDate(item.bound_at) : ''"></div>
+                                                                </td>
+                                                                <td class="px-3 py-3 align-top text-xs text-muted min-w-[200px]">
+                                                                    <div>生效：<span class="text-primary" x-text="getAdminLicenseValidityLeadText(item)"></span></div>
+                                                                    <div class="mt-1"><span x-text="`${getAdminLicenseValidityTailLabel(item)}：`"></span><span class="text-primary" x-text="getAdminLicenseValidityTailText(item)"></span></div>
+                                                                    <div class="mt-1" x-show="item.activation_starts_validity && item.expires_at">总时长：<span class="text-primary" x-text="formatLicenseDurationDays(item.duration_days)"></span></div>
+                                                                </td>
+                                                                <td class="px-3 py-3 align-top text-xs text-muted min-w-[180px] max-w-[18rem]">
+                                                                    <span class="break-words" x-text="item.note || '-'"></span>
+                                                                </td>
+                                                                <td class="px-3 py-3 align-top min-w-[7.5rem]">
+                                                                    <button @click.stop="openAdminLicenseDetailFromRow(item.id)"
+                                                                            class="inline-flex items-center justify-center whitespace-nowrap min-w-[5.75rem] px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-xs font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer">
+                                                                        查看详情
+                                                                    </button>
+                                                                </td>
+                                                            </tr>
+                                                        </template>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                            <div x-show="adminLicenseList.length === 0" x-cloak class="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-muted">
+                                                当前筛选条件下暂无 License 记录。
+                                            </div>
+                                            <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 text-sm">
+                                                <div class="text-muted">
+                                                    第 <span class="font-medium text-primary" x-text="adminLicensePagination.page || 1"></span> / <span class="font-medium text-primary" x-text="getAdminLicenseTotalPages()"></span> 页，
+                                                    共 <span class="font-medium text-primary" x-text="adminLicensePagination.count || 0"></span> 条记录
+                                                </div>
+                                                <div class="flex flex-wrap items-center gap-2">
+                                                    <button @click="goToAdminLicensePage(1)"
+                                                            :disabled="(adminLicensePagination.page || 1) <= 1"
+                                                            class="px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                                        首页
+                                                    </button>
+                                                    <button @click="goToAdminLicensePage(Math.max(1, (adminLicensePagination.page || 1) - 1))"
+                                                            :disabled="(adminLicensePagination.page || 1) <= 1"
+                                                            class="px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                                        上一页
+                                                    </button>
+                                                    <div class="flex items-center gap-2 px-1">
+                                                        <span class="text-muted whitespace-nowrap">跳至</span>
+                                                        <input type="number"
+                                                               min="1"
+                                                               x-model="adminLicensePageJumpInput"
+                                                               @keydown.enter.prevent="jumpAdminLicensePage()"
+                                                               class="w-20 px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                        <button @click="jumpAdminLicensePage()"
+                                                                class="px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer">
+                                                            跳转
+                                                        </button>
+                                                    </div>
+                                                    <button @click="goToAdminLicensePage(Math.min(getAdminLicenseTotalPages(), (adminLicensePagination.page || 1) + 1))"
+                                                            :disabled="(adminLicensePagination.page || 1) >= getAdminLicenseTotalPages()"
+                                                            class="px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                                        下一页
+                                                    </button>
+                                                    <button @click="goToAdminLicensePage(getAdminLicenseTotalPages())"
+                                                            :disabled="(adminLicensePagination.page || 1) >= getAdminLicenseTotalPages()"
+                                                            class="px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                                        末页
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                                        <div>
+                                            <h3 class="text-base font-semibold text-primary">License 详情</h3>
+                                            <p class="text-sm text-muted mt-1">点击左侧任一行即可查看生命周期时间线，并执行单条延期 / 撤销。</p>
+                                        </div>
+                                        <div x-show="adminLicenseDetailLoading" x-cloak class="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-muted">
+                                            正在加载 License 详情...
+                                        </div>
+                                        <template x-if="adminLicenseDetail">
+                                            <div class="space-y-4">
+                                                <div class="rounded-xl border border-border px-4 py-4 space-y-3">
+                                                    <div class="flex items-center justify-between gap-3">
+                                                        <span class="font-mono text-sm text-primary break-all" x-text="adminLicenseDetail?.masked_code || '-'"></span>
+                                                        <span class="inline-flex items-center justify-center whitespace-nowrap leading-none min-w-[4.5rem] px-2.5 py-1 rounded-full border text-xs font-medium"
+                                                              :class="getAdminLicenseStatusClass(adminLicenseDetail?.status)"
+                                                              x-text="getLicenseStatusLabel(adminLicenseDetail?.status)"></span>
+                                                    </div>
+                                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                                                        <div>
+                                                            <div class="text-xs text-muted">批次号</div>
+                                                            <div class="text-primary mt-1" x-text="adminLicenseDetail?.batch_id || '-'"></div>
+                                                        </div>
+                                                        <div>
+                                                            <div class="text-xs text-muted">绑定账号</div>
+                                                            <div class="text-primary mt-1" x-text="adminLicenseDetail?.bound_account || '未绑定'"></div>
+                                                        </div>
+                                                        <div>
+                                                            <div class="text-xs text-muted">生效时间</div>
+                                                            <div class="text-primary mt-1" x-text="getAdminLicenseValidityLeadText(adminLicenseDetail)"></div>
+                                                        </div>
+                                                        <div>
+                                                            <div class="text-xs text-muted">到期时间</div>
+                                                            <div class="text-primary mt-1" x-text="adminLicenseDetail?.expires_at ? formatDate(adminLicenseDetail.expires_at) : '-'"></div>
+                                                        </div>
+                                                        <div>
+                                                            <div class="text-xs text-muted">有效期</div>
+                                                            <div class="text-primary mt-1" x-text="adminLicenseDetail?.activation_starts_validity ? formatLicenseDurationDays(adminLicenseDetail.duration_days) : '固定时间窗'"></div>
+                                                        </div>
+                                                        <div>
+                                                            <div class="text-xs text-muted">创建时间</div>
+                                                            <div class="text-primary mt-1" x-text="adminLicenseDetail?.created_at ? formatDate(adminLicenseDetail.created_at) : '-'"></div>
+                                                        </div>
+                                                        <div>
+                                                            <div class="text-xs text-muted">更新时间</div>
+                                                            <div class="text-primary mt-1" x-text="adminLicenseDetail?.updated_at ? formatDate(adminLicenseDetail.updated_at) : '-'"></div>
+                                                        </div>
+                                                    </div>
+                                                    <div class="text-sm" x-show="adminLicenseDetail?.note">
+                                                        <div class="text-xs text-muted">备注</div>
+                                                        <div class="text-primary mt-1 break-words" x-text="adminLicenseDetail?.note || ''"></div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="rounded-xl border border-border px-4 py-4 space-y-3">
+                                                    <div class="text-sm font-semibold text-primary">单条操作</div>
+                                                    <label class="space-y-1 block">
+                                                        <span class="text-xs font-medium text-muted">新的有效期（天）</span>
+                                                        <input type="number"
+                                                               min="1"
+                                                               max="3650"
+                                                               x-model="adminLicenseDetailForm.duration_days"
+                                                               class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                    </label>
+                                                    <div class="text-xs text-muted">未激活 License 会改为激活后起算；已激活 License 会按首次生效时间重新计算到期时间。</div>
+                                                    <button @click="extendAdminLicenseDetail()"
+                                                            class="w-full px-3.5 py-2.5 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer">
+                                                        延期当前 License
+                                                    </button>
+                                                    <label class="space-y-1 block">
+                                                        <span class="text-xs font-medium text-muted">撤销原因</span>
+                                                        <input type="text"
+                                                               x-model.trim="adminLicenseDetailForm.revoke_reason"
+                                                               placeholder="可留空"
+                                                               class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                    </label>
+                                                    <button @click="revokeAdminLicenseDetail()"
+                                                            class="w-full px-3.5 py-2.5 rounded-lg border border-red-200 bg-red-50 text-sm font-medium text-red-700 hover:bg-red-100 transition-colors cursor-pointer">
+                                                        撤销当前 License
+                                                    </button>
+                                                </div>
+
+                                                <div class="rounded-xl border border-border px-4 py-4 space-y-3">
+                                                    <div class="text-sm font-semibold text-primary">生命周期时间线</div>
+                                                    <template x-if="adminLicenseEvents.length > 0">
+                                                        <div class="space-y-3 max-h-96 overflow-y-auto">
+                                                            <template x-for="event in adminLicenseEvents" :key="`license-event-${event.id}`">
+                                                                <div class="border-l-2 border-gray-200 pl-4 py-1">
+                                                                    <div class="flex items-center justify-between gap-3">
+                                                                        <div class="text-sm font-medium text-primary" x-text="formatAdminLicenseEventLabel(event.event_type)"></div>
+                                                                        <div class="text-xs text-muted" x-text="event.created_at ? formatDate(event.created_at) : '-'"></div>
+                                                                    </div>
+                                                                    <div class="text-xs text-muted mt-1">
+                                                                        <span x-show="event.actor_account">操作者：<span x-text="event.actor_account"></span></span>
+                                                                    </div>
+                                                                    <pre class="mt-2 text-xs text-muted whitespace-pre-wrap break-words bg-gray-50 rounded-lg px-3 py-2" x-text="JSON.stringify(event.payload || {}, null, 2)"></pre>
+                                                                </div>
+                                                            </template>
+                                                        </div>
+                                                    </template>
+                                                    <template x-if="adminLicenseEvents.length === 0">
+                                                        <div class="rounded-xl border border-dashed border-gray-200 px-4 py-4 text-sm text-muted">当前 License 暂无可展示事件。</div>
+                                                    </template>
+                                                </div>
+                                            </div>
+                                        </template>
+                                        <template x-if="!adminLicenseDetail && !adminLicenseDetailLoading">
+                                            <div class="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-muted">
+                                                点击左侧任一 License 行查看详情与时间线。
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+
+                    <div x-show="adminTab === 'ops'" x-cloak class="space-y-4">
+                        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                            <div>
+                                <h3 class="text-base font-semibold text-primary">问题链路监控</h3>
+                                <p class="text-sm text-muted mt-1">
+                                    最近 <span x-text="opsMetricsLastN"></span> 次服务端样本，<span x-text="getOpsMetricsFreshnessText()"></span>
+                                </p>
+                            </div>
+                            <button @click="loadOpsMetrics({ force: true })"
+                                    :disabled="opsMetricsLoading"
+                                    class="px-3.5 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                <span x-text="opsMetricsLoading ? '刷新中...' : '刷新监控'"></span>
+                            </button>
+                        </div>
+
+                        <div x-show="opsMetricsError" x-cloak class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+                            <p x-text="opsMetricsError"></p>
+                        </div>
+
+                        <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                            <div class="bg-surface border border-border rounded-2xl p-5 space-y-3">
+                                <div>
+                                    <h4 class="text-sm font-semibold text-primary">问题链路概览</h4>
+                                    <p class="text-xs text-muted mt-1">区分真实 AI 成功、备用题目和过载拒绝。</p>
+                                </div>
+                                <div class="grid grid-cols-2 gap-3 text-sm">
+                                    <div class="rounded-lg bg-slate-50 px-3 py-3">
+                                        <div class="text-xs text-muted">AI 成功</div>
+                                        <div class="text-lg font-semibold text-primary mt-1" x-text="opsMetrics?.question_generation?.ai_success ?? 0"></div>
+                                    </div>
+                                    <div class="rounded-lg bg-slate-50 px-3 py-3">
+                                        <div class="text-xs text-muted">备用题目</div>
+                                        <div class="text-lg font-semibold text-primary mt-1" x-text="opsMetrics?.question_generation?.fallback_served ?? 0"></div>
+                                        <div class="text-xs text-muted mt-1" x-text="formatOpsPercent(opsMetrics?.question_generation?.fallback_rate ?? 0)"></div>
+                                    </div>
+                                    <div class="rounded-lg bg-slate-50 px-3 py-3">
+                                        <div class="text-xs text-muted">过载拒绝</div>
+                                        <div class="text-lg font-semibold text-primary mt-1" x-text="opsMetrics?.question_generation?.overloaded ?? 0"></div>
+                                    </div>
+                                    <div class="rounded-lg bg-slate-50 px-3 py-3">
+                                        <div class="text-xs text-muted">Question Fast 样本</div>
+                                        <div class="text-lg font-semibold text-primary mt-1" x-text="getQuestionFastStageSummary().count"></div>
+                                        <div class="text-xs text-muted mt-1" x-text="formatOpsPercent(getQuestionFastStageSummary().success_rate)"></div>
+                                    </div>
+                                </div>
+                                <div class="rounded-lg border border-border px-3 py-3 text-xs text-muted space-y-1">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span>搜索决策 AI 成功</span>
+                                        <span class="font-medium text-primary" x-text="opsMetrics?.search_decision?.ai_success ?? 0"></span>
+                                    </div>
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span>搜索决策降级</span>
+                                        <span class="font-medium text-primary" x-text="opsMetrics?.search_decision?.degraded ?? 0"></span>
+                                    </div>
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span>搜索决策缓存命中</span>
+                                        <span class="font-medium text-primary" x-text="opsMetrics?.search_decision?.cache_hit ?? 0"></span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="bg-surface border border-border rounded-2xl p-5 space-y-3">
+                                <div>
+                                    <h4 class="text-sm font-semibold text-primary">Fast 命中观察</h4>
+                                    <p class="text-xs text-muted mt-1">按 lane / model 聚合最近的 `question_fast` 样本。</p>
+                                </div>
+                                <div class="grid grid-cols-2 gap-3 text-sm">
+                                    <div class="rounded-lg bg-slate-50 px-3 py-3">
+                                        <div class="text-xs text-muted">p50</div>
+                                        <div class="text-lg font-semibold text-primary mt-1" x-text="formatOpsDurationMs(getQuestionFastStageSummary().p50_ms)"></div>
+                                    </div>
+                                    <div class="rounded-lg bg-slate-50 px-3 py-3">
+                                        <div class="text-xs text-muted">p95</div>
+                                        <div class="text-lg font-semibold text-primary mt-1" x-text="formatOpsDurationMs(getQuestionFastStageSummary().p95_ms)"></div>
+                                    </div>
+                                </div>
+                                <div class="space-y-2" x-show="getQuestionFastStageGroups().length > 0">
+                                    <template x-for="group in getQuestionFastStageGroups()" :key="`${group.stage}-${group.lane}-${group.model}`">
+                                        <div class="rounded-lg border border-border px-3 py-3">
+                                            <div class="flex items-start justify-between gap-3">
+                                                <div>
+                                                    <div class="text-sm font-medium text-primary" x-text="group.lane || 'unknown'"></div>
+                                                    <div class="text-xs text-muted mt-1" x-text="group.model || 'unknown model'"></div>
+                                                </div>
+                                                <div class="text-right text-xs text-muted">
+                                                    <div><span x-text="group.count"></span> 次</div>
+                                                    <div class="mt-1" x-text="formatOpsPercent(group.success_rate)"></div>
+                                                </div>
+                                            </div>
+                                            <div class="grid grid-cols-2 gap-2 text-xs text-muted mt-3">
+                                                <div>p50：<span class="text-primary font-medium" x-text="formatOpsDurationMs(group.p50_ms)"></span></div>
+                                                <div>p95：<span class="text-primary font-medium" x-text="formatOpsDurationMs(group.p95_ms)"></span></div>
+                                            </div>
+                                        </div>
+                                    </template>
+                                </div>
+                                <p x-show="getQuestionFastStageGroups().length === 0" x-cloak class="text-xs text-muted">暂无 `question_fast` 聚合样本。</p>
+                            </div>
+
+                            <div class="bg-surface border border-border rounded-2xl p-5 space-y-3">
+                                <div>
+                                    <h4 class="text-sm font-semibold text-primary">当前前端状态</h4>
+                                    <p class="text-xs text-muted mt-1">展示最近一次取题请求的本地观察结果。</p>
+                                </div>
+                                <div class="rounded-lg bg-slate-50 px-3 py-3 space-y-2 text-sm">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span class="text-muted">最近状态</span>
+                                        <span class="font-medium text-primary" x-text="getQuestionOpsStatusLabel(questionOpsLocalState.lastResultStatus)"></span>
+                                    </div>
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span class="text-muted">最近维度</span>
+                                        <span class="font-medium text-primary" x-text="questionOpsLocalState.lastDimension ? getDimensionName(questionOpsLocalState.lastDimension) : '-'"></span>
+                                    </div>
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span class="text-muted">最近时间</span>
+                                        <span class="font-medium text-primary" x-text="questionOpsLocalState.lastRequestAt ? formatDate(questionOpsLocalState.lastRequestAt) : '-'"></span>
+                                    </div>
+                                </div>
+                                <div class="rounded-lg border border-border px-3 py-3 text-sm space-y-2">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span class="text-muted">Tier</span>
+                                        <span class="font-medium text-primary" x-text="questionOpsLocalState.lastTier || '-'"></span>
+                                    </div>
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span class="text-muted">Lane</span>
+                                        <span class="font-medium text-primary" x-text="questionOpsLocalState.lastLane || '-'"></span>
+                                    </div>
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span class="text-muted">Profile</span>
+                                        <span class="font-medium text-primary text-right" x-text="questionOpsLocalState.lastProfile || '-'"></span>
+                                    </div>
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span class="text-muted">Fast Hedge</span>
+                                        <span class="font-medium text-primary" x-text="formatOpsBool(questionOpsLocalState.lastFastHedge)"></span>
+                                    </div>
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span class="text-muted">Full Hedge</span>
+                                        <span class="font-medium text-primary" x-text="formatOpsBool(questionOpsLocalState.lastFullHedge)"></span>
+                                    </div>
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span class="text-muted">429 自动重试</span>
+                                        <span class="font-medium text-primary" x-text="`${questionOpsLocalState.lastOverloadRetryCount || 0} 次 / ${formatOpsDurationMs(questionOpsLocalState.lastOverloadWaitMs || 0)}`"></span>
+                                    </div>
+                                    <div class="flex items-center justify-between gap-3">
+                                        <span class="text-muted">预取优先</span>
+                                        <span class="font-medium text-primary" x-text="questionOpsLocalState.lastPreferPrefetch ? '是' : '否'"></span>
+                                    </div>
+                                    <div x-show="questionOpsLocalState.lastError" x-cloak class="pt-2 border-t border-border">
+                                        <div class="text-xs text-muted">最近错误</div>
+                                        <div class="text-sm text-red-600 mt-1" x-text="questionOpsLocalState.lastError"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div x-show="adminTab === 'summaries'" x-cloak class="space-y-4">
+                        <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                            <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                                <div>
+                                    <h3 class="text-base font-semibold text-primary">智能摘要缓存</h3>
+                                    <p class="text-sm text-muted mt-1">V1 仅提供状态查看和缓存清理，不在线修改摘要策略参数。</p>
+                                </div>
+                                <div class="flex gap-2">
+                                    <button @click="loadAdminSummariesInfo()"
+                                            :disabled="adminSummariesLoading"
+                                            class="px-3.5 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                        刷新
+                                    </button>
+                                    <button @click="clearAdminSummariesCache()"
+                                            class="px-3.5 py-2 rounded-lg border border-red-200 bg-red-50 text-sm font-medium text-red-700 hover:bg-red-100 transition-colors cursor-pointer">
+                                        清空缓存
+                                    </button>
+                                </div>
+                            </div>
+                            <div x-show="adminSummariesError" x-cloak class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600" x-text="adminSummariesError"></div>
+                            <template x-if="adminSummariesInfo">
+                                <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                                    <div class="rounded-xl border border-border bg-white px-4 py-4">
+                                        <div class="text-xs text-muted">智能摘要</div>
+                                        <div class="text-lg font-semibold text-primary mt-1" x-text="adminSummariesInfo?.enabled ? '已启用' : '未启用'"></div>
+                                    </div>
+                                    <div class="rounded-xl border border-border bg-white px-4 py-4">
+                                        <div class="text-xs text-muted">缓存开关</div>
+                                        <div class="text-lg font-semibold text-primary mt-1" x-text="adminSummariesInfo?.cache_enabled ? '已开启' : '已关闭'"></div>
+                                    </div>
+                                    <div class="rounded-xl border border-border bg-white px-4 py-4">
+                                        <div class="text-xs text-muted">缓存数量</div>
+                                        <div class="text-lg font-semibold text-primary mt-1" x-text="adminSummariesInfo?.cached_count ?? 0"></div>
+                                    </div>
+                                    <div class="rounded-xl border border-border bg-white px-4 py-4">
+                                        <div class="text-xs text-muted">缓存体积</div>
+                                        <div class="text-lg font-semibold text-primary mt-1" x-text="formatBytes(adminSummariesInfo?.cache_size_bytes ?? 0)"></div>
+                                    </div>
+                                    <div class="rounded-xl border border-border bg-white px-4 py-4">
+                                        <div class="text-xs text-muted">触发阈值</div>
+                                        <div class="text-lg font-semibold text-primary mt-1" x-text="adminSummariesInfo?.threshold ?? '-'"></div>
+                                    </div>
+                                    <div class="rounded-xl border border-border bg-white px-4 py-4">
+                                        <div class="text-xs text-muted">目标长度</div>
+                                        <div class="text-lg font-semibold text-primary mt-1" x-text="adminSummariesInfo?.target_length ?? '-'"></div>
+                                    </div>
+                                </div>
+                            </template>
+                            <template x-if="!adminSummariesInfo">
+                                <div class="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-muted">
+                                    摘要缓存信息尚未加载。
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <div x-show="adminTab === 'config'" x-cloak class="space-y-4">
+                        <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                            <div class="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4">
+                                <div>
+                                    <h3 class="text-base font-semibold text-primary">配置中心</h3>
+                                    <p class="text-sm text-muted mt-1">按来源与分组查看、编辑并写入 <code>.env</code>、<code>config.py</code> 和 <code>site-config.js</code>，避免手工翻文件。</p>
+                                </div>
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <button @click="setAdminConfigSource('env')"
+                                            :class="adminConfigSource === 'env' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-secondary border-gray-200 hover:bg-gray-50'"
+                                            class="px-3.5 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer">
+                                        .env
+                                    </button>
+                                    <button @click="setAdminConfigSource('config')"
+                                            :class="adminConfigSource === 'config' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-secondary border-gray-200 hover:bg-gray-50'"
+                                            class="px-3.5 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer">
+                                        config.py
+                                    </button>
+                                    <button @click="setAdminConfigSource('site')"
+                                            :class="adminConfigSource === 'site' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-secondary border-gray-200 hover:bg-gray-50'"
+                                            class="px-3.5 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer">
+                                        site-config.js
+                                    </button>
+                                    <button @click="loadAdminConfigCenter()"
+                                            :disabled="adminConfigLoading"
+                                            class="px-3.5 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                        刷新
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
+                                 x-text="getAdminConfigSourceMeta(adminConfigSource)?.hint || adminConfigCenter?.meta?.restart_hint || '配置会写入文件，大多数改动需要重启服务后完全生效。'"></div>
+
+                            <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                                <div class="rounded-xl border border-border bg-white px-4 py-4 space-y-2">
+                                    <div class="text-xs text-muted">当前编辑文件</div>
+                                    <div class="text-sm font-semibold text-primary" x-text="getAdminConfigSourceLabel(adminConfigSource)"></div>
+                                    <div class="text-xs text-muted break-all" x-text="getAdminConfigSourcePayload(adminConfigSource)?.file?.path || '-'"></div>
+                                    <div class="text-xs text-muted">
+                                        文件状态：
+                                        <span class="font-medium text-primary" x-text="getAdminConfigSourcePayload(adminConfigSource)?.file?.exists ? '已存在' : '将自动创建'"></span>
+                                    </div>
+                                </div>
+                                <div class="rounded-xl border border-border bg-white px-4 py-4 space-y-3">
+                                    <div class="text-xs text-muted">筛选与显示</div>
+                                    <input type="text"
+                                           x-model.trim="adminConfigSearch"
+                                           placeholder="模糊搜索分类、字段名、键名或说明"
+                                           class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                    <div class="text-xs text-muted">
+                                        当前命中
+                                        <span class="font-medium text-primary" x-text="getAdminConfigVisibleGroups().length"></span>
+                                        个分类，
+                                        共
+                                        <span class="font-medium text-primary"
+                                              x-text="getAdminConfigVisibleGroups().reduce((sum, group) => sum + (group.visibleItemCount || 0), 0)"></span>
+                                        个配置项
+                                    </div>
+                                    <label class="inline-flex items-center gap-2 text-sm text-secondary cursor-pointer">
+                                        <input type="checkbox"
+                                               x-model="adminConfigShowSecrets"
+                                               class="batch-checkbox w-4 h-4 border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
+                                        <span>显示敏感字段明文</span>
+                                    </label>
+                                </div>
+                                <div class="rounded-xl border border-border bg-white px-4 py-4 space-y-2">
+                                    <div class="text-xs text-muted">当前解析模式</div>
+                                    <div class="text-sm font-semibold text-primary" x-text="getAdminConfigSourceMeta(adminConfigSource)?.mode_label || adminConfigCenter?.meta?.config_resolution_mode || '-'"></div>
+                                    <div class="text-xs text-muted"
+                                         x-show="adminConfigSource === 'env' && (getAdminConfigSourcePayload('env')?.file?.loaded_files?.length || 0) > 0">
+                                        已加载环境文件：
+                                        <span class="font-medium text-primary" x-text="(getAdminConfigSourcePayload('env')?.file?.loaded_files || []).length"></span>
+                                    </div>
+                                    <div class="text-xs text-muted"
+                                         x-show="adminConfigSource === 'config'">
+                                        托管区块键数：
+                                        <span class="font-medium text-primary" x-text="(getAdminConfigSourcePayload('config')?.file?.managed_block_keys || []).length"></span>
+                                    </div>
+                                    <div class="text-xs text-muted"
+                                         x-show="adminConfigSource === 'site'">
+                                        顶层配置分组：
+                                        <span class="font-medium text-primary" x-text="(getAdminConfigSourcePayload('site')?.file?.top_level_keys || []).length"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div x-show="adminConfigError" x-cloak class="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600" x-text="adminConfigError"></div>
+
+                        <div x-show="adminConfigLoading" x-cloak class="rounded-2xl border border-dashed border-gray-200 bg-white px-4 py-10 text-center text-sm text-muted">
+                            正在加载配置中心...
+                        </div>
+
+                        <template x-if="!adminConfigLoading">
+                            <div class="space-y-4">
+                                <div x-show="getAdminConfigVisibleGroups().length > 0" x-cloak
+                                     class="grid grid-cols-1 xl:grid-cols-[260px_minmax(0,1fr)] gap-4">
+                                    <aside class="bg-surface border border-border rounded-2xl p-4 space-y-3 xl:sticky xl:top-4 self-start">
+                                        <div>
+                                            <h4 class="text-sm font-semibold text-primary">配置分类</h4>
+                                            <p class="text-xs text-muted mt-1">点击左侧分类，右侧只展示对应配置项。</p>
+                                        </div>
+                                        <div class="space-y-2 max-h-[38rem] overflow-y-auto pr-1">
+                                            <template x-for="group in getAdminConfigVisibleGroups()" :key="`admin-config-nav-${adminConfigSource}-${group.id}`">
+                                                <button @click="setAdminConfigActiveGroup(adminConfigSource, group.id)"
+                                                        class="w-full text-left rounded-xl border px-3 py-3 transition-colors cursor-pointer"
+                                                        :class="getAdminConfigCurrentGroupId(adminConfigSource) === group.id
+                                                            ? 'border-gray-900 bg-gray-900 text-white shadow-sm'
+                                                            : 'border-gray-200 bg-white text-secondary hover:bg-gray-50'">
+                                                    <div class="flex items-start justify-between gap-3">
+                                                        <div class="min-w-0">
+                                                            <div class="text-sm font-medium truncate" x-text="group.title"></div>
+                                                            <div class="text-[11px] mt-1 break-words"
+                                                                 :class="getAdminConfigCurrentGroupId(adminConfigSource) === group.id ? 'text-gray-300' : 'text-muted'"
+                                                                 x-text="group.description || '未填写分组说明'"></div>
+                                                        </div>
+                                                        <span class="shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
+                                                              :class="getAdminConfigCurrentGroupId(adminConfigSource) === group.id
+                                                                  ? 'bg-white/10 text-white'
+                                                                  : 'bg-gray-100 text-gray-600'"
+                                                              x-text="`${group.visibleItemCount}/${group.totalItemCount}`"></span>
+                                                    </div>
+                                                </button>
+                                            </template>
+                                        </div>
+                                    </aside>
+
+                                    <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                                        <template x-if="getAdminConfigActiveGroup()">
+                                            <div class="space-y-4">
+                                                <div class="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4">
+                                                    <div>
+                                                        <div class="flex flex-wrap items-center gap-2">
+                                                            <h4 class="text-base font-semibold text-primary" x-text="getAdminConfigActiveGroup()?.title"></h4>
+                                                            <span class="px-2 py-0.5 rounded-full border border-gray-200 bg-gray-50 text-[11px] font-medium text-gray-600"
+                                                                  x-text="getAdminConfigSourceLabel(getAdminConfigActiveGroup()?.source)"></span>
+                                                            <span class="px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-[11px] font-medium text-slate-600"
+                                                                  x-text="`${getAdminConfigActiveGroup()?.visibleItemCount || 0} 项`"></span>
+                                                        </div>
+                                                        <p class="text-sm text-muted mt-1" x-text="getAdminConfigActiveGroup()?.description"></p>
+                                                    </div>
+                                                    <button @click="saveAdminConfigGroup(adminConfigSource, getAdminConfigActiveGroup()?.id)"
+                                                            :disabled="!getAdminConfigActiveGroup() || isAdminConfigGroupSaving(adminConfigSource, getAdminConfigActiveGroup()?.id)"
+                                                            class="px-4 py-2 rounded-lg border border-gray-900 bg-gray-900 text-sm font-medium text-white hover:bg-gray-800 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                                        <span x-text="isAdminConfigGroupSaving(adminConfigSource, getAdminConfigActiveGroup()?.id) ? '保存中...' : '保存当前分类'"></span>
+                                                    </button>
+                                                </div>
+
+                                                <div class="grid grid-cols-1 2xl:grid-cols-2 gap-4">
+                                                    <template x-for="item in (getAdminConfigActiveGroup()?.visibleItems || [])" :key="`admin-config-item-${getAdminConfigActiveGroup()?.id}-${item.key}`">
+                                                        <div class="rounded-xl border border-border bg-white px-4 py-4 space-y-3">
+                                                            <div class="flex items-start justify-between gap-3">
+                                                                <div>
+                                                                    <div class="text-sm font-semibold text-primary" x-text="item.label"></div>
+                                                                    <div class="text-[11px] font-mono text-muted mt-1" x-text="item.key"></div>
+                                                                </div>
+                                                                <span class="px-2 py-0.5 rounded-full border text-[11px] font-medium"
+                                                                      :class="getAdminConfigActiveGroup()?.source === 'site'
+                                                                          ? 'border-sky-200 bg-sky-50 text-sky-700'
+                                                                          : (item.runtime_matches_file
+                                                                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                                                              : 'border-amber-200 bg-amber-50 text-amber-700')"
+                                                                      x-text="getAdminConfigActiveGroup()?.source === 'site' ? '需刷新页面' : (item.runtime_matches_file ? '已生效' : '待重启')"></span>
+                                                            </div>
+                                                            <p class="text-xs text-muted" x-text="item.description"></p>
+
+                                                            <template x-if="item.type === 'boolean'">
+                                                                <select x-model="adminConfigDraft[adminConfigSource][getAdminConfigActiveGroup().id][item.key]"
+                                                                        class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                                    <option value="true">true</option>
+                                                                    <option value="false">false</option>
+                                                                </select>
+                                                            </template>
+
+                                                            <template x-if="item.type === 'select'">
+                                                                <select x-model="adminConfigDraft[adminConfigSource][getAdminConfigActiveGroup().id][item.key]"
+                                                                        class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                                    <template x-for="option in item.options" :key="`admin-config-option-${item.key}-${option.value}`">
+                                                                        <option :value="option.value" x-text="option.label"></option>
+                                                                    </template>
+                                                                </select>
+                                                            </template>
+
+                                                            <template x-if="item.type === 'textarea' || item.type === 'list'">
+                                                                <textarea x-model="adminConfigDraft[adminConfigSource][getAdminConfigActiveGroup().id][item.key]"
+                                                                          rows="3"
+                                                                          :placeholder="item.placeholder || (item.type === 'list' ? '多个值请用逗号分隔' : '')"
+                                                                          class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"></textarea>
+                                                            </template>
+
+                                                            <template x-if="!['boolean', 'select', 'textarea', 'list'].includes(item.type)">
+                                                                <input :type="getAdminConfigInputType(item)"
+                                                                       x-model="adminConfigDraft[adminConfigSource][getAdminConfigActiveGroup().id][item.key]"
+                                                                       :step="item.type === 'integer' ? '1' : (item.type === 'float' ? 'any' : null)"
+                                                                       :placeholder="item.placeholder || ''"
+                                                                       class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                            </template>
+
+                                                            <div class="rounded-lg bg-slate-50 px-3 py-3 text-xs text-muted space-y-1">
+                                                                <div>文件值：<span class="font-medium text-primary" x-text="item.file_value_display"></span></div>
+                                                                <div>运行中：<span class="font-medium text-primary" x-text="item.runtime_value_display"></span></div>
+                                                                <div>当前来源：<span class="font-medium text-primary" x-text="item.runtime_source_label"></span></div>
+                                                                <div>生效方式：<span class="font-medium text-primary" x-text="getAdminConfigActiveGroup()?.source === 'site' ? '保存后刷新页面' : (item.requires_restart ? '通常需重启' : '即时生效')"></span></div>
+                                                            </div>
+                                                        </div>
+                                                    </template>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+
+                                <div x-show="getAdminConfigVisibleGroups().length === 0" x-cloak class="rounded-2xl border border-dashed border-gray-200 bg-white px-4 py-10 text-center text-sm text-muted">
+                                    当前筛选条件下没有匹配的配置项。
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+
+                    <div x-show="adminTab === 'ownership'" x-cloak class="space-y-4">
+                        <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                            <div>
+                                <h3 class="text-base font-semibold text-primary">迁移参数</h3>
+                                <p class="text-sm text-muted mt-1">必须先 dry-run 预览，再输入确认词执行正式迁移。</p>
+                            </div>
+                            <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                                <div class="rounded-xl border border-border bg-white px-4 py-4 space-y-3">
+                                    <div class="text-sm font-semibold text-primary">目标用户</div>
+                                    <div class="flex gap-2">
+                                        <input type="text"
+                                               x-model.trim="adminOwnershipTargetQuery"
+                                               placeholder="输入手机号 / 邮箱 / 用户 ID"
+                                               class="flex-1 min-w-0 px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                        <button @click="searchAdminUsers('target')"
+                                                :disabled="adminOwnershipSearchLoading"
+                                                class="px-3.5 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                            搜索
+                                        </button>
+                                    </div>
+                                    <div class="text-xs text-muted" x-show="adminOwnershipForm.to_account">
+                                        已选目标：<span class="font-medium text-primary" x-text="adminOwnershipForm.to_account"></span>
+                                    </div>
+                                    <div class="space-y-2" x-show="adminOwnershipTargetResults.length > 0">
+                                        <template x-for="user in adminOwnershipTargetResults" :key="`ownership-target-${user.id}`">
+                                            <button @click="selectAdminOwnershipUser(user, 'target')"
+                                                    class="w-full rounded-lg border border-border bg-slate-50 px-3 py-3 text-left hover:bg-slate-100 transition-colors cursor-pointer">
+                                                <div class="text-sm font-medium text-primary" x-text="user.account || user.phone || user.email || `user-${user.id}`"></div>
+                                                <div class="text-xs text-muted mt-1">ID <span x-text="user.id"></span></div>
+                                            </button>
+                                        </template>
+                                    </div>
+                                </div>
+
+                                <div class="rounded-xl border border-border bg-white px-4 py-4 space-y-3">
+                                    <div class="text-sm font-semibold text-primary">迁移范围</div>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <label class="space-y-1">
+                                            <span class="text-xs font-medium text-muted">Scope</span>
+                                            <select x-model="adminOwnershipForm.scope"
+                                                    class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                <option value="unowned">仅未归属</option>
+                                                <option value="all">全部改归目标用户</option>
+                                                <option value="from-user">仅迁移指定来源用户</option>
+                                            </select>
+                                        </label>
+                                        <label class="space-y-1">
+                                            <span class="text-xs font-medium text-muted">样例数量</span>
+                                            <input type="number"
+                                                   min="1"
+                                                   max="50"
+                                                   x-model="adminOwnershipForm.max_examples"
+                                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                        </label>
+                                    </div>
+                                    <div class="flex flex-wrap gap-4 text-sm">
+                                        <label class="inline-flex items-center gap-2 cursor-pointer">
+                                            <input type="checkbox"
+                                                   :checked="adminOwnershipForm.kinds.includes('sessions')"
+                                                   @change="toggleAdminOwnershipKind('sessions')"
+                                                   class="batch-checkbox w-4 h-4 border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
+                                            <span>迁移会话</span>
+                                        </label>
+                                        <label class="inline-flex items-center gap-2 cursor-pointer">
+                                            <input type="checkbox"
+                                                   :checked="adminOwnershipForm.kinds.includes('reports')"
+                                                   @change="toggleAdminOwnershipKind('reports')"
+                                                   class="batch-checkbox w-4 h-4 border-gray-300 rounded focus:ring-primary/30 cursor-pointer">
+                                            <span>迁移报告</span>
+                                        </label>
+                                    </div>
+                                    <div x-show="adminOwnershipForm.scope === 'from-user'" x-cloak class="space-y-3">
+                                        <div class="text-sm font-semibold text-primary">来源用户</div>
+                                        <div class="flex gap-2">
+                                            <input type="text"
+                                                   x-model.trim="adminOwnershipSourceQuery"
+                                                   placeholder="输入来源用户手机号 / 邮箱 / ID"
+                                                   class="flex-1 min-w-0 px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                            <button @click="searchAdminUsers('source')"
+                                                    :disabled="adminOwnershipSearchLoading"
+                                                    class="px-3.5 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                                搜索
+                                            </button>
+                                        </div>
+                                        <div class="text-xs text-muted" x-show="adminOwnershipForm.from_account">
+                                            已选来源：<span class="font-medium text-primary" x-text="adminOwnershipForm.from_account"></span>
+                                        </div>
+                                        <div class="space-y-2" x-show="adminOwnershipSourceResults.length > 0">
+                                            <template x-for="user in adminOwnershipSourceResults" :key="`ownership-source-${user.id}`">
+                                                <button @click="selectAdminOwnershipUser(user, 'source')"
+                                                        class="w-full rounded-lg border border-border bg-slate-50 px-3 py-3 text-left hover:bg-slate-100 transition-colors cursor-pointer">
+                                                    <div class="text-sm font-medium text-primary" x-text="user.account || user.phone || user.email || `user-${user.id}`"></div>
+                                                    <div class="text-xs text-muted mt-1">ID <span x-text="user.id"></span></div>
+                                                </button>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="flex flex-wrap gap-2">
+                                <button @click="auditAdminOwnership()"
+                                        :disabled="adminOwnershipAuditLoading"
+                                        class="px-3.5 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                    <span x-text="adminOwnershipAuditLoading ? '审计中...' : '先审计目标归属'"></span>
+                                </button>
+                                <button @click="previewAdminOwnershipMigration()"
+                                        :disabled="adminOwnershipPreviewLoading"
+                                        class="btn-sage-blue text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
+                                    <span x-text="adminOwnershipPreviewLoading ? 'dry-run 中...' : '执行 dry-run 预览'"></span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                            <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                                <div>
+                                    <h3 class="text-base font-semibold text-primary">归属审计</h3>
+                                    <p class="text-sm text-muted mt-1">查看目标用户当前已拥有的会话与报告数量。</p>
+                                </div>
+                                <div x-show="adminOwnershipAuditError" x-cloak class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600" x-text="adminOwnershipAuditError"></div>
+                                <template x-if="adminOwnershipAudit">
+                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div class="rounded-xl border border-border bg-white px-4 py-4">
+                                            <div class="text-xs text-muted">会话归属</div>
+                                            <div class="text-xl font-semibold text-primary mt-1" x-text="adminOwnershipAudit?.sessions?.owned ?? 0"></div>
+                                            <div class="text-xs text-muted mt-1">总会话 <span x-text="adminOwnershipAudit?.sessions?.total ?? 0"></span></div>
+                                        </div>
+                                        <div class="rounded-xl border border-border bg-white px-4 py-4">
+                                            <div class="text-xs text-muted">报告归属</div>
+                                            <div class="text-xl font-semibold text-primary mt-1" x-text="adminOwnershipAudit?.reports?.owned ?? 0"></div>
+                                            <div class="text-xs text-muted mt-1">总报告 <span x-text="adminOwnershipAudit?.reports?.total ?? 0"></span></div>
+                                        </div>
+                                    </div>
+                                </template>
+                                <template x-if="!adminOwnershipAudit">
+                                    <div class="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-muted">选择目标用户后，可先做归属审计。</div>
+                                </template>
+                            </div>
+
+                            <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                                <div>
+                                    <h3 class="text-base font-semibold text-primary">dry-run 预览与正式执行</h3>
+                                    <p class="text-sm text-muted mt-1">参数锁定后才能 apply，apply 会自动落备份。</p>
+                                </div>
+                                <div x-show="adminOwnershipPreviewError" x-cloak class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600" x-text="adminOwnershipPreviewError"></div>
+                                <template x-if="adminOwnershipPreview">
+                                    <div class="space-y-4">
+                                        <div class="rounded-xl border border-border bg-white px-4 py-4 space-y-3">
+                                            <div class="text-sm font-semibold text-primary">预览结果</div>
+                                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                                                <div class="rounded-lg bg-slate-50 px-3 py-3">
+                                                    <div class="text-xs text-muted">会话命中</div>
+                                                    <div class="text-xl font-semibold text-primary mt-1" x-text="adminOwnershipPreview?.summary?.sessions?.matched ?? 0"></div>
+                                                </div>
+                                                <div class="rounded-lg bg-slate-50 px-3 py-3">
+                                                    <div class="text-xs text-muted">报告命中</div>
+                                                    <div class="text-xl font-semibold text-primary mt-1" x-text="adminOwnershipPreview?.summary?.reports?.matched ?? 0"></div>
+                                                </div>
+                                            </div>
+                                            <div class="text-sm text-muted">
+                                                目标用户：
+                                                <span class="font-medium text-primary" x-text="adminOwnershipPreview?.summary?.target_user?.account || adminOwnershipPreview?.summary?.target_user?.phone || adminOwnershipPreview?.summary?.target_user?.email || '-'"></span>
+                                            </div>
+                                            <div class="text-sm text-muted">
+                                                确认词：
+                                                <span class="font-medium text-primary" x-text="adminOwnershipPreview?.confirm_phrase || '-'"></span>
+                                            </div>
+                                        </div>
+
+                                        <div class="rounded-xl border border-border bg-white px-4 py-4 space-y-3">
+                                            <div class="text-sm font-semibold text-primary">输入确认词后执行 apply</div>
+                                            <input type="text"
+                                                   x-model.trim="adminOwnershipConfirmText"
+                                                   :placeholder="adminOwnershipPreview?.confirm_phrase || '请先生成 dry-run 预览'"
+                                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                            <button @click="applyAdminOwnershipMigration()"
+                                                    :disabled="!canApplyAdminOwnershipMigration()"
+                                                    class="w-full px-4 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    :class="canApplyAdminOwnershipMigration() ? 'bg-gray-900 text-white hover:bg-gray-800' : 'bg-gray-100 text-gray-400'">
+                                                <span x-text="adminOwnershipApplyLoading ? '执行中...' : '正式 apply 迁移'"></span>
+                                            </button>
+                                        </div>
+
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                                            <div class="rounded-xl border border-border bg-white px-4 py-4">
+                                                <div class="font-semibold text-primary mb-2">会话样例</div>
+                                                <template x-if="(adminOwnershipPreview?.summary?.sessions?.examples || []).length > 0">
+                                                    <div class="space-y-2">
+                                                        <template x-for="item in adminOwnershipPreview.summary.sessions.examples" :key="item.session_file">
+                                                            <div class="text-muted break-words" x-text="`${item.session_file}：${item.from_owner || 0} -> ${item.to_owner}`"></div>
+                                                        </template>
+                                                    </div>
+                                                </template>
+                                                <template x-if="(adminOwnershipPreview?.summary?.sessions?.examples || []).length === 0">
+                                                    <div class="text-muted">暂无会话样例</div>
+                                                </template>
+                                            </div>
+                                            <div class="rounded-xl border border-border bg-white px-4 py-4">
+                                                <div class="font-semibold text-primary mb-2">报告样例</div>
+                                                <template x-if="(adminOwnershipPreview?.summary?.reports?.examples || []).length > 0">
+                                                    <div class="space-y-2">
+                                                        <template x-for="item in adminOwnershipPreview.summary.reports.examples" :key="item.report_name">
+                                                            <div class="text-muted break-words" x-text="`${item.report_name}：${item.from_owner || 0} -> ${item.to_owner}`"></div>
+                                                        </template>
+                                                    </div>
+                                                </template>
+                                                <template x-if="(adminOwnershipPreview?.summary?.reports?.examples || []).length === 0">
+                                                    <div class="text-muted">暂无报告样例</div>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </template>
+                                <template x-if="!adminOwnershipPreview">
+                                    <div class="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-muted">先执行 dry-run，系统会生成确认词和命中样例。</div>
+                                </template>
+                            </div>
+                        </div>
+
+                        <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                                <div>
+                                    <h3 class="text-base font-semibold text-primary">迁移历史与回滚</h3>
+                                    <p class="text-sm text-muted mt-1">从备份元数据读取历史操作，可选择单次备份执行回滚。</p>
+                                </div>
+                                <button @click="loadAdminOwnershipHistory()"
+                                        :disabled="adminOwnershipHistoryLoading"
+                                        class="px-3.5 py-2 rounded-lg border border-gray-200 bg-white text-sm font-medium text-secondary hover:bg-gray-50 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                    刷新历史
+                                </button>
+                            </div>
+                            <div x-show="adminOwnershipHistoryError" x-cloak class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600" x-text="adminOwnershipHistoryError"></div>
+                            <div class="space-y-3">
+                                <template x-if="adminOwnershipHistory.length > 0">
+                                    <div class="space-y-3">
+                                        <template x-for="item in adminOwnershipHistory" :key="`ownership-history-${item.backup_id}`">
+                                            <div class="rounded-xl border border-border bg-white px-4 py-4">
+                                                <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
+                                                    <div class="space-y-2">
+                                                        <div class="flex items-center gap-2 flex-wrap">
+                                                            <span class="text-sm font-semibold text-primary" x-text="item.backup_id"></span>
+                                                            <span class="inline-flex items-center justify-center whitespace-nowrap leading-none min-w-[4.5rem] px-2.5 py-1 rounded-full border text-xs font-medium"
+                                                                  :class="item.rolled_back ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-emerald-200 bg-emerald-50 text-emerald-700'"
+                                                                  x-text="item.rolled_back ? '已回滚' : '可回滚'"></span>
+                                                        </div>
+                                                        <div class="text-sm text-muted">
+                                                            目标：<span class="font-medium text-primary" x-text="item.target_user?.account || item.target_user?.phone || item.target_user?.email || '-'"></span>
+                                                            · Scope <span class="font-medium text-primary" x-text="item.scope || '-'"></span>
+                                                            · <span x-text="getAdminOwnershipKindsLabel(item.kinds)"></span>
+                                                        </div>
+                                                        <div class="text-xs text-muted">
+                                                            <span x-text="item.generated_at ? formatDate(item.generated_at) : '-'"></span>
+                                                            · 会话 <span x-text="item.sessions?.updated ?? item.sessions?.matched ?? 0"></span>
+                                                            · 报告 <span x-text="item.reports?.updated ?? item.reports?.matched ?? 0"></span>
+                                                        </div>
+                                                    </div>
+                                                    <button @click="rollbackAdminOwnershipMigration(item.backup_id)"
+                                                            :disabled="item.rolled_back"
+                                                            class="px-3.5 py-2 rounded-lg border border-red-200 bg-red-50 text-sm font-medium text-red-700 hover:bg-red-100 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+                                                        回滚本次迁移
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </template>
+                                <template x-if="adminOwnershipHistory.length === 0">
+                                    <div class="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-muted">
+                                        暂无迁移历史。
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </template>
         </main>
             </div>
         </template>
@@ -3708,8 +5394,7 @@
                     <div>
                         <h3 id="dv-dialog-settings-title" class="dv-modal-title">设置中心</h3>
                         <p id="dv-dialog-settings-desc"
-                           class="dv-modal-body text-sm mt-1"
-                           x-text="canViewOpsMetrics() ? '管理外观偏好、账号绑定与运行观测' : '管理外观偏好与账号绑定关系'"></p>
+                           class="dv-modal-body text-sm mt-1">管理外观偏好、账号绑定与 License 状态</p>
                     </div>
                     <button @click="closeSettingsModal()"
                             data-dialog-autofocus
@@ -3733,13 +5418,6 @@
                                 :class="settingsTab === 'account' ? 'settings-tab-btn settings-tab-btn--active' : 'settings-tab-btn'"
                                 class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium">
                             账号与绑定
-                        </button>
-                        <button id="dv-settings-tab-ops"
-                                x-show="currentUser?.is_admin"
-                                @click="switchSettingsTab('ops')"
-                                :class="settingsTab === 'ops' ? 'settings-tab-btn settings-tab-btn--active' : 'settings-tab-btn'"
-                                class="w-full text-left px-3 py-2 rounded-lg text-sm font-medium">
-                            运行监控
                         </button>
                     </aside>
                     <section class="settings-content flex-1 p-4 md:p-5 space-y-5">
@@ -3778,6 +5456,39 @@
                                         <span class="settings-info-label">微信</span>
                                         <span class="settings-info-value"
                                               x-text="currentUser?.wechat_bound ? (currentUser?.wechat_nickname ? `已绑定（${currentUser.wechat_nickname}）` : '已绑定') : '未绑定'"></span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="settings-group">
+                                <h4 class="text-sm font-semibold text-primary mb-2">License 状态</h4>
+                                <div class="settings-info-grid text-sm">
+                                    <div class="settings-info-row">
+                                        <span class="settings-info-label">校验开关</span>
+                                        <span class="settings-info-value" x-text="licenseEnforcementEnabled ? '已开启' : '未开启'"></span>
+                                    </div>
+                                    <div class="settings-info-row">
+                                        <span class="settings-info-label">当前状态</span>
+                                        <span class="settings-info-value" x-text="getLicenseStatusLabel()"></span>
+                                    </div>
+                                    <div class="settings-info-row">
+                                        <span class="settings-info-label">License</span>
+                                        <span class="settings-info-value font-mono" x-text="licenseInfo?.masked_code || '未绑定'"></span>
+                                    </div>
+                                    <div class="settings-info-row">
+                                        <span class="settings-info-label">生效时间</span>
+                                        <span class="settings-info-value" x-text="licenseInfo?.not_before_at ? formatDate(licenseInfo.not_before_at) : '未设置'"></span>
+                                    </div>
+                                    <div class="settings-info-row">
+                                        <span class="settings-info-label">到期时间</span>
+                                        <span class="settings-info-value" x-text="licenseInfo?.expires_at ? formatDate(licenseInfo.expires_at) : '未设置'"></span>
+                                    </div>
+                                    <div class="settings-info-row" x-show="licenseInfo?.duration_days">
+                                        <span class="settings-info-label">授权时长</span>
+                                        <span class="settings-info-value" x-text="formatLicenseDurationDays(licenseInfo?.duration_days)"></span>
+                                    </div>
+                                    <div class="settings-info-row">
+                                        <span class="settings-info-label">剩余有效期</span>
+                                        <span class="settings-info-value" x-text="getLicenseRemainingText()"></span>
                                     </div>
                                 </div>
                             </div>
@@ -4046,6 +5757,116 @@
                         </button>
                     </div>
                 </form>
+            </div>
+        </div>
+
+        <!-- ========== 账号合并确认弹窗 ========== -->
+        <div x-show="showAccountMergeModal"
+             data-dialog-key="showAccountMergeModal"
+             x-bind="getDialogAttrs('showAccountMergeModal')"
+             x-transition:enter="transition ease-out duration-200"
+             x-transition:enter-start="opacity-0"
+             x-transition:enter-end="opacity-100"
+             x-transition:leave="transition ease-in duration-150"
+             x-transition:leave-start="opacity-100"
+             x-transition:leave-end="opacity-0"
+             class="dv-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
+             @click.self="closeAccountMergeModal()"
+             @keydown.escape.window="closeAccountMergeModal()">
+            <div x-bind="getDialogPanelAttrs('showAccountMergeModal')"
+                 class="dv-modal-panel bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-6 max-h-[85vh] overflow-y-auto"
+                 x-transition:enter="transition ease-out duration-200"
+                 x-transition:enter-start="opacity-0 scale-95 translate-y-1"
+                 x-transition:enter-end="opacity-100 scale-100 translate-y-0"
+                 x-transition:leave="transition ease-in duration-150"
+                 x-transition:leave-start="opacity-100 scale-100 translate-y-0"
+                 x-transition:leave-end="opacity-0 scale-95 translate-y-1">
+                <div class="flex items-start justify-between gap-4 mb-5">
+                    <div>
+                        <h3 class="dv-modal-title mb-2">确认合并账号历史</h3>
+                        <p class="dv-modal-body">检测到另一个 <span x-text="accountMergePreview?.identity_label || '账号'"></span> 账号已有历史数据。继续后，这些数据将并入当前账号。</p>
+                    </div>
+                    <button @click="closeAccountMergeModal()"
+                            class="settings-close-btn shrink-0"
+                            aria-label="关闭账号合并确认">
+                        <svg class="settings-close-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <div x-show="accountMergePreview" x-cloak class="space-y-4">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div class="rounded-xl border border-border bg-surface-secondary px-4 py-4">
+                            <div class="text-xs text-muted mb-2">当前主账号</div>
+                            <div class="text-base font-semibold text-primary" x-text="accountMergePreview?.target_account?.display_name || '-'"></div>
+                            <div class="text-sm text-muted mt-2 space-y-1">
+                                <div>手机号：<span x-text="accountMergePreview?.target_account?.phone_masked || '未绑定'"></span></div>
+                                <div>微信：<span x-text="accountMergePreview?.target_account?.wechat_bound ? (accountMergePreview?.target_account?.wechat_nickname || '已绑定') : '未绑定'"></span></div>
+                                <div>License：<span x-text="accountMergePreview?.target_account?.has_valid_license ? '有效' : '无有效 License'"></span></div>
+                            </div>
+                        </div>
+                        <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4">
+                            <div class="text-xs text-amber-700 mb-2">待并入账号</div>
+                            <div class="text-base font-semibold text-primary" x-text="accountMergePreview?.source_account?.display_name || '-'"></div>
+                            <div class="text-sm text-muted mt-2 space-y-1">
+                                <div>手机号：<span x-text="accountMergePreview?.source_account?.phone_masked || '未绑定'"></span></div>
+                                <div>微信：<span x-text="accountMergePreview?.source_account?.wechat_bound ? (accountMergePreview?.source_account?.wechat_nickname || '已绑定') : '未绑定'"></span></div>
+                                <div>License：<span x-text="accountMergePreview?.source_account?.has_valid_license ? '有效' : '无有效 License'"></span></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="rounded-xl border border-border px-4 py-4">
+                        <div class="flex items-center justify-between gap-3 mb-3">
+                            <h4 class="text-sm font-semibold text-primary">将被并入的数据</h4>
+                            <span class="text-xs text-muted">原账号将不再单独持有这些内容</span>
+                        </div>
+                        <div class="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                            <template x-for="item in getAccountMergeAssetItems(accountMergePreview?.source_account)" :key="item.key">
+                                <div class="rounded-lg bg-surface-secondary px-3 py-3 text-center">
+                                    <div class="text-lg font-semibold text-primary" x-text="item.value"></div>
+                                    <div class="text-xs text-muted mt-1" x-text="item.label"></div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+                        <p x-text="accountMergePreview?.warning_message || '合并后，另一账号的历史数据将并入当前账号。'"></p>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-primary mb-1">
+                            请输入确认短语：<span class="font-mono" x-text="accountMergePreview?.confirm_phrase || ''"></span>
+                        </label>
+                        <input type="text"
+                               data-dialog-autofocus
+                               x-model.trim="accountMergeConfirmText"
+                               :placeholder="accountMergePreview?.confirm_phrase || '请输入确认短语'"
+                               class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                    </div>
+
+                    <p x-show="accountMergeError" x-cloak class="text-sm text-red-500" x-text="accountMergeError"></p>
+                </div>
+
+                <div x-show="accountMergeLoading" x-cloak class="py-8 text-center text-sm text-muted">
+                    正在加载账号合并预览...
+                </div>
+
+                <div class="dv-modal-actions mt-6">
+                    <button type="button"
+                            @click="closeAccountMergeModal()"
+                            class="dv-modal-btn-secondary px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer">
+                        取消
+                    </button>
+                    <button type="button"
+                            @click="applyAccountMerge()"
+                            :disabled="accountMergeApplyLoading || accountMergeLoading || !accountMergePreview || accountMergeConfirmText !== accountMergePreview.confirm_phrase"
+                            class="dv-modal-btn-primary px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
+                        <span x-text="accountMergeApplyLoading ? '合并中...' : '确认合并'"></span>
+                    </button>
+                </div>
             </div>
         </div>
 

@@ -50,6 +50,18 @@ function deepVision() {
         authAccountSuggestionsOpen: false,
         authAccountSuggestionsCloseTimer: null,
         currentUser: null,
+        licenseChecking: false,
+        licenseEnforcementEnabled: false,
+        hasValidLicense: false,
+        licenseStatus: 'missing',
+        licenseInfo: null,
+        licenseGateActive: false,
+        licenseGateMessage: '',
+        licenseActivationLoading: false,
+        licenseActivationForm: {
+            code: ''
+        },
+        licenseActivationError: '',
         showSettingsModal: false,
         settingsTab: 'appearance',
         opsMetrics: null,
@@ -58,6 +70,110 @@ function deepVision() {
         opsMetricsLastUpdatedAt: 0,
         opsMetricsLastLoadedAt: 0,
         opsMetricsLastN: 200,
+        adminTab: 'overview',
+        adminLicenseSummary: null,
+        adminLicenseSummaryLoading: false,
+        adminLicenseSummaryError: '',
+        adminLicenseEnforcementMutating: false,
+        adminLicenseList: [],
+        adminLicenseListLoading: false,
+        adminLicenseListError: '',
+        adminLicenseFilters: {
+            status: '',
+            batch_id: '',
+            bound_account: '',
+            note: '',
+            created_from: '',
+            created_to: '',
+            expires_from: '',
+            expires_to: '',
+            is_bound: '',
+            code: '',
+        },
+        adminLicensePagination: {
+            page: 1,
+            page_size: 20,
+            total_pages: 0,
+            count: 0,
+        },
+        adminLicenseSort: {
+            by: 'id',
+            order: 'desc',
+        },
+        adminLicensePageJumpInput: '',
+        adminLicenseSelectedIds: [],
+        adminLicenseDetailId: null,
+        adminLicenseDetail: null,
+        adminLicenseDetailLoading: false,
+        adminLicenseEvents: [],
+        adminLicenseBootstrapStatus: null,
+        adminLicenseBootstrapLoading: false,
+        adminLicenseBootstrapSubmitting: false,
+        adminLicenseBootstrapError: '',
+        adminLicenseBootstrapForm: {
+            duration_days: 365,
+            note: '',
+        },
+        adminLicenseGenerateLoading: false,
+        adminLicenseGenerateForm: {
+            count: 10,
+            duration_days: 30,
+            note: '',
+        },
+        adminLicenseGeneratedBatch: null,
+        adminLicenseBulk: {
+            revoke_reason: '',
+            duration_days: '',
+        },
+        adminLicenseDetailForm: {
+            revoke_reason: '',
+            duration_days: '',
+        },
+        adminSummariesInfo: null,
+        adminSummariesLoading: false,
+        adminSummariesError: '',
+        adminOwnershipTargetQuery: '',
+        adminOwnershipTargetResults: [],
+        adminOwnershipSourceQuery: '',
+        adminOwnershipSourceResults: [],
+        adminOwnershipSearchLoading: false,
+        adminOwnershipForm: {
+            to_user_id: '',
+            to_account: '',
+            scope: 'unowned',
+            from_user_id: '',
+            from_account: '',
+            kinds: ['sessions', 'reports'],
+            max_examples: 20,
+        },
+        adminOwnershipAudit: null,
+        adminOwnershipAuditLoading: false,
+        adminOwnershipAuditError: '',
+        adminOwnershipPreview: null,
+        adminOwnershipPreviewLoading: false,
+        adminOwnershipPreviewError: '',
+        adminOwnershipConfirmText: '',
+        adminOwnershipApplyLoading: false,
+        adminOwnershipHistory: [],
+        adminOwnershipHistoryLoading: false,
+        adminOwnershipHistoryError: '',
+        adminConfigCenter: null,
+        adminConfigLoading: false,
+        adminConfigError: '',
+        adminConfigSource: 'env',
+        adminConfigSearch: '',
+        adminConfigShowSecrets: false,
+        adminConfigActiveGroupId: {
+            env: '',
+            config: '',
+            site: '',
+        },
+        adminConfigDraft: {
+            env: {},
+            config: {},
+            site: {},
+        },
+        adminConfigSavingKey: '',
         showBindPhoneModal: false,
         bindPhoneLoading: false,
         bindCodeSending: false,
@@ -71,6 +187,12 @@ function deepVision() {
             phone: '',
             code: ''
         },
+        showAccountMergeModal: false,
+        accountMergeLoading: false,
+        accountMergeApplyLoading: false,
+        accountMergeError: '',
+        accountMergePreview: null,
+        accountMergeConfirmText: '',
         loading: false,
         loadingQuestion: false,
         questionRequestId: 0,
@@ -183,6 +305,7 @@ function deepVision() {
             'showDeleteReportModal',
             'showSettingsModal',
             'showBindPhoneModal',
+            'showAccountMergeModal',
             'showActionConfirmModal',
             'showBatchDeleteModal'
         ],
@@ -569,14 +692,18 @@ function deepVision() {
             await this.checkAuthStatus();
 
             if (!this.authReady) {
-                this.consumeAuthRedirectToast();
+                await this.consumeAuthRedirectToast();
                 this.enforceAuthViewLightTheme();
                 this.authChecking = false;
                 return;
             }
 
+            await this.refreshLicenseStatus({ showToast: false });
             this.authChecking = false;
-            this.consumeAuthRedirectToast();
+            await this.consumeAuthRedirectToast();
+            if (!this.authReady || this.licenseChecking || this.licenseGateActive) {
+                return;
+            }
             this.bootstrapAuthenticatedApp().catch((error) => {
                 console.error('登录后初始化失败:', error);
             });
@@ -668,6 +795,201 @@ function deepVision() {
             }
         },
 
+        resetLicenseState() {
+            this.licenseChecking = false;
+            this.licenseEnforcementEnabled = Boolean(this.serverStatus?.license_enforcement_enabled);
+            this.hasValidLicense = false;
+            this.licenseStatus = 'missing';
+            this.licenseInfo = null;
+            this.licenseGateActive = false;
+            this.licenseGateMessage = '';
+            this.licenseActivationLoading = false;
+            this.licenseActivationForm = { code: '' };
+            this.licenseActivationError = '';
+        },
+
+        applyLicenseStatusPayload(payload = {}, options = {}) {
+            const {
+                message = '',
+                preserveInput = false
+            } = options;
+            const enforcementEnabled = Boolean(
+                payload?.enforcement_enabled ?? this.serverStatus?.license_enforcement_enabled
+            );
+            const hasValidLicense = Boolean(payload?.has_valid_license);
+            const status = String(payload?.status || 'missing').trim() || 'missing';
+            this.licenseEnforcementEnabled = enforcementEnabled;
+            this.hasValidLicense = hasValidLicense;
+            this.licenseStatus = status;
+            this.licenseInfo = payload?.license || null;
+            this.licenseGateActive = enforcementEnabled && !hasValidLicense;
+            this.licenseGateMessage = String(message || '').trim();
+            if (!preserveInput && hasValidLicense) {
+                this.licenseActivationForm.code = '';
+                this.licenseActivationError = '';
+            }
+        },
+
+        enterLicenseGateState(payload = {}, options = {}) {
+            const errorCode = String(payload?.error_code || '').trim();
+            const licenseStatus = String(
+                payload?.license_status
+                || (errorCode.startsWith('license_') ? errorCode.replace(/^license_/, '') : '')
+                || this.licenseStatus
+                || 'missing'
+            ).trim();
+            this.applyLicenseStatusPayload(
+                {
+                    enforcement_enabled: true,
+                    has_valid_license: false,
+                    status: licenseStatus,
+                    license: payload?.license || this.licenseInfo || null
+                },
+                {
+                    message: payload?.error || options.message || '',
+                    preserveInput: true
+                }
+            );
+            this.showAccountMenu = false;
+            this.showSettingsModal = false;
+            this.showNewSessionModal = false;
+            this.showDeleteModal = false;
+            this.showDeleteReportModal = false;
+            this.showBatchDeleteModal = false;
+            this.showRestartModal = false;
+            this.showDeleteDocModal = false;
+            this.showBindPhoneModal = false;
+            this.clearAdminGeneratedLicenseBatch();
+            this.abortQuestionRequest();
+            this.stopQuestionRequestGuard();
+            this.stopThinkingPolling();
+            this.stopWebSearchPolling();
+            this.stopReportGenerationPolling();
+            this.stopSessionsAutoRefresh();
+            this.stopPresentationPolling();
+            this.loading = false;
+            this.loadingQuestion = false;
+            this.submitting = false;
+            this.generatingReport = false;
+            this.generatingSlides = false;
+        },
+
+        async refreshLicenseStatus(options = {}) {
+            const { showToast = false } = options;
+            if (!this.authReady) {
+                this.resetLicenseState();
+                return null;
+            }
+
+            this.licenseChecking = true;
+            try {
+                const payload = await this.apiCall('/licenses/current', {
+                    skipAuthRedirect: true,
+                    expectedStatuses: [401]
+                });
+                this.applyLicenseStatusPayload(payload);
+                if (showToast && this.licenseGateActive) {
+                    this.showToast(this.getLicenseGateDescription(), 'warning');
+                }
+                return payload;
+            } catch (error) {
+                if (error?.status === 401) {
+                    this.enterLoginState({ showToast: false });
+                    return null;
+                }
+                this.enterLicenseGateState(
+                    {
+                        error: error?.message || 'License 状态获取失败',
+                        error_code: 'license_required',
+                        license_status: this.licenseStatus || 'missing',
+                        license: this.licenseInfo || null
+                    },
+                    { message: error?.message || 'License 状态获取失败' }
+                );
+                if (showToast) {
+                    this.showToast(error?.message || 'License 状态获取失败', 'error');
+                }
+                return null;
+            } finally {
+                this.licenseChecking = false;
+            }
+        },
+
+        getLicenseStatusLabel(status = '') {
+            const normalized = String(status || this.licenseStatus || 'missing').trim();
+            if (normalized === 'active') return '已生效';
+            if (normalized === 'not_yet_active') return '未到生效时间';
+            if (normalized === 'expired') return '已过期';
+            if (normalized === 'revoked') return '已撤销';
+            if (normalized === 'replaced') return '已替换';
+            return '未绑定';
+        },
+
+        getLicenseGateTitle() {
+            if (this.licenseStatus === 'expired') return 'License 已过期';
+            if (this.licenseStatus === 'not_yet_active') return 'License 尚未生效';
+            if (this.licenseStatus === 'revoked') return 'License 已被撤销';
+            if (this.licenseStatus === 'replaced') return '需要重新绑定新的 License';
+            return '请输入 License 继续使用';
+        },
+
+        getLicenseGateDescription() {
+            if (this.licenseGateMessage) return this.licenseGateMessage;
+            if (this.licenseStatus === 'expired') return '当前账号绑定的 License 已过期，请联系管理员续期或重新分配。';
+            if (this.licenseStatus === 'not_yet_active') return '当前账号的 License 尚未到生效时间，请等待生效后再继续。';
+            if (this.licenseStatus === 'revoked') return '当前账号绑定的 License 已被撤销，请联系管理员获取新的 License。';
+            if (this.licenseStatus === 'replaced') return '当前账号之前绑定的 License 已被替换，请输入新的 License 完成换绑。';
+            return '系统已开启 License 校验。登录后仍需绑定有效 License 才能继续使用访谈与报告功能。';
+        },
+
+        getLicenseRemainingText() {
+            const expiresAt = this.licenseInfo?.expires_at;
+            if (!expiresAt) return '未设置';
+            const expiresDate = new Date(expiresAt);
+            if (!Number.isFinite(expiresDate.getTime())) return '未设置';
+            const diffMs = expiresDate.getTime() - Date.now();
+            if (diffMs <= 0) return '已过期';
+            const diffDays = Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+            return diffDays <= 1 ? '不足 1 天' : `约 ${diffDays} 天`;
+        },
+
+        canSubmitLicenseActivation() {
+            return !!String(this.licenseActivationForm.code || '').trim() && !this.licenseActivationLoading;
+        },
+
+        async submitLicenseActivation() {
+            if (!this.canSubmitLicenseActivation()) return;
+            this.licenseActivationLoading = true;
+            this.licenseActivationError = '';
+            try {
+                const payload = await this.apiCall('/licenses/activate', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        code: String(this.licenseActivationForm.code || '').trim()
+                    }),
+                    skipAuthRedirect: true
+                });
+                this.applyLicenseStatusPayload(payload);
+                this.showToast(payload?.message || 'License 绑定成功', 'success');
+                if (!this.licenseGateActive) {
+                    await this.bootstrapAuthenticatedApp({ skipLicenseRefresh: true });
+                }
+            } catch (error) {
+                const payload = error?.payload || {};
+                if (error?.status === 401) {
+                    this.enterLoginState({ showToast: false });
+                    return;
+                }
+                if (error?.status === 403 && String(payload?.error_code || '').startsWith('license_')) {
+                    this.enterLicenseGateState(payload, { message: payload?.error || error?.message || '' });
+                }
+                this.licenseActivationError = payload?.error || error?.message || 'License 绑定失败，请稍后重试';
+                this.showToast(this.licenseActivationError, 'error');
+            } finally {
+                this.licenseActivationLoading = false;
+            }
+        },
+
         readAuthRedirectResult() {
             if (typeof window === 'undefined') return;
             const params = new URLSearchParams(window.location.search || '');
@@ -708,13 +1030,14 @@ function deepVision() {
             window.history.replaceState({}, '', nextUrl);
         },
 
-        consumeAuthRedirectToast() {
+        async consumeAuthRedirectToast() {
             if (!this.authRedirectResult) return;
 
             const result = String(this.authRedirectResult.result || '');
             const rawMessage = String(this.authRedirectResult.message || '').trim();
             let toastType = 'info';
             let fallbackMessage = '登录状态已更新';
+            let shouldOpenAccountMerge = false;
 
             if (result === 'wechat_success') {
                 toastType = this.authReady ? 'success' : 'warning';
@@ -731,10 +1054,17 @@ function deepVision() {
             } else if (result === 'wechat_bind_error') {
                 toastType = 'error';
                 fallbackMessage = '微信绑定失败，请稍后重试';
+            } else if (result === 'wechat_bind_merge_required') {
+                toastType = 'warning';
+                fallbackMessage = '发现另一个微信账号已有历史数据，请确认合并后继续绑定';
+                shouldOpenAccountMerge = true;
             }
 
             this.showToast(rawMessage || fallbackMessage, toastType);
             this.authRedirectResult = null;
+            if (shouldOpenAccountMerge && this.authReady) {
+                await this.loadAccountMergePreview({ openModal: true, showToastOnError: true });
+            }
         },
 
         enterLoginState(options = {}) {
@@ -747,6 +1077,7 @@ function deepVision() {
             this.authChecking = false;
             this.authReady = false;
             this.currentUser = null;
+            this.resetLicenseState();
             this.authLoading = false;
             this.wechatLoginLoading = false;
             this.wechatBindLoading = false;
@@ -770,6 +1101,7 @@ function deepVision() {
             this.showRestartModal = false;
             this.showDeleteDocModal = false;
             this.showBindPhoneModal = false;
+            this.showAccountMergeModal = false;
             this.showActionConfirmModal = false;
             if (typeof this.actionConfirmResolve === 'function') {
                 this.actionConfirmResolve(false);
@@ -783,6 +1115,11 @@ function deepVision() {
             this.stopAuthCodeCountdown('bind');
             this.bindPhoneForm = { phone: '', code: '' };
             this.bindPhoneErrors = { phone: '', code: '' };
+            this.accountMergeLoading = false;
+            this.accountMergeApplyLoading = false;
+            this.accountMergeError = '';
+            this.accountMergePreview = null;
+            this.accountMergeConfirmText = '';
             this.sessionBatchMode = false;
             this.reportBatchMode = false;
             this.selectedSessionIds = [];
@@ -793,6 +1130,7 @@ function deepVision() {
             this.opsMetricsLastUpdatedAt = 0;
             this.opsMetricsLastLoadedAt = 0;
             this.settingsTab = 'appearance';
+            this.resetAdminCenterState();
             this.resetQuestionOpsLocalState();
             this.questionRequestId += 1;
             this.abortQuestionRequest();
@@ -813,11 +1151,20 @@ function deepVision() {
             this.$nextTick(() => this.focusAuthAccountInput());
         },
 
-        async bootstrapAuthenticatedApp() {
+        async bootstrapAuthenticatedApp(options = {}) {
+            const { skipLicenseRefresh = false } = options;
+            if (!skipLicenseRefresh) {
+                await this.refreshLicenseStatus({ showToast: false });
+                if (this.licenseGateActive) {
+                    return;
+                }
+            }
             this.startQuoteRotation();
 
             // 检查是否首次访问，跳转产品介绍页
-            this.checkFirstVisit();
+            if (this.checkFirstVisit()) {
+                return;
+            }
             this.initGuide();
 
             await Promise.all([
@@ -1184,20 +1531,1526 @@ function deepVision() {
             let normalizedTab = 'appearance';
             if (tab === 'account') {
                 normalizedTab = 'account';
-            } else if (tab === 'ops' && this.canViewOpsMetrics()) {
-                normalizedTab = 'ops';
             }
             this.settingsTab = normalizedTab;
             if (forceOpen) {
                 this.showSettingsModal = true;
             }
-            if (normalizedTab === 'ops' && this.canViewOpsMetrics()) {
-                void this.loadOpsMetrics();
-            }
         },
 
         canViewOpsMetrics() {
             return !!this.currentUser?.is_admin;
+        },
+
+        canViewAdminCenter() {
+            return !!this.currentUser?.is_admin;
+        },
+
+        canManageAdminLicenses() {
+            return this.canViewAdminCenter() && !!this.hasValidLicense;
+        },
+
+        isAdminViewActive() {
+            return this.currentView === 'admin';
+        },
+
+        toDateTimeLocalValue(input = null) {
+            const date = input instanceof Date ? input : new Date(input || Date.now());
+            if (!Number.isFinite(date.getTime())) return '';
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            return `${year}-${month}-${day}T${hours}:${minutes}`;
+        },
+
+        normalizeDateTimeInputToIso(value = '') {
+            const raw = String(value || '').trim();
+            if (!raw) return '';
+            const parsed = new Date(raw);
+            if (!Number.isFinite(parsed.getTime())) {
+                return raw;
+            }
+            return parsed.toISOString().replace('Z', '+00:00');
+        },
+
+        formatIsoToDateTimeInput(value = '') {
+            const raw = String(value || '').trim();
+            if (!raw) return '';
+            return this.toDateTimeLocalValue(raw);
+        },
+
+        normalizePositiveIntInput(value, fallback = 0) {
+            const parsed = Number.parseInt(String(value ?? '').trim(), 10);
+            if (!Number.isFinite(parsed) || parsed <= 0) {
+                return fallback;
+            }
+            return parsed;
+        },
+
+        createDefaultAdminLicenseGenerateForm() {
+            return {
+                count: 10,
+                duration_days: 30,
+                note: '',
+            };
+        },
+
+        createDefaultAdminLicenseBootstrapForm() {
+            return {
+                duration_days: 365,
+                note: '管理员首个种子 License',
+            };
+        },
+
+        createDefaultAdminLicensePagination() {
+            return {
+                page: 1,
+                page_size: 20,
+                total_pages: 0,
+                count: 0,
+            };
+        },
+
+        createDefaultAdminLicenseSort() {
+            return {
+                by: 'id',
+                order: 'desc',
+            };
+        },
+
+        resetAdminCenterState() {
+            this.adminTab = 'overview';
+            this.adminLicenseSummary = null;
+            this.adminLicenseSummaryLoading = false;
+            this.adminLicenseSummaryError = '';
+            this.adminLicenseEnforcementMutating = false;
+            this.adminLicenseList = [];
+            this.adminLicenseListLoading = false;
+            this.adminLicenseListError = '';
+            this.adminLicenseFilters = {
+                status: '',
+                batch_id: '',
+                bound_account: '',
+                note: '',
+                created_from: '',
+                created_to: '',
+                expires_from: '',
+                expires_to: '',
+                is_bound: '',
+                code: '',
+            };
+            this.adminLicensePagination = this.createDefaultAdminLicensePagination();
+            this.adminLicenseSort = this.createDefaultAdminLicenseSort();
+            this.adminLicensePageJumpInput = '';
+            this.adminLicenseSelectedIds = [];
+            this.adminLicenseDetailId = null;
+            this.adminLicenseDetail = null;
+            this.adminLicenseDetailLoading = false;
+            this.adminLicenseEvents = [];
+            this.adminLicenseBootstrapStatus = null;
+            this.adminLicenseBootstrapLoading = false;
+            this.adminLicenseBootstrapSubmitting = false;
+            this.adminLicenseBootstrapError = '';
+            this.adminLicenseBootstrapForm = this.createDefaultAdminLicenseBootstrapForm();
+            this.adminLicenseGenerateLoading = false;
+            this.adminLicenseGenerateForm = this.createDefaultAdminLicenseGenerateForm();
+            this.adminLicenseGeneratedBatch = null;
+            this.adminLicenseBulk = {
+                revoke_reason: '',
+                duration_days: '',
+            };
+            this.adminLicenseDetailForm = {
+                revoke_reason: '',
+                duration_days: '',
+            };
+            this.adminSummariesInfo = null;
+            this.adminSummariesLoading = false;
+            this.adminSummariesError = '';
+            this.adminOwnershipTargetQuery = '';
+            this.adminOwnershipTargetResults = [];
+            this.adminOwnershipSourceQuery = '';
+            this.adminOwnershipSourceResults = [];
+            this.adminOwnershipSearchLoading = false;
+            this.adminOwnershipForm = {
+                to_user_id: '',
+                to_account: '',
+                scope: 'unowned',
+                from_user_id: '',
+                from_account: '',
+                kinds: ['sessions', 'reports'],
+                max_examples: 20,
+            };
+            this.adminOwnershipAudit = null;
+            this.adminOwnershipAuditLoading = false;
+            this.adminOwnershipAuditError = '';
+            this.adminOwnershipPreview = null;
+            this.adminOwnershipPreviewLoading = false;
+            this.adminOwnershipPreviewError = '';
+            this.adminOwnershipConfirmText = '';
+            this.adminOwnershipApplyLoading = false;
+            this.adminOwnershipHistory = [];
+            this.adminOwnershipHistoryLoading = false;
+            this.adminOwnershipHistoryError = '';
+            this.adminConfigCenter = null;
+            this.adminConfigLoading = false;
+            this.adminConfigError = '';
+            this.adminConfigSource = 'env';
+            this.adminConfigSearch = '';
+            this.adminConfigShowSecrets = false;
+            this.adminConfigActiveGroupId = {
+                env: '',
+                config: '',
+                site: '',
+            };
+            this.adminConfigDraft = {
+                env: {},
+                config: {},
+                site: {},
+            };
+            this.adminConfigSavingKey = '';
+        },
+
+        clearAdminGeneratedLicenseBatch() {
+            this.adminLicenseGeneratedBatch = null;
+        },
+
+        openAdminCenter(tab = 'overview') {
+            if (!this.canViewAdminCenter()) return;
+            this.showAccountMenu = false;
+            this.showSettingsModal = false;
+            this.switchView('admin');
+            this.switchAdminTab(tab);
+        },
+
+        switchAdminTab(tab = 'overview') {
+            if (!this.canViewAdminCenter()) return;
+            const allowedTabs = ['overview', 'license', 'ops', 'summaries', 'ownership', 'config'];
+            const normalizedTab = allowedTabs.includes(tab) ? tab : 'overview';
+            this.adminTab = normalizedTab;
+            void this.ensureAdminDataForTab(normalizedTab);
+        },
+
+        async ensureAdminDataForTab(tab = this.adminTab) {
+            if (!this.canViewAdminCenter()) return;
+            if (tab === 'overview') {
+                await this.loadAdminOverview();
+                return;
+            }
+            if (tab === 'license') {
+                this.adminLicenseBootstrapForm = {
+                    ...this.createDefaultAdminLicenseBootstrapForm(),
+                    ...this.adminLicenseBootstrapForm,
+                    duration_days: this.normalizePositiveIntInput(
+                        this.adminLicenseBootstrapForm?.duration_days,
+                        this.createDefaultAdminLicenseBootstrapForm().duration_days,
+                    ),
+                };
+                await this.loadAdminLicenseBootstrapStatus({ silent: true });
+                this.adminLicenseGenerateForm = {
+                    ...this.createDefaultAdminLicenseGenerateForm(),
+                    ...this.adminLicenseGenerateForm,
+                    duration_days: this.normalizePositiveIntInput(
+                        this.adminLicenseGenerateForm?.duration_days,
+                        this.createDefaultAdminLicenseGenerateForm().duration_days,
+                    ),
+                };
+                if (this.canManageAdminLicenses()) {
+                    await Promise.all([
+                        this.loadAdminLicenseSummary(),
+                        this.loadAdminLicenseList({ page: this.adminLicensePagination.page || 1 }),
+                    ]);
+                } else {
+                    this.adminLicenseSummaryError = this.adminLicenseBootstrapStatus?.eligible
+                        ? '当前账号尚未绑定有效 License，可先创建并绑定首个种子 License。'
+                        : '当前账号需先绑定有效 License，才能进入 License 管理。';
+                    this.adminLicenseList = [];
+                    this.adminLicenseDetail = null;
+                    this.adminLicenseEvents = [];
+                }
+                return;
+            }
+            if (tab === 'ops') {
+                await this.loadOpsMetrics({ force: !this.opsMetrics });
+                return;
+            }
+            if (tab === 'summaries') {
+                await this.loadAdminSummariesInfo();
+                return;
+            }
+            if (tab === 'ownership') {
+                await this.loadAdminOwnershipHistory();
+                return;
+            }
+            if (tab === 'config') {
+                await this.loadAdminConfigCenter();
+            }
+        },
+
+        async loadAdminOverview() {
+            const tasks = [
+                this.loadOpsMetrics({ silent: true }),
+                this.loadAdminSummariesInfo({ silent: true }),
+                this.loadAdminOwnershipHistory({ silent: true }),
+            ];
+            if (this.canManageAdminLicenses()) {
+                tasks.push(this.loadAdminLicenseSummary({ silent: true }));
+            }
+            await Promise.all(tasks);
+        },
+
+        buildAdminLicenseQueryParams(page = 1) {
+            const params = new URLSearchParams();
+            params.set('page', String(Math.max(1, Number(page) || 1)));
+            params.set('page_size', String(Math.max(1, Number(this.adminLicensePagination?.page_size) || 20)));
+            params.set('sort_by', String(this.adminLicenseSort?.by || 'id'));
+            params.set('sort_order', String(this.adminLicenseSort?.order || 'desc'));
+            Object.entries(this.adminLicenseFilters || {}).forEach(([key, value]) => {
+                const normalized = String(value ?? '').trim();
+                if (normalized) {
+                    params.set(key, normalized);
+                }
+            });
+            return params;
+        },
+
+        syncAdminLicenseSelection() {
+            const visibleIds = new Set((Array.isArray(this.adminLicenseList) ? this.adminLicenseList : []).map(item => Number(item?.id) || 0));
+            this.adminLicenseSelectedIds = (Array.isArray(this.adminLicenseSelectedIds) ? this.adminLicenseSelectedIds : [])
+                .map(item => Number(item) || 0)
+                .filter(item => item > 0 && visibleIds.has(item));
+        },
+
+        async loadAdminLicenseBootstrapStatus(options = {}) {
+            const { silent = false } = options;
+            if (!this.canViewAdminCenter()) return null;
+            this.adminLicenseBootstrapLoading = true;
+            this.adminLicenseBootstrapError = '';
+            try {
+                const payload = await this.apiCall('/admin/licenses/bootstrap/status', {
+                    skipAuthRedirect: true,
+                });
+                this.adminLicenseBootstrapStatus = payload && typeof payload === 'object' ? payload : null;
+                return this.adminLicenseBootstrapStatus;
+            } catch (error) {
+                const message = error?.message || '种子 License 状态加载失败';
+                this.adminLicenseBootstrapStatus = null;
+                this.adminLicenseBootstrapError = message;
+                if (!silent) {
+                    this.showToast(message, 'error');
+                }
+                return null;
+            } finally {
+                this.adminLicenseBootstrapLoading = false;
+            }
+        },
+
+        canBootstrapAdminLicense() {
+            return this.canViewAdminCenter() && !!this.adminLicenseBootstrapStatus?.eligible;
+        },
+
+        formatLicenseDurationDays(durationDays = 0) {
+            const normalized = this.normalizePositiveIntInput(durationDays, 0);
+            return normalized > 0 ? `${normalized} 天` : '-';
+        },
+
+        getAdminLicenseValidityLeadText(item = null) {
+            if (item?.activation_starts_validity && !item?.not_before_at) {
+                return '激活后开始';
+            }
+            return item?.not_before_at ? this.formatDate(item.not_before_at) : '-';
+        },
+
+        getAdminLicenseValidityTailLabel(item = null) {
+            if (item?.activation_starts_validity && !item?.expires_at) {
+                return '有效期';
+            }
+            return '到期';
+        },
+
+        getAdminLicenseValidityTailText(item = null) {
+            if (item?.activation_starts_validity && !item?.expires_at) {
+                return this.formatLicenseDurationDays(item?.duration_days);
+            }
+            return item?.expires_at ? this.formatDate(item.expires_at) : '-';
+        },
+
+        async bootstrapAdminLicenseSeed() {
+            if (!this.canViewAdminCenter()) return;
+            const durationDays = this.normalizePositiveIntInput(this.adminLicenseBootstrapForm?.duration_days, 0);
+            if (!durationDays) {
+                this.showToast('请填写有效期天数', 'warning');
+                return;
+            }
+            this.adminLicenseBootstrapSubmitting = true;
+            this.adminLicenseBootstrapError = '';
+            try {
+                const payload = await this.apiCall('/admin/licenses/bootstrap', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        duration_days: durationDays,
+                        note: String(this.adminLicenseBootstrapForm?.note || '').trim(),
+                    }),
+                    skipAuthRedirect: true,
+                });
+                this.applyLicenseStatusPayload(payload);
+                this.adminLicenseBootstrapStatus = payload?.bootstrap_status && typeof payload.bootstrap_status === 'object'
+                    ? payload.bootstrap_status
+                    : this.adminLicenseBootstrapStatus;
+                this.adminLicenseBootstrapForm = this.createDefaultAdminLicenseBootstrapForm();
+                await Promise.all([
+                    this.loadAdminLicenseBootstrapStatus({ silent: true }),
+                    this.loadAdminLicenseSummary({ silent: true }),
+                    this.loadAdminLicenseList({ page: 1, silent: true }),
+                ]);
+                this.showToast(payload?.message || '已生成并绑定首个种子 License', 'success');
+            } catch (error) {
+                const message = error?.payload?.bootstrap_status?.message
+                    || error?.message
+                    || '首个种子 License 创建失败';
+                this.adminLicenseBootstrapStatus = error?.payload?.bootstrap_status && typeof error.payload.bootstrap_status === 'object'
+                    ? error.payload.bootstrap_status
+                    : this.adminLicenseBootstrapStatus;
+                this.adminLicenseBootstrapError = message;
+                this.showToast(message, 'error');
+            } finally {
+                this.adminLicenseBootstrapSubmitting = false;
+            }
+        },
+
+        async loadAdminLicenseSummary(options = {}) {
+            const { silent = false } = options;
+            if (!this.canManageAdminLicenses()) {
+                this.adminLicenseSummary = null;
+                this.adminLicenseSummaryError = '当前账号需先绑定有效 License，才能进入 License 管理。';
+                return null;
+            }
+            this.adminLicenseSummaryLoading = true;
+            this.adminLicenseSummaryError = '';
+            try {
+                const payload = await this.apiCall('/admin/licenses/summary', {
+                    skipAuthRedirect: true,
+                });
+                this.adminLicenseSummary = payload && typeof payload === 'object' ? payload : null;
+                if (this.adminLicenseSummary?.enforcement) {
+                    this.applyAdminLicenseEnforcementPayload(this.adminLicenseSummary.enforcement);
+                }
+                return this.adminLicenseSummary;
+            } catch (error) {
+                const message = error?.message || 'License 概览加载失败';
+                this.adminLicenseSummaryError = message;
+                if (!silent) {
+                    this.showToast(message, 'error');
+                }
+                return null;
+            } finally {
+                this.adminLicenseSummaryLoading = false;
+            }
+        },
+
+        async loadAdminLicenseList(options = {}) {
+            const {
+                page = this.adminLicensePagination?.page || 1,
+                silent = false,
+            } = options;
+            if (!this.canManageAdminLicenses()) {
+                this.adminLicenseList = [];
+                this.adminLicenseListError = '当前账号需先绑定有效 License，才能进入 License 管理。';
+                this.adminLicensePagination = this.createDefaultAdminLicensePagination();
+                return null;
+            }
+            this.adminLicenseListLoading = true;
+            this.adminLicenseListError = '';
+            try {
+                const params = this.buildAdminLicenseQueryParams(page);
+                const payload = await this.apiCall(`/admin/licenses?${params.toString()}`, {
+                    skipAuthRedirect: true,
+                });
+                this.adminLicenseList = Array.isArray(payload?.items) ? payload.items : [];
+                this.adminLicensePagination = {
+                    page: Number(payload?.page) || 1,
+                    page_size: Number(payload?.page_size) || 20,
+                    total_pages: Number(payload?.total_pages) || 0,
+                    count: Number(payload?.count) || 0,
+                };
+                this.adminLicenseSort = {
+                    by: String(payload?.sort_by || this.adminLicenseSort?.by || 'id'),
+                    order: String(payload?.sort_order || this.adminLicenseSort?.order || 'desc'),
+                };
+                this.adminLicensePageJumpInput = String(Number(payload?.page) || 1);
+                this.syncAdminLicenseSelection();
+                if (this.adminLicenseDetailId) {
+                    const exists = this.adminLicenseList.some(item => Number(item?.id) === Number(this.adminLicenseDetailId));
+                    if (!exists && this.adminLicenseDetail && Number(this.adminLicenseDetail?.id) === Number(this.adminLicenseDetailId)) {
+                        await this.loadAdminLicenseDetail(this.adminLicenseDetailId, { silent: true });
+                    }
+                }
+                return payload;
+            } catch (error) {
+                const message = error?.message || 'License 列表加载失败';
+                this.adminLicenseListError = message;
+                if (!silent) {
+                    this.showToast(message, 'error');
+                }
+                return null;
+            } finally {
+                this.adminLicenseListLoading = false;
+            }
+        },
+
+        async loadAdminLicenseDetail(licenseId, options = {}) {
+            const { silent = false } = options;
+            const normalizedId = Number(licenseId) || 0;
+            if (!normalizedId || !this.canManageAdminLicenses()) {
+                this.adminLicenseDetailId = null;
+                this.adminLicenseDetail = null;
+                this.adminLicenseEvents = [];
+                return null;
+            }
+            this.adminLicenseDetailLoading = true;
+            try {
+                const [detail, eventsPayload] = await Promise.all([
+                    this.apiCall(`/admin/licenses/${normalizedId}`, { skipAuthRedirect: true }),
+                    this.apiCall(`/admin/licenses/${normalizedId}/events?limit=50`, { skipAuthRedirect: true }),
+                ]);
+                this.adminLicenseDetailId = normalizedId;
+                this.adminLicenseDetail = detail && typeof detail === 'object' ? detail : null;
+                this.adminLicenseEvents = Array.isArray(eventsPayload?.items) ? eventsPayload.items : [];
+                this.adminLicenseDetailForm = {
+                    revoke_reason: '',
+                    duration_days: this.normalizePositiveIntInput(this.adminLicenseDetail?.duration_days, ''),
+                };
+                return this.adminLicenseDetail;
+            } catch (error) {
+                if (!silent) {
+                    this.showToast(error?.message || 'License 详情加载失败', 'error');
+                }
+                return null;
+            } finally {
+                this.adminLicenseDetailLoading = false;
+            }
+        },
+
+        getAdminLicenseStatusClass(status = '') {
+            const normalized = String(status || '').trim().toLowerCase();
+            if (normalized === 'active') return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+            if (normalized === 'issued') return 'border-slate-200 bg-slate-100 text-slate-700';
+            if (normalized === 'not_yet_active') return 'border-amber-200 bg-amber-50 text-amber-700';
+            if (normalized === 'expired') return 'border-orange-200 bg-orange-50 text-orange-700';
+            if (normalized === 'revoked') return 'border-red-200 bg-red-50 text-red-700';
+            if (normalized === 'replaced') return 'border-violet-200 bg-violet-50 text-violet-700';
+            return 'border-gray-200 bg-gray-50 text-gray-700';
+        },
+
+        formatAdminLicenseEventLabel(eventType = '') {
+            const normalized = String(eventType || '').trim().toLowerCase();
+            const labels = {
+                generated: '已生成',
+                activated: '已激活',
+                bootstrap_seeded: '种子初始化',
+                activate_failed: '激活失败',
+                activate_reused: '重复激活',
+                extended: '已延期',
+                revoked: '已撤销',
+                replaced: '已替换',
+                enforcement_changed: '开关变更',
+            };
+            return labels[normalized] || (normalized || '未知事件');
+        },
+
+        getAdminLicenseEnforcementState() {
+            const enforcement = this.adminLicenseSummary?.enforcement;
+            return enforcement && typeof enforcement === 'object' ? enforcement : null;
+        },
+
+        getAdminLicenseEnforcementOverrideLabel() {
+            const enforcement = this.getAdminLicenseEnforcementState();
+            if (!enforcement || enforcement.override_enabled === null || enforcement.override_enabled === undefined) {
+                return '跟随默认值';
+            }
+            return enforcement.override_enabled ? '强制开启' : '强制关闭';
+        },
+
+        getAdminLicenseEnforcementSourceLabel() {
+            const enforcement = this.getAdminLicenseEnforcementState();
+            if (!enforcement) {
+                return '-';
+            }
+            if (enforcement.source === 'runtime_override') {
+                return '运行时覆盖生效';
+            }
+            return '默认值生效';
+        },
+
+        applyAdminLicenseEnforcementPayload(payload = {}) {
+            const enabled = !!payload?.enabled;
+            this.licenseEnforcementEnabled = enabled;
+            if (this.serverStatus && typeof this.serverStatus === 'object') {
+                this.serverStatus = {
+                    ...this.serverStatus,
+                    license_enforcement_enabled: enabled,
+                    license_enforcement_source: String(payload?.source || this.serverStatus.license_enforcement_source || 'env_default'),
+                };
+            }
+            if (this.adminLicenseSummary && typeof this.adminLicenseSummary === 'object') {
+                this.adminLicenseSummary = {
+                    ...this.adminLicenseSummary,
+                    enforcement: payload,
+                };
+            }
+        },
+
+        toggleAdminLicenseSelection(licenseId) {
+            const normalizedId = Number(licenseId) || 0;
+            if (!normalizedId) return;
+            if (this.adminLicenseSelectedIds.includes(normalizedId)) {
+                this.adminLicenseSelectedIds = this.adminLicenseSelectedIds.filter(item => item !== normalizedId);
+                return;
+            }
+            this.adminLicenseSelectedIds = [...this.adminLicenseSelectedIds, normalizedId];
+        },
+
+        isAdminLicenseDetailActive(licenseId) {
+            const normalizedId = Number(licenseId) || 0;
+            return normalizedId > 0 && normalizedId === (Number(this.adminLicenseDetailId) || 0);
+        },
+
+        openAdminLicenseDetailFromRow(licenseId) {
+            const normalizedId = Number(licenseId) || 0;
+            if (!normalizedId) return;
+            void this.loadAdminLicenseDetail(normalizedId, { silent: true });
+        },
+
+        toggleAdminLicenseSelectionAndInspect(licenseId) {
+            const normalizedId = Number(licenseId) || 0;
+            if (!normalizedId) return;
+            this.toggleAdminLicenseSelection(normalizedId);
+            void this.loadAdminLicenseDetail(normalizedId, { silent: true });
+        },
+
+        areAllAdminLicensesSelected() {
+            if (!Array.isArray(this.adminLicenseList) || this.adminLicenseList.length === 0) return false;
+            return this.adminLicenseList.every(item => this.adminLicenseSelectedIds.includes(Number(item?.id) || 0));
+        },
+
+        toggleSelectAllAdminLicenses() {
+            if (this.areAllAdminLicensesSelected()) {
+                this.adminLicenseSelectedIds = [];
+                return;
+            }
+            this.adminLicenseSelectedIds = this.adminLicenseList
+                .map(item => Number(item?.id) || 0)
+                .filter(item => item > 0);
+        },
+
+        async applyAdminLicenseFilters() {
+            this.adminLicensePagination.page = 1;
+            await this.loadAdminLicenseList({ page: 1 });
+        },
+
+        async resetAdminLicenseFilters() {
+            this.adminLicenseFilters = {
+                status: '',
+                batch_id: '',
+                bound_account: '',
+                note: '',
+                created_from: '',
+                created_to: '',
+                expires_from: '',
+                expires_to: '',
+                is_bound: '',
+                code: '',
+            };
+            this.adminLicensePagination.page = 1;
+            await this.loadAdminLicenseList({ page: 1 });
+        },
+
+        async applyAdminLicenseListTools() {
+            this.adminLicensePagination.page = 1;
+            await this.loadAdminLicenseList({ page: 1 });
+        },
+
+        async changeAdminLicensePageSize(pageSize) {
+            const normalized = Math.max(1, Math.min(Number(pageSize) || 20, 100));
+            this.adminLicensePagination.page_size = normalized;
+            this.adminLicensePagination.page = 1;
+            await this.loadAdminLicenseList({ page: 1 });
+        },
+
+        getAdminLicenseTotalPages() {
+            return Math.max(1, Number(this.adminLicensePagination?.total_pages) || 1);
+        },
+
+        async goToAdminLicensePage(page) {
+            const requested = Math.max(1, Math.min(Number(page) || 1, this.getAdminLicenseTotalPages()));
+            await this.loadAdminLicenseList({ page: requested });
+        },
+
+        getAdminLicenseSortLabel(sortBy = '') {
+            const labels = {
+                id: 'ID',
+                created_at: '创建时间',
+                updated_at: '更新时间',
+                expires_at: '到期时间',
+                bound_at: '绑定时间',
+                status: '状态',
+                batch_id: '批次号',
+                duration_days: '有效期天数',
+            };
+            return labels[String(sortBy || '').trim()] || 'ID';
+        },
+
+        async setAdminLicenseSortBy(sortBy) {
+            this.adminLicenseSort.by = String(sortBy || 'id');
+            await this.applyAdminLicenseListTools();
+        },
+
+        async toggleAdminLicenseSortOrder(order = '') {
+            const normalized = String(order || '').trim().toLowerCase();
+            if (normalized === 'asc' || normalized === 'desc') {
+                this.adminLicenseSort.order = normalized;
+            } else {
+                this.adminLicenseSort.order = this.adminLicenseSort.order === 'asc' ? 'desc' : 'asc';
+            }
+            await this.applyAdminLicenseListTools();
+        },
+
+        async jumpAdminLicensePage() {
+            const requested = Math.max(1, Math.min(Number(this.adminLicensePageJumpInput) || 1, this.getAdminLicenseTotalPages()));
+            this.adminLicensePageJumpInput = String(requested);
+            await this.goToAdminLicensePage(requested);
+        },
+
+        summarizeAdminLicenseMutationResult(payload = {}, verb = '处理') {
+            const succeeded = Array.isArray(payload?.succeeded) ? payload.succeeded.length : 0;
+            const failed = Array.isArray(payload?.failed) ? payload.failed.length : 0;
+            if (failed > 0) {
+                return `${verb}完成：成功 ${succeeded} 条，跳过 ${failed} 条`;
+            }
+            return `${verb}完成：成功 ${succeeded} 条`;
+        },
+
+        async toggleAdminLicenseEnforcement(enabled) {
+            if (!this.canManageAdminLicenses()) {
+                this.showToast('当前账号需先绑定有效 License，才能切换 License 开关', 'warning');
+                return;
+            }
+            this.adminLicenseEnforcementMutating = true;
+            try {
+                const payload = await this.apiCall('/admin/license-enforcement', {
+                    method: 'POST',
+                    body: JSON.stringify({ enabled: !!enabled, sync_default: true }),
+                    skipAuthRedirect: true,
+                });
+                this.applyAdminLicenseEnforcementPayload(payload);
+                this.showToast(payload?.message || 'License 开关已更新', 'success');
+            } catch (error) {
+                this.showToast(error?.message || 'License 开关更新失败', 'error');
+            } finally {
+                this.adminLicenseEnforcementMutating = false;
+            }
+        },
+
+        async followAdminLicenseEnforcementDefault() {
+            if (!this.canManageAdminLicenses()) {
+                this.showToast('当前账号需先绑定有效 License，才能调整 License 开关', 'warning');
+                return;
+            }
+            this.adminLicenseEnforcementMutating = true;
+            try {
+                const payload = await this.apiCall('/admin/license-enforcement/follow-default', {
+                    method: 'POST',
+                    body: JSON.stringify({}),
+                    skipAuthRedirect: true,
+                });
+                this.applyAdminLicenseEnforcementPayload(payload);
+                this.showToast(payload?.message || '已恢复跟随默认值', 'success');
+            } catch (error) {
+                this.showToast(error?.message || '恢复默认跟随失败', 'error');
+            } finally {
+                this.adminLicenseEnforcementMutating = false;
+            }
+        },
+
+        async generateAdminLicenseBatch() {
+            if (!this.canManageAdminLicenses()) {
+                this.showToast('当前账号需先绑定有效 License，才能生成 License', 'warning');
+                return;
+            }
+            const count = Math.max(1, Number(this.adminLicenseGenerateForm?.count) || 0);
+            if (!count) {
+                this.showToast('请输入有效的生成数量', 'warning');
+                return;
+            }
+            const durationDays = this.normalizePositiveIntInput(this.adminLicenseGenerateForm?.duration_days, 0);
+            if (!durationDays) {
+                this.showToast('请填写有效期天数', 'warning');
+                return;
+            }
+            this.adminLicenseGenerateLoading = true;
+            try {
+                const payload = await this.apiCall('/admin/licenses/batch', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        count,
+                        duration_days: durationDays,
+                        note: String(this.adminLicenseGenerateForm?.note || '').trim(),
+                    }),
+                    skipAuthRedirect: true,
+                });
+                this.adminLicenseGeneratedBatch = payload;
+                this.adminLicenseGenerateForm = {
+                    ...this.createDefaultAdminLicenseGenerateForm(),
+                    note: this.adminLicenseGenerateForm?.note || '',
+                };
+                await Promise.all([
+                    this.loadAdminLicenseSummary({ silent: true }),
+                    this.loadAdminLicenseList({ page: 1, silent: true }),
+                ]);
+                this.showToast(`已生成 ${payload?.count || 0} 条 License`, 'success');
+            } catch (error) {
+                this.showToast(error?.message || 'License 生成失败', 'error');
+            } finally {
+                this.adminLicenseGenerateLoading = false;
+            }
+        },
+
+        async copyTextToClipboard(text = '') {
+            const content = String(text || '');
+            if (!content) return false;
+            if (navigator?.clipboard?.writeText) {
+                await navigator.clipboard.writeText(content);
+                return true;
+            }
+            const textarea = document.createElement('textarea');
+            textarea.value = content;
+            textarea.setAttribute('readonly', 'readonly');
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            const copied = document.execCommand('copy');
+            document.body.removeChild(textarea);
+            return copied;
+        },
+
+        async copyAdminGeneratedLicenses() {
+            const licenses = Array.isArray(this.adminLicenseGeneratedBatch?.licenses) ? this.adminLicenseGeneratedBatch.licenses : [];
+            if (licenses.length === 0) return;
+            try {
+                const content = licenses.map(item => String(item?.code || '').trim()).filter(Boolean).join('\n');
+                const copied = await this.copyTextToClipboard(content);
+                this.showToast(copied ? '明文 License 已复制' : '复制失败，请稍后重试', copied ? 'success' : 'error');
+            } catch (error) {
+                this.showToast(error?.message || '复制失败，请稍后重试', 'error');
+            }
+        },
+
+        async downloadAdminGeneratedLicenses(format = 'txt') {
+            const payload = this.adminLicenseGeneratedBatch;
+            const licenses = Array.isArray(payload?.licenses) ? payload.licenses : [];
+            if (licenses.length === 0) return;
+
+            const batchId = String(payload?.batch_id || 'licenses').trim() || 'licenses';
+            let blob = null;
+            let filename = '';
+            if (format === 'csv') {
+                const rows = [
+                    ['id', 'code', 'masked_code', 'duration_days', 'not_before_at', 'expires_at'],
+                    ...licenses.map(item => [
+                        item?.id ?? '',
+                        item?.code ?? '',
+                        item?.masked_code ?? '',
+                        item?.duration_days ?? '',
+                        item?.not_before_at ?? '',
+                        item?.expires_at ?? '',
+                    ]),
+                ];
+                const content = rows
+                    .map(row => row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+                    .join('\n');
+                blob = new Blob([content], { type: 'text/csv;charset=utf-8' });
+                filename = `${batchId}.csv`;
+            } else {
+                const content = licenses.map(item => String(item?.code || '').trim()).filter(Boolean).join('\n');
+                blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+                filename = `${batchId}.txt`;
+            }
+            const target = { mode: 'fallback' };
+            const saved = await this.commitExportBlob(target, blob, filename);
+            if (saved) {
+                this.showToast(format === 'csv' ? 'CSV 已导出' : '文本文件已导出', 'success');
+            }
+        },
+
+        async runAdminLicenseBulkRevoke() {
+            if (!this.canManageAdminLicenses()) return;
+            const licenseIds = this.adminLicenseSelectedIds.filter(item => Number(item) > 0);
+            if (licenseIds.length === 0) {
+                this.showToast('请先勾选要撤销的 License', 'warning');
+                return;
+            }
+            const confirmed = await this.openActionConfirmDialog({
+                title: '确认批量撤销',
+                message: `将撤销 ${licenseIds.length} 条 License，已绑定账号会立即失效，是否继续？`,
+                tone: 'danger',
+                confirmText: '确认撤销',
+            });
+            if (!confirmed) return;
+            try {
+                const payload = await this.apiCall('/admin/licenses/bulk-revoke', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        license_ids: licenseIds,
+                        reason: String(this.adminLicenseBulk?.revoke_reason || '').trim(),
+                    }),
+                    skipAuthRedirect: true,
+                });
+                this.adminLicenseBulk.revoke_reason = '';
+                this.adminLicenseSelectedIds = [];
+                await Promise.all([
+                    this.loadAdminLicenseSummary({ silent: true }),
+                    this.loadAdminLicenseList({ page: this.adminLicensePagination.page || 1, silent: true }),
+                    this.adminLicenseDetailId ? this.loadAdminLicenseDetail(this.adminLicenseDetailId, { silent: true }) : Promise.resolve(null),
+                ]);
+                this.showToast(this.summarizeAdminLicenseMutationResult(payload, '撤销'), 'success');
+            } catch (error) {
+                this.showToast(error?.message || '批量撤销失败', 'error');
+            }
+        },
+
+        async runAdminLicenseBulkExtend() {
+            if (!this.canManageAdminLicenses()) return;
+            const licenseIds = this.adminLicenseSelectedIds.filter(item => Number(item) > 0);
+            if (licenseIds.length === 0) {
+                this.showToast('请先勾选要延期的 License', 'warning');
+                return;
+            }
+            const durationDays = this.normalizePositiveIntInput(this.adminLicenseBulk?.duration_days, 0);
+            if (!durationDays) {
+                this.showToast('请先填写新的有效期天数', 'warning');
+                return;
+            }
+            try {
+                const payload = await this.apiCall('/admin/licenses/bulk-extend', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        license_ids: licenseIds,
+                        duration_days: durationDays,
+                    }),
+                    skipAuthRedirect: true,
+                });
+                this.adminLicenseBulk.duration_days = '';
+                await Promise.all([
+                    this.loadAdminLicenseSummary({ silent: true }),
+                    this.loadAdminLicenseList({ page: this.adminLicensePagination.page || 1, silent: true }),
+                    this.adminLicenseDetailId ? this.loadAdminLicenseDetail(this.adminLicenseDetailId, { silent: true }) : Promise.resolve(null),
+                ]);
+                this.showToast(this.summarizeAdminLicenseMutationResult(payload, '延期'), 'success');
+            } catch (error) {
+                this.showToast(error?.message || '批量延期失败', 'error');
+            }
+        },
+
+        async revokeAdminLicenseDetail() {
+            const licenseId = Number(this.adminLicenseDetail?.id) || 0;
+            if (!licenseId || !this.canManageAdminLicenses()) return;
+            const confirmed = await this.openActionConfirmDialog({
+                title: '确认撤销 License',
+                message: '撤销后当前绑定账号将立即失效，是否继续？',
+                tone: 'danger',
+                confirmText: '确认撤销',
+            });
+            if (!confirmed) return;
+            try {
+                const payload = await this.apiCall(`/admin/licenses/${licenseId}/revoke`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        reason: String(this.adminLicenseDetailForm?.revoke_reason || '').trim(),
+                    }),
+                    skipAuthRedirect: true,
+                });
+                this.adminLicenseDetailForm.revoke_reason = '';
+                await Promise.all([
+                    this.loadAdminLicenseSummary({ silent: true }),
+                    this.loadAdminLicenseList({ page: this.adminLicensePagination.page || 1, silent: true }),
+                    this.loadAdminLicenseDetail(licenseId, { silent: true }),
+                ]);
+                this.showToast(payload?.status === 'revoked' ? 'License 已撤销' : '撤销完成', 'success');
+            } catch (error) {
+                this.showToast(error?.message || '撤销失败', 'error');
+            }
+        },
+
+        async extendAdminLicenseDetail() {
+            const licenseId = Number(this.adminLicenseDetail?.id) || 0;
+            if (!licenseId || !this.canManageAdminLicenses()) return;
+            const durationDays = this.normalizePositiveIntInput(this.adminLicenseDetailForm?.duration_days, 0);
+            if (!durationDays) {
+                this.showToast('请先填写新的有效期天数', 'warning');
+                return;
+            }
+            try {
+                const payload = await this.apiCall(`/admin/licenses/${licenseId}/extend`, {
+                    method: 'POST',
+                    body: JSON.stringify({ duration_days: durationDays }),
+                    skipAuthRedirect: true,
+                });
+                await Promise.all([
+                    this.loadAdminLicenseSummary({ silent: true }),
+                    this.loadAdminLicenseList({ page: this.adminLicensePagination.page || 1, silent: true }),
+                    this.loadAdminLicenseDetail(licenseId, { silent: true }),
+                ]);
+                this.showToast(payload?.duration_days ? 'License 有效期已更新' : '延期完成', 'success');
+            } catch (error) {
+                this.showToast(error?.message || '延期失败', 'error');
+            }
+        },
+
+        async loadAdminSummariesInfo(options = {}) {
+            const { silent = false } = options;
+            if (!this.canViewAdminCenter()) return null;
+            this.adminSummariesLoading = true;
+            this.adminSummariesError = '';
+            try {
+                const payload = await this.apiCall('/summaries', { skipAuthRedirect: true });
+                this.adminSummariesInfo = payload && typeof payload === 'object' ? payload : null;
+                return this.adminSummariesInfo;
+            } catch (error) {
+                const message = error?.message || '摘要缓存信息加载失败';
+                this.adminSummariesError = message;
+                if (!silent) {
+                    this.showToast(message, 'error');
+                }
+                return null;
+            } finally {
+                this.adminSummariesLoading = false;
+            }
+        },
+
+        async clearAdminSummariesCache() {
+            if (!this.canViewAdminCenter()) return;
+            const confirmed = await this.openActionConfirmDialog({
+                title: '确认清空摘要缓存',
+                message: '该操作会删除当前全部智能摘要缓存，但不会删除会话和报告数据。',
+                tone: 'warning',
+                confirmText: '确认清空',
+            });
+            if (!confirmed) return;
+            try {
+                const payload = await this.apiCall('/summaries/clear', {
+                    method: 'POST',
+                    body: JSON.stringify({}),
+                    skipAuthRedirect: true,
+                });
+                await this.loadAdminSummariesInfo({ silent: true });
+                this.showToast(payload?.message || '摘要缓存已清空', 'success');
+            } catch (error) {
+                this.showToast(error?.message || '摘要缓存清空失败', 'error');
+            }
+        },
+
+        syncAdminConfigDraftFromPayload(payload = null) {
+            const nextDraft = {
+                env: {},
+                config: {},
+                site: {},
+            };
+            ['env', 'config', 'site'].forEach((source) => {
+                const groups = Array.isArray(payload?.[source]?.groups) ? payload[source].groups : [];
+                groups.forEach((group) => {
+                    const groupId = String(group?.id || '').trim();
+                    if (!groupId) return;
+                    nextDraft[source][groupId] = {};
+                    const items = Array.isArray(group?.items) ? group.items : [];
+                    items.forEach((item) => {
+                        const key = String(item?.key || '').trim();
+                        if (!key) return;
+                        nextDraft[source][groupId][key] = String(item?.value ?? '');
+                    });
+                });
+            });
+            this.adminConfigDraft = nextDraft;
+        },
+
+        getAdminConfigRequestErrorMessage(error, fallback = '配置中心加载失败') {
+            if (Number(error?.status) === 404) {
+                return '当前运行中的后端未包含配置中心接口，请重启服务或部署最新后端版本后再试';
+            }
+            return error?.message || fallback;
+        },
+
+        normalizeAdminConfigSource(source = this.adminConfigSource) {
+            return source === 'config' || source === 'site' ? source : 'env';
+        },
+
+        setAdminConfigSource(source = 'env') {
+            this.adminConfigSource = this.normalizeAdminConfigSource(source);
+            this.ensureAdminConfigActiveGroup(this.adminConfigSource);
+        },
+
+        getAdminConfigSourceMeta(source = this.adminConfigSource) {
+            const normalized = this.normalizeAdminConfigSource(source);
+            return this.adminConfigCenter?.meta?.source_meta?.[normalized] || {};
+        },
+
+        getAdminConfigSourceLabel(source = this.adminConfigSource) {
+            const normalized = this.normalizeAdminConfigSource(source);
+            if (normalized === 'config') return 'config.py';
+            if (normalized === 'site') return 'site-config.js';
+            return '.env';
+        },
+
+        async loadAdminConfigCenter(options = {}) {
+            const { silent = false } = options;
+            if (!this.canViewAdminCenter()) return null;
+            this.adminConfigLoading = true;
+            this.adminConfigError = '';
+            try {
+                const payload = await this.apiCall('/admin/config-center', {
+                    skipAuthRedirect: true,
+                });
+                this.adminConfigCenter = payload && typeof payload === 'object' ? payload : null;
+                this.syncAdminConfigDraftFromPayload(this.adminConfigCenter);
+                ['env', 'config', 'site'].forEach((source) => this.ensureAdminConfigActiveGroup(source));
+                return this.adminConfigCenter;
+            } catch (error) {
+                const message = this.getAdminConfigRequestErrorMessage(error, '配置中心加载失败');
+                this.adminConfigError = message;
+                if (!silent) {
+                    this.showToast(message, 'error');
+                }
+                return null;
+            } finally {
+                this.adminConfigLoading = false;
+            }
+        },
+
+        getAdminConfigSourcePayload(source = this.adminConfigSource) {
+            const normalized = this.normalizeAdminConfigSource(source);
+            return this.adminConfigCenter?.[normalized] || { file: {}, groups: [] };
+        },
+
+        normalizeAdminConfigSearchText(value = '') {
+            return String(value || '')
+                .toLowerCase()
+                .normalize('NFKC')
+                .replace(/\s+/g, ' ')
+                .trim();
+        },
+
+        compactAdminConfigSearchText(value = '') {
+            return this.normalizeAdminConfigSearchText(value).replace(/[\s_\-./:@]+/g, '');
+        },
+
+        isAdminConfigSubsequenceMatch(text = '', keyword = '') {
+            if (!keyword) return true;
+            let cursor = 0;
+            for (const char of String(text || '')) {
+                if (char === keyword[cursor]) {
+                    cursor += 1;
+                    if (cursor >= keyword.length) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        },
+
+        matchesAdminConfigSearchValue(value = '', keyword = this.adminConfigSearch) {
+            const normalizedValue = this.normalizeAdminConfigSearchText(value);
+            const normalizedKeyword = this.normalizeAdminConfigSearchText(keyword);
+            if (!normalizedKeyword) return true;
+            if (!normalizedValue) return false;
+            if (normalizedValue.includes(normalizedKeyword)) return true;
+            const compactValue = this.compactAdminConfigSearchText(normalizedValue);
+            const compactKeyword = this.compactAdminConfigSearchText(normalizedKeyword);
+            if (!compactKeyword) return true;
+            if (compactValue.includes(compactKeyword)) return true;
+            return this.isAdminConfigSubsequenceMatch(compactValue, compactKeyword);
+        },
+
+        matchesAdminConfigSearchParts(parts = [], keyword = this.adminConfigSearch) {
+            const normalizedKeyword = this.normalizeAdminConfigSearchText(keyword);
+            if (!normalizedKeyword) return true;
+            const tokens = normalizedKeyword.split(' ').filter(Boolean);
+            if (tokens.length === 0) return true;
+            return tokens.every((token) => (
+                parts.some((part) => this.matchesAdminConfigSearchValue(part, token))
+            ));
+        },
+
+        getAdminConfigVisibleGroups(source = this.adminConfigSource) {
+            const normalized = this.normalizeAdminConfigSource(source);
+            const payload = this.getAdminConfigSourcePayload(normalized);
+            const groups = Array.isArray(payload?.groups) ? payload.groups : [];
+            return groups
+                .map((group) => {
+                    const items = Array.isArray(group?.items) ? group.items : [];
+                    const visibleItems = items.filter((item) => this.matchesAdminConfigSearchParts([
+                        group?.title,
+                        group?.description,
+                        item?.label,
+                        item?.key,
+                        item?.description,
+                        item?.placeholder,
+                    ]));
+                    return {
+                        ...group,
+                        visibleItems,
+                        visibleItemCount: visibleItems.length,
+                        totalItemCount: items.length,
+                    };
+                })
+                .filter((group) => Array.isArray(group.visibleItems) && group.visibleItems.length > 0);
+        },
+
+        ensureAdminConfigActiveGroup(source = this.adminConfigSource) {
+            const normalized = this.normalizeAdminConfigSource(source);
+            const groups = this.getAdminConfigVisibleGroups(normalized);
+            if (!groups.length) {
+                this.adminConfigActiveGroupId[normalized] = '';
+                return '';
+            }
+            const currentId = String(this.adminConfigActiveGroupId?.[normalized] || '');
+            if (groups.some((group) => String(group?.id || '') === currentId)) {
+                return currentId;
+            }
+            const nextId = String(groups[0]?.id || '');
+            this.adminConfigActiveGroupId[normalized] = nextId;
+            return nextId;
+        },
+
+        getAdminConfigCurrentGroupId(source = this.adminConfigSource) {
+            return this.ensureAdminConfigActiveGroup(source);
+        },
+
+        setAdminConfigActiveGroup(source, groupId) {
+            const normalized = this.normalizeAdminConfigSource(source);
+            this.adminConfigActiveGroupId[normalized] = String(groupId || '');
+        },
+
+        getAdminConfigActiveGroup(source = this.adminConfigSource) {
+            const normalized = this.normalizeAdminConfigSource(source);
+            const groups = this.getAdminConfigVisibleGroups(normalized);
+            const currentId = this.ensureAdminConfigActiveGroup(normalized);
+            return groups.find((group) => String(group?.id || '') === String(currentId || '')) || null;
+        },
+
+        getAdminConfigDraftValue(source, groupId, key) {
+            const normalizedSource = this.normalizeAdminConfigSource(source);
+            return String(this.adminConfigDraft?.[normalizedSource]?.[groupId]?.[key] ?? '');
+        },
+
+        setAdminConfigDraftValue(source, groupId, key, value) {
+            const normalizedSource = this.normalizeAdminConfigSource(source);
+            if (!this.adminConfigDraft[normalizedSource]) {
+                this.adminConfigDraft[normalizedSource] = {};
+            }
+            if (!this.adminConfigDraft[normalizedSource][groupId]) {
+                this.adminConfigDraft[normalizedSource][groupId] = {};
+            }
+            this.adminConfigDraft[normalizedSource][groupId][key] = String(value ?? '');
+        },
+
+        getAdminConfigInputType(item = {}) {
+            const fieldType = String(item?.type || 'text').trim();
+            if (fieldType === 'integer' || fieldType === 'float') return 'number';
+            if (item?.secret) return this.adminConfigShowSecrets ? 'text' : 'password';
+            return 'text';
+        },
+
+        isAdminConfigGroupSaving(source, groupId) {
+            return this.adminConfigSavingKey === `${source}:${groupId}`;
+        },
+
+        async saveAdminConfigGroup(source, groupId) {
+            if (!this.canViewAdminCenter()) return;
+            const normalizedSource = this.normalizeAdminConfigSource(source);
+            const groups = Array.isArray(this.adminConfigCenter?.[normalizedSource]?.groups)
+                ? this.adminConfigCenter[normalizedSource].groups
+                : [];
+            const targetGroup = groups.find((group) => String(group?.id || '') === String(groupId || ''));
+            if (!targetGroup) {
+                this.showToast('未找到配置分组', 'error');
+                return;
+            }
+            const values = {};
+            const items = Array.isArray(targetGroup?.items) ? targetGroup.items : [];
+            items.forEach((item) => {
+                const key = String(item?.key || '').trim();
+                if (!key) return;
+                values[key] = this.getAdminConfigDraftValue(normalizedSource, targetGroup.id, key);
+            });
+            this.adminConfigSavingKey = `${normalizedSource}:${targetGroup.id}`;
+            try {
+                const payload = await this.apiCall('/admin/config-center/save', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        source: normalizedSource,
+                        group_id: targetGroup.id,
+                        values,
+                    }),
+                    skipAuthRedirect: true,
+                });
+                this.adminConfigCenter = payload?.config_center && typeof payload.config_center === 'object'
+                    ? payload.config_center
+                    : this.adminConfigCenter;
+                this.syncAdminConfigDraftFromPayload(this.adminConfigCenter);
+                this.showToast(payload?.message || '配置已保存', 'success');
+            } catch (error) {
+                this.showToast(this.getAdminConfigRequestErrorMessage(error, '配置保存失败'), 'error');
+            } finally {
+                this.adminConfigSavingKey = '';
+            }
+        },
+
+        async searchAdminUsers(target = 'target') {
+            if (!this.canViewAdminCenter()) return;
+            const isSource = target === 'source';
+            const query = String(isSource ? this.adminOwnershipSourceQuery : this.adminOwnershipTargetQuery || '').trim();
+            this.adminOwnershipSearchLoading = true;
+            try {
+                const params = new URLSearchParams();
+                if (query) {
+                    params.set('q', query);
+                }
+                params.set('limit', '12');
+                const payload = await this.apiCall(`/admin/users?${params.toString()}`, {
+                    skipAuthRedirect: true,
+                });
+                const items = Array.isArray(payload?.items) ? payload.items : [];
+                if (isSource) {
+                    this.adminOwnershipSourceResults = items;
+                } else {
+                    this.adminOwnershipTargetResults = items;
+                }
+                return items;
+            } catch (error) {
+                this.showToast(error?.message || '用户搜索失败', 'error');
+                return [];
+            } finally {
+                this.adminOwnershipSearchLoading = false;
+            }
+        },
+
+        selectAdminOwnershipUser(user, target = 'target') {
+            const normalizedUser = user && typeof user === 'object' ? user : null;
+            if (!normalizedUser) return;
+            const isSource = target === 'source';
+            if (isSource) {
+                this.adminOwnershipForm.from_user_id = String(normalizedUser.id || '');
+                this.adminOwnershipForm.from_account = String(normalizedUser.account || normalizedUser.phone || normalizedUser.email || '').trim();
+                this.adminOwnershipSourceQuery = this.adminOwnershipForm.from_account;
+                this.adminOwnershipSourceResults = [];
+                return;
+            }
+            this.adminOwnershipForm.to_user_id = String(normalizedUser.id || '');
+            this.adminOwnershipForm.to_account = String(normalizedUser.account || normalizedUser.phone || normalizedUser.email || '').trim();
+            this.adminOwnershipTargetQuery = this.adminOwnershipForm.to_account;
+            this.adminOwnershipTargetResults = [];
+        },
+
+        toggleAdminOwnershipKind(kind = '') {
+            const normalized = String(kind || '').trim();
+            if (!normalized) return;
+            const nextKinds = Array.isArray(this.adminOwnershipForm?.kinds)
+                ? [...this.adminOwnershipForm.kinds]
+                : [];
+            if (nextKinds.includes(normalized)) {
+                this.adminOwnershipForm.kinds = nextKinds.filter(item => item !== normalized);
+                return;
+            }
+            this.adminOwnershipForm.kinds = [...nextKinds, normalized];
+        },
+
+        buildAdminOwnershipPayload() {
+            const kinds = Array.isArray(this.adminOwnershipForm?.kinds)
+                ? this.adminOwnershipForm.kinds.filter(item => item === 'sessions' || item === 'reports')
+                : [];
+            return {
+                to_user_id: this.adminOwnershipForm?.to_user_id ? Number(this.adminOwnershipForm.to_user_id) : undefined,
+                to_account: String(this.adminOwnershipForm?.to_account || this.adminOwnershipTargetQuery || '').trim(),
+                scope: String(this.adminOwnershipForm?.scope || 'unowned').trim() || 'unowned',
+                from_user_id: this.adminOwnershipForm?.scope === 'from-user' && this.adminOwnershipForm?.from_user_id
+                    ? Number(this.adminOwnershipForm.from_user_id)
+                    : undefined,
+                kinds,
+                max_examples: Math.max(1, Math.min(50, Number(this.adminOwnershipForm?.max_examples) || 20)),
+            };
+        },
+
+        async auditAdminOwnership() {
+            const targetUserId = Number(this.adminOwnershipForm?.to_user_id) || 0;
+            const userAccount = String(this.adminOwnershipForm?.to_account || '').trim();
+            if (!targetUserId && !userAccount) {
+                this.showToast('请先选择目标用户', 'warning');
+                return;
+            }
+            this.adminOwnershipAuditLoading = true;
+            this.adminOwnershipAuditError = '';
+            try {
+                const payload = await this.apiCall('/admin/ownership-migrations/audit', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        user_id: targetUserId || undefined,
+                        user_account: userAccount || undefined,
+                        kinds: this.buildAdminOwnershipPayload().kinds,
+                    }),
+                    skipAuthRedirect: true,
+                });
+                this.adminOwnershipAudit = payload;
+                return payload;
+            } catch (error) {
+                const message = error?.message || '归属审计失败';
+                this.adminOwnershipAuditError = message;
+                this.showToast(message, 'error');
+                return null;
+            } finally {
+                this.adminOwnershipAuditLoading = false;
+            }
+        },
+
+        async previewAdminOwnershipMigration() {
+            const payload = this.buildAdminOwnershipPayload();
+            if (!payload.to_user_id && !payload.to_account) {
+                this.showToast('请先选择目标用户', 'warning');
+                return;
+            }
+            if (!Array.isArray(payload.kinds) || payload.kinds.length === 0) {
+                this.showToast('请至少选择一种迁移对象', 'warning');
+                return;
+            }
+            if (payload.scope === 'from-user' && !payload.from_user_id) {
+                this.showToast('scope=from-user 时必须选择来源用户', 'warning');
+                return;
+            }
+            this.adminOwnershipPreviewLoading = true;
+            this.adminOwnershipPreviewError = '';
+            this.adminOwnershipConfirmText = '';
+            try {
+                const result = await this.apiCall('/admin/ownership-migrations/preview', {
+                    method: 'POST',
+                    body: JSON.stringify(payload),
+                    skipAuthRedirect: true,
+                });
+                this.adminOwnershipPreview = result;
+                this.showToast('dry-run 预览已生成，请确认后再正式迁移', 'success');
+                return result;
+            } catch (error) {
+                const message = error?.message || 'dry-run 预览失败';
+                this.adminOwnershipPreviewError = message;
+                this.showToast(message, 'error');
+                return null;
+            } finally {
+                this.adminOwnershipPreviewLoading = false;
+            }
+        },
+
+        canApplyAdminOwnershipMigration() {
+            const preview = this.adminOwnershipPreview;
+            if (!preview || typeof preview !== 'object') return false;
+            const confirmPhrase = String(preview.confirm_phrase || '').trim();
+            return !!confirmPhrase && String(this.adminOwnershipConfirmText || '').trim() === confirmPhrase && !this.adminOwnershipApplyLoading;
+        },
+
+        async applyAdminOwnershipMigration() {
+            if (!this.canApplyAdminOwnershipMigration()) {
+                this.showToast('请先完成 dry-run，并输入正确确认词', 'warning');
+                return;
+            }
+            const preview = this.adminOwnershipPreview || {};
+            const payload = {
+                ...this.buildAdminOwnershipPayload(),
+                preview_token: preview.preview_token,
+                confirm_text: String(this.adminOwnershipConfirmText || '').trim(),
+            };
+            this.adminOwnershipApplyLoading = true;
+            try {
+                const result = await this.apiCall('/admin/ownership-migrations/apply', {
+                    method: 'POST',
+                    body: JSON.stringify(payload),
+                    skipAuthRedirect: true,
+                });
+                this.adminOwnershipPreview = null;
+                this.adminOwnershipConfirmText = '';
+                await Promise.all([
+                    this.loadAdminOwnershipHistory({ silent: true }),
+                    this.auditAdminOwnership(),
+                ]);
+                this.showToast('归属迁移已执行', 'success');
+                return result;
+            } catch (error) {
+                this.showToast(error?.message || '归属迁移失败', 'error');
+                return null;
+            } finally {
+                this.adminOwnershipApplyLoading = false;
+            }
+        },
+
+        async loadAdminOwnershipHistory(options = {}) {
+            const { silent = false } = options;
+            if (!this.canViewAdminCenter()) return [];
+            this.adminOwnershipHistoryLoading = true;
+            this.adminOwnershipHistoryError = '';
+            try {
+                const payload = await this.apiCall('/admin/ownership-migrations?limit=50', {
+                    skipAuthRedirect: true,
+                });
+                this.adminOwnershipHistory = Array.isArray(payload?.items) ? payload.items : [];
+                return this.adminOwnershipHistory;
+            } catch (error) {
+                const message = error?.message || '迁移历史加载失败';
+                this.adminOwnershipHistoryError = message;
+                if (!silent) {
+                    this.showToast(message, 'error');
+                }
+                return [];
+            } finally {
+                this.adminOwnershipHistoryLoading = false;
+            }
+        },
+
+        async rollbackAdminOwnershipMigration(backupId = '') {
+            const normalizedBackupId = String(backupId || '').trim();
+            if (!normalizedBackupId) return;
+            const confirmed = await this.openActionConfirmDialog({
+                title: '确认回滚迁移',
+                message: `将按备份 ${normalizedBackupId} 恢复归属关系，是否继续？`,
+                tone: 'danger',
+                confirmText: '确认回滚',
+            });
+            if (!confirmed) return;
+            try {
+                const payload = await this.apiCall('/admin/ownership-migrations/rollback', {
+                    method: 'POST',
+                    body: JSON.stringify({ backup_id: normalizedBackupId }),
+                    skipAuthRedirect: true,
+                });
+                await Promise.all([
+                    this.loadAdminOwnershipHistory({ silent: true }),
+                    this.auditAdminOwnership(),
+                ]);
+                this.showToast(payload?.backup_id ? `已回滚 ${payload.backup_id}` : '迁移已回滚', 'success');
+            } catch (error) {
+                this.showToast(error?.message || '回滚失败', 'error');
+            }
+        },
+
+        formatBytes(bytes = 0) {
+            const value = Number(bytes) || 0;
+            if (value <= 0) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const exponent = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+            const size = value / (1024 ** exponent);
+            return `${size.toFixed(size >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+        },
+
+        getAdminOwnershipKindsLabel(kinds = []) {
+            const values = Array.isArray(kinds) ? kinds : [];
+            const labels = values.map(item => item === 'sessions' ? '会话' : (item === 'reports' ? '报告' : '')).filter(Boolean);
+            return labels.length > 0 ? labels.join('、') : '未指定';
         },
 
         createQuestionOpsLocalState(overrides = {}) {
@@ -1329,7 +3182,10 @@ function deepVision() {
         },
 
         refreshOpsMetricsIfVisible(options = {}) {
-            if (!this.showSettingsModal || this.settingsTab !== 'ops' || !this.canViewOpsMetrics()) {
+            if (!this.canViewOpsMetrics()) {
+                return;
+            }
+            if (!(this.currentView === 'admin' && this.adminTab === 'ops')) {
                 return;
             }
             void this.loadOpsMetrics({
@@ -1435,6 +3291,110 @@ function deepVision() {
             this.showBindPhoneModal = false;
         },
 
+        resetAccountMergeState(options = {}) {
+            const { closeModal = true } = options;
+            if (closeModal) {
+                this.showAccountMergeModal = false;
+            }
+            this.accountMergeLoading = false;
+            this.accountMergeApplyLoading = false;
+            this.accountMergeError = '';
+            this.accountMergePreview = null;
+            this.accountMergeConfirmText = '';
+        },
+
+        closeAccountMergeModal() {
+            if (this.accountMergeLoading || this.accountMergeApplyLoading) return;
+            this.resetAccountMergeState({ closeModal: true });
+        },
+
+        async loadAccountMergePreview(options = {}) {
+            const {
+                openModal = true,
+                showToastOnError = false
+            } = options;
+            if (!this.authReady || this.accountMergeLoading) return null;
+
+            this.accountMergeLoading = true;
+            this.accountMergeError = '';
+            try {
+                const result = await this.apiCall('/auth/account-merge/preview', {
+                    method: 'POST',
+                    body: JSON.stringify({}),
+                });
+                this.accountMergePreview = result || null;
+                this.accountMergeConfirmText = '';
+                if (openModal) {
+                    this.showBindPhoneModal = false;
+                    this.showSettingsModal = false;
+                    this.showAccountMergeModal = true;
+                }
+                return result;
+            } catch (error) {
+                const message = error?.message || '账号合并预览加载失败，请稍后重试';
+                this.accountMergeError = message;
+                if (showToastOnError) {
+                    this.showToast(message, 'error');
+                }
+                return null;
+            } finally {
+                this.accountMergeLoading = false;
+            }
+        },
+
+        async handleAccountMergeRequired(payload = {}, options = {}) {
+            const {
+                message = '',
+                toastType = 'warning'
+            } = options;
+            const conflictMessage = String(message || payload?.error || '').trim();
+            if (conflictMessage) {
+                this.showToast(conflictMessage, toastType);
+            }
+            await this.loadAccountMergePreview({ openModal: true, showToastOnError: true });
+        },
+
+        getAccountMergeAssetItems(account = null) {
+            const counts = account?.asset_counts || {};
+            return [
+                { key: 'sessions', label: '会话', value: Number(counts.sessions || 0) },
+                { key: 'reports', label: '报告', value: Number(counts.reports || 0) },
+                { key: 'custom_scenarios', label: '自定义场景', value: Number(counts.custom_scenarios || 0) },
+                { key: 'solution_shares', label: '分享', value: Number(counts.solution_shares || 0) },
+                { key: 'licenses', label: 'License', value: Number(counts.licenses || 0) },
+            ];
+        },
+
+        async applyAccountMerge() {
+            if (this.accountMergeApplyLoading || !this.accountMergePreview) return;
+            this.accountMergeApplyLoading = true;
+            this.accountMergeError = '';
+            try {
+                const result = await this.apiCall('/auth/account-merge/apply', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        preview_token: this.accountMergePreview?.preview_token || '',
+                        confirm_text: String(this.accountMergeConfirmText || '').trim(),
+                    }),
+                });
+                this.currentUser = result?.user || this.currentUser;
+                this.resetAccountMergeState({ closeModal: true });
+                await this.refreshLicenseStatus({ showToast: false });
+                await Promise.all([
+                    this.loadScenarios(),
+                    this.loadSessions(),
+                    this.loadReports(),
+                ]);
+                this.showToast(result?.message || '账号历史已并入当前账号', 'success');
+            } catch (error) {
+                const message = error?.message || '账号合并失败，请稍后重试';
+                this.accountMergeError = message;
+                this.showToast(message, 'error');
+            } finally {
+                this.accountMergeApplyLoading = false;
+            }
+        },
+
         focusBindCodeInput() {
             const input = document.querySelector('[data-bind-phone-code]');
             if (input && typeof input.focus === 'function') {
@@ -1529,8 +3489,16 @@ function deepVision() {
                 this.bindCodeSending = false;
                 this.stopAuthCodeCountdown('bind');
                 this.showBindPhoneModal = false;
-                this.showToast('手机号绑定成功', 'success');
+                this.showToast(result?.merge_applied ? '手机号绑定成功，历史数据已自动并入当前账号' : '手机号绑定成功', 'success');
             } catch (error) {
+                if (error?.payload?.merge_required) {
+                    this.bindPhoneLoading = false;
+                    await this.handleAccountMergeRequired(error.payload, {
+                        message: error?.payload?.error || '发现另一个手机号账号已有历史数据，请确认合并后继续绑定',
+                        toastType: 'warning',
+                    });
+                    return;
+                }
                 const message = error?.message || '手机号绑定失败，请稍后重试';
                 if (message.includes('验证码')) {
                     this.bindPhoneErrors.code = message;
@@ -2016,7 +3984,9 @@ function deepVision() {
             if (!hasSeenIntro) {
                 localStorage.setItem('deepvision_intro_seen', 'true');
                 window.location.href = 'intro.html';
+                return true;
             }
+            return false;
         },
         initGuide() {
             const params = new URLSearchParams(window.location.search);
@@ -2231,6 +4201,10 @@ function deepVision() {
                 const response = await fetch(`${API_BASE}/status`);
                 if (response.ok) {
                     this.serverStatus = await response.json();
+                    this.licenseEnforcementEnabled = Boolean(this.serverStatus?.license_enforcement_enabled);
+                    if (this.serverStatus?.license) {
+                        this.applyLicenseStatusPayload(this.serverStatus.license);
+                    }
                     if (typeof this.serverStatus.ai_available === 'boolean') {
                         this.aiAvailable = this.serverStatus.ai_available;
                     }
@@ -2706,9 +4680,10 @@ function deepVision() {
                 });
                 if (!response.ok) {
                     let errorMsg = `HTTP ${response.status}`;
+                    let errorPayload = null;
                     try {
-                        const error = await response.json();
-                        errorMsg = error.error || error.detail || errorMsg;
+                        errorPayload = await response.json();
+                        errorMsg = errorPayload.error || errorPayload.detail || errorMsg;
                     } catch (parseError) {
                         // 响应非 JSON 格式，使用 HTTP 状态信息
                     }
@@ -2721,9 +4696,18 @@ function deepVision() {
                         });
                     }
 
+                    if (
+                        response.status === 403
+                        && !skipAuthRedirect
+                        && String(errorPayload?.error_code || '').startsWith('license_')
+                    ) {
+                        this.enterLicenseGateState(errorPayload, { message: errorMsg });
+                    }
+
                     const error = new Error(errorMsg);
                     error.status = response.status;
                     error.isExpected = Array.isArray(expectedStatuses) && expectedStatuses.includes(response.status);
+                    error.payload = errorPayload;
                     throw error;
                 }
                 return await response.json();
@@ -8905,6 +10889,7 @@ function deepVision() {
         // ============ 工具方法 ============
         switchView(view) {
             if (!this.authReady) return;
+            if (view === 'admin' && !this.canViewAdminCenter()) return;
             if (view !== 'sessions') {
                 this.stopSessionsAutoRefresh();
             }
@@ -8924,6 +10909,8 @@ function deepVision() {
                 this.loadSessions();
             } else if (view === 'reports') {
                 this.loadReports();
+            } else if (view === 'admin') {
+                void this.ensureAdminDataForTab(this.adminTab || 'overview');
             }
         },
 

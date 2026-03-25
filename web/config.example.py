@@ -75,14 +75,24 @@ SUMMARY_CACHE_ENABLED = True
 
 # ============ 问题生成链路 ===========
 # 控制快档、竞速、按 lane 覆盖以及问题链路的长尾优化。
+# 作用：设置问题生成接口允许的最大并发请求数。
+QUESTION_GENERATION_MAX_INFLIGHT = 2
+# 作用：设置问题生成链路触发并发保护后的建议重试时间（秒）。
+QUESTION_GENERATION_RETRY_AFTER_SECONDS = 2
 # 作用：控制问题生成是否先尝试快档。
 QUESTION_FAST_PATH_ENABLED = True
 # 作用：设置问题快档调用的超时时间（秒）。
 QUESTION_FAST_TIMEOUT = 12.0
+# 作用：设置问题快档在轻量参考资料模式下的请求超时时间（秒）。
+QUESTION_FAST_REFERENCE_TIMEOUT = 15.0
 # 作用：设置问题快档调用允许输出的最大 token 数。
 QUESTION_FAST_MAX_TOKENS = 1000
 # 作用：设置仍允许走问题快档的 Prompt 最大字符数。
 QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS = 1800
+# 作用：控制问题快档是否允许启用轻量参考资料模式。
+QUESTION_FAST_LIGHT_REFERENCE_DOCS_ENABLED = True
+# 作用：设置轻量参考资料模式下最多注入的参考资料条数。
+QUESTION_FAST_LIGHT_MAX_REFERENCE_DOCS = 2
 # 作用：控制存在截断文档时是否直接跳过问题快档。
 QUESTION_FAST_SKIP_WHEN_TRUNCATED_DOCS = True
 # 作用：控制问题快档是否根据命中率自动冷却。
@@ -117,12 +127,16 @@ QUESTION_HIGH_EVIDENCE_PRIMARY_LANE = "question"
 QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = "report"
 # 作用：高取证强度问题是否禁用基于历史时延/成功率的动态 lane 晋升。
 QUESTION_HIGH_EVIDENCE_DISABLE_DYNAMIC_LANE = True
+# 作用：高取证强度问题是否允许继续走快档。
+QUESTION_HIGH_EVIDENCE_FAST_PATH_ENABLED = True
 # 作用：高取证强度问题是否允许直接并发备用通道，默认关闭，优先单发失败后补发。
 QUESTION_HIGH_EVIDENCE_HEDGED_ENABLED = False
 # 作用：是否启用主通道失败后的备用通道补发。
 QUESTION_HEDGE_FAILURE_FALLBACK_ENABLED = True
 # 作用：是否仅允许真正阻塞 shadow draft 的题目启用并发竞速。
 QUESTION_HEDGE_REQUIRE_SHADOW_BLOCKER = True
+# 作用：轻量参考资料模式是否绕过问题竞速预算限制。
+QUESTION_FAST_REFERENCE_HEDGE_BYPASS_BUDGET = True
 # 作用：单个会话内允许发生问题并发竞速的总次数预算。
 QUESTION_SESSION_HEDGE_BUDGET = 4
 # 作用：单个维度内允许发生问题并发竞速的次数预算。
@@ -270,6 +284,8 @@ PREFETCH_QUESTION_HEDGE_DELAY_SECONDS = 2.2
 PREFETCH_QUESTION_PRIMARY_LANE = "question"
 # 作用：设置后台预生成问题时备用使用的 lane。
 PREFETCH_QUESTION_SECONDARY_LANE = "summary"
+# 作用：设置提交答案后优先等待预生成结果的最长时间（秒）。
+QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS = 25.0
 # 作用：设置问题结果幂等缓存的保留时长（秒）。
 QUESTION_RESULT_CACHE_TTL_SECONDS = 180
 # 作用：设置问题结果幂等缓存允许保存的最大条目数。
@@ -282,6 +298,10 @@ SUMMARY_UPDATE_DEBOUNCE_SECONDS = 60
 SEARCH_DECISION_CACHE_TTL_SECONDS = 900
 # 作用：设置搜索决策缓存允许保存的最大条目数。
 SEARCH_DECISION_CACHE_MAX_ENTRIES = 256
+# 作用：设置搜索决策接口允许的最大并发请求数。
+SEARCH_DECISION_MAX_INFLIGHT = 1
+# 作用：控制搜索决策预取阶段是否仅使用规则判断，不直接触发模型调用。
+SEARCH_DECISION_PREFETCH_RULE_ONLY = True
 # 作用：设置并发命中同一搜索决策时等待首个结果的最长时间（秒）。
 SEARCH_DECISION_INFLIGHT_WAIT_SECONDS = 10.0
 # 作用：设置搜索结果缓存的保留时长（秒）。
