@@ -328,10 +328,10 @@ const SITE_CONFIG = {
     "configFile": "version.json"
   },
   "presentation": {
-    "enabled": true
+    "enabled": false
   },
   "solution": {
-    "enabled": true
+    "enabled": false
   }
 };
 
