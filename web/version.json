@@ -1,7 +1,17 @@
 {
-  "version": "5.0.8",
+  "version": "5.0.9",
   "releaseDate": "2026-03-25",
   "changelog": [
+    {
+      "version": "5.0.9",
+      "date": "2026-03-25",
+      "type": "patch",
+      "title": "调整站点功能开关配置",
+      "changes": [
+        "配置: 关闭 presentation 功能入口。",
+        "配置: 关闭 solution 功能入口。"
+      ]
+    },
     {
       "version": "5.0.8",
       "date": "2026-03-25",
