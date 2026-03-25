@@ -1,4 +1,5 @@
 import io
+import hashlib
 import importlib.util
 import json
 import os
@@ -92,6 +93,7 @@ class SecurityRegressionTests(unittest.TestCase):
         cls.server.PRESENTATIONS_DIR = data_dir / "presentations"
         cls.server.AUTH_DIR = data_dir / "auth"
         cls.server.AUTH_DB_PATH = cls.server.AUTH_DIR / "users.db"
+        cls.server.LICENSE_DB_PATH = cls.server.AUTH_DIR / "licenses.db"
         cls.server.PRESENTATION_MAP_FILE = cls.server.PRESENTATIONS_DIR / ".presentation_map.json"
         cls.server.DELETED_REPORTS_FILE = cls.server.REPORTS_DIR / ".deleted_reports.json"
         cls.server.DELETED_DOCS_FILE = cls.server.DATA_DIR / ".deleted_docs.json"
@@ -113,6 +115,7 @@ class SecurityRegressionTests(unittest.TestCase):
 
         cls.server.metrics_collector.metrics_file = cls.server.METRICS_DIR / "api_metrics.json"
         cls.server.init_auth_db()
+        cls.server.init_license_db()
 
         # Keep tests deterministic and avoid external model calls.
         cls.server.ENABLE_AI = False
@@ -395,6 +398,7 @@ class SecurityRegressionTests(unittest.TestCase):
     def test_license_secret_persists_in_auth_db_across_machine_secret_changes(self):
         backup_auth_dir = self.server.AUTH_DIR
         backup_auth_db_path = self.server.AUTH_DB_PATH
+        backup_license_db_path = self.server.LICENSE_DB_PATH
         backup_config_secret_key = self.server.CONFIG_SECRET_KEY
         backup_license_signing_secret = self.server.LICENSE_CODE_SIGNING_SECRET
         backup_app_secret_key = self.server.app.secret_key
@@ -405,13 +409,15 @@ class SecurityRegressionTests(unittest.TestCase):
         try:
             self.server.AUTH_DIR = isolated_auth_dir
             self.server.AUTH_DB_PATH = isolated_auth_dir / "users.db"
+            self.server.LICENSE_DB_PATH = isolated_auth_dir / "licenses.db"
             self.server.LICENSE_CODE_SIGNING_SECRET = ""
             self.server.CONFIG_SECRET_KEY = "machine-a-secret"
             self.server.app.secret_key = "machine-a-secret"
             self.server._clear_cached_license_signing_secret()
             self.server.init_auth_db()
+            self.server.init_license_db()
 
-            with self.server.get_auth_db_connection() as conn:
+            with self.server.get_license_db_connection() as conn:
                 secret_row = conn.execute(
                     "SELECT meta_value FROM auth_meta WHERE meta_key = ? LIMIT 1",
                     (self.server.AUTH_META_LICENSE_SIGNING_SECRET_KEY,),
@@ -428,7 +434,7 @@ class SecurityRegressionTests(unittest.TestCase):
             self.server.app.secret_key = "machine-b-secret"
             self.server._clear_cached_license_signing_secret()
 
-            with self.server.get_auth_db_connection() as conn:
+            with self.server.get_license_db_connection() as conn:
                 persisted_again = conn.execute(
                     "SELECT meta_value FROM auth_meta WHERE meta_key = ? LIMIT 1",
                     (self.server.AUTH_META_LICENSE_SIGNING_SECRET_KEY,),
@@ -442,11 +448,105 @@ class SecurityRegressionTests(unittest.TestCase):
         finally:
             self.server.AUTH_DIR = backup_auth_dir
             self.server.AUTH_DB_PATH = backup_auth_db_path
+            self.server.LICENSE_DB_PATH = backup_license_db_path
             self.server.CONFIG_SECRET_KEY = backup_config_secret_key
             self.server.LICENSE_CODE_SIGNING_SECRET = backup_license_signing_secret
             self.server.app.secret_key = backup_app_secret_key
             self.server._clear_cached_license_signing_secret()
             self.server.init_auth_db()
+            self.server.init_license_db()
+
+    def test_init_license_db_migrates_legacy_license_rows_from_auth_db(self):
+        backup_auth_dir = self.server.AUTH_DIR
+        backup_auth_db_path = self.server.AUTH_DB_PATH
+        backup_license_db_path = self.server.LICENSE_DB_PATH
+        backup_config_secret_key = self.server.CONFIG_SECRET_KEY
+        backup_license_signing_secret = self.server.LICENSE_CODE_SIGNING_SECRET
+        backup_app_secret_key = self.server.app.secret_key
+
+        isolated_auth_dir = self.server.DATA_DIR / f"auth-legacy-migrate-{uuid.uuid4().hex}"
+        isolated_auth_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            self.server.AUTH_DIR = isolated_auth_dir
+            self.server.AUTH_DB_PATH = isolated_auth_dir / "users.db"
+            self.server.LICENSE_DB_PATH = isolated_auth_dir / "licenses.db"
+            self.server.LICENSE_CODE_SIGNING_SECRET = ""
+            self.server.CONFIG_SECRET_KEY = "legacy-machine-secret"
+            self.server.app.secret_key = "legacy-machine-secret"
+            self.server._clear_cached_license_signing_secret()
+            self.server.init_auth_db()
+
+            user = self._register_user()
+            code = self.server.generate_license_code()
+            normalized = self.server.normalize_license_code(code)
+            code_hash = hashlib.sha256(f"{normalized}|legacy-machine-secret".encode("utf-8")).hexdigest()
+            now_iso = datetime.utcnow().isoformat()
+
+            with self.server.get_auth_db_connection() as conn:
+                self.server.ensure_auth_meta_table(conn)
+                self.server.ensure_license_tables(conn)
+                conn.execute(
+                    """
+                    INSERT INTO auth_meta (meta_key, meta_value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(meta_key) DO UPDATE SET
+                        meta_value = excluded.meta_value,
+                        updated_at = excluded.updated_at
+                    """,
+                    (self.server.AUTH_META_LICENSE_SIGNING_SECRET_KEY, "legacy-machine-secret", now_iso),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO licenses (
+                        id, batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+                        bound_user_id, bound_at, replaced_by_license_id, revoked_at,
+                        revoked_reason, note, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, 'issued', '', '', ?, NULL, NULL, NULL, NULL, '', ?, ?, ?)
+                    """,
+                    (
+                        1,
+                        "legacy-batch",
+                        code_hash,
+                        self.server.mask_license_code(code),
+                        30,
+                        "旧库迁移测试",
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+
+            self.server.init_license_db()
+
+            with self.server.get_license_db_connection() as conn:
+                migrated_row = conn.execute(
+                    "SELECT batch_id, code_hash, status, note FROM licenses WHERE id = 1 LIMIT 1"
+                ).fetchone()
+                migrated_secret = conn.execute(
+                    "SELECT meta_value FROM auth_meta WHERE meta_key = ? LIMIT 1",
+                    (self.server.AUTH_META_LICENSE_SIGNING_SECRET_KEY,),
+                ).fetchone()
+            self.assertIsNotNone(migrated_row)
+            self.assertEqual("legacy-batch", str(migrated_row["batch_id"]))
+            self.assertEqual(code_hash, str(migrated_row["code_hash"]))
+            self.assertEqual("legacy-machine-secret", str(migrated_secret["meta_value"]))
+
+            ok, status_code, payload = self.server.activate_license_for_user(code, int(user["id"]))
+            self.assertTrue(ok)
+            self.assertEqual(status_code, 200)
+            self.assertTrue(payload.get("has_valid_license"))
+        finally:
+            self.server.AUTH_DIR = backup_auth_dir
+            self.server.AUTH_DB_PATH = backup_auth_db_path
+            self.server.LICENSE_DB_PATH = backup_license_db_path
+            self.server.CONFIG_SECRET_KEY = backup_config_secret_key
+            self.server.LICENSE_CODE_SIGNING_SECRET = backup_license_signing_secret
+            self.server.app.secret_key = backup_app_secret_key
+            self.server._clear_cached_license_signing_secret()
+            self.server.init_auth_db()
+            self.server.init_license_db()
 
     def test_sms_send_code_cooldown_is_not_bypassed_by_parallel_requests(self):
         phone = f"1{uuid.uuid4().int % 10**10:010d}"

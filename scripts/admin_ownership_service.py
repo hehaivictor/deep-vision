@@ -13,6 +13,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT_DIR / "data"
 AUTH_DIR = DATA_DIR / "auth"
 DEFAULT_AUTH_DB_PATH = AUTH_DIR / "users.db"
+DEFAULT_LICENSE_DB_PATH = AUTH_DIR / "licenses.db"
 DEFAULT_BACKUP_ROOT = DATA_DIR / "operations" / "ownership-migrations"
 
 AUTH_EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -70,8 +71,27 @@ def resolve_auth_db_path(raw_auth_db: str) -> Path:
     return path
 
 
+def resolve_license_db_path(raw_license_db: str, *, auth_db_path: Optional[Path] = None) -> Path:
+    input_path = str(raw_license_db or "").strip()
+    if input_path:
+        path = Path(input_path).expanduser()
+    elif auth_db_path is not None:
+        path = Path(auth_db_path).expanduser().parent / "licenses.db"
+    else:
+        path = DEFAULT_LICENSE_DB_PATH
+    if not path.is_absolute():
+        path = (ROOT_DIR / path).resolve()
+    return path
+
+
 def get_auth_db_connection(auth_db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(auth_db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def get_license_db_connection(license_db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(license_db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -246,6 +266,7 @@ def prepare_backup_dir(backup_root: Path, backup_id: str, target_user_id: int, a
     (backup_dir / "sessions").mkdir(parents=True, exist_ok=True)
     (backup_dir / "reports").mkdir(parents=True, exist_ok=True)
     (backup_dir / "auth").mkdir(parents=True, exist_ok=True)
+    (backup_dir / "licenses").mkdir(parents=True, exist_ok=True)
     (backup_dir / "custom_scenarios").mkdir(parents=True, exist_ok=True)
     return backup_dir
 
@@ -306,8 +327,8 @@ def query_wechat_identities_by_user_id(auth_db_path: Path, user_id: int) -> list
     return [dict(row) for row in rows]
 
 
-def count_bound_licenses(auth_db_path: Path, user_id: int) -> int:
-    with get_auth_db_connection(auth_db_path) as conn:
+def count_bound_licenses(license_db_path: Path, user_id: int) -> int:
+    with get_license_db_connection(license_db_path) as conn:
         row = conn.execute(
             "SELECT COUNT(1) AS count FROM licenses WHERE bound_user_id = ?",
             (int(user_id),),
@@ -373,6 +394,7 @@ def count_owned_solution_shares(report_solution_shares_file: Path, owner_user_id
 def build_account_merge_asset_counts(
     *,
     auth_db_path: Path,
+    license_db_path: Path,
     sessions_dir: Path,
     reports_dir: Path,
     report_owners_file: Path,
@@ -385,7 +407,7 @@ def build_account_merge_asset_counts(
         "reports": count_owned_reports(reports_dir, report_owners_file, user_id),
         "custom_scenarios": count_owned_custom_scenarios(custom_scenarios_dir, user_id),
         "solution_shares": count_owned_solution_shares(report_solution_shares_file, user_id),
-        "licenses": count_bound_licenses(auth_db_path, user_id),
+        "licenses": count_bound_licenses(license_db_path, user_id),
         "wechat_identities": len(query_wechat_identities_by_user_id(auth_db_path, user_id)),
     }
 
@@ -395,6 +417,7 @@ def _build_account_merge_summary(
     target_user: dict[str, Any],
     source_user: dict[str, Any],
     auth_db_path: Path,
+    license_db_path: Path,
     source_asset_counts: dict[str, int],
     identity_type: str,
     identity_value: str,
@@ -412,6 +435,7 @@ def _build_account_merge_summary(
         "target_user": target_user,
         "source_user": source_user,
         "auth_db_path": str(auth_db_path),
+        "license_db_path": str(license_db_path),
         "backup_dir": str(backup_dir) if backup_dir else None,
         "sessions": {
             "matched": int(source_asset_counts.get("sessions", 0) or 0),
@@ -463,6 +487,7 @@ def _generate_merged_placeholder_email(conn: sqlite3.Connection, source_user_id:
 def run_account_merge(
     *,
     auth_db_path: Path,
+    license_db_path: Path,
     sessions_dir: Path,
     reports_dir: Path,
     report_owners_file: Path,
@@ -489,6 +514,7 @@ def run_account_merge(
     source_user = resolve_user_reference(auth_db_path, user_id=normalized_source_user_id)
     source_asset_counts = build_account_merge_asset_counts(
         auth_db_path=auth_db_path,
+        license_db_path=license_db_path,
         sessions_dir=sessions_dir,
         reports_dir=reports_dir,
         report_owners_file=report_owners_file,
@@ -501,6 +527,7 @@ def run_account_merge(
         target_user=target_user,
         source_user=source_user,
         auth_db_path=auth_db_path,
+        license_db_path=license_db_path,
         source_asset_counts=source_asset_counts,
         identity_type=identity_type,
         identity_value=identity_value,
@@ -644,6 +671,7 @@ def run_account_merge(
 
         if backup_dir:
             backup_file_once(auth_db_path, backup_dir / "auth" / auth_db_path.name)
+            backup_file_once(license_db_path, backup_dir / "licenses" / license_db_path.name)
             for session_file in source_session_files:
                 backup_file_once(session_file, backup_dir / "sessions" / session_file.name)
             if source_report_names:
@@ -696,15 +724,6 @@ def run_account_merge(
                 (normalized_target_user_id, now_iso, normalized_source_user_id),
             )
 
-            conn.execute(
-                """
-                UPDATE licenses
-                SET bound_user_id = ?, updated_at = ?
-                WHERE bound_user_id = ?
-                """,
-                (normalized_target_user_id, now_iso, normalized_source_user_id),
-            )
-
             source_email = str(source_row["email"] or "").strip()
             merged_email = source_email or _generate_merged_placeholder_email(conn, normalized_source_user_id)
             conn.execute(
@@ -733,6 +752,18 @@ def run_account_merge(
                 (now_iso, normalized_target_user_id),
             )
             conn.commit()
+
+        with get_license_db_connection(license_db_path) as license_conn:
+            license_conn.execute("BEGIN IMMEDIATE")
+            license_conn.execute(
+                """
+                UPDATE licenses
+                SET bound_user_id = ?, updated_at = ?
+                WHERE bound_user_id = ?
+                """,
+                (normalized_target_user_id, now_iso, normalized_source_user_id),
+            )
+            license_conn.commit()
 
         for session_file in source_session_files:
             payload = json.loads(session_file.read_text(encoding="utf-8"))
@@ -1008,6 +1039,7 @@ def rollback_ownership_migration(
     reports_dir: Path,
     report_owners_file: Path,
     auth_db_path: Optional[Path] = None,
+    license_db_path: Optional[Path] = None,
     custom_scenarios_dir: Optional[Path] = None,
     report_solution_shares_file: Optional[Path] = None,
     backup_id: Optional[str] = None,
@@ -1067,10 +1099,23 @@ def rollback_ownership_migration(
 
     auth_db_restored = False
     auth_backup_file = resolved_backup_dir / "auth" / "users.db"
+    if not auth_backup_file.exists():
+        auth_candidates = sorted((resolved_backup_dir / "auth").glob("*.db"))
+        auth_backup_file = auth_candidates[0] if auth_candidates else auth_backup_file
     if auth_db_path is not None and auth_backup_file.exists():
         auth_db_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(auth_backup_file, auth_db_path)
         auth_db_restored = True
+
+    license_db_restored = False
+    license_backup_file = resolved_backup_dir / "licenses" / "licenses.db"
+    if not license_backup_file.exists():
+        license_candidates = sorted((resolved_backup_dir / "licenses").glob("*.db"))
+        license_backup_file = license_candidates[0] if license_candidates else license_backup_file
+    if license_db_path is not None and license_backup_file.exists():
+        license_db_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(license_backup_file, license_db_path)
+        license_db_restored = True
 
     result = {
         "backup_id": resolved_backup_dir.name,
@@ -1082,6 +1127,7 @@ def rollback_ownership_migration(
         "solution_shares_removed": solution_shares_removed,
         "restored_custom_scenarios": restored_custom_scenarios,
         "auth_db_restored": auth_db_restored,
+        "license_db_restored": license_db_restored,
         "rolled_back_at": utc_now_iso(),
     }
     (resolved_backup_dir / "rollback.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")

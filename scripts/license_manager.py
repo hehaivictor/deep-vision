@@ -56,11 +56,23 @@ def resolve_auth_db_path(raw_auth_db: str) -> Path:
     return path
 
 
-def configure_server_auth_db(server, auth_db_path: Path) -> None:
+def resolve_license_db_path(raw_license_db: str, auth_db_path: Path) -> Path:
+    env_path = os.environ.get("DEEPVISION_LICENSE_DB_PATH", "")
+    value = str(raw_license_db or "").strip() or env_path
+    path = Path(value).expanduser() if value else (auth_db_path.parent / "licenses.db")
+    if not path.is_absolute():
+        path = (ROOT_DIR / path).resolve()
+    return path
+
+
+def configure_server_databases(server, auth_db_path: Path, license_db_path: Path) -> None:
     server.AUTH_DB_PATH = auth_db_path
     server.AUTH_DIR = auth_db_path.parent
     server.AUTH_DIR.mkdir(parents=True, exist_ok=True)
+    server.LICENSE_DB_PATH = license_db_path
+    license_db_path.parent.mkdir(parents=True, exist_ok=True)
     server.init_auth_db()
+    server.init_license_db()
 
 
 def print_json(payload: object) -> None:
@@ -88,7 +100,8 @@ def print_license_table(items: list[dict]) -> None:
 
 def run_generate(args: argparse.Namespace) -> int:
     server = load_server_module()
-    configure_server_auth_db(server, resolve_auth_db_path(args.auth_db))
+    auth_db_path = resolve_auth_db_path(args.auth_db)
+    configure_server_databases(server, auth_db_path, resolve_license_db_path(args.license_db, auth_db_path))
     try:
         payload = server.generate_license_batch(
             count=args.count,
@@ -117,7 +130,8 @@ def run_generate(args: argparse.Namespace) -> int:
 
 def run_list(args: argparse.Namespace) -> int:
     server = load_server_module()
-    configure_server_auth_db(server, resolve_auth_db_path(args.auth_db))
+    auth_db_path = resolve_auth_db_path(args.auth_db)
+    configure_server_databases(server, auth_db_path, resolve_license_db_path(args.license_db, auth_db_path))
     items = server.list_licenses_admin(
         batch_id=args.batch_id,
         status=args.status,
@@ -132,7 +146,8 @@ def run_list(args: argparse.Namespace) -> int:
 
 def run_revoke(args: argparse.Namespace) -> int:
     server = load_server_module()
-    configure_server_auth_db(server, resolve_auth_db_path(args.auth_db))
+    auth_db_path = resolve_auth_db_path(args.auth_db)
+    configure_server_databases(server, auth_db_path, resolve_license_db_path(args.license_db, auth_db_path))
     try:
         payload = server.revoke_license_by_id(args.license_id, reason=args.reason, actor_user_id=None)
     except Exception as exc:
@@ -144,7 +159,8 @@ def run_revoke(args: argparse.Namespace) -> int:
 
 def run_extend(args: argparse.Namespace) -> int:
     server = load_server_module()
-    configure_server_auth_db(server, resolve_auth_db_path(args.auth_db))
+    auth_db_path = resolve_auth_db_path(args.auth_db)
+    configure_server_databases(server, auth_db_path, resolve_license_db_path(args.license_db, auth_db_path))
     try:
         payload = server.extend_license_by_id(
             args.license_id,
@@ -161,7 +177,8 @@ def run_extend(args: argparse.Namespace) -> int:
 
 def run_enforcement_status(args: argparse.Namespace) -> int:
     server = load_server_module()
-    configure_server_auth_db(server, resolve_auth_db_path(args.auth_db))
+    auth_db_path = resolve_auth_db_path(args.auth_db)
+    configure_server_databases(server, auth_db_path, resolve_license_db_path(args.license_db, auth_db_path))
     payload = server.get_license_enforcement_state()
     print_json(payload)
     return 0
@@ -169,7 +186,8 @@ def run_enforcement_status(args: argparse.Namespace) -> int:
 
 def run_enforcement_set(args: argparse.Namespace) -> int:
     server = load_server_module()
-    configure_server_auth_db(server, resolve_auth_db_path(args.auth_db))
+    auth_db_path = resolve_auth_db_path(args.auth_db)
+    configure_server_databases(server, auth_db_path, resolve_license_db_path(args.license_db, auth_db_path))
     enabled = server._parse_bool_like(args.enabled)
     if enabled is None:
         print("[ERROR] --enabled 仅支持 true/false/on/off/1/0", file=sys.stderr)
@@ -185,7 +203,8 @@ def run_enforcement_set(args: argparse.Namespace) -> int:
 
 def run_enforcement_follow_default(args: argparse.Namespace) -> int:
     server = load_server_module()
-    configure_server_auth_db(server, resolve_auth_db_path(args.auth_db))
+    auth_db_path = resolve_auth_db_path(args.auth_db)
+    configure_server_databases(server, auth_db_path, resolve_license_db_path(args.license_db, auth_db_path))
     payload = server.set_license_enforcement_override(None, actor_user_id=None, sync_default=False)
     print_json({"success": True, **payload})
     return 0
@@ -194,6 +213,7 @@ def run_enforcement_follow_default(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="DeepVision License 运维脚本")
     parser.add_argument("--auth-db", default="", help="鉴权数据库路径，默认 data/auth/users.db 或 DEEPVISION_AUTH_DB_PATH")
+    parser.add_argument("--license-db", default="", help="License 数据库路径，默认 data/auth/licenses.db 或 DEEPVISION_LICENSE_DB_PATH")
     parser.add_argument("--json", action="store_true", help="以 JSON 输出")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

@@ -226,6 +226,7 @@ ENV_MANAGED_CONFIG_EXACT_KEYS = {
     "FOCUS_GENERATION_ACCESS_LOG",
     "INSTANCE_SCOPE_KEY",
     "LICENSE_CODE_SIGNING_SECRET",
+    "LICENSE_DB_PATH",
     "LICENSE_ENFORCEMENT_ENABLED",
     "REFLY_API_URL",
     "REFLY_FILES_FIELD",
@@ -1855,6 +1856,7 @@ ASSESSMENT_SCORE_MAX_TOKENS = max(32, ASSESSMENT_SCORE_MAX_TOKENS)
 # 集中读取后复用
 CONFIG_SECRET_KEY = _cfg_text("SECRET_KEY", "")
 CONFIG_AUTH_DB_PATH = _cfg_text("AUTH_DB_PATH", "")
+CONFIG_LICENSE_DB_PATH = _cfg_text("LICENSE_DB_PATH", "")
 CONFIG_SCENARIOS_DIR = _cfg_text("SCENARIOS_DIR", "")
 CONFIG_BUILTIN_SCENARIOS_DIR = _cfg_text("BUILTIN_SCENARIOS_DIR", "")
 CONFIG_CUSTOM_SCENARIOS_DIR = _cfg_text("CUSTOM_SCENARIOS_DIR", "")
@@ -2238,6 +2240,16 @@ if raw_auth_db_path:
 else:
     AUTH_DB_PATH = AUTH_DIR / "users.db"
 
+license_db_from_config = CONFIG_LICENSE_DB_PATH
+license_db_from_env = os.environ.get("DEEPVISION_LICENSE_DB_PATH", "")
+raw_license_db_path = license_db_from_env or license_db_from_config
+if raw_license_db_path:
+    LICENSE_DB_PATH = Path(raw_license_db_path).expanduser()
+    if not LICENSE_DB_PATH.is_absolute():
+        LICENSE_DB_PATH = (SKILL_DIR / LICENSE_DB_PATH).resolve()
+else:
+    LICENSE_DB_PATH = AUTH_DB_PATH.parent / "licenses.db"
+
 INSECURE_SECRET_KEY_PLACEHOLDERS = {
     "replace-with-a-strong-random-secret",
     "deepvision-dev-secret-key",
@@ -2425,11 +2437,12 @@ ADMIN_ENV_SETTINGS_GROUPS: list[dict[str, Any]] = [
         "source": "env",
         "items": [
             _admin_password("SECRET_KEY", "SECRET_KEY", description="Flask 会话与签名密钥。"),
-            _admin_setting("AUTH_DB_PATH", "鉴权数据库路径", description="用户与 License 数据库路径。"),
+            _admin_setting("AUTH_DB_PATH", "鉴权数据库路径", description="用户、登录与微信身份数据库路径。"),
+            _admin_setting("LICENSE_DB_PATH", "License 数据库路径", description="License、事件与 License 元数据独立数据库路径。"),
             _admin_password(
                 "LICENSE_CODE_SIGNING_SECRET",
                 "License 签名密钥",
-                description="仅在鉴权库首次初始化时作为种子；后续同一 users.db 以库内持久化值为准。",
+                description="仅在 License 库首次初始化时作为种子；后续同一 licenses.db 以库内持久化值为准。",
             ),
             _admin_list("ADMIN_USER_IDS", "管理员用户 ID", list_value_kind="int", description="逗号分隔。"),
             _admin_list("ADMIN_PHONE_NUMBERS", "管理员手机号", description="逗号分隔。"),
@@ -3205,6 +3218,8 @@ def _get_admin_runtime_setting_value(source: str, key: str, *, site_values: Opti
         return app.config.get("SECRET_KEY", "")
     if key == "AUTH_DB_PATH":
         return str(AUTH_DB_PATH)
+    if key == "LICENSE_DB_PATH":
+        return str(LICENSE_DB_PATH)
     if key == "ADMIN_USER_IDS":
         return sorted(int(item) for item in ADMIN_USER_IDS)
     if key == "ADMIN_PHONE_NUMBERS":
@@ -5526,11 +5541,23 @@ def get_auth_db_connection() -> sqlite3.Connection:
     return conn
 
 
+def get_license_db_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(LICENSE_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 AUTH_META_INSTANCE_KEY = "auth_instance_id"
 AUTH_META_LICENSE_SIGNING_SECRET_KEY = "license_signing_secret"
 AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY = "license_enforcement_enabled"
 AUTH_META_LICENSE_ENFORCEMENT_UPDATED_BY_KEY = "license_enforcement_updated_by"
 AUTH_META_LICENSE_ENFORCEMENT_UPDATED_AT_KEY = "license_enforcement_updated_at"
+LICENSE_META_KEYS = {
+    AUTH_META_LICENSE_SIGNING_SECRET_KEY,
+    AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY,
+    AUTH_META_LICENSE_ENFORCEMENT_UPDATED_BY_KEY,
+    AUTH_META_LICENSE_ENFORCEMENT_UPDATED_AT_KEY,
+}
 ADMIN_OWNERSHIP_PREVIEW_SESSION_KEY = "admin_ownership_preview"
 ADMIN_OWNERSHIP_PREVIEW_TTL_SECONDS = 900
 ACCOUNT_MERGE_CANDIDATE_SESSION_KEY = "account_merge_candidate"
@@ -5561,6 +5588,181 @@ def ensure_auth_meta_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def ensure_license_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS licenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL,
+            code_hash TEXT NOT NULL UNIQUE,
+            code_mask TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'issued',
+            not_before_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            duration_days INTEGER NOT NULL DEFAULT 0,
+            bound_user_id INTEGER,
+            bound_at TEXT,
+            replaced_by_license_id INTEGER,
+            revoked_at TEXT,
+            revoked_reason TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_licenses_batch_id ON licenses(batch_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_licenses_status ON licenses(status)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_licenses_bound_user_id ON licenses(bound_user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_licenses_expires_at ON licenses(expires_at)")
+    license_columns = {
+        str(row[1]): True
+        for row in conn.execute("PRAGMA table_info(licenses)").fetchall()
+    }
+    if "duration_days" not in license_columns:
+        conn.execute("ALTER TABLE licenses ADD COLUMN duration_days INTEGER NOT NULL DEFAULT 0")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS license_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            license_id INTEGER,
+            actor_user_id INTEGER,
+            event_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_license_events_license_id ON license_events(license_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_license_events_actor_user_id ON license_events(actor_user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_license_events_event_type ON license_events(event_type)")
+
+
+def _migrate_legacy_license_data_to_license_db(conn: sqlite3.Connection) -> bool:
+    auth_db_resolved = _resolve_auth_db_cache_path()
+    license_db_resolved = _resolve_license_db_cache_path()
+    if auth_db_resolved == license_db_resolved:
+        return False
+
+    has_existing_license_rows = conn.execute("SELECT 1 FROM licenses LIMIT 1").fetchone() is not None
+    has_existing_license_events = conn.execute("SELECT 1 FROM license_events LIMIT 1").fetchone() is not None
+    has_existing_license_meta = conn.execute(
+        f"SELECT 1 FROM auth_meta WHERE meta_key IN ({','.join('?' for _ in LICENSE_META_KEYS)}) LIMIT 1",
+        tuple(sorted(LICENSE_META_KEYS)),
+    ).fetchone() is not None
+    if has_existing_license_rows or has_existing_license_events or has_existing_license_meta:
+        return False
+
+    if not Path(AUTH_DB_PATH).exists():
+        return False
+
+    migrated = False
+    with get_auth_db_connection() as auth_conn:
+        if _sqlite_table_exists(auth_conn, "licenses"):
+            rows = auth_conn.execute(
+                """
+                SELECT id, batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+                       bound_user_id, bound_at, replaced_by_license_id, revoked_at,
+                       revoked_reason, note, created_at, updated_at
+                FROM licenses
+                ORDER BY id ASC
+                """
+            ).fetchall()
+            if rows:
+                conn.executemany(
+                    """
+                    INSERT INTO licenses (
+                        id, batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+                        bound_user_id, bound_at, replaced_by_license_id, revoked_at,
+                        revoked_reason, note, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            int(row["id"]),
+                            str(row["batch_id"] or "").strip(),
+                            str(row["code_hash"] or "").strip(),
+                            str(row["code_mask"] or "").strip(),
+                            str(row["status"] or "").strip(),
+                            str(row["not_before_at"] or "").strip(),
+                            str(row["expires_at"] or "").strip(),
+                            int(row["duration_days"] or 0),
+                            int(row["bound_user_id"] or 0) or None,
+                            str(row["bound_at"] or "").strip() or None,
+                            int(row["replaced_by_license_id"] or 0) or None,
+                            str(row["revoked_at"] or "").strip() or None,
+                            str(row["revoked_reason"] or "").strip(),
+                            str(row["note"] or "").strip(),
+                            str(row["created_at"] or "").strip(),
+                            str(row["updated_at"] or "").strip(),
+                        )
+                        for row in rows
+                    ],
+                )
+                migrated = True
+
+        if _sqlite_table_exists(auth_conn, "license_events"):
+            rows = auth_conn.execute(
+                """
+                SELECT id, license_id, actor_user_id, event_type, payload_json, created_at
+                FROM license_events
+                ORDER BY id ASC
+                """
+            ).fetchall()
+            if rows:
+                conn.executemany(
+                    """
+                    INSERT INTO license_events (id, license_id, actor_user_id, event_type, payload_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            int(row["id"]),
+                            int(row["license_id"] or 0) or None,
+                            int(row["actor_user_id"] or 0) or None,
+                            str(row["event_type"] or "").strip(),
+                            str(row["payload_json"] or "{}"),
+                            str(row["created_at"] or "").strip(),
+                        )
+                        for row in rows
+                    ],
+                )
+                migrated = True
+
+        if _sqlite_table_exists(auth_conn, "auth_meta"):
+            meta_rows = auth_conn.execute(
+                f"""
+                SELECT meta_key, meta_value, updated_at
+                FROM auth_meta
+                WHERE meta_key IN ({','.join('?' for _ in LICENSE_META_KEYS)})
+                """,
+                tuple(sorted(LICENSE_META_KEYS)),
+            ).fetchall()
+            if meta_rows:
+                conn.executemany(
+                    """
+                    INSERT INTO auth_meta (meta_key, meta_value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(meta_key) DO UPDATE SET
+                        meta_value = excluded.meta_value,
+                        updated_at = excluded.updated_at
+                    """,
+                    [
+                        (
+                            str(row["meta_key"] or "").strip(),
+                            str(row["meta_value"] or "").strip(),
+                            str(row["updated_at"] or "").strip() or datetime.now(timezone.utc).isoformat(),
+                        )
+                        for row in meta_rows
+                    ],
+                )
+                migrated = True
+
+    return migrated
+
+
 def _clear_cached_license_signing_secret() -> None:
     with license_signing_secret_cache_lock:
         license_signing_secret_cache["db_path"] = ""
@@ -5575,12 +5777,27 @@ def _resolve_auth_db_cache_path() -> str:
         return str(AUTH_DB_PATH)
 
 
+def _resolve_license_db_cache_path() -> str:
+    try:
+        return str(Path(LICENSE_DB_PATH).resolve())
+    except Exception:
+        return str(LICENSE_DB_PATH)
+
+
 def _legacy_license_signing_secret() -> str:
     return _first_non_empty(
         CONFIG_SECRET_KEY,
         str(app.secret_key or ""),
         "deepvision-dev-license-secret",
     )
+
+
+def _sqlite_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (str(table_name or "").strip(),),
+    ).fetchone()
+    return bool(row)
 
 
 def _read_auth_meta_value(conn: sqlite3.Connection, meta_key: str) -> str:
@@ -5677,7 +5894,7 @@ def get_license_enforcement_default_state() -> dict[str, Any]:
 def get_license_enforcement_state() -> dict:
     default_state = get_license_enforcement_default_state()
     default_enabled = bool(default_state.get("enabled"))
-    with get_auth_db_connection() as conn:
+    with get_license_db_connection() as conn:
         ensure_auth_meta_table(conn)
         rows = conn.execute(
             """
@@ -5734,7 +5951,7 @@ def set_license_enforcement_override(
     previous_state = get_license_enforcement_state()
     default_write_path = None
     next_default_enabled = bool(previous_state.get("default_enabled"))
-    with get_auth_db_connection() as conn:
+    with get_license_db_connection() as conn:
         ensure_auth_meta_table(conn)
         now_iso = datetime.now(timezone.utc).isoformat()
         if enabled is None:
@@ -5820,7 +6037,7 @@ def get_auth_instance_id(force_refresh: bool = False) -> str:
             if auth_instance_cache.get("db_path") == db_path and auth_instance_cache.get("value"):
                 return str(auth_instance_cache.get("value"))
 
-    with get_auth_db_connection() as conn:
+    with get_license_db_connection() as conn:
         ensure_auth_meta_table(conn)
         row = conn.execute(
             "SELECT meta_value FROM auth_meta WHERE meta_key = ? LIMIT 1",
@@ -5913,69 +6130,31 @@ def init_auth_db() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sms_codes_phone_scene ON auth_sms_codes(phone, scene)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_auth_sms_codes_created_at ON auth_sms_codes(created_at)")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS licenses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                batch_id TEXT NOT NULL,
-                code_hash TEXT NOT NULL UNIQUE,
-                code_mask TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'issued',
-                not_before_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                duration_days INTEGER NOT NULL DEFAULT 0,
-                bound_user_id INTEGER,
-                bound_at TEXT,
-                replaced_by_license_id INTEGER,
-                revoked_at TEXT,
-                revoked_reason TEXT NOT NULL DEFAULT '',
-                note TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY (bound_user_id) REFERENCES users(id) ON DELETE SET NULL,
-                FOREIGN KEY (replaced_by_license_id) REFERENCES licenses(id) ON DELETE SET NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_licenses_batch_id ON licenses(batch_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_licenses_status ON licenses(status)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_licenses_bound_user_id ON licenses(bound_user_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_licenses_expires_at ON licenses(expires_at)")
-        license_columns = {
-            str(row[1]): True
-            for row in conn.execute("PRAGMA table_info(licenses)").fetchall()
-        }
-        if "duration_days" not in license_columns:
-            conn.execute("ALTER TABLE licenses ADD COLUMN duration_days INTEGER NOT NULL DEFAULT 0")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS license_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                license_id INTEGER,
-                actor_user_id INTEGER,
-                event_type TEXT NOT NULL,
-                payload_json TEXT NOT NULL DEFAULT '{}',
-                created_at TEXT NOT NULL,
-                FOREIGN KEY (license_id) REFERENCES licenses(id) ON DELETE SET NULL,
-                FOREIGN KEY (actor_user_id) REFERENCES users(id) ON DELETE SET NULL
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_license_events_license_id ON license_events(license_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_license_events_actor_user_id ON license_events(actor_user_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_license_events_event_type ON license_events(event_type)")
-        license_secret, license_secret_source = _ensure_license_signing_secret_in_auth_meta(conn)
         conn.commit()
     # 初始化并缓存鉴权库实例标识（多实例时用于识别“错库会话”）。
     get_auth_instance_id(force_refresh=True)
+
+
+def init_license_db() -> None:
+    Path(LICENSE_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    with get_license_db_connection() as conn:
+        ensure_auth_meta_table(conn)
+        ensure_license_tables(conn)
+        migrated_from_auth_db = _migrate_legacy_license_data_to_license_db(conn)
+        license_secret, license_secret_source = _ensure_license_signing_secret_in_auth_meta(conn)
+        conn.commit()
+
     with license_signing_secret_cache_lock:
-        license_signing_secret_cache["db_path"] = _resolve_auth_db_cache_path()
+        license_signing_secret_cache["db_path"] = _resolve_license_db_cache_path()
         license_signing_secret_cache["configured_seed"] = str(LICENSE_CODE_SIGNING_SECRET or "").strip()
         license_signing_secret_cache["value"] = license_secret
+
+    if migrated_from_auth_db:
+        print("🔐 已将旧 users.db 中的 License 数据迁移到独立的 licenses.db")
     if license_secret_source == "legacy_migrated":
-        print("🔐 已将 License 签名密钥迁移到鉴权库，同库多机共享不再依赖本机 SECRET_KEY")
+        print("🔐 已将 License 签名密钥迁移到 License 库，同库多机共享不再依赖本机 SECRET_KEY")
     elif license_secret_source == "generated":
-        print("🔐 已为鉴权库初始化共享 License 签名密钥")
+        print("🔐 已为 License 库初始化共享签名密钥")
 
 
 def normalize_phone_number(raw_phone: str) -> str:
@@ -6153,7 +6332,7 @@ def _build_license_validity_fields(
 
 
 def _license_signing_secret() -> str:
-    cache_db_path = _resolve_auth_db_cache_path()
+    cache_db_path = _resolve_license_db_cache_path()
     configured_seed = str(LICENSE_CODE_SIGNING_SECRET or "").strip()
     with license_signing_secret_cache_lock:
         if (
@@ -6163,7 +6342,7 @@ def _license_signing_secret() -> str:
         ):
             return str(license_signing_secret_cache.get("value") or "").strip()
 
-    with get_auth_db_connection() as conn:
+    with get_license_db_connection() as conn:
         secret_value, _source = _ensure_license_signing_secret_in_auth_meta(conn)
         conn.commit()
 
@@ -6227,6 +6406,49 @@ def _license_row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:
     if not row:
         return None
     return {key: row[key] for key in row.keys()}
+
+
+def _build_user_identity_map(user_ids: list[int]) -> dict[int, dict[str, str]]:
+    normalized_ids = unique_positive_ints(user_ids)
+    if not normalized_ids:
+        return {}
+
+    placeholders = ",".join("?" for _ in normalized_ids)
+    user_map: dict[int, dict[str, str]] = {}
+    with get_auth_db_connection() as conn:
+        user_rows = conn.execute(
+            f"""
+            SELECT id, phone, email
+            FROM users
+            WHERE id IN ({placeholders})
+            """,
+            tuple(normalized_ids),
+        ).fetchall()
+        for row in user_rows:
+            user_map[int(row["id"])] = {
+                "phone": str(row["phone"] or "").strip(),
+                "email": str(row["email"] or "").strip(),
+                "wechat_nickname": "",
+            }
+
+        wechat_rows = conn.execute(
+            f"""
+            SELECT user_id, nickname
+            FROM wechat_identities
+            WHERE user_id IN ({placeholders})
+            ORDER BY updated_at DESC, id DESC
+            """,
+            tuple(normalized_ids),
+        ).fetchall()
+        for row in wechat_rows:
+            user_id = int(row["user_id"] or 0)
+            if user_id <= 0:
+                continue
+            entry = user_map.setdefault(user_id, {"phone": "", "email": "", "wechat_nickname": ""})
+            if not entry.get("wechat_nickname"):
+                entry["wechat_nickname"] = normalize_wechat_nickname(row["nickname"] or "")
+
+    return user_map
 
 
 def _record_license_event(
@@ -6370,7 +6592,7 @@ def get_user_license_state(user_id: int) -> dict:
             "license": None,
         }
 
-    with get_auth_db_connection() as conn:
+    with get_license_db_connection() as conn:
         row = _get_latest_bound_license_for_user(conn, normalized_user_id)
         row = _sync_license_row_status(conn, row, now=datetime.now(timezone.utc), commit=True)
 
@@ -6437,7 +6659,7 @@ def get_admin_license_bootstrap_status(user_row: Optional[sqlite3.Row]) -> dict:
         }
 
     license_state = build_license_status_payload_for_user(user_row)
-    with get_auth_db_connection() as conn:
+    with get_license_db_connection() as conn:
         total_license_count = _count_license_records(conn)
 
     if license_state.get("has_valid_license"):
@@ -6493,7 +6715,7 @@ def bootstrap_first_admin_license(
     bootstrap_note = str(note or "").strip() or "管理员首个种子 License"
     normalized_duration_days = int(timing["duration_days"] or 0)
 
-    with get_auth_db_connection() as conn:
+    with get_license_db_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         if _count_license_records(conn) > 0:
             conn.rollback()
@@ -6603,7 +6825,7 @@ def generate_license_batch(
     now_iso = datetime.now(timezone.utc).isoformat()
     batch_id = generate_license_batch_id()
     generated_items: list[dict] = []
-    with get_auth_db_connection() as conn:
+    with get_license_db_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         for _ in range(requested_count):
             for _attempt in range(12):
@@ -6689,7 +6911,7 @@ def activate_license_for_user(code: object, user_id: int) -> tuple[bool, int, di
     with named_file_lock("license-activate", lock_key):
         now = datetime.now(timezone.utc)
         now_iso = now.isoformat()
-        with get_auth_db_connection() as conn:
+        with get_license_db_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 """
@@ -6901,22 +7123,25 @@ def _parse_admin_filter_datetime(raw_value: object, *, field_name: str) -> Optio
 
 
 def _fetch_admin_license_rows() -> list[dict]:
-    with get_auth_db_connection() as conn:
+    with get_license_db_connection() as conn:
         rows = conn.execute(
             """
-            SELECT l.id, l.batch_id, l.code_mask, l.code_hash, l.status, l.not_before_at, l.expires_at,
-                   l.duration_days,
-                   l.bound_user_id, l.bound_at, l.replaced_by_license_id, l.revoked_at,
-                   l.revoked_reason, l.note, l.created_at, l.updated_at,
-                   u.phone AS bound_phone, u.email AS bound_email,
-                   wi.nickname AS bound_wechat_nickname
+            SELECT id, batch_id, code_mask, code_hash, status, not_before_at, expires_at,
+                   duration_days, bound_user_id, bound_at, replaced_by_license_id, revoked_at,
+                   revoked_reason, note, created_at, updated_at
             FROM licenses l
-            LEFT JOIN users u ON u.id = l.bound_user_id
-            LEFT JOIN wechat_identities wi ON wi.user_id = l.bound_user_id
             ORDER BY l.id DESC
             """
         ).fetchall()
-    return [_license_row_to_dict(row) or {} for row in rows]
+    items = [_license_row_to_dict(row) or {} for row in rows]
+    user_map = _build_user_identity_map([int(item.get("bound_user_id") or 0) for item in items])
+    for item in items:
+        bound_user_id = int(item.get("bound_user_id") or 0)
+        identity = user_map.get(bound_user_id) or {}
+        item["bound_phone"] = str(identity.get("phone") or "").strip()
+        item["bound_email"] = str(identity.get("email") or "").strip()
+        item["bound_wechat_nickname"] = str(identity.get("wechat_nickname") or "").strip()
+    return items
 
 
 def _build_admin_license_item(item: dict, *, now: datetime) -> dict:
@@ -7160,21 +7385,20 @@ def list_license_events_admin(*, license_id: Optional[int] = None, limit: int = 
         where_clause = "WHERE e.license_id = ?"
         params.append(int(license_id))
 
-    with get_auth_db_connection() as conn:
+    with get_license_db_connection() as conn:
         rows = conn.execute(
             f"""
             SELECT e.id, e.license_id, e.actor_user_id, e.event_type, e.payload_json, e.created_at,
-                   l.code_mask AS masked_code, l.batch_id,
-                   u.phone AS actor_phone, u.email AS actor_email
+                   l.code_mask AS masked_code, l.batch_id
             FROM license_events e
             LEFT JOIN licenses l ON l.id = e.license_id
-            LEFT JOIN users u ON u.id = e.actor_user_id
             {where_clause}
             ORDER BY e.id DESC
             LIMIT ?
             """,
             tuple(params + [normalized_limit]),
         ).fetchall()
+    actor_map = _build_user_identity_map([int(row["actor_user_id"] or 0) for row in rows])
 
     items: list[dict] = []
     for row in rows:
@@ -7190,7 +7414,13 @@ def list_license_events_admin(*, license_id: Optional[int] = None, limit: int = 
                 "masked_code": str(row["masked_code"] or "").strip(),
                 "batch_id": str(row["batch_id"] or "").strip(),
                 "actor_user_id": int(row["actor_user_id"] or 0) or None,
-                "actor_account": str(row["actor_phone"] or row["actor_email"] or "").strip(),
+                "actor_account": str(
+                    (
+                        actor_map.get(int(row["actor_user_id"] or 0), {}).get("phone")
+                        or actor_map.get(int(row["actor_user_id"] or 0), {}).get("email")
+                        or ""
+                    )
+                ).strip(),
                 "event_type": str(row["event_type"] or "").strip(),
                 "payload": payload,
                 "created_at": str(row["created_at"] or "").strip(),
@@ -7878,6 +8108,7 @@ def _build_account_merge_user_summary(user_id: int) -> Optional[dict]:
     license_state = get_user_license_state(int(user_row["id"]))
     asset_counts = ownership_admin_service.build_account_merge_asset_counts(
         auth_db_path=AUTH_DB_PATH,
+        license_db_path=LICENSE_DB_PATH,
         sessions_dir=SESSIONS_DIR,
         reports_dir=REPORTS_DIR,
         report_owners_file=REPORT_OWNERS_FILE,
@@ -8090,6 +8321,7 @@ def _build_account_merge_preview_payload(candidate: dict, current_user_id: int) 
 
     merge_summary = ownership_admin_service.run_account_merge(
         auth_db_path=AUTH_DB_PATH,
+        license_db_path=LICENSE_DB_PATH,
         sessions_dir=SESSIONS_DIR,
         reports_dir=REPORTS_DIR,
         report_owners_file=REPORT_OWNERS_FILE,
@@ -8166,6 +8398,7 @@ def _execute_account_merge_apply(candidate: dict, *, actor_user_id: int, reason:
     source_user_id = int(candidate.get("source_user_id") or 0)
     summary = ownership_admin_service.run_account_merge(
         auth_db_path=AUTH_DB_PATH,
+        license_db_path=LICENSE_DB_PATH,
         sessions_dir=SESSIONS_DIR,
         reports_dir=REPORTS_DIR,
         report_owners_file=REPORT_OWNERS_FILE,
@@ -8916,6 +9149,7 @@ def enforce_auth_for_protected_routes():
 
 
 init_auth_db()
+init_license_db()
 
 
 def load_presentation_map() -> dict:
@@ -39616,6 +39850,7 @@ def admin_rollback_ownership_migration():
             reports_dir=REPORTS_DIR,
             report_owners_file=REPORT_OWNERS_FILE,
             auth_db_path=AUTH_DB_PATH,
+            license_db_path=LICENSE_DB_PATH,
             custom_scenarios_dir=Path(getattr(scenario_loader, "custom_dir", DATA_DIR / "scenarios" / "custom")),
             report_solution_shares_file=REPORT_SOLUTION_SHARES_FILE,
             backup_id=backup_id,

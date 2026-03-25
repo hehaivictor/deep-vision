@@ -91,6 +91,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         cls.server.PRESENTATIONS_DIR = data_dir / "presentations"
         cls.server.AUTH_DIR = data_dir / "auth"
         cls.server.AUTH_DB_PATH = cls.server.AUTH_DIR / "users.db"
+        cls.server.LICENSE_DB_PATH = cls.server.AUTH_DIR / "licenses.db"
         cls.server.PRESENTATION_MAP_FILE = cls.server.PRESENTATIONS_DIR / ".presentation_map.json"
         cls.server.DELETED_REPORTS_FILE = cls.server.REPORTS_DIR / ".deleted_reports.json"
         cls.server.DELETED_DOCS_FILE = cls.server.DATA_DIR / ".deleted_docs.json"
@@ -129,6 +130,7 @@ class ComprehensiveApiTests(unittest.TestCase):
             encoding="utf-8",
         )
         cls.server.init_auth_db()
+        cls.server.init_license_db()
 
         # 避免测试中启动后台预生成线程和外部依赖。
         cls.server.ENABLE_AI = False
@@ -637,14 +639,18 @@ class ComprehensiveApiTests(unittest.TestCase):
         old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
         old_auth_dir = self.server.AUTH_DIR
         old_auth_db_path = self.server.AUTH_DB_PATH
+        old_license_db_path = self.server.LICENSE_DB_PATH
         old_enforcement_enabled = self.server.LICENSE_ENFORCEMENT_ENABLED
         bootstrap_auth_dir = self.server.DATA_DIR / f"bootstrap-auth-{uuid.uuid4().hex}"
         bootstrap_auth_db = bootstrap_auth_dir / "users.db"
+        bootstrap_license_db = bootstrap_auth_dir / "licenses.db"
         try:
             bootstrap_auth_dir.mkdir(parents=True, exist_ok=True)
             self.server.AUTH_DIR = bootstrap_auth_dir
             self.server.AUTH_DB_PATH = bootstrap_auth_db
+            self.server.LICENSE_DB_PATH = bootstrap_license_db
             self.server.init_auth_db()
+            self.server.init_license_db()
             self.server.LICENSE_ENFORCEMENT_ENABLED = True
 
             client = self.server.app.test_client()
@@ -685,8 +691,11 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
             self.server.AUTH_DIR = old_auth_dir
             self.server.AUTH_DB_PATH = old_auth_db_path
+            self.server.LICENSE_DB_PATH = old_license_db_path
             self.server.LICENSE_ENFORCEMENT_ENABLED = old_enforcement_enabled
+            self.server._clear_cached_license_signing_secret()
             self.server.init_auth_db()
+            self.server.init_license_db()
 
     def test_admin_ownership_migration_endpoints_cover_search_preview_apply_and_rollback(self):
         admin_user = self._register()
