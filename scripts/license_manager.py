@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = []
+# dependencies = ["psycopg[binary]"]
 # ///
 """
 DeepVision License 运维脚本
@@ -31,9 +31,12 @@ import os
 import sys
 from pathlib import Path
 
-
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SERVER_PATH = ROOT_DIR / "web" / "server.py"
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from db_compat import resolve_db_target
 
 
 def load_server_module():
@@ -47,30 +50,27 @@ def load_server_module():
     return module
 
 
-def resolve_auth_db_path(raw_auth_db: str) -> Path:
+def resolve_auth_db_path(raw_auth_db: str) -> str:
     env_path = os.environ.get("DEEPVISION_AUTH_DB_PATH", "")
     value = str(raw_auth_db or "").strip() or env_path
-    path = Path(value).expanduser() if value else (ROOT_DIR / "data" / "auth" / "users.db")
-    if not path.is_absolute():
-        path = (ROOT_DIR / path).resolve()
-    return path
+    return resolve_db_target(value, root_dir=ROOT_DIR, default_path=ROOT_DIR / "data" / "auth" / "users.db")
 
 
-def resolve_license_db_path(raw_license_db: str, auth_db_path: Path) -> Path:
+def resolve_license_db_path(raw_license_db: str, auth_db_path: str) -> str:
     env_path = os.environ.get("DEEPVISION_LICENSE_DB_PATH", "")
     value = str(raw_license_db or "").strip() or env_path
-    path = Path(value).expanduser() if value else (auth_db_path.parent / "licenses.db")
-    if not path.is_absolute():
-        path = (ROOT_DIR / path).resolve()
-    return path
+    default_path = ROOT_DIR / "data" / "auth" / "licenses.db"
+    if not value and "://" not in str(auth_db_path):
+        default_path = Path(auth_db_path).expanduser().parent / "licenses.db"
+    return resolve_db_target(value, root_dir=ROOT_DIR, default_path=default_path)
 
 
-def configure_server_databases(server, auth_db_path: Path, license_db_path: Path) -> None:
+def configure_server_databases(server, auth_db_path: str, license_db_path: str) -> None:
     server.AUTH_DB_PATH = auth_db_path
-    server.AUTH_DIR = auth_db_path.parent
-    server.AUTH_DIR.mkdir(parents=True, exist_ok=True)
+    if "://" not in str(auth_db_path):
+        server.AUTH_DIR = Path(auth_db_path).expanduser().parent
+        server.AUTH_DIR.mkdir(parents=True, exist_ok=True)
     server.LICENSE_DB_PATH = license_db_path
-    license_db_path.parent.mkdir(parents=True, exist_ok=True)
     server.init_auth_db()
     server.init_license_db()
 

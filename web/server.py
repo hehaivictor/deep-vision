@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["flask", "flask-cors", "anthropic", "requests", "reportlab", "pillow", "jdcloud-sdk"]
+# dependencies = ["flask", "flask-cors", "anthropic", "requests", "reportlab", "pillow", "jdcloud-sdk", "psycopg[binary]"]
 # ///
 """
 Deep Vision Web Server - AI 驱动版本
@@ -31,6 +31,7 @@ import re
 import secrets
 import sqlite3
 import subprocess
+import sys
 import threading
 import time as _time
 import requests
@@ -46,6 +47,19 @@ from flask_cors import CORS
 from werkzeug.security import generate_password_hash
 from werkzeug.serving import WSGIRequestHandler
 from werkzeug.utils import secure_filename
+
+CURRENT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CURRENT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from db_compat import (
+    connect_db,
+    db_target_exists,
+    ensure_sqlite_parent_dir,
+    normalize_db_cache_key,
+    resolve_db_target,
+)
 
 try:
     import fcntl
@@ -2233,22 +2247,20 @@ else:
 auth_db_from_config = CONFIG_AUTH_DB_PATH
 auth_db_from_env = os.environ.get("DEEPVISION_AUTH_DB_PATH", "")
 raw_auth_db_path = auth_db_from_env or auth_db_from_config
-if raw_auth_db_path:
-    AUTH_DB_PATH = Path(raw_auth_db_path).expanduser()
-    if not AUTH_DB_PATH.is_absolute():
-        AUTH_DB_PATH = (SKILL_DIR / AUTH_DB_PATH).resolve()
-else:
-    AUTH_DB_PATH = AUTH_DIR / "users.db"
+AUTH_DB_PATH = resolve_db_target(
+    raw_auth_db_path,
+    root_dir=SKILL_DIR,
+    default_path=AUTH_DIR / "users.db",
+)
 
 license_db_from_config = CONFIG_LICENSE_DB_PATH
 license_db_from_env = os.environ.get("DEEPVISION_LICENSE_DB_PATH", "")
 raw_license_db_path = license_db_from_env or license_db_from_config
-if raw_license_db_path:
-    LICENSE_DB_PATH = Path(raw_license_db_path).expanduser()
-    if not LICENSE_DB_PATH.is_absolute():
-        LICENSE_DB_PATH = (SKILL_DIR / LICENSE_DB_PATH).resolve()
-else:
-    LICENSE_DB_PATH = AUTH_DB_PATH.parent / "licenses.db"
+LICENSE_DB_PATH = resolve_db_target(
+    raw_license_db_path,
+    root_dir=SKILL_DIR,
+    default_path=Path(str(AUTH_DB_PATH)).expanduser().parent / "licenses.db" if "://" not in str(AUTH_DB_PATH) else AUTH_DIR / "licenses.db",
+)
 
 INSECURE_SECRET_KEY_PLACEHOLDERS = {
     "replace-with-a-strong-random-secret",
@@ -5535,16 +5547,12 @@ def query_report_index_for_user(owner_user_id: int, page: int, page_size: int) -
     ], total)
 
 
-def get_auth_db_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(AUTH_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_auth_db_connection():
+    return connect_db(AUTH_DB_PATH)
 
 
-def get_license_db_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(LICENSE_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_license_db_connection():
+    return connect_db(LICENSE_DB_PATH)
 
 
 AUTH_META_INSTANCE_KEY = "auth_instance_id"
@@ -5654,12 +5662,12 @@ def _migrate_legacy_license_data_to_license_db(conn: sqlite3.Connection) -> bool
     if has_existing_license_rows or has_existing_license_events or has_existing_license_meta:
         return False
 
-    if not Path(AUTH_DB_PATH).exists():
+    if not db_target_exists(AUTH_DB_PATH):
         return False
 
     migrated = False
     with get_auth_db_connection() as auth_conn:
-        if _sqlite_table_exists(auth_conn, "licenses"):
+        if _db_table_exists(auth_conn, "licenses"):
             rows = auth_conn.execute(
                 """
                 SELECT id, batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
@@ -5703,7 +5711,7 @@ def _migrate_legacy_license_data_to_license_db(conn: sqlite3.Connection) -> bool
                 )
                 migrated = True
 
-        if _sqlite_table_exists(auth_conn, "license_events"):
+        if _db_table_exists(auth_conn, "license_events"):
             rows = auth_conn.execute(
                 """
                 SELECT id, license_id, actor_user_id, event_type, payload_json, created_at
@@ -5731,7 +5739,7 @@ def _migrate_legacy_license_data_to_license_db(conn: sqlite3.Connection) -> bool
                 )
                 migrated = True
 
-        if _sqlite_table_exists(auth_conn, "auth_meta"):
+        if _db_table_exists(auth_conn, "auth_meta"):
             meta_rows = auth_conn.execute(
                 f"""
                 SELECT meta_key, meta_value, updated_at
@@ -5771,17 +5779,11 @@ def _clear_cached_license_signing_secret() -> None:
 
 
 def _resolve_auth_db_cache_path() -> str:
-    try:
-        return str(Path(AUTH_DB_PATH).resolve())
-    except Exception:
-        return str(AUTH_DB_PATH)
+    return normalize_db_cache_key(AUTH_DB_PATH)
 
 
 def _resolve_license_db_cache_path() -> str:
-    try:
-        return str(Path(LICENSE_DB_PATH).resolve())
-    except Exception:
-        return str(LICENSE_DB_PATH)
+    return normalize_db_cache_key(LICENSE_DB_PATH)
 
 
 def _legacy_license_signing_secret() -> str:
@@ -5792,12 +5794,15 @@ def _legacy_license_signing_secret() -> str:
     )
 
 
-def _sqlite_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-        (str(table_name or "").strip(),),
-    ).fetchone()
-    return bool(row)
+def _db_table_exists(conn, table_name: str) -> bool:
+    table = str(table_name or "").strip()
+    if not table:
+        return False
+    try:
+        row = conn.execute(f"PRAGMA table_info({table})").fetchone()
+        return bool(row)
+    except Exception:
+        return False
 
 
 def _read_auth_meta_value(conn: sqlite3.Connection, meta_key: str) -> str:
@@ -6031,7 +6036,7 @@ def set_license_enforcement_override(
 
 def get_auth_instance_id(force_refresh: bool = False) -> str:
     """返回当前鉴权库实例标识，用于拦截跨实例会话串号。"""
-    db_path = str(AUTH_DB_PATH.resolve())
+    db_path = _resolve_auth_db_cache_path()
     if not force_refresh:
         with auth_instance_cache_lock:
             if auth_instance_cache.get("db_path") == db_path and auth_instance_cache.get("value"):
@@ -6136,7 +6141,7 @@ def init_auth_db() -> None:
 
 
 def init_license_db() -> None:
-    Path(LICENSE_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    ensure_sqlite_parent_dir(LICENSE_DB_PATH)
     with get_license_db_connection() as conn:
         ensure_auth_meta_table(conn)
         ensure_license_tables(conn)

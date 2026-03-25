@@ -3,13 +3,24 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import sqlite3
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-
 ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from db_compat import (
+    connect_db,
+    db_target_exists,
+    db_target_name,
+    db_target_supports_file_backup,
+    normalize_db_cache_key,
+    resolve_db_target,
+)
+
 DATA_DIR = ROOT_DIR / "data"
 AUTH_DIR = DATA_DIR / "auth"
 DEFAULT_AUTH_DB_PATH = AUTH_DIR / "users.db"
@@ -63,40 +74,29 @@ def normalize_account(account: str) -> tuple[Optional[str], Optional[str], str]:
     return None, phone, ""
 
 
-def resolve_auth_db_path(raw_auth_db: str) -> Path:
-    input_path = str(raw_auth_db or "").strip()
-    path = Path(input_path).expanduser() if input_path else DEFAULT_AUTH_DB_PATH
-    if not path.is_absolute():
-        path = (ROOT_DIR / path).resolve()
-    return path
+def resolve_auth_db_path(raw_auth_db: str) -> str:
+    return resolve_db_target(raw_auth_db, root_dir=ROOT_DIR, default_path=DEFAULT_AUTH_DB_PATH)
 
 
-def resolve_license_db_path(raw_license_db: str, *, auth_db_path: Optional[Path] = None) -> Path:
+def resolve_license_db_path(raw_license_db: str, *, auth_db_path: Optional[str] = None) -> str:
     input_path = str(raw_license_db or "").strip()
     if input_path:
-        path = Path(input_path).expanduser()
-    elif auth_db_path is not None:
+        return resolve_db_target(input_path, root_dir=ROOT_DIR, default_path=DEFAULT_LICENSE_DB_PATH)
+    if auth_db_path is not None and not str(auth_db_path).strip().lower().startswith(("postgres://", "postgresql://")):
         path = Path(auth_db_path).expanduser().parent / "licenses.db"
-    else:
-        path = DEFAULT_LICENSE_DB_PATH
-    if not path.is_absolute():
-        path = (ROOT_DIR / path).resolve()
-    return path
+        return resolve_db_target(str(path), root_dir=ROOT_DIR, default_path=DEFAULT_LICENSE_DB_PATH)
+    return resolve_db_target("", root_dir=ROOT_DIR, default_path=DEFAULT_LICENSE_DB_PATH)
 
 
-def get_auth_db_connection(auth_db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(auth_db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_auth_db_connection(auth_db_path: str):
+    return connect_db(auth_db_path)
 
 
-def get_license_db_connection(license_db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(license_db_path)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_license_db_connection(license_db_path: str):
+    return connect_db(license_db_path)
 
 
-def query_user_by_id(auth_db_path: Path, user_id: int) -> Optional[sqlite3.Row]:
+def query_user_by_id(auth_db_path: str, user_id: int):
     with get_auth_db_connection(auth_db_path) as conn:
         return conn.execute(
             "SELECT id, email, phone, created_at FROM users WHERE id = ? LIMIT 1",
@@ -104,7 +104,7 @@ def query_user_by_id(auth_db_path: Path, user_id: int) -> Optional[sqlite3.Row]:
         ).fetchone()
 
 
-def query_user_by_account(auth_db_path: Path, account: str) -> Optional[sqlite3.Row]:
+def query_user_by_account(auth_db_path: str, account: str):
     email, phone, account_error = normalize_account(account)
     if account_error:
         raise ValueError(account_error)
@@ -123,7 +123,7 @@ def query_user_by_account(auth_db_path: Path, account: str) -> Optional[sqlite3.
     return None
 
 
-def serialize_user(row: sqlite3.Row) -> dict[str, Any]:
+def serialize_user(row) -> dict[str, Any]:
     email = str(row["email"] or "").strip()
     phone = str(row["phone"] or "").strip()
     account = email or phone or f"user-{int(row['id'])}"
@@ -136,8 +136,8 @@ def serialize_user(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-def search_users(auth_db_path: Path, query: str = "", limit: int = 20) -> list[dict[str, Any]]:
-    if not auth_db_path.exists():
+def search_users(auth_db_path: str, query: str = "", limit: int = 20) -> list[dict[str, Any]]:
+    if not db_target_exists(auth_db_path):
         raise RuntimeError(f"用户数据库不存在: {auth_db_path}")
 
     normalized_query = str(query or "").strip()
@@ -193,8 +193,8 @@ def should_migrate_owner(owner_id: int, target_user_id: int, scope: str, from_us
     return False
 
 
-def resolve_target_user(auth_db_path: Path, to_user_id: Optional[int], to_account: str) -> dict[str, Any]:
-    if not auth_db_path.exists():
+def resolve_target_user(auth_db_path: str, to_user_id: Optional[int], to_account: str) -> dict[str, Any]:
+    if not db_target_exists(auth_db_path):
         raise RuntimeError(f"用户数据库不存在: {auth_db_path}")
 
     row = query_user_by_id(auth_db_path, int(to_user_id)) if to_user_id is not None else query_user_by_account(auth_db_path, to_account)
@@ -203,7 +203,7 @@ def resolve_target_user(auth_db_path: Path, to_user_id: Optional[int], to_accoun
     return serialize_user(row)
 
 
-def resolve_user_reference(auth_db_path: Path, *, user_id: Optional[int] = None, user_account: str = "") -> dict[str, Any]:
+def resolve_user_reference(auth_db_path: str, *, user_id: Optional[int] = None, user_account: str = "") -> dict[str, Any]:
     if user_id is not None:
         row = query_user_by_id(auth_db_path, int(user_id))
     else:
@@ -300,11 +300,11 @@ def _write_json_file(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _read_user_columns(conn: sqlite3.Connection) -> set[str]:
+def _read_user_columns(conn) -> set[str]:
     return {str(row[1]) for row in conn.execute("PRAGMA table_info(users)").fetchall()}
 
 
-def ensure_user_merge_columns(conn: sqlite3.Connection) -> None:
+def ensure_user_merge_columns(conn) -> None:
     user_columns = _read_user_columns(conn)
     if "merged_into_user_id" not in user_columns:
         conn.execute("ALTER TABLE users ADD COLUMN merged_into_user_id INTEGER")
@@ -473,7 +473,7 @@ def _build_account_merge_summary(
     }
 
 
-def _generate_merged_placeholder_email(conn: sqlite3.Connection, source_user_id: int) -> str:
+def _generate_merged_placeholder_email(conn, source_user_id: int) -> str:
     base = f"merged_{int(source_user_id)}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     for attempt in range(12):
         suffix = "" if attempt == 0 else f"_{attempt + 1}"
@@ -670,8 +670,10 @@ def run_account_merge(
             return summary
 
         if backup_dir:
-            backup_file_once(auth_db_path, backup_dir / "auth" / auth_db_path.name)
-            backup_file_once(license_db_path, backup_dir / "licenses" / license_db_path.name)
+            if db_target_supports_file_backup(auth_db_path):
+                backup_file_once(Path(auth_db_path), backup_dir / "auth" / db_target_name(auth_db_path, "users.db"))
+            if db_target_supports_file_backup(license_db_path):
+                backup_file_once(Path(license_db_path), backup_dir / "licenses" / db_target_name(license_db_path, "licenses.db"))
             for session_file in source_session_files:
                 backup_file_once(session_file, backup_dir / "sessions" / session_file.name)
             if source_report_names:
@@ -1103,8 +1105,10 @@ def rollback_ownership_migration(
         auth_candidates = sorted((resolved_backup_dir / "auth").glob("*.db"))
         auth_backup_file = auth_candidates[0] if auth_candidates else auth_backup_file
     if auth_db_path is not None and auth_backup_file.exists():
-        auth_db_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(auth_backup_file, auth_db_path)
+        if not db_target_supports_file_backup(auth_db_path):
+            raise RuntimeError("当前使用 PostgreSQL，暂不支持通过文件备份回滚鉴权数据库")
+        Path(auth_db_path).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(auth_backup_file, Path(auth_db_path))
         auth_db_restored = True
 
     license_db_restored = False
@@ -1113,8 +1117,10 @@ def rollback_ownership_migration(
         license_candidates = sorted((resolved_backup_dir / "licenses").glob("*.db"))
         license_backup_file = license_candidates[0] if license_candidates else license_backup_file
     if license_db_path is not None and license_backup_file.exists():
-        license_db_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(license_backup_file, license_db_path)
+        if not db_target_supports_file_backup(license_db_path):
+            raise RuntimeError("当前使用 PostgreSQL，暂不支持通过文件备份回滚 License 数据库")
+        Path(license_db_path).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(license_backup_file, Path(license_db_path))
         license_db_restored = True
 
     result = {
