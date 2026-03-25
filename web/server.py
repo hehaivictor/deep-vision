@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["flask", "flask-cors", "anthropic", "requests", "reportlab", "pillow"]
+# dependencies = ["flask", "flask-cors", "anthropic", "requests", "reportlab", "pillow", "jdcloud-sdk"]
 # ///
 """
 Deep Vision Web Server - AI 驱动版本
@@ -4512,7 +4512,7 @@ def send_sms_code_via_jdcloud(phone: str, code: str, scene: str) -> tuple[bool, 
     template_id = resolve_sms_template_id(scene)
     try:
         credential = JdCredential(JD_SMS_ACCESS_KEY_ID, JD_SMS_ACCESS_KEY_SECRET)
-        config = JdConfig({"timeout": JD_SMS_TIMEOUT})
+        config = JdConfig("sms.jdcloud-api.com", timeout=JD_SMS_TIMEOUT)
         sms_client = JdSmsClient(credential=credential, config=config)
         request_params = {
             "regionId": JD_SMS_REGION_ID,
@@ -4521,11 +4521,26 @@ def send_sms_code_via_jdcloud(phone: str, code: str, scene: str) -> tuple[bool, 
             "phoneList": [phone],
             "params": [code],
         }
-        response = sms_client.batchSend(JdBatchSendRequest(request_params, JD_SMS_REGION_ID))
+        request_obj = JdBatchSendRequest(request_params)
+        send_callable = getattr(sms_client, "batchSend", None)
+        if callable(send_callable):
+            response = send_callable(request_obj)
+        else:
+            response = sms_client.send(request_obj)
         if getattr(response, "error", None):
             error_obj = getattr(response, "error")
             message = str(getattr(error_obj, "message", "") or "京东云短信发送失败")
             return False, message
+        result_obj = getattr(response, "result", None)
+        if isinstance(result_obj, dict):
+            result_status = result_obj.get("status")
+            result_code = result_obj.get("code")
+            result_message = str(result_obj.get("message") or "").strip()
+            if result_status is False:
+                if result_message:
+                    return False, result_message
+                if result_code not in {None, 0, "0"}:
+                    return False, f"京东云短信发送失败，错误码: {result_code}"
         return True, ""
     except Exception as exc:
         return False, f"京东云短信发送异常: {exc}"
@@ -4669,14 +4684,36 @@ def verify_sms_code(phone: str, scene: str, code: str, consume: bool = True) -> 
             if row["consumed_at"]:
                 return False, "验证码已失效，请重新获取"
 
+            expected_hash = str(row["code_hash"] or "")
+            provided_hash = hash_sms_code(normalized_phone, scene_value, code_text)
+            stale_record = conn.execute(
+                """
+                SELECT id
+                FROM auth_sms_codes
+                WHERE phone = ? AND scene = ? AND id < ? AND code_hash = ?
+                  AND consumed_at IS NULL AND expires_at > ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (
+                    normalized_phone,
+                    scene_value,
+                    int(row["id"]),
+                    provided_hash,
+                    now.isoformat(),
+                ),
+            ).fetchone()
+
             attempts = int(row["attempts"] or 0)
             max_attempts = int(row["max_attempts"] or SMS_MAX_VERIFY_ATTEMPTS)
             if attempts >= max_attempts:
+                if expected_hash != provided_hash and stale_record:
+                    return False, "验证码已更新，请使用最新短信"
                 return False, "验证码错误次数过多，请重新获取"
 
-            expected_hash = str(row["code_hash"] or "")
-            provided_hash = hash_sms_code(normalized_phone, scene_value, code_text)
             if expected_hash != provided_hash:
+                if stale_record:
+                    return False, "验证码已更新，请使用最新短信"
                 conn.execute(
                     "UPDATE auth_sms_codes SET attempts = attempts + 1 WHERE id = ?",
                     (int(row["id"]),),
@@ -4691,6 +4728,7 @@ def verify_sms_code(phone: str, scene: str, code: str, consume: bool = True) -> 
                 )
                 conn.commit()
     return True, ""
+
 
 
 _WECHAT_MOJIBAKE_MARKERS = (

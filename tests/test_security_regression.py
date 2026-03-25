@@ -275,6 +275,40 @@ class SecurityRegressionTests(unittest.TestCase):
         success_count = sum(1 for ok, _message in results if ok)
         self.assertEqual(1, success_count, results)
 
+    def test_stale_sms_code_returns_refresh_hint_without_consuming_attempts(self):
+        phone = f"1{uuid.uuid4().int % 10**10:010d}"
+        issued_codes = iter(["111111", "222222"])
+        original_resolve = self.server.resolve_sms_code_for_issue
+        self.server.resolve_sms_code_for_issue = lambda: next(issued_codes)
+        try:
+            ok, error_message, _payload = self.server.issue_sms_code(phone, "login", request_ip="seed-ip-1")
+            self.assertTrue(ok, error_message)
+            ok, error_message, _payload = self.server.issue_sms_code(phone, "login", request_ip="seed-ip-2")
+            self.assertTrue(ok, error_message)
+        finally:
+            self.server.resolve_sms_code_for_issue = original_resolve
+
+        verified, verify_error = self.server.verify_sms_code(phone, "login", "111111", consume=True)
+        self.assertFalse(verified)
+        self.assertEqual("验证码已更新，请使用最新短信", verify_error)
+
+        with self.server.get_auth_db_connection() as conn:
+            latest = conn.execute(
+                """
+                SELECT attempts
+                FROM auth_sms_codes
+                WHERE phone = ? AND scene = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (phone, "login"),
+            ).fetchone()
+        self.assertIsNotNone(latest)
+        self.assertEqual(0, int(latest["attempts"] or 0))
+
+        verified, verify_error = self.server.verify_sms_code(phone, "login", "222222", consume=True)
+        self.assertTrue(verified, verify_error)
+
     def test_deleted_reports_sidecar_keeps_all_entries_under_parallel_updates(self):
         report_names = [f"parallel-delete-{idx}.md" for idx in range(12)]
         barrier = threading.Barrier(len(report_names))
