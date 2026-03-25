@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "f1cf7d7",
+  "committedAt": "2026-03-25T18:55:15+08:00",
+  "versionType": "patch",
+  "title": "完善后端处理逻辑并补充回归测试",
+  "changes": [
+    "后端：围绕“完善后端处理逻辑并补充回归测试”更新接口与数据处理逻辑。",
+    "测试：围绕“完善后端处理逻辑并补充回归测试”补充并校验相关回归用例。",
+    "资源：围绕“完善后端处理逻辑并补充回归测试”同步内置资源与示例内容。"
+  ],
+  "changedFiles": [
+    "tests/test_security_regression.py",
+    "web/.env.example",
+    "web/server.py"
+  ]
+}

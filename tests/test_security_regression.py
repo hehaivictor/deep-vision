@@ -392,6 +392,62 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual(old_code_resp.status_code, 403, old_code_resp.get_data(as_text=True))
         self.assertEqual("license_replaced", old_code_resp.get_json().get("error_code"))
 
+    def test_license_secret_persists_in_auth_db_across_machine_secret_changes(self):
+        backup_auth_dir = self.server.AUTH_DIR
+        backup_auth_db_path = self.server.AUTH_DB_PATH
+        backup_config_secret_key = self.server.CONFIG_SECRET_KEY
+        backup_license_signing_secret = self.server.LICENSE_CODE_SIGNING_SECRET
+        backup_app_secret_key = self.server.app.secret_key
+
+        isolated_auth_dir = self.server.DATA_DIR / f"auth-cross-machine-{uuid.uuid4().hex}"
+        isolated_auth_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            self.server.AUTH_DIR = isolated_auth_dir
+            self.server.AUTH_DB_PATH = isolated_auth_dir / "users.db"
+            self.server.LICENSE_CODE_SIGNING_SECRET = ""
+            self.server.CONFIG_SECRET_KEY = "machine-a-secret"
+            self.server.app.secret_key = "machine-a-secret"
+            self.server._clear_cached_license_signing_secret()
+            self.server.init_auth_db()
+
+            with self.server.get_auth_db_connection() as conn:
+                secret_row = conn.execute(
+                    "SELECT meta_value FROM auth_meta WHERE meta_key = ? LIMIT 1",
+                    (self.server.AUTH_META_LICENSE_SIGNING_SECRET_KEY,),
+                ).fetchone()
+            self.assertIsNotNone(secret_row)
+            persisted_secret = str(secret_row["meta_value"] or "")
+            self.assertTrue(persisted_secret)
+
+            user = self._register_user()
+            generated = self.server.generate_license_batch(count=1, duration_days=30, note="跨机器稳定")
+            code = generated["licenses"][0]["code"]
+
+            self.server.CONFIG_SECRET_KEY = "machine-b-secret"
+            self.server.app.secret_key = "machine-b-secret"
+            self.server._clear_cached_license_signing_secret()
+
+            with self.server.get_auth_db_connection() as conn:
+                persisted_again = conn.execute(
+                    "SELECT meta_value FROM auth_meta WHERE meta_key = ? LIMIT 1",
+                    (self.server.AUTH_META_LICENSE_SIGNING_SECRET_KEY,),
+                ).fetchone()
+            self.assertEqual(persisted_secret, str(persisted_again["meta_value"] or ""))
+
+            ok, status_code, payload = self.server.activate_license_for_user(code, int(user["id"]))
+            self.assertTrue(ok)
+            self.assertEqual(status_code, 200)
+            self.assertTrue(payload.get("has_valid_license"))
+        finally:
+            self.server.AUTH_DIR = backup_auth_dir
+            self.server.AUTH_DB_PATH = backup_auth_db_path
+            self.server.CONFIG_SECRET_KEY = backup_config_secret_key
+            self.server.LICENSE_CODE_SIGNING_SECRET = backup_license_signing_secret
+            self.server.app.secret_key = backup_app_secret_key
+            self.server._clear_cached_license_signing_secret()
+            self.server.init_auth_db()
+
     def test_sms_send_code_cooldown_is_not_bypassed_by_parallel_requests(self):
         phone = f"1{uuid.uuid4().int % 10**10:010d}"
         self.server.SMS_SEND_COOLDOWN_SECONDS = 120

@@ -2426,7 +2426,11 @@ ADMIN_ENV_SETTINGS_GROUPS: list[dict[str, Any]] = [
         "items": [
             _admin_password("SECRET_KEY", "SECRET_KEY", description="Flask 会话与签名密钥。"),
             _admin_setting("AUTH_DB_PATH", "鉴权数据库路径", description="用户与 License 数据库路径。"),
-            _admin_password("LICENSE_CODE_SIGNING_SECRET", "License 签名密钥", description="留空时回落到 SECRET_KEY。"),
+            _admin_password(
+                "LICENSE_CODE_SIGNING_SECRET",
+                "License 签名密钥",
+                description="仅在鉴权库首次初始化时作为种子；后续同一 users.db 以库内持久化值为准。",
+            ),
             _admin_list("ADMIN_USER_IDS", "管理员用户 ID", list_value_kind="int", description="逗号分隔。"),
             _admin_list("ADMIN_PHONE_NUMBERS", "管理员手机号", description="逗号分隔。"),
         ],
@@ -5523,6 +5527,7 @@ def get_auth_db_connection() -> sqlite3.Connection:
 
 
 AUTH_META_INSTANCE_KEY = "auth_instance_id"
+AUTH_META_LICENSE_SIGNING_SECRET_KEY = "license_signing_secret"
 AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY = "license_enforcement_enabled"
 AUTH_META_LICENSE_ENFORCEMENT_UPDATED_BY_KEY = "license_enforcement_updated_by"
 AUTH_META_LICENSE_ENFORCEMENT_UPDATED_AT_KEY = "license_enforcement_updated_at"
@@ -5536,6 +5541,12 @@ auth_instance_cache = {
     "value": "",
 }
 auth_instance_cache_lock = threading.Lock()
+license_signing_secret_cache = {
+    "db_path": "",
+    "configured_seed": "",
+    "value": "",
+}
+license_signing_secret_cache_lock = threading.Lock()
 
 
 def ensure_auth_meta_table(conn: sqlite3.Connection) -> None:
@@ -5548,6 +5559,79 @@ def ensure_auth_meta_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
+
+
+def _clear_cached_license_signing_secret() -> None:
+    with license_signing_secret_cache_lock:
+        license_signing_secret_cache["db_path"] = ""
+        license_signing_secret_cache["configured_seed"] = ""
+        license_signing_secret_cache["value"] = ""
+
+
+def _resolve_auth_db_cache_path() -> str:
+    try:
+        return str(Path(AUTH_DB_PATH).resolve())
+    except Exception:
+        return str(AUTH_DB_PATH)
+
+
+def _legacy_license_signing_secret() -> str:
+    return _first_non_empty(
+        CONFIG_SECRET_KEY,
+        str(app.secret_key or ""),
+        "deepvision-dev-license-secret",
+    )
+
+
+def _read_auth_meta_value(conn: sqlite3.Connection, meta_key: str) -> str:
+    row = conn.execute(
+        "SELECT meta_value FROM auth_meta WHERE meta_key = ? LIMIT 1",
+        (str(meta_key or "").strip(),),
+    ).fetchone()
+    if not row:
+        return ""
+    return str(row["meta_value"] or "").strip()
+
+
+def _write_auth_meta_value(conn: sqlite3.Connection, meta_key: str, meta_value: str) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO auth_meta (meta_key, meta_value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(meta_key) DO UPDATE SET
+            meta_value = excluded.meta_value,
+            updated_at = excluded.updated_at
+        """,
+        (
+            str(meta_key or "").strip(),
+            str(meta_value or "").strip(),
+            now_iso,
+        ),
+    )
+
+
+def _ensure_license_signing_secret_in_auth_meta(conn: sqlite3.Connection) -> tuple[str, str]:
+    ensure_auth_meta_table(conn)
+    persisted_value = _read_auth_meta_value(conn, AUTH_META_LICENSE_SIGNING_SECRET_KEY)
+    if persisted_value:
+        return persisted_value, "auth_meta"
+
+    configured_seed = str(LICENSE_CODE_SIGNING_SECRET or "").strip()
+    if configured_seed:
+        secret_value = configured_seed
+        source = "env_seed"
+    else:
+        has_existing_licenses = conn.execute("SELECT 1 FROM licenses LIMIT 1").fetchone() is not None
+        if has_existing_licenses:
+            secret_value = _legacy_license_signing_secret()
+            source = "legacy_migrated"
+        else:
+            secret_value = secrets.token_urlsafe(32)
+            source = "generated"
+
+    _write_auth_meta_value(conn, AUTH_META_LICENSE_SIGNING_SECRET_KEY, secret_value)
+    return secret_value, source
 
 
 def _parse_bool_like(value: object) -> Optional[bool]:
@@ -5880,9 +5964,18 @@ def init_auth_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_license_events_license_id ON license_events(license_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_license_events_actor_user_id ON license_events(actor_user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_license_events_event_type ON license_events(event_type)")
+        license_secret, license_secret_source = _ensure_license_signing_secret_in_auth_meta(conn)
         conn.commit()
     # 初始化并缓存鉴权库实例标识（多实例时用于识别“错库会话”）。
     get_auth_instance_id(force_refresh=True)
+    with license_signing_secret_cache_lock:
+        license_signing_secret_cache["db_path"] = _resolve_auth_db_cache_path()
+        license_signing_secret_cache["configured_seed"] = str(LICENSE_CODE_SIGNING_SECRET or "").strip()
+        license_signing_secret_cache["value"] = license_secret
+    if license_secret_source == "legacy_migrated":
+        print("🔐 已将 License 签名密钥迁移到鉴权库，同库多机共享不再依赖本机 SECRET_KEY")
+    elif license_secret_source == "generated":
+        print("🔐 已为鉴权库初始化共享 License 签名密钥")
 
 
 def normalize_phone_number(raw_phone: str) -> str:
@@ -6060,13 +6153,25 @@ def _build_license_validity_fields(
 
 
 def _license_signing_secret() -> str:
-    configured = _first_non_empty(
-        LICENSE_CODE_SIGNING_SECRET,
-        CONFIG_SECRET_KEY,
-        str(app.secret_key or ""),
-        "deepvision-dev-license-secret",
-    )
-    return configured
+    cache_db_path = _resolve_auth_db_cache_path()
+    configured_seed = str(LICENSE_CODE_SIGNING_SECRET or "").strip()
+    with license_signing_secret_cache_lock:
+        if (
+            license_signing_secret_cache.get("db_path") == cache_db_path
+            and license_signing_secret_cache.get("configured_seed") == configured_seed
+            and str(license_signing_secret_cache.get("value") or "").strip()
+        ):
+            return str(license_signing_secret_cache.get("value") or "").strip()
+
+    with get_auth_db_connection() as conn:
+        secret_value, _source = _ensure_license_signing_secret_in_auth_meta(conn)
+        conn.commit()
+
+    with license_signing_secret_cache_lock:
+        license_signing_secret_cache["db_path"] = cache_db_path
+        license_signing_secret_cache["configured_seed"] = configured_seed
+        license_signing_secret_cache["value"] = secret_value
+    return secret_value
 
 
 def normalize_license_code(raw_code: object) -> str:
