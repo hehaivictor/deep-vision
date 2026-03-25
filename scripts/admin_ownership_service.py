@@ -285,6 +285,242 @@ def backup_absent_marker_once(dest: Path) -> None:
     dest.write_text("absent\n", encoding="utf-8")
 
 
+def _row_to_dict(row: Any) -> dict[str, Any]:
+    if row is None:
+        return {}
+    if isinstance(row, dict):
+        return dict(row)
+    if hasattr(row, "keys"):
+        return {str(key): row[key] for key in row.keys()}
+    return {}
+
+
+def _fetch_all_dicts(conn, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
+    rows = conn.execute(sql, params).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def _write_json_snapshot(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_json_snapshot(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def capture_account_merge_db_snapshot(
+    *,
+    backup_dir: Path,
+    auth_db_path: str,
+    license_db_path: str,
+    source_user_id: int,
+    target_user_id: int,
+) -> Optional[Path]:
+    if not backup_dir:
+        return None
+
+    snapshot = {
+        "snapshot_type": "account_merge_db_state",
+        "captured_at": utc_now_iso(),
+        "auth_db_path": normalize_db_cache_key(auth_db_path),
+        "license_db_path": normalize_db_cache_key(license_db_path),
+        "source_user_id": int(source_user_id),
+        "target_user_id": int(target_user_id),
+        "users": [],
+        "wechat_identities": [],
+        "licenses": [],
+    }
+
+    with get_auth_db_connection(auth_db_path) as conn:
+        ensure_user_merge_columns(conn)
+        snapshot["users"] = _fetch_all_dicts(
+            conn,
+            """
+            SELECT id, email, phone, password_hash, created_at, updated_at, merged_into_user_id, merged_at
+            FROM users
+            WHERE id IN (?, ?)
+            ORDER BY id
+            """,
+            (int(source_user_id), int(target_user_id)),
+        )
+        snapshot["wechat_identities"] = _fetch_all_dicts(
+            conn,
+            """
+            SELECT id, user_id, app_id, openid, unionid, nickname, avatar_url, created_at, updated_at
+            FROM wechat_identities
+            WHERE user_id IN (?, ?)
+            ORDER BY id
+            """,
+            (int(source_user_id), int(target_user_id)),
+        )
+
+    with get_license_db_connection(license_db_path) as conn:
+        snapshot["licenses"] = _fetch_all_dicts(
+            conn,
+            """
+            SELECT id, batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+                   bound_user_id, bound_at, replaced_by_license_id, revoked_at, revoked_reason, note, created_at, updated_at
+            FROM licenses
+            WHERE bound_user_id = ?
+            ORDER BY id
+            """,
+            (int(source_user_id),),
+        )
+
+    snapshot_path = backup_dir / "auth" / "account-merge-db-snapshot.json"
+    _write_json_snapshot(snapshot_path, snapshot)
+    return snapshot_path
+
+
+def restore_account_merge_db_snapshot(
+    *,
+    snapshot_path: Path,
+    auth_db_path: str,
+    license_db_path: str,
+) -> dict[str, int]:
+    snapshot = _load_json_snapshot(snapshot_path)
+    if not snapshot:
+        raise RuntimeError(f"数据库快照不存在或无效: {snapshot_path}")
+
+    snapshot_auth_db_path = normalize_db_cache_key(snapshot.get("auth_db_path"))
+    snapshot_license_db_path = normalize_db_cache_key(snapshot.get("license_db_path"))
+    current_auth_db_path = normalize_db_cache_key(auth_db_path)
+    current_license_db_path = normalize_db_cache_key(license_db_path)
+    if snapshot_auth_db_path and current_auth_db_path and snapshot_auth_db_path != current_auth_db_path:
+        raise RuntimeError("当前鉴权数据库与备份快照记录不一致，已拒绝回滚")
+    if snapshot_license_db_path and current_license_db_path and snapshot_license_db_path != current_license_db_path:
+        raise RuntimeError("当前 License 数据库与备份快照记录不一致，已拒绝回滚")
+
+    users_rows = [item for item in snapshot.get("users", []) if isinstance(item, dict)]
+    wechat_rows = [item for item in snapshot.get("wechat_identities", []) if isinstance(item, dict)]
+    license_rows = [item for item in snapshot.get("licenses", []) if isinstance(item, dict)]
+
+    restored = {
+        "users": 0,
+        "wechat_identities": 0,
+        "licenses": 0,
+    }
+
+    if users_rows or wechat_rows:
+        with get_auth_db_connection(auth_db_path) as conn:
+            ensure_user_merge_columns(conn)
+            conn.execute("BEGIN IMMEDIATE")
+            for row in users_rows:
+                conn.execute(
+                    """
+                    INSERT INTO users (id, email, phone, password_hash, created_at, updated_at, merged_into_user_id, merged_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        email = excluded.email,
+                        phone = excluded.phone,
+                        password_hash = excluded.password_hash,
+                        created_at = excluded.created_at,
+                        updated_at = excluded.updated_at,
+                        merged_into_user_id = excluded.merged_into_user_id,
+                        merged_at = excluded.merged_at
+                    """,
+                    (
+                        row.get("id"),
+                        row.get("email"),
+                        row.get("phone"),
+                        row.get("password_hash"),
+                        row.get("created_at"),
+                        row.get("updated_at"),
+                        row.get("merged_into_user_id"),
+                        row.get("merged_at"),
+                    ),
+                )
+                restored["users"] += 1
+            for row in wechat_rows:
+                conn.execute(
+                    """
+                    INSERT INTO wechat_identities (id, user_id, app_id, openid, unionid, nickname, avatar_url, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        user_id = excluded.user_id,
+                        app_id = excluded.app_id,
+                        openid = excluded.openid,
+                        unionid = excluded.unionid,
+                        nickname = excluded.nickname,
+                        avatar_url = excluded.avatar_url,
+                        created_at = excluded.created_at,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        row.get("id"),
+                        row.get("user_id"),
+                        row.get("app_id"),
+                        row.get("openid"),
+                        row.get("unionid"),
+                        row.get("nickname"),
+                        row.get("avatar_url"),
+                        row.get("created_at"),
+                        row.get("updated_at"),
+                    ),
+                )
+                restored["wechat_identities"] += 1
+            conn.commit()
+
+    if license_rows:
+        with get_license_db_connection(license_db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            for row in license_rows:
+                conn.execute(
+                    """
+                    INSERT INTO licenses (
+                        id, batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+                        bound_user_id, bound_at, replaced_by_license_id, revoked_at, revoked_reason, note, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        batch_id = excluded.batch_id,
+                        code_hash = excluded.code_hash,
+                        code_mask = excluded.code_mask,
+                        status = excluded.status,
+                        not_before_at = excluded.not_before_at,
+                        expires_at = excluded.expires_at,
+                        duration_days = excluded.duration_days,
+                        bound_user_id = excluded.bound_user_id,
+                        bound_at = excluded.bound_at,
+                        replaced_by_license_id = excluded.replaced_by_license_id,
+                        revoked_at = excluded.revoked_at,
+                        revoked_reason = excluded.revoked_reason,
+                        note = excluded.note,
+                        created_at = excluded.created_at,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        row.get("id"),
+                        row.get("batch_id"),
+                        row.get("code_hash"),
+                        row.get("code_mask"),
+                        row.get("status"),
+                        row.get("not_before_at"),
+                        row.get("expires_at"),
+                        row.get("duration_days"),
+                        row.get("bound_user_id"),
+                        row.get("bound_at"),
+                        row.get("replaced_by_license_id"),
+                        row.get("revoked_at"),
+                        row.get("revoked_reason"),
+                        row.get("note"),
+                        row.get("created_at"),
+                        row.get("updated_at"),
+                    ),
+                )
+                restored["licenses"] += 1
+            conn.commit()
+
+    return restored
+
+
 def _load_json_file(path: Path, default):
     if not path.exists():
         return default
@@ -469,6 +705,11 @@ def _build_account_merge_summary(
             "source_marked_merged": False,
             "source_phone_cleared": False,
             "target_phone_transferred": False,
+        },
+        "db_snapshot": {
+            "captured": False,
+            "snapshot_file": "",
+            "restore_mode": "file_backup" if db_target_supports_file_backup(auth_db_path) and db_target_supports_file_backup(license_db_path) else "row_snapshot",
         },
     }
 
@@ -674,6 +915,17 @@ def run_account_merge(
                 backup_file_once(Path(auth_db_path), backup_dir / "auth" / db_target_name(auth_db_path, "users.db"))
             if db_target_supports_file_backup(license_db_path):
                 backup_file_once(Path(license_db_path), backup_dir / "licenses" / db_target_name(license_db_path, "licenses.db"))
+            if not (db_target_supports_file_backup(auth_db_path) and db_target_supports_file_backup(license_db_path)):
+                snapshot_path = capture_account_merge_db_snapshot(
+                    backup_dir=backup_dir,
+                    auth_db_path=auth_db_path,
+                    license_db_path=license_db_path,
+                    source_user_id=normalized_source_user_id,
+                    target_user_id=normalized_target_user_id,
+                )
+                if snapshot_path is not None:
+                    summary["db_snapshot"]["captured"] = True
+                    summary["db_snapshot"]["snapshot_file"] = str(snapshot_path)
             for session_file in source_session_files:
                 backup_file_once(session_file, backup_dir / "sessions" / session_file.name)
             if source_report_names:
@@ -1051,6 +1303,9 @@ def rollback_ownership_migration(
     if not resolved_backup_dir.exists() or not resolved_backup_dir.is_dir():
         raise RuntimeError(f"备份目录不存在: {resolved_backup_dir}")
 
+    metadata = _load_json_snapshot(resolved_backup_dir / "metadata.json")
+    operation_type = str(metadata.get("operation_type") or "ownership_migration").strip() or "ownership_migration"
+
     sessions_backup_dir = resolved_backup_dir / "sessions"
     reports_backup_dir = resolved_backup_dir / "reports"
 
@@ -1100,6 +1355,7 @@ def rollback_ownership_migration(
             restored_custom_scenarios += 1
 
     auth_db_restored = False
+    auth_db_snapshot_restored = False
     auth_backup_file = resolved_backup_dir / "auth" / "users.db"
     if not auth_backup_file.exists():
         auth_candidates = sorted((resolved_backup_dir / "auth").glob("*.db"))
@@ -1112,6 +1368,7 @@ def rollback_ownership_migration(
         auth_db_restored = True
 
     license_db_restored = False
+    license_db_snapshot_restored = False
     license_backup_file = resolved_backup_dir / "licenses" / "licenses.db"
     if not license_backup_file.exists():
         license_candidates = sorted((resolved_backup_dir / "licenses").glob("*.db"))
@@ -1123,9 +1380,28 @@ def rollback_ownership_migration(
         shutil.copy2(license_backup_file, Path(license_db_path))
         license_db_restored = True
 
+    if operation_type == "account_merge" and auth_db_path is not None and license_db_path is not None:
+        snapshot_path = resolved_backup_dir / "auth" / "account-merge-db-snapshot.json"
+        if snapshot_path.exists() and not (auth_db_restored or license_db_restored):
+            restored_counts = restore_account_merge_db_snapshot(
+                snapshot_path=snapshot_path,
+                auth_db_path=auth_db_path,
+                license_db_path=license_db_path,
+            )
+            auth_db_snapshot_restored = restored_counts.get("users", 0) > 0 or restored_counts.get("wechat_identities", 0) > 0
+            license_db_snapshot_restored = restored_counts.get("licenses", 0) > 0
+        elif snapshot_path.exists():
+            # 已执行文件级数据库回滚时，无需再次写回行级快照
+            pass
+        elif not (auth_db_restored and license_db_restored) and not (
+            db_target_supports_file_backup(auth_db_path) and db_target_supports_file_backup(license_db_path)
+        ):
+            raise RuntimeError("当前为 PostgreSQL 账号合并记录，但缺少数据库行级快照，无法安全回滚")
+
     result = {
         "backup_id": resolved_backup_dir.name,
         "backup_dir": str(resolved_backup_dir),
+        "operation_type": operation_type,
         "restored_sessions": restored_sessions,
         "owners_restored": owners_restored,
         "owners_removed": owners_removed,
@@ -1134,6 +1410,8 @@ def rollback_ownership_migration(
         "restored_custom_scenarios": restored_custom_scenarios,
         "auth_db_restored": auth_db_restored,
         "license_db_restored": license_db_restored,
+        "auth_db_snapshot_restored": auth_db_snapshot_restored,
+        "license_db_snapshot_restored": license_db_snapshot_restored,
         "rolled_back_at": utc_now_iso(),
     }
     (resolved_backup_dir / "rollback.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1183,6 +1461,7 @@ def list_ownership_migrations(backup_root: Path, limit: int = 50) -> list[dict[s
                 "custom_scenarios": metadata.get("custom_scenarios") or {},
                 "solution_shares": metadata.get("solution_shares") or {},
                 "licenses": metadata.get("licenses") or {},
+                "db_snapshot": metadata.get("db_snapshot") or {},
                 "rolled_back": bool(rollback_payload),
                 "rolled_back_at": str((rollback_payload or {}).get("rolled_back_at") or "").strip(),
             }
