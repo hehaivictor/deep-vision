@@ -1,7 +1,18 @@
 {
-  "version": "5.0.9",
+  "version": "5.0.10",
   "releaseDate": "2026-03-25",
   "changelog": [
+    {
+      "version": "5.0.10",
+      "date": "2026-03-25",
+      "type": "patch",
+      "title": "完善 PostgreSQL 归属迁移回滚能力",
+      "changes": [
+        "后端: 为账号合并补充数据库行级快照，支持 PostgreSQL 场景下恢复 users、wechat_identities 与 licenses。",
+        "运维: 回滚接口兼容文件备份与行级快照两种模式，并在迁移历史中记录数据库快照信息。",
+        "测试: 复用归属迁移与账号合并回滚用例，验证 PostgreSQL 改造未破坏既有流程。"
+      ]
+    },
     {
       "version": "5.0.9",
       "date": "2026-03-25",
