@@ -4484,8 +4484,12 @@ def _delete_session_store_record(session_id: str = "", file_name: str = "") -> N
         return
 
 
+def _use_pure_cloud_session_storage() -> bool:
+    return is_postgres_dsn(get_meta_index_db_target())
+
+
 def safe_load_session(session_file: Path) -> dict:
-    """安全加载会话，优先读取会话存储表，失败再回退本地文件。"""
+    """安全加载会话。PostgreSQL 模式下仅使用 session_store 作为在线主存储。"""
     target = Path(session_file)
     session_id = _extract_session_id_from_session_file(target)
     if session_id:
@@ -4496,6 +4500,9 @@ def safe_load_session(session_file: Path) -> dict:
         store_payload = _load_session_from_store_by_file_name(target.name)
         if isinstance(store_payload, dict):
             return store_payload
+
+    if _use_pure_cloud_session_storage():
+        return None
 
     try:
         return json.loads(target.read_text(encoding="utf-8"))
@@ -5869,10 +5876,13 @@ def _write_json_atomic(file_path: Path, payload: object) -> None:
 
 def save_session_json_and_sync(session_file: Path, session_data: dict) -> None:
     payload_text = json.dumps(session_data, ensure_ascii=False, indent=2)
-    _write_text_atomic(session_file, payload_text, encoding="utf-8")
+    use_cloud_primary = _use_pure_cloud_session_storage()
+    signature = (int(_time.time_ns()), len(payload_text.encode("utf-8")))
+    if not use_cloud_primary:
+        _write_text_atomic(session_file, payload_text, encoding="utf-8")
+        signature = get_file_signature(session_file) or signature
 
     try:
-        signature = get_file_signature(session_file) or (int(_time.time_ns()), len(payload_text.encode("utf-8")))
         record = {
             "session_id": str(session_data.get("session_id") or "").strip(),
             "file_name": session_file.name,
@@ -5884,10 +5894,15 @@ def save_session_json_and_sync(session_file: Path, session_data: dict) -> None:
             "payload_mtime_ns": int(signature[0]),
             "payload_size": int(signature[1]),
         }
-        if record["session_id"] and int(record["owner_user_id"]) > 0:
+        if not record["session_id"] or int(record["owner_user_id"]) <= 0:
+            if use_cloud_primary:
+                raise RuntimeError("会话缺少 session_id 或 owner_user_id，无法写入云端主存储")
+        else:
             with get_meta_index_connection() as conn:
                 _upsert_session_store_record(conn, record)
     except Exception as exc:
+        if use_cloud_primary:
+            raise
         if ENABLE_DEBUG_LOG:
             _safe_log(f"⚠️ 同步 session_store 失败: {session_file.name}, 错误: {exc}")
 
@@ -5896,6 +5911,8 @@ def save_session_json_and_sync(session_file: Path, session_data: dict) -> None:
         if record:
             _upsert_session_index_record(record)
     except Exception as exc:
+        if use_cloud_primary:
+            raise
         if ENABLE_DEBUG_LOG:
             _safe_log(f"⚠️ 同步 session_index 失败: {session_file.name}, 错误: {exc}")
 
@@ -5913,6 +5930,9 @@ def save_session_json_and_sync(session_file: Path, session_data: dict) -> None:
                 instance_scope_key=scope_key,
                 binding_metadata=binding_metadata,
             )
+
+    if use_cloud_primary and session_file.exists():
+        session_file.unlink(missing_ok=True)
 
 
 def remove_session_index_record(session_id: str = "", file_name: str = "") -> None:
@@ -8938,6 +8958,12 @@ def _mask_phone_number(raw_phone: object) -> str:
     return f"{phone[:3]}****{phone[-4:]}"
 
 
+def _get_admin_meta_index_db_target() -> Optional[str]:
+    if _use_postgres_shared_meta_storage():
+        return get_meta_index_db_target()
+    return None
+
+
 def _build_account_merge_user_summary(user_id: int) -> Optional[dict]:
     user_row = query_user_by_id(int(user_id or 0))
     if not user_row:
@@ -8953,6 +8979,7 @@ def _build_account_merge_user_summary(user_id: int) -> Optional[dict]:
         report_owners_file=REPORT_OWNERS_FILE,
         custom_scenarios_dir=Path(getattr(scenario_loader, "custom_dir", DATA_DIR / "scenarios" / "custom")),
         report_solution_shares_file=REPORT_SOLUTION_SHARES_FILE,
+        meta_index_db_path=_get_admin_meta_index_db_target(),
         user_id=int(user_row["id"]),
     )
     phone = str(user_row["phone"] or "").strip()
@@ -9165,6 +9192,7 @@ def _build_account_merge_preview_payload(candidate: dict, current_user_id: int) 
         reports_dir=REPORTS_DIR,
         report_owners_file=REPORT_OWNERS_FILE,
         report_solution_shares_file=REPORT_SOLUTION_SHARES_FILE,
+        meta_index_db_path=_get_admin_meta_index_db_target(),
         custom_scenarios_dir=Path(getattr(scenario_loader, "custom_dir", DATA_DIR / "scenarios" / "custom")),
         backup_root=get_admin_ownership_backup_root(),
         target_user_id=target_user_id,
@@ -9242,6 +9270,7 @@ def _execute_account_merge_apply(candidate: dict, *, actor_user_id: int, reason:
         reports_dir=REPORTS_DIR,
         report_owners_file=REPORT_OWNERS_FILE,
         report_solution_shares_file=REPORT_SOLUTION_SHARES_FILE,
+        meta_index_db_path=_get_admin_meta_index_db_target(),
         custom_scenarios_dir=Path(getattr(scenario_loader, "custom_dir", DATA_DIR / "scenarios" / "custom")),
         backup_root=get_admin_ownership_backup_root(),
         target_user_id=target_user_id,
@@ -12934,7 +12963,6 @@ def save_report_scopes(data: dict) -> None:
                     ],
                 )
         with REPORT_SCOPES_LOCK:
-            _write_json_atomic(REPORT_SCOPES_FILE, normalized)
             report_scopes_cache["signature"] = None
             report_scopes_cache["data"] = {}
         return
@@ -12971,18 +12999,9 @@ def set_report_scope_key(filename: str, scope_key: object) -> None:
                 )
             else:
                 conn.execute("DELETE FROM report_meta_scopes WHERE file_name = ?", (name,))
-
-        # 保留本地镜像文件，便于运维脚本排查
         with REPORT_SCOPES_LOCK:
-            with named_file_lock("sidecar", "report_scopes"):
-                scopes = load_report_scopes()
-                if normalized_scope:
-                    scopes[name] = normalized_scope
-                else:
-                    scopes.pop(name, None)
-                _write_json_atomic(REPORT_SCOPES_FILE, scopes)
-                report_scopes_cache["signature"] = None
-                report_scopes_cache["data"] = {}
+            report_scopes_cache["signature"] = None
+            report_scopes_cache["data"] = {}
         return
 
     with REPORT_SCOPES_LOCK:
@@ -13121,7 +13140,6 @@ def save_solution_share_map(data: dict) -> None:
                     ],
                 )
         with REPORT_SOLUTION_SHARES_LOCK:
-            _write_json_atomic(REPORT_SOLUTION_SHARES_FILE, normalized)
             report_solution_shares_cache["signature"] = None
             report_solution_shares_cache["data"] = {}
         return
@@ -13196,7 +13214,6 @@ def create_or_get_solution_share(report_name: str, owner_user_id: int) -> dict:
                 except Exception:
                     continue
         if isinstance(created_payload, dict):
-            _write_json_atomic(REPORT_SOLUTION_SHARES_FILE, load_solution_share_map())
             return created_payload
         raise RuntimeError("生成分享链接失败，请稍后重试")
 
@@ -13242,7 +13259,9 @@ def delete_solution_shares_for_report(report_name: str) -> None:
                 "DELETE FROM report_meta_solution_shares WHERE report_name = ?",
                 (normalized_report_name,),
             )
-        _write_json_atomic(REPORT_SOLUTION_SHARES_FILE, load_solution_share_map())
+        with REPORT_SOLUTION_SHARES_LOCK:
+            report_solution_shares_cache["signature"] = None
+            report_solution_shares_cache["data"] = {}
         return
 
     with named_file_lock("sidecar", "solution_shares"):
@@ -13384,7 +13403,6 @@ def save_report_owners(data: dict) -> None:
                     ],
                 )
         with REPORT_OWNERS_LOCK:
-            _write_json_atomic(REPORT_OWNERS_FILE, normalized)
             report_owners_cache["signature"] = None
             report_owners_cache["data"] = {}
         return
@@ -13417,14 +13435,9 @@ def set_report_owner_id(filename: str, owner_user_id: int) -> None:
                 """,
                 (filename, owner_id, get_utc_now()),
             )
-        # 保留本地镜像
         with REPORT_OWNERS_LOCK:
-            with named_file_lock("sidecar", "report_owners"):
-                owners = load_report_owners()
-                owners[filename] = owner_id
-                _write_json_atomic(REPORT_OWNERS_FILE, owners)
-                report_owners_cache["signature"] = None
-                report_owners_cache["data"] = {}
+            report_owners_cache["signature"] = None
+            report_owners_cache["data"] = {}
     else:
         with REPORT_OWNERS_LOCK:
             with named_file_lock("sidecar", "report_owners"):
@@ -13493,7 +13506,7 @@ def load_session_for_user(session_id: str, user_id: int, include_missing: bool =
     session_file = SESSIONS_DIR / f"{session_id}.json"
     session_data = safe_load_session(session_file)
     if session_data is None:
-        if session_file.exists():
+        if session_file.exists() and not _use_pure_cloud_session_storage():
             return None, "会话数据损坏", 500
         if include_missing:
             return None, None, "not_found"
@@ -13534,9 +13547,6 @@ def mark_report_as_deleted(filename: str):
                 """,
                 (str(filename or "").strip(), get_utc_now()),
             )
-        # 本地镜像
-        deleted = sorted(get_deleted_reports())
-        _write_json_atomic(DELETED_REPORTS_FILE, {"deleted": deleted})
     else:
         with named_file_lock("sidecar", "deleted_reports"):
             deleted = get_deleted_reports()
@@ -13558,8 +13568,6 @@ def unmark_report_as_deleted(filename: str) -> None:
     if _use_postgres_shared_meta_storage():
         with get_meta_index_connection() as conn:
             conn.execute("DELETE FROM report_meta_deleted_reports WHERE file_name = ?", (name,))
-        deleted = sorted(get_deleted_reports())
-        _write_json_atomic(DELETED_REPORTS_FILE, {"deleted": deleted})
     else:
         with named_file_lock("sidecar", "deleted_reports"):
             deleted = get_deleted_reports()
@@ -13876,7 +13884,6 @@ def mark_doc_as_deleted(session_id: str, doc_name: str, doc_type: str = "referen
                 """,
                 (sid, name, token, now_iso, now_iso),
             )
-        _write_json_atomic(DELETED_DOCS_FILE, get_deleted_docs())
         return
 
     with named_file_lock("sidecar", "deleted_docs"):
@@ -31915,8 +31922,7 @@ def find_direct_bound_session_for_report(report_name: str, owner_user_id: int) -
     if not normalized_report_name:
         return None
 
-    for session_file in SESSIONS_DIR.glob("*.json"):
-        session_data = safe_load_session(session_file)
+    for _session_file, session_data in _iter_session_payload_entries():
         if not isinstance(session_data, dict):
             continue
         if not ensure_session_owner(session_data, owner_user_id):
@@ -40921,6 +40927,7 @@ def admin_audit_ownership():
             sessions_dir=SESSIONS_DIR,
             reports_dir=REPORTS_DIR,
             report_owners_file=REPORT_OWNERS_FILE,
+            meta_index_db_path=_get_admin_meta_index_db_target(),
             user_id=int(data["user_id"]) if data.get("user_id") not in (None, "") else None,
             user_account=str(data.get("user_account") or "").strip(),
             kinds=data.get("kinds") or "sessions,reports",
@@ -40941,6 +40948,7 @@ def admin_preview_ownership_migration():
             sessions_dir=SESSIONS_DIR,
             reports_dir=REPORTS_DIR,
             report_owners_file=REPORT_OWNERS_FILE,
+            meta_index_db_path=_get_admin_meta_index_db_target(),
             backup_root=get_admin_ownership_backup_root(),
             to_user_id=payload.get("to_user_id"),
             to_account=payload.get("to_account", ""),
@@ -40987,6 +40995,7 @@ def admin_apply_ownership_migration():
             sessions_dir=SESSIONS_DIR,
             reports_dir=REPORTS_DIR,
             report_owners_file=REPORT_OWNERS_FILE,
+            meta_index_db_path=_get_admin_meta_index_db_target(),
             backup_root=get_admin_ownership_backup_root(),
             to_user_id=payload.get("to_user_id"),
             to_account=payload.get("to_account", ""),
@@ -41029,6 +41038,7 @@ def admin_rollback_ownership_migration():
             report_owners_file=REPORT_OWNERS_FILE,
             auth_db_path=AUTH_DB_PATH,
             license_db_path=LICENSE_DB_PATH,
+            meta_index_db_path=_get_admin_meta_index_db_target(),
             custom_scenarios_dir=Path(getattr(scenario_loader, "custom_dir", DATA_DIR / "scenarios" / "custom")),
             report_solution_shares_file=REPORT_SOLUTION_SHARES_FILE,
             backup_id=backup_id,
