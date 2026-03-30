@@ -15,7 +15,7 @@
 
 - 将 `data/auth/users.db` 与 `data/meta_index.db` 从 SQLite 迁移到 PostgreSQL。
 - 将 `data/sessions/*.json` 的会话主数据迁移到 PostgreSQL；如需保留原始 JSON，可作为对象存储归档，不再作为在线主存储。
-- 将报告正文、报告附属 JSON、演示元数据映射迁移到 PostgreSQL；真正的文件产物再迁到对象存储。
+- 将报告正文、报告附属 JSON、演示元数据映射迁移到 PostgreSQL；演示文件与上传原件接入 S3 兼容对象存储。
 - `data/summaries/` 改为 Redis 或 PostgreSQL 缓存表；允许失效重建，不再依赖实例本地磁盘。
 - `data/temp/`、`data/metrics/` 保留为实例本地临时目录，但不得承载用户核心数据。
 - 同一业务站点的所有副本统一使用同一个 `SECRET_KEY`、`AUTH_DB_PATH`、`INSTANCE_SCOPE_KEY`。
@@ -45,10 +45,10 @@
 | 报告正文 Markdown | `data/reports/*.md` | PostgreSQL `report_store` | 已迁移 | P0 | 报告读取、生成、列表索引都已走数据库主存储 |
 | 报告 sidecar / solution payload | `*.solution.json` / `*.solution.payload.json` | PostgreSQL | 已迁移 | P0 | 结构化小文本数据已进入数据库表 |
 | 演示元数据映射 | `.presentation_map.json` | PostgreSQL | 已迁移 | P1 | 演示任务映射已走数据库主存储 |
-| 演示文件本体 | `data/presentations/` | S3 兼容对象存储 + PostgreSQL 元数据 | 未迁移 | P1 | 典型文件型产物，适合对象存储 |
-| 上传原件 | `data/temp/` 中转 | S3 兼容对象存储 + PostgreSQL 元数据 | 未迁移 | P1 | 原件是跨实例需要长期可读的文件，应迁对象存储 |
+| 演示文件本体 | `Downloads` / `data/presentations/` 引用 | S3 兼容对象存储 + PostgreSQL 元数据 | 已迁移 | P1 | 新下载演示直接入对象存储，历史本地记录启动时自动补传 |
+| 上传原件 | `data/temp/` 中转 | S3 兼容对象存储 + PostgreSQL 元数据 | 已迁移（新上传） | P1 | 新上传原件会归档到对象存储；历史临时文件因缺少稳定引用不做自动回填 |
 | 导出文件 / 二进制产物 | 本地目录 | S3 兼容对象存储 + PostgreSQL 元数据 | 未迁移 | P1 | 包括 PPT/PDF/图片等大文件 |
-| 转换产物 | `data/converted/*.md` | Redis 或 PostgreSQL 缓存表 | 未迁移 | P2 | 若可重建，应视为缓存而不是主数据 |
+| 转换产物 | `data/converted/*.md` | Redis 或 PostgreSQL 缓存表 | 已迁移到 PostgreSQL 缓存表 | P2 | 上传转换优先查 PostgreSQL 缓存，未命中才调用本地转换 |
 | 摘要缓存 | `data/summaries/*.txt` | Redis 优先，其次 PostgreSQL 缓存表 | 已迁移到 PostgreSQL 缓存表 | P2 | 当前已数据库化；后续如需更低延迟可再切 Redis |
 | 运行配置（前端展示配置） | `web/site-config.js` | 静态发布或 PostgreSQL 配置表 | 未迁移 | P2 | 不建议继续用实例本地可变文件 |
 | 本地临时文件 | `data/temp/` | 本地临时目录 | 保留本地 | P3 | 仅用于短时中转，不得承载业务真相 |
@@ -126,11 +126,36 @@
 
 建议按下面顺序推进：
 
-1. 上传原件、演示文件、导出文件迁入对象存储，数据库仅保存对象键与元数据。
-2. 转换缓存从本地目录切到 Redis 或 PostgreSQL 缓存表。
+1. 导出文件迁入对象存储，数据库仅保存对象键与元数据。
+2. 如有更高并发或更低延迟需求，再把转换缓存从 PostgreSQL 缓存表切到 Redis。
 3. `site-config.js` 从实例本地可变文件改为静态发布或数据库配置。
 4. 清理 `data/` 中仍被当作主数据源的目录，保留 `temp/` 与必要 scratch 目录。
-5. 为对象存储与缓存补充迁移脚本、运维回滚与监控告警。
+5. 为对象存储补充批量回填、生命周期清理、监控告警与回滚策略。
+
+## Object Storage Config
+
+当前代码已支持通过环境变量接入 S3 兼容对象存储：
+
+- `OBJECT_STORAGE_ENDPOINT`
+- `OBJECT_STORAGE_REGION`
+- `OBJECT_STORAGE_BUCKET`
+- `OBJECT_STORAGE_ACCESS_KEY_ID`
+- `OBJECT_STORAGE_SECRET_ACCESS_KEY`
+- `OBJECT_STORAGE_FORCE_PATH_STYLE`
+- `OBJECT_STORAGE_SIGNATURE_VERSION`
+- `OBJECT_STORAGE_PREFIX`
+
+当前已接入的对象存储链路：
+
+- 演示文件下载后直接上传对象存储，并由受保护接口回放下载。
+- 历史演示文件记录如果仍指向本地路径，服务启动时会自动补传到对象存储。
+- 新上传的原始参考文档会归档到对象存储，并把对象键写入会话主数据。
+- 文档转换结果已进入 PostgreSQL `converted_cache_store`，命中缓存时不再依赖本地 `data/converted/`。
+
+当前仍未接入对象存储的文件型数据：
+
+- 导出附件与其他二进制产物
+- 运维备份归档
 
 ## Decision Rules
 

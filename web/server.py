@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["flask", "flask-cors", "anthropic", "requests", "reportlab", "pillow", "jdcloud-sdk", "psycopg[binary]"]
+# dependencies = ["flask", "flask-cors", "anthropic", "requests", "reportlab", "pillow", "jdcloud-sdk", "psycopg[binary]", "boto3"]
 # ///
 """
 Deep Vision Web Server - AI 驱动版本
@@ -25,6 +25,7 @@ import hashlib
 import html
 import json
 import math
+import mimetypes
 import os
 import queue
 import re
@@ -533,6 +534,14 @@ if REFLY_POLL_TIMEOUT < 30:
 REFLY_POLL_INTERVAL = _cfg_float("REFLY_POLL_INTERVAL", 2.0)
 if REFLY_POLL_INTERVAL <= 0:
     REFLY_POLL_INTERVAL = 2.0
+OBJECT_STORAGE_ENDPOINT = _cfg_text("OBJECT_STORAGE_ENDPOINT", "")
+OBJECT_STORAGE_REGION = _cfg_text("OBJECT_STORAGE_REGION", "us-east-1") or "us-east-1"
+OBJECT_STORAGE_BUCKET = _cfg_text("OBJECT_STORAGE_BUCKET", "")
+OBJECT_STORAGE_ACCESS_KEY_ID = _cfg_text("OBJECT_STORAGE_ACCESS_KEY_ID", "")
+OBJECT_STORAGE_SECRET_ACCESS_KEY = _cfg_text("OBJECT_STORAGE_SECRET_ACCESS_KEY", "")
+OBJECT_STORAGE_FORCE_PATH_STYLE = _cfg_bool("OBJECT_STORAGE_FORCE_PATH_STYLE", False)
+OBJECT_STORAGE_SIGNATURE_VERSION = _cfg_text("OBJECT_STORAGE_SIGNATURE_VERSION", "v4") or "v4"
+OBJECT_STORAGE_PREFIX = _cfg_text("OBJECT_STORAGE_PREFIX", "deepvision") or "deepvision"
 
 # 列表接口性能与并发保护配置
 LIST_API_DEFAULT_PAGE_SIZE = _cfg_int("LIST_API_DEFAULT_PAGE_SIZE", 20)
@@ -847,6 +856,7 @@ QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS = _cfg_int(
 )
 if QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS < QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS:
     QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS = QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS
+QUESTION_RELEASE_CONSERVATIVE_MODE = _cfg_bool("QUESTION_RELEASE_CONSERVATIVE_MODE", True)
 API_TIMEOUT = _cfg_float("API_TIMEOUT", 90.0)             # 通用 API 超时时间（秒）
 REPORT_API_TIMEOUT = _cfg_float("REPORT_API_TIMEOUT", 210.0)  # 报告生成专用超时（秒）
 if REPORT_API_TIMEOUT < API_TIMEOUT:
@@ -854,6 +864,7 @@ if REPORT_API_TIMEOUT < API_TIMEOUT:
 REPORT_V3_PROFILE = _cfg_text("REPORT_V3_PROFILE", "balanced").strip().lower()
 if REPORT_V3_PROFILE not in {"balanced", "quality"}:
     REPORT_V3_PROFILE = "balanced"
+REPORT_V3_RELEASE_CONSERVATIVE_MODE = _cfg_bool("REPORT_V3_RELEASE_CONSERVATIVE_MODE", True)
 report_default_review_timeout = min(REPORT_API_TIMEOUT, 120.0 if REPORT_V3_PROFILE == "balanced" else 150.0)
 REPORT_REVIEW_API_TIMEOUT = _cfg_float("REPORT_REVIEW_API_TIMEOUT", report_default_review_timeout)
 REPORT_REVIEW_API_TIMEOUT = max(30.0, min(REPORT_REVIEW_API_TIMEOUT, REPORT_API_TIMEOUT))
@@ -952,6 +963,7 @@ def normalize_report_profile_choice(raw_profile: str, fallback: str = "") -> str
 
 def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
     profile = normalize_report_profile_choice(profile_choice, fallback=REPORT_V3_PROFILE)
+    release_conservative_mode = bool(REPORT_V3_RELEASE_CONSERVATIVE_MODE and profile == "balanced")
 
     draft_timeout_default = min(REPORT_API_TIMEOUT, 140.0 if profile == "balanced" else 180.0)
     draft_timeout = _cfg_float("REPORT_DRAFT_API_TIMEOUT", draft_timeout_default)
@@ -1024,8 +1036,25 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
     unknown_ratio_trigger = _cfg_float("REPORT_V3_UNKNOWN_RATIO_TRIGGER", 0.65)
     unknown_ratio_trigger = max(0.2, min(unknown_ratio_trigger, 1.0))
 
+    if release_conservative_mode:
+        draft_timeout = min(float(draft_timeout), 110.0)
+        review_timeout = min(float(review_timeout), 75.0)
+        draft_max_tokens = min(int(draft_max_tokens), 3400)
+        draft_facts_limit = min(int(draft_facts_limit), 24)
+        draft_min_facts_limit = min(int(draft_min_facts_limit), 14, int(draft_facts_limit))
+        draft_retry_count = min(int(draft_retry_count), 0)
+        draft_retry_backoff_seconds = min(float(draft_retry_backoff_seconds), 0.3)
+        fast_fail_on_draft_empty = True
+        review_max_tokens = min(int(review_max_tokens), 3600)
+        review_base_rounds = 1
+        quality_fix_rounds = 0
+        min_required_review_rounds = 1
+        salvage_on_quality_gate_failure = False
+        failover_on_single_issue = False
+
     return {
         "profile": profile,
+        "release_conservative_mode": release_conservative_mode,
         "draft_timeout": float(draft_timeout),
         "review_timeout": float(review_timeout),
         "draft_max_tokens": int(draft_max_tokens),
@@ -2117,6 +2146,10 @@ PRESENTATIONS_DIR = DATA_DIR / "presentations"
 AUTH_DIR = DATA_DIR / "auth"
 PRESENTATION_MAP_FILE = PRESENTATIONS_DIR / ".presentation_map.json"
 PRESENTATION_MAP_LOCK = threading.Lock()
+OBJECT_STORAGE_CLIENT_LOCK = threading.Lock()
+OBJECT_STORAGE_CLIENT = None
+OBJECT_STORAGE_PRESENTATION_MIGRATION_LOCK = threading.Lock()
+OBJECT_STORAGE_PRESENTATION_MIGRATED = False
 DELETED_REPORTS_FILE = REPORTS_DIR / ".deleted_reports.json"
 DELETED_DOCS_FILE = DATA_DIR / ".deleted_docs.json"  # 软删除记录文件
 REPORT_OWNERS_FILE = REPORTS_DIR / ".owners.json"
@@ -2320,6 +2353,15 @@ def _collect_runtime_security_validation_issues() -> tuple[list[str], list[str]]
         message = "SMS_PROVIDER=mock 仅适用于本地调试，非调试环境禁止使用"
         if strict_mode or has_explicit_env:
             (errors if strict_mode else warnings).append(message)
+
+    object_storage_values = [
+        OBJECT_STORAGE_ENDPOINT,
+        OBJECT_STORAGE_BUCKET,
+        OBJECT_STORAGE_ACCESS_KEY_ID,
+        OBJECT_STORAGE_SECRET_ACCESS_KEY,
+    ]
+    if any(object_storage_values) and not all(object_storage_values):
+        warnings.append("对象存储配置不完整，已启用的文件云存储能力将不可用")
 
     return warnings, errors
 
@@ -2564,6 +2606,14 @@ ADMIN_ENV_SETTINGS_GROUPS: list[dict[str, Any]] = [
             _admin_int("REFLY_TIMEOUT", "Refly 请求超时"),
             _admin_int("REFLY_POLL_TIMEOUT", "Refly 轮询超时"),
             _admin_float("REFLY_POLL_INTERVAL", "Refly 轮询间隔"),
+            _admin_setting("OBJECT_STORAGE_ENDPOINT", "对象存储 Endpoint"),
+            _admin_setting("OBJECT_STORAGE_REGION", "对象存储 Region"),
+            _admin_setting("OBJECT_STORAGE_BUCKET", "对象存储 Bucket"),
+            _admin_setting("OBJECT_STORAGE_ACCESS_KEY_ID", "对象存储 Access Key ID"),
+            _admin_password("OBJECT_STORAGE_SECRET_ACCESS_KEY", "对象存储 Secret Access Key"),
+            _admin_bool("OBJECT_STORAGE_FORCE_PATH_STYLE", "对象存储 Path Style"),
+            _admin_setting("OBJECT_STORAGE_SIGNATURE_VERSION", "对象存储签名版本"),
+            _admin_setting("OBJECT_STORAGE_PREFIX", "对象存储前缀"),
         ],
     },
     {
@@ -3786,6 +3836,60 @@ question_generation_stats = {
     "fallback_served": 0,
     "fallback_reasons": {},
 }
+QUESTION_RUNTIME_SAMPLE_MAX = 300
+REPORT_RUNTIME_SAMPLE_MAX = 180
+
+
+def _build_runtime_metric_store(sample_max: int, stage_names: list[str]) -> dict:
+    safe_sample_max = max(32, int(sample_max or 32))
+    return {
+        "calls": 0,
+        "completed": 0,
+        "failed": 0,
+        "total_ms": 0.0,
+        "total_ms_samples": deque(maxlen=safe_sample_max),
+        "stages": {
+            str(stage_name): {
+                "total_ms": 0.0,
+                "samples": deque(maxlen=safe_sample_max),
+            }
+            for stage_name in (stage_names or [])
+        },
+        "last_profile": "",
+        "last_tier": "",
+        "last_reason": "",
+        "last_outcome": "",
+        "last_path": "",
+        "last_updated_at": "",
+    }
+
+
+question_generation_runtime_stats_lock = threading.Lock()
+question_generation_runtime_stats = _build_runtime_metric_store(
+    QUESTION_RUNTIME_SAMPLE_MAX,
+    [
+        "session_load_ms",
+        "prefetch_wait_ms",
+        "prompt_build_ms",
+        "ai_call_ms",
+        "parse_repair_ms",
+        "postprocess_ms",
+    ],
+)
+report_generation_runtime_stats_lock = threading.Lock()
+report_generation_runtime_stats = _build_runtime_metric_store(
+    REPORT_RUNTIME_SAMPLE_MAX,
+    [
+        "session_load_ms",
+        "evidence_pack_ms",
+        "draft_gen_ms",
+        "review_ms",
+        "salvage_ms",
+        "failover_ms",
+        "legacy_fallback_ms",
+        "persist_ms",
+    ],
+)
 search_decision_stats_lock = threading.Lock()
 search_decision_stats = {
     "overloaded": 0,
@@ -4675,6 +4779,56 @@ def get_question_generation_stats_snapshot() -> dict:
         }
 
 
+def record_question_generation_runtime_sample(
+    *,
+    durations: Optional[dict] = None,
+    outcome: str = "completed",
+    runtime_profile: str = "",
+    tier_used: str = "",
+    selection_reason: str = "",
+) -> None:
+    safe_durations = dict(durations or {})
+    total_ms = max(0.0, _safe_float(safe_durations.get("total_ms"), 0.0))
+    with question_generation_runtime_stats_lock:
+        question_generation_runtime_stats["calls"] = int(question_generation_runtime_stats.get("calls", 0) or 0) + 1
+        if str(outcome or "").strip().lower() == "completed":
+            question_generation_runtime_stats["completed"] = int(question_generation_runtime_stats.get("completed", 0) or 0) + 1
+        else:
+            question_generation_runtime_stats["failed"] = int(question_generation_runtime_stats.get("failed", 0) or 0) + 1
+        question_generation_runtime_stats["total_ms"] = float(question_generation_runtime_stats.get("total_ms", 0.0) or 0.0) + total_ms
+        total_samples = question_generation_runtime_stats.get("total_ms_samples")
+        if not isinstance(total_samples, deque):
+            total_samples = deque(maxlen=QUESTION_RUNTIME_SAMPLE_MAX)
+            question_generation_runtime_stats["total_ms_samples"] = total_samples
+        total_samples.append(total_ms)
+        for stage_name in (
+            "session_load_ms",
+            "prefetch_wait_ms",
+            "prompt_build_ms",
+            "ai_call_ms",
+            "parse_repair_ms",
+            "postprocess_ms",
+        ):
+            _append_runtime_stage_metric(
+                question_generation_runtime_stats.setdefault("stages", {}).setdefault(
+                    stage_name,
+                    {"total_ms": 0.0, "samples": deque(maxlen=QUESTION_RUNTIME_SAMPLE_MAX)},
+                ),
+                safe_durations.get(stage_name, 0.0),
+                QUESTION_RUNTIME_SAMPLE_MAX,
+            )
+        question_generation_runtime_stats["last_profile"] = str(runtime_profile or "")
+        question_generation_runtime_stats["last_tier"] = str(tier_used or "")
+        question_generation_runtime_stats["last_reason"] = str(selection_reason or "")
+        question_generation_runtime_stats["last_outcome"] = str(outcome or "")
+        question_generation_runtime_stats["last_updated_at"] = get_utc_now()
+
+
+def get_question_generation_runtime_stats_snapshot() -> dict:
+    with question_generation_runtime_stats_lock:
+        return _build_runtime_stage_snapshot(question_generation_runtime_stats)
+
+
 def get_search_decision_stats_snapshot() -> dict:
     with search_decision_stats_lock:
         return {
@@ -4693,6 +4847,96 @@ def reset_question_generation_stats() -> None:
         question_generation_stats["ai_success"] = 0
         question_generation_stats["fallback_served"] = 0
         question_generation_stats["fallback_reasons"] = {}
+
+
+def reset_question_generation_runtime_stats() -> None:
+    with question_generation_runtime_stats_lock:
+        question_generation_runtime_stats.clear()
+        question_generation_runtime_stats.update(
+            _build_runtime_metric_store(
+                QUESTION_RUNTIME_SAMPLE_MAX,
+                [
+                    "session_load_ms",
+                    "prefetch_wait_ms",
+                    "prompt_build_ms",
+                    "ai_call_ms",
+                    "parse_repair_ms",
+                    "postprocess_ms",
+                ],
+            )
+        )
+
+
+def record_report_generation_runtime_sample(
+    *,
+    durations: Optional[dict] = None,
+    outcome: str = "completed",
+    runtime_profile: str = "",
+    path: str = "",
+    reason: str = "",
+) -> None:
+    safe_durations = dict(durations or {})
+    total_ms = max(0.0, _safe_float(safe_durations.get("total_ms"), 0.0))
+    with report_generation_runtime_stats_lock:
+        report_generation_runtime_stats["calls"] = int(report_generation_runtime_stats.get("calls", 0) or 0) + 1
+        if str(outcome or "").strip().lower() == "completed":
+            report_generation_runtime_stats["completed"] = int(report_generation_runtime_stats.get("completed", 0) or 0) + 1
+        else:
+            report_generation_runtime_stats["failed"] = int(report_generation_runtime_stats.get("failed", 0) or 0) + 1
+        report_generation_runtime_stats["total_ms"] = float(report_generation_runtime_stats.get("total_ms", 0.0) or 0.0) + total_ms
+        total_samples = report_generation_runtime_stats.get("total_ms_samples")
+        if not isinstance(total_samples, deque):
+            total_samples = deque(maxlen=REPORT_RUNTIME_SAMPLE_MAX)
+            report_generation_runtime_stats["total_ms_samples"] = total_samples
+        total_samples.append(total_ms)
+        for stage_name in (
+            "session_load_ms",
+            "evidence_pack_ms",
+            "draft_gen_ms",
+            "review_ms",
+            "salvage_ms",
+            "failover_ms",
+            "legacy_fallback_ms",
+            "persist_ms",
+        ):
+            _append_runtime_stage_metric(
+                report_generation_runtime_stats.setdefault("stages", {}).setdefault(
+                    stage_name,
+                    {"total_ms": 0.0, "samples": deque(maxlen=REPORT_RUNTIME_SAMPLE_MAX)},
+                ),
+                safe_durations.get(stage_name, 0.0),
+                REPORT_RUNTIME_SAMPLE_MAX,
+            )
+        report_generation_runtime_stats["last_profile"] = str(runtime_profile or "")
+        report_generation_runtime_stats["last_reason"] = str(reason or "")
+        report_generation_runtime_stats["last_outcome"] = str(outcome or "")
+        report_generation_runtime_stats["last_path"] = str(path or "")
+        report_generation_runtime_stats["last_updated_at"] = get_utc_now()
+
+
+def get_report_generation_runtime_stats_snapshot() -> dict:
+    with report_generation_runtime_stats_lock:
+        return _build_runtime_stage_snapshot(report_generation_runtime_stats)
+
+
+def reset_report_generation_runtime_stats() -> None:
+    with report_generation_runtime_stats_lock:
+        report_generation_runtime_stats.clear()
+        report_generation_runtime_stats.update(
+            _build_runtime_metric_store(
+                REPORT_RUNTIME_SAMPLE_MAX,
+                [
+                    "session_load_ms",
+                    "evidence_pack_ms",
+                    "draft_gen_ms",
+                    "review_ms",
+                    "salvage_ms",
+                    "failover_ms",
+                    "legacy_fallback_ms",
+                    "persist_ms",
+                ],
+            )
+        )
 
 
 def reset_search_decision_stats() -> None:
@@ -4872,6 +5116,50 @@ def _compute_percentile(values: list[float], percentile: float) -> float:
     idx = int((len(ordered) - 1) * percentile)
     idx = max(0, min(len(ordered) - 1, idx))
     return float(ordered[idx])
+
+
+def _append_runtime_stage_metric(stage_bucket: dict, elapsed_ms: object, sample_max: int) -> None:
+    if not isinstance(stage_bucket, dict):
+        return
+    safe_elapsed = max(0.0, _safe_float(elapsed_ms, 0.0))
+    stage_bucket["total_ms"] = float(stage_bucket.get("total_ms", 0.0) or 0.0) + safe_elapsed
+    samples = stage_bucket.get("samples")
+    if not isinstance(samples, deque):
+        samples = deque(maxlen=max(32, int(sample_max or 32)))
+        stage_bucket["samples"] = samples
+    samples.append(safe_elapsed)
+
+
+def _build_runtime_stage_snapshot(store: dict) -> dict:
+    calls = int(store.get("calls", 0) or 0)
+    completed = int(store.get("completed", 0) or 0)
+    failed = int(store.get("failed", 0) or 0)
+    total_samples = list(store.get("total_ms_samples") or [])
+    snapshot = {
+        "calls": calls,
+        "completed": completed,
+        "failed": failed,
+        "avg_total_ms": round(float(store.get("total_ms", 0.0) or 0.0) / calls, 2) if calls > 0 else 0.0,
+        "p50_total_ms": round(_compute_percentile(total_samples, 0.50), 2),
+        "p95_total_ms": round(_compute_percentile(total_samples, 0.95), 2),
+        "last_profile": str(store.get("last_profile", "") or ""),
+        "last_tier": str(store.get("last_tier", "") or ""),
+        "last_reason": str(store.get("last_reason", "") or ""),
+        "last_outcome": str(store.get("last_outcome", "") or ""),
+        "last_path": str(store.get("last_path", "") or ""),
+        "last_updated_at": str(store.get("last_updated_at", "") or ""),
+        "stages": {},
+    }
+    for stage_name, stage_bucket in (store.get("stages") or {}).items():
+        samples = list((stage_bucket or {}).get("samples") or [])
+        sample_count = len(samples)
+        snapshot["stages"][str(stage_name)] = {
+            "calls": sample_count,
+            "avg_ms": round(float((stage_bucket or {}).get("total_ms", 0.0) or 0.0) / sample_count, 2) if sample_count > 0 else 0.0,
+            "p50_ms": round(_compute_percentile(samples, 0.50), 2),
+            "p95_ms": round(_compute_percentile(samples, 0.95), 2),
+        }
+    return snapshot
 
 
 def _build_stage_latency_profiles(calls: list[dict]) -> dict:
@@ -5836,6 +6124,82 @@ def _migrate_legacy_report_artifacts_if_needed(conn: Any) -> None:
             )
 
 
+def build_converted_cache_key(file_hash: str, extension: str) -> str:
+    normalized_hash = str(file_hash or "").strip().lower()
+    normalized_ext = str(extension or "").strip().lower()
+    if not normalized_hash:
+        return ""
+    return f"{normalized_ext}:{normalized_hash}"
+
+
+def get_converted_cache_content(cache_key: str) -> str:
+    normalized_key = str(cache_key or "").strip()
+    if not normalized_key:
+        return ""
+    if _use_postgres_shared_meta_storage():
+        try:
+            with get_meta_index_connection() as conn:
+                row = conn.execute(
+                    """
+                    SELECT markdown_text
+                    FROM converted_cache_store
+                    WHERE cache_key = ?
+                    LIMIT 1
+                    """,
+                    (normalized_key,),
+                ).fetchone()
+        except Exception:
+            row = None
+        if row:
+            return str(row["markdown_text"] or "")
+        return ""
+    return ""
+
+
+def save_converted_cache_content(
+    cache_key: str,
+    markdown_text: str,
+    *,
+    source_ext: str = "",
+    source_hash: str = "",
+) -> None:
+    normalized_key = str(cache_key or "").strip()
+    if not normalized_key:
+        return
+    if _use_postgres_shared_meta_storage():
+        with get_meta_index_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO converted_cache_store(
+                    cache_key, source_ext, source_hash, markdown_text, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    source_ext=excluded.source_ext,
+                    source_hash=excluded.source_hash,
+                    markdown_text=excluded.markdown_text,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    normalized_key,
+                    str(source_ext or "").strip().lower(),
+                    str(source_hash or "").strip().lower(),
+                    str(markdown_text or ""),
+                    get_utc_now(),
+                ),
+            )
+
+
+def _compute_file_sha256(file_path: Path) -> str:
+    target = Path(file_path)
+    digest = hashlib.sha256()
+    with target.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _load_report_content(file_name: str) -> str:
     normalized_name = normalize_solution_report_filename(file_name)
     if not normalized_name:
@@ -6224,6 +6588,20 @@ def ensure_meta_index_schema() -> None:
                     updated_at TEXT NOT NULL DEFAULT ''
                 )
                 """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS converted_cache_store (
+                    cache_key TEXT PRIMARY KEY,
+                    source_ext TEXT NOT NULL DEFAULT '',
+                    source_hash TEXT NOT NULL DEFAULT '',
+                    markdown_text TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_converted_cache_source_hash ON converted_cache_store(source_hash, source_ext)"
             )
 
             _ensure_postgres_meta_index_bigint_columns(conn, db_target_text)
@@ -10660,9 +11038,18 @@ def record_presentation_file(report_filename: str, download_info: Optional[dict]
             "path": download_info.get("path"),
             "filename": download_info.get("filename")
         })
+    if download_info and download_info.get("object_key"):
+        record.update({
+            "object_key": download_info.get("object_key"),
+            "filename": download_info.get("filename"),
+            "storage_backend": download_info.get("storage_backend") or "object_storage",
+            "bucket": download_info.get("bucket") or OBJECT_STORAGE_BUCKET,
+            "content_type": download_info.get("content_type") or "",
+            "size": int(download_info.get("size") or 0),
+        })
     if pdf_url:
         record["pdf_url"] = pdf_url
-    if "path" not in record and "pdf_url" not in record:
+    if "path" not in record and "object_key" not in record and "pdf_url" not in record:
         return None
     with PRESENTATION_MAP_LOCK:
         with named_file_lock("sidecar", "presentation_map"):
@@ -10767,6 +11154,56 @@ def get_presentation_record(report_filename: str) -> Optional[dict]:
     return record if isinstance(record, dict) else None
 
 
+def migrate_presentation_assets_to_object_storage_if_needed() -> None:
+    global OBJECT_STORAGE_PRESENTATION_MIGRATED
+    if OBJECT_STORAGE_PRESENTATION_MIGRATED or not is_object_storage_enabled():
+        return
+    with OBJECT_STORAGE_PRESENTATION_MIGRATION_LOCK:
+        if OBJECT_STORAGE_PRESENTATION_MIGRATED:
+            return
+        try:
+            with PRESENTATION_MAP_LOCK:
+                with named_file_lock("sidecar", "presentation_map"):
+                    data = load_presentation_map()
+                    mutated = False
+                    for report_name, record in list(data.items()):
+                        if not isinstance(record, dict) or record.get("object_key"):
+                            continue
+                        path_str = str(record.get("path") or "").strip()
+                        if not path_str:
+                            continue
+                        file_path = Path(path_str)
+                        if not file_path.exists() or not file_path.is_file():
+                            continue
+                        uploaded = upload_file_to_object_storage(
+                            file_path,
+                            object_key=build_object_storage_key(
+                                "presentations",
+                                Path(report_name).stem,
+                                filename=file_path.name,
+                            ),
+                            content_type=str(record.get("content_type") or _guess_content_type(file_path.name)),
+                            metadata={
+                                "report_name": report_name,
+                                "instance_scope_key": get_active_instance_scope_key(),
+                            },
+                        )
+                        record["object_key"] = uploaded["object_key"]
+                        record["bucket"] = uploaded["bucket"]
+                        record["storage_backend"] = uploaded["storage_backend"]
+                        record["content_type"] = uploaded["content_type"]
+                        record["size"] = uploaded["size"]
+                        record["filename"] = str(record.get("filename") or file_path.name)
+                        mutated = True
+                    if mutated:
+                        save_presentation_map(data)
+        except Exception as exc:
+            if ENABLE_DEBUG_LOG:
+                print(f"⚠️ 演示文件迁移到对象存储失败: {exc}")
+            return
+        OBJECT_STORAGE_PRESENTATION_MIGRATED = True
+
+
 def is_presentation_execution_stopped(report_filename: str, execution_id: str = "") -> bool:
     report_filename = normalize_presentation_report_filename(report_filename)
     if not report_filename:
@@ -10787,6 +11224,147 @@ def is_path_under(path: Path, directory: Path) -> bool:
         resolved_path = path.resolve()
         resolved_dir = directory.resolve()
         return resolved_path == resolved_dir or resolved_dir in resolved_path.parents
+    except Exception:
+        return False
+
+
+def is_object_storage_enabled() -> bool:
+    return bool(
+        OBJECT_STORAGE_ENDPOINT
+        and OBJECT_STORAGE_BUCKET
+        and OBJECT_STORAGE_ACCESS_KEY_ID
+        and OBJECT_STORAGE_SECRET_ACCESS_KEY
+    )
+
+
+def _normalize_object_storage_signature_version(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"v4", "s3v4", "4"}:
+        return "s3v4"
+    return normalized or "s3v4"
+
+
+def _normalize_object_storage_segment(value: object, fallback: str = "item") -> str:
+    text = sanitize_filename(str(value or "").strip())
+    text = text.replace(" ", "-").strip("-_.")
+    return text or fallback
+
+
+def build_object_storage_key(category: str, *segments: object, filename: str = "") -> str:
+    scope_key = _normalize_object_storage_segment(get_active_instance_scope_key(), fallback="default")
+    prefix = _normalize_object_storage_segment(OBJECT_STORAGE_PREFIX, fallback="deepvision")
+    parts = [prefix, scope_key, _normalize_object_storage_segment(category, fallback="misc")]
+    for segment in segments:
+        normalized = _normalize_object_storage_segment(segment, fallback="")
+        if normalized:
+            parts.append(normalized)
+    normalized_filename = _normalize_object_storage_segment(filename, fallback="file")
+    parts.append(f"{secrets.token_hex(8)}-{normalized_filename}")
+    return "/".join(parts)
+
+
+def _guess_content_type(filename: str, fallback: str = "application/octet-stream") -> str:
+    guessed, _ = mimetypes.guess_type(str(filename or ""))
+    return guessed or fallback
+
+
+def get_object_storage_client():
+    global OBJECT_STORAGE_CLIENT
+    if not is_object_storage_enabled():
+        raise RuntimeError("对象存储未配置")
+    with OBJECT_STORAGE_CLIENT_LOCK:
+        if OBJECT_STORAGE_CLIENT is not None:
+            return OBJECT_STORAGE_CLIENT
+        try:
+            import boto3
+            from botocore.config import Config as BotoConfig
+        except ImportError as exc:
+            raise RuntimeError("当前环境未安装 boto3，请先安装 boto3") from exc
+
+        OBJECT_STORAGE_CLIENT = boto3.client(
+            "s3",
+            endpoint_url=OBJECT_STORAGE_ENDPOINT.rstrip("/"),
+            region_name=OBJECT_STORAGE_REGION,
+            aws_access_key_id=OBJECT_STORAGE_ACCESS_KEY_ID,
+            aws_secret_access_key=OBJECT_STORAGE_SECRET_ACCESS_KEY,
+            config=BotoConfig(
+                signature_version=_normalize_object_storage_signature_version(OBJECT_STORAGE_SIGNATURE_VERSION),
+                s3={"addressing_style": "path" if OBJECT_STORAGE_FORCE_PATH_STYLE else "auto"},
+            ),
+        )
+        return OBJECT_STORAGE_CLIENT
+
+
+def upload_bytes_to_object_storage(
+    content: bytes,
+    *,
+    object_key: str,
+    content_type: str = "application/octet-stream",
+    metadata: Optional[dict] = None,
+) -> dict:
+    client = get_object_storage_client()
+    payload = {
+        "Bucket": OBJECT_STORAGE_BUCKET,
+        "Key": str(object_key or "").strip(),
+        "Body": content,
+        "ContentType": str(content_type or "application/octet-stream"),
+    }
+    normalized_metadata = {}
+    if isinstance(metadata, dict):
+        for key, value in metadata.items():
+            normalized_key = str(key or "").strip().lower()
+            normalized_value = str(value or "").strip()
+            if normalized_key and normalized_value:
+                normalized_metadata[normalized_key] = normalized_value[:1024]
+    if normalized_metadata:
+        payload["Metadata"] = normalized_metadata
+    client.put_object(**payload)
+    return {
+        "bucket": OBJECT_STORAGE_BUCKET,
+        "object_key": str(object_key or "").strip(),
+        "size": len(content),
+        "content_type": str(content_type or "application/octet-stream"),
+        "storage_backend": "object_storage",
+    }
+
+
+def upload_file_to_object_storage(
+    file_path: Path,
+    *,
+    object_key: str,
+    content_type: str = "application/octet-stream",
+    metadata: Optional[dict] = None,
+) -> dict:
+    target = Path(file_path)
+    if not target.exists() or not target.is_file():
+        raise FileNotFoundError(f"文件不存在: {target}")
+    content = target.read_bytes()
+    return upload_bytes_to_object_storage(
+        content,
+        object_key=object_key,
+        content_type=content_type,
+        metadata=metadata,
+    )
+
+
+def download_object_storage_bytes(object_key: str) -> tuple[bytes, dict]:
+    client = get_object_storage_client()
+    response = client.get_object(Bucket=OBJECT_STORAGE_BUCKET, Key=str(object_key or "").strip())
+    body = response["Body"].read()
+    metadata = {
+        "content_type": str(response.get("ContentType") or "application/octet-stream"),
+        "content_length": int(response.get("ContentLength") or len(body)),
+    }
+    return body, metadata
+
+
+def object_storage_key_exists(object_key: str) -> bool:
+    if not is_object_storage_enabled():
+        return False
+    try:
+        client = get_object_storage_client()
+        client.head_object(Bucket=OBJECT_STORAGE_BUCKET, Key=str(object_key or "").strip())
+        return True
     except Exception:
         return False
 
@@ -10898,6 +11476,12 @@ def build_report_generation_payload(record: Optional[dict]) -> dict:
     quality_meta = record.get("report_quality_meta")
     if isinstance(quality_meta, dict):
         payload["report_quality_meta"] = quality_meta
+    runtime_timings = record.get("runtime_timings")
+    if isinstance(runtime_timings, dict):
+        payload["runtime_timings"] = runtime_timings
+    runtime_summary = record.get("runtime_summary")
+    if isinstance(runtime_summary, dict):
+        payload["runtime_summary"] = runtime_summary
 
     return payload
 
@@ -11436,9 +12020,13 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str, session_si
             # 重新读取会话数据（可能已更新）
             session_file = SESSIONS_DIR / f"{session_id}.json"
             session_data = safe_load_session(session_file)
+            if not isinstance(session_data, dict) and isinstance(session, dict):
+                session_data = copy.deepcopy(session)
             if not isinstance(session_data, dict):
                 return
             fresh_signature = get_file_signature(session_file)
+            if fresh_signature is None and normalized_signature is not None:
+                fresh_signature = normalized_signature
             if fresh_signature is None:
                 return
             if normalized_signature is not None and fresh_signature != normalized_signature:
@@ -23361,6 +23949,11 @@ def generate_report_v3_pipeline(
     ) -> Optional[dict]:
     """执行 V3 报告生成流水线。失败时返回包含 reason 的调试结构。"""
     try:
+        pipeline_timings = {
+            "evidence_pack_ms": 0.0,
+            "draft_gen_ms": 0.0,
+            "review_ms": 0.0,
+        }
         runtime_cfg = get_report_v3_runtime_config(report_profile)
         runtime_profile = runtime_cfg["profile"]
         pipeline_lane = str(preferred_lane or "report").strip().lower() or "report"
@@ -23380,7 +23973,9 @@ def generate_report_v3_pipeline(
         report_draft_max_tokens = min(MAX_TOKENS_REPORT, runtime_cfg["draft_max_tokens"])
         report_review_max_tokens = min(MAX_TOKENS_REPORT, runtime_cfg["review_max_tokens"])
 
+        evidence_pack_started_at = _time.perf_counter()
         evidence_pack = build_report_evidence_pack(session)
+        pipeline_timings["evidence_pack_ms"] = round((_time.perf_counter() - evidence_pack_started_at) * 1000.0, 2)
 
         if session_id:
             update_report_generation_status(session_id, "building_prompt", message="正在构建证据包并生成结构化草案...")
@@ -23440,6 +24035,7 @@ def generate_report_v3_pipeline(
             for lane_index, candidate_lane in enumerate(draft_lane_candidates):
                 lane_call_type = current_call_type if lane_index == 0 else f"{current_call_type}_fallback_{candidate_lane}"
                 lane_model = resolve_model_name_for_lane(call_type="report_v3_draft", selected_lane=candidate_lane)
+                draft_call_started_at = _time.perf_counter()
                 draft_raw = call_claude(
                     draft_prompt,
                     max_tokens=current_max_tokens,
@@ -23447,6 +24043,7 @@ def generate_report_v3_pipeline(
                     timeout=current_timeout,
                     preferred_lane=candidate_lane,
                 )
+                pipeline_timings["draft_gen_ms"] += max(0.0, (_time.perf_counter() - draft_call_started_at) * 1000.0)
 
                 last_draft_call_type = lane_call_type
                 last_facts_limit = current_facts_limit
@@ -23525,6 +24122,7 @@ def generate_report_v3_pipeline(
                 },
                 "evidence_pack": evidence_pack,
                 "review_issues": [],
+                "timings": pipeline_timings,
             }
 
         current_draft, local_issues = validate_report_draft_v3(draft_parsed, evidence_pack)
@@ -23552,6 +24150,7 @@ def generate_report_v3_pipeline(
         for review_round in range(total_round_budget):
             review_round_no = review_round + 1
             last_review_round_no = review_round_no
+            review_round_started_at = _time.perf_counter()
             if session_id:
                 update_report_generation_status(
                     session_id,
@@ -23579,6 +24178,7 @@ def generate_report_v3_pipeline(
                 preferred_lane=review_phase_lane,
             )
             if not review_raw:
+                pipeline_timings["review_ms"] += max(0.0, (_time.perf_counter() - review_round_started_at) * 1000.0)
                 return {
                     "status": "failed",
                     "reason": "review_generation_failed",
@@ -23599,6 +24199,7 @@ def generate_report_v3_pipeline(
                     "draft_snapshot": current_draft if isinstance(current_draft, dict) else {},
                     "evidence_pack": evidence_pack,
                     "review_issues": final_issues,
+                    "timings": pipeline_timings,
                 }
 
             review_parse_meta = {}
@@ -23660,6 +24261,7 @@ def generate_report_v3_pipeline(
                         or ""
                     )
             if not review_parsed:
+                pipeline_timings["review_ms"] += max(0.0, (_time.perf_counter() - review_round_started_at) * 1000.0)
                 return {
                     "status": "failed",
                     "reason": "review_parse_failed",
@@ -23688,6 +24290,7 @@ def generate_report_v3_pipeline(
                     },
                     "evidence_pack": evidence_pack,
                     "review_issues": final_issues,
+                    "timings": pipeline_timings,
                 }
 
             if isinstance(review_parsed.get("revised_draft"), dict):
@@ -23737,9 +24340,11 @@ def generate_report_v3_pipeline(
                         error_msg=f"quality_issue_count={len(quality_gate_issues)}",
                     )
                     if remaining_quality_fix_rounds <= 0:
+                        pipeline_timings["review_ms"] += max(0.0, (_time.perf_counter() - review_round_started_at) * 1000.0)
                         break
                     remaining_quality_fix_rounds -= 1
                     review_issues = quality_gate_issues
+                    pipeline_timings["review_ms"] += max(0.0, (_time.perf_counter() - review_round_started_at) * 1000.0)
                     continue
                 record_pipeline_stage_metric(
                     stage="quality_gate",
@@ -23761,9 +24366,11 @@ def generate_report_v3_pipeline(
                             "重点提升表达清晰度、证据衔接与行动可执行性。"
                         ),
                     }]
+                    pipeline_timings["review_ms"] += max(0.0, (_time.perf_counter() - review_round_started_at) * 1000.0)
                     continue
 
                 report_content = render_report_from_draft_v3(session, current_draft, quality_meta)
+                pipeline_timings["review_ms"] += max(0.0, (_time.perf_counter() - review_round_started_at) * 1000.0)
                 return {
                     "status": "success",
                     "profile": runtime_profile,
@@ -23777,10 +24384,12 @@ def generate_report_v3_pipeline(
                     "phase_lanes": phase_lanes,
                     "review_rounds_executed": review_round_no,
                     "min_required_review_rounds": min_required_review_rounds,
+                    "timings": pipeline_timings,
                 }
 
             review_issues = merged_issues
             last_failed_stage = "review_gate"
+            pipeline_timings["review_ms"] += max(0.0, (_time.perf_counter() - review_round_started_at) * 1000.0)
 
         final_issue_types = summarize_issue_types_v3(final_issues)
         failure_reason = "quality_gate_failed" if last_failed_stage == "quality_gate" else "review_gate_failed"
@@ -23805,6 +24414,7 @@ def generate_report_v3_pipeline(
             "final_issue_count": len(final_issues),
             "final_issue_types": final_issue_types,
             "failure_stage": last_failed_stage,
+            "timings": pipeline_timings,
         }
     except Exception as e:
         if ENABLE_DEBUG_LOG:
@@ -23824,6 +24434,7 @@ def generate_report_v3_pipeline(
             "repair_applied": False,
             "evidence_pack": {},
             "review_issues": [],
+            "timings": {},
         }
 
 
@@ -27029,6 +27640,7 @@ def _select_question_generation_runtime_profile(
     full_max_tokens_by_lane = QUESTION_FULL_MAX_TOKENS_BY_LANE
     hedge_delay_by_lane = QUESTION_HEDGE_DELAY_BY_LANE
     reasons = []
+    release_conservative_mode = bool(QUESTION_RELEASE_CONSERVATIVE_MODE and not is_prefetch)
 
     if is_prefetch:
         primary_lane = PREFETCH_QUESTION_PRIMARY_LANE
@@ -27263,6 +27875,19 @@ def _select_question_generation_runtime_profile(
 
     if has_reference_docs:
         reasons.append("has_reference_docs")
+    if release_conservative_mode:
+        if full_timeout is not None:
+            conservative_full_timeout = 15.0 if high_evidence_intent else 14.0
+            full_timeout = _clamp_question_generation_timeout(
+                min(float(full_timeout), conservative_full_timeout),
+                minimum=12.0 if not high_evidence_intent else 13.0,
+            )
+        full_max_tokens = _clamp_question_generation_tokens(
+            min(max_tokens_ceiling, int(full_max_tokens or max_tokens_ceiling), 1200 if high_evidence_intent else 1100),
+            minimum=720,
+            ceiling=max_tokens_ceiling,
+        )
+        reasons.append("release_conservative")
     if not reasons:
         reasons.append(profile_name)
 
@@ -27857,8 +28482,33 @@ def get_next_question(session_id):
     user_id = get_current_user_id_or_none()
     if not user_id:
         return jsonify({"error": "请先登录"}), 401
+    request_started_at = _time.perf_counter()
+    question_runtime_durations = {
+        "session_load_ms": 0.0,
+        "prefetch_wait_ms": 0.0,
+        "prompt_build_ms": 0.0,
+        "ai_call_ms": 0.0,
+        "parse_repair_ms": 0.0,
+        "postprocess_ms": 0.0,
+    }
 
+    def _elapsed_ms(started_at: float) -> float:
+        return max(0.0, (_time.perf_counter() - float(started_at or _time.perf_counter())) * 1000.0)
+
+    def _record_question_runtime(outcome: str, runtime_profile: str = "", tier_used: str = "", selection_reason: str = "") -> None:
+        payload = dict(question_runtime_durations)
+        payload["total_ms"] = round(_elapsed_ms(request_started_at), 2)
+        record_question_generation_runtime_sample(
+            durations=payload,
+            outcome=outcome,
+            runtime_profile=runtime_profile,
+            tier_used=tier_used,
+            selection_reason=selection_reason,
+        )
+
+    session_load_started_at = _time.perf_counter()
     loaded = load_session_for_user(session_id, user_id)
+    question_runtime_durations["session_load_ms"] = round(_elapsed_ms(session_load_started_at), 2)
     if len(loaded) == 3:
         _file, error_msg, status_code = loaded
         return jsonify({"error": error_msg}), status_code
@@ -27880,7 +28530,10 @@ def get_next_question(session_id):
         return jsonify(cached_question_payload)
 
     prefetch_wait_seconds = QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS if prefer_prefetch else QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS
-    if _wait_for_question_prefetch_inflight(question_cache_key, prefetch_wait_seconds):
+    prefetch_wait_started_at = _time.perf_counter()
+    waited_prefetch = _wait_for_question_prefetch_inflight(question_cache_key, prefetch_wait_seconds)
+    question_runtime_durations["prefetch_wait_ms"] = round(_elapsed_ms(prefetch_wait_started_at), 2)
+    if waited_prefetch:
         cached_question_payload = _get_question_result_cache(question_cache_key)
         if isinstance(cached_question_payload, dict):
             if ENABLE_DEBUG_LOG:
@@ -28084,6 +28737,7 @@ def get_next_question(session_id):
         # 阶段1: 分析回答
         update_thinking_status(session_id, "analyzing", has_search)
 
+        prompt_build_started_at = _time.perf_counter()
         prepared_runtime = _prepare_question_generation_runtime(
             session,
             dimension,
@@ -28099,6 +28753,7 @@ def get_next_question(session_id):
         decision_meta = prepared_runtime["decision_meta"]
         runtime_profile = prepared_runtime["runtime_profile"]
         fast_prompt = prepared_runtime["fast_prompt"]
+        question_runtime_durations["prompt_build_ms"] = round(_elapsed_ms(prompt_build_started_at), 2)
 
         # 日志：记录 prompt 长度（便于监控和调优）
         if ENABLE_DEBUG_LOG:
@@ -28113,6 +28768,7 @@ def get_next_question(session_id):
         # 阶段3: 生成问题
         update_thinking_status(session_id, "generating", has_search)
 
+        ai_call_started_at = _time.perf_counter()
         response, result, tier_used = generate_question_with_tiered_strategy(
             prompt,
             truncated_docs=truncated_docs,
@@ -28123,6 +28779,8 @@ def get_next_question(session_id):
             fast_prompt=fast_prompt,
             runtime_profile=runtime_profile,
         )
+        question_runtime_durations["ai_call_ms"] = round(_elapsed_ms(ai_call_started_at), 2)
+        parse_repair_started_at = _time.perf_counter()
         if ENABLE_DEBUG_LOG:
             print(f"⚙️ 问题生成通道: {tier_used}")
 
@@ -28131,6 +28789,13 @@ def get_next_question(session_id):
             fallback = get_fallback_question(session, dimension)
             fallback["detail"] = "AI 服务暂时不可用，已切换为备用题目"
             _record_question_generation_fallback("ai_unavailable")
+            question_runtime_durations["parse_repair_ms"] = round(_elapsed_ms(parse_repair_started_at), 2)
+            _record_question_runtime(
+                "failed",
+                runtime_profile=runtime_profile.get("profile_name", ""),
+                tier_used=tier_used,
+                selection_reason=runtime_profile.get("selection_reason", ""),
+            )
             return jsonify(fallback)
 
         if result:
@@ -28181,6 +28846,13 @@ def get_next_question(session_id):
                     fallback = get_fallback_question(session, dimension)
                     fallback["detail"] = "AI 连续生成了重复问题，已切换为备用题目"
                     _record_question_generation_fallback("repeat_retry_failed")
+                    question_runtime_durations["parse_repair_ms"] = round(_elapsed_ms(parse_repair_started_at), 2)
+                    _record_question_runtime(
+                        "failed",
+                        runtime_profile=runtime_profile.get("profile_name", ""),
+                        tier_used=tier_used,
+                        selection_reason=runtime_profile.get("selection_reason", ""),
+                    )
                     return jsonify(fallback)
 
             # ========== 后端强制校验 is_follow_up ==========
@@ -28221,9 +28893,18 @@ def get_next_question(session_id):
             # 清除思考状态
             clear_thinking_status(session_id)
             # ========== 步骤5: 触发预生成（如果需要）==========
+            postprocess_started_at = _time.perf_counter()
             trigger_prefetch_if_needed(session, dimension, session_signature=session_signature)
             _set_question_result_cache(question_cache_key, result)
             record_question_generation_event("ai_success", reason=tier_used)
+            question_runtime_durations["parse_repair_ms"] = round(_elapsed_ms(parse_repair_started_at), 2)
+            question_runtime_durations["postprocess_ms"] = round(_elapsed_ms(postprocess_started_at), 2)
+            _record_question_runtime(
+                "completed",
+                runtime_profile=runtime_profile.get("profile_name", ""),
+                tier_used=tier_used,
+                selection_reason=runtime_profile.get("selection_reason", ""),
+            )
             return jsonify(result)
 
         clear_thinking_status(session_id)
@@ -28242,17 +28923,40 @@ def get_next_question(session_id):
             repaired_result["question_generation_tier"] = tier_used
             repaired_result["question_selected_lane"] = selected_lane
             repaired_result["question_runtime_profile"] = runtime_profile.get("profile_name", "")
+            postprocess_started_at = _time.perf_counter()
             trigger_prefetch_if_needed(session, dimension, session_signature=session_signature)
             _set_question_result_cache(question_cache_key, repaired_result)
             record_question_generation_event("ai_success", reason=f"{tier_used}:repair")
+            question_runtime_durations["parse_repair_ms"] = round(_elapsed_ms(parse_repair_started_at), 2)
+            question_runtime_durations["postprocess_ms"] = round(_elapsed_ms(postprocess_started_at), 2)
+            _record_question_runtime(
+                "completed",
+                runtime_profile=runtime_profile.get("profile_name", ""),
+                tier_used=f"{tier_used}:repair",
+                selection_reason=runtime_profile.get("selection_reason", ""),
+            )
             return jsonify(repaired_result)
 
         fallback = get_fallback_question(session, dimension)
         if fallback.get("question") or fallback.get("completed"):
             fallback["detail"] = "AI 返回内容无法稳定解析，已切换为备用题目"
             _record_question_generation_fallback("parse_invalid")
+            question_runtime_durations["parse_repair_ms"] = round(_elapsed_ms(parse_repair_started_at), 2)
+            _record_question_runtime(
+                "failed",
+                runtime_profile=runtime_profile.get("profile_name", ""),
+                tier_used=tier_used,
+                selection_reason=runtime_profile.get("selection_reason", ""),
+            )
             return jsonify(fallback)
 
+        question_runtime_durations["parse_repair_ms"] = round(_elapsed_ms(parse_repair_started_at), 2)
+        _record_question_runtime(
+            "failed",
+            runtime_profile=runtime_profile.get("profile_name", ""),
+            tier_used=tier_used,
+            selection_reason=runtime_profile.get("selection_reason", ""),
+        )
         return jsonify({
             "error": "AI 响应格式错误",
             "detail": "AI 返回的内容无法解析为有效的 JSON 格式。请点击「重试」按钮重新生成问题。"
@@ -28266,30 +28970,54 @@ def get_next_question(session_id):
         if fallback.get("question") or fallback.get("completed"):
             fallback["detail"] = "AI 生成过程中发生异常，已切换为备用题目"
             _record_question_generation_fallback("exception")
+            _record_question_runtime(
+                "failed",
+                selection_reason="exception",
+            )
             return jsonify(fallback)
 
         # 根据异常类型提供更具体的错误信息
         if "connection" in error_msg.lower() or "network" in error_msg.lower():
+            _record_question_runtime(
+                "failed",
+                selection_reason="exception:connection",
+            )
             return jsonify({
                 "error": "网络连接失败",
                 "detail": "无法连接到 AI 服务，请检查网络连接"
             }), 503
         elif "timeout" in error_msg.lower():
+            _record_question_runtime(
+                "failed",
+                selection_reason="exception:timeout",
+            )
             return jsonify({
                 "error": "请求超时",
                 "detail": "AI 服务响应超时，请稍后重试"
             }), 503
         elif "authentication" in error_msg.lower() or "api key" in error_msg.lower():
+            _record_question_runtime(
+                "failed",
+                selection_reason="exception:auth",
+            )
             return jsonify({
                 "error": "API 认证失败",
                 "detail": "API Key 无效或已过期，请联系管理员"
             }), 503
         elif "rate limit" in error_msg.lower():
+            _record_question_runtime(
+                "failed",
+                selection_reason="exception:rate_limit",
+            )
             return jsonify({
                 "error": "请求频率超限",
                 "detail": "AI 服务请求过于频繁，请稍后再试"
             }), 503
         else:
+            _record_question_runtime(
+                "failed",
+                selection_reason="exception:unknown",
+            )
             return jsonify({
                 "error": "生成问题失败",
                 "detail": f"发生未知错误: {error_msg}"
@@ -29039,34 +29767,54 @@ def upload_document(session_id):
             if not content or not content.strip():
                 return jsonify({"error": "文件内容为空"}), 400
         elif ext in ['.pdf', '.docx', '.xlsx', '.pptx']:
-            # 调用转换脚本
+            # 先查 PostgreSQL 转换缓存，未命中再调用转换脚本
             import subprocess
-            convert_script = SKILL_DIR / "scripts" / "convert_doc.py"
-            if convert_script.exists():
-                try:
-                    result = subprocess.run(
-                        ["uv", "run", str(convert_script), "convert", str(filepath)],
-                        capture_output=True,
-                        text=True,
-                        cwd=str(SKILL_DIR),
-                        timeout=DOCUMENT_CONVERT_TIMEOUT_SECONDS,
-                    )
-                    if result.returncode == 0:
-                        converted_file = CONVERTED_DIR / f"{filepath.stem}.md"
-                        if converted_file.exists():
-                            content = converted_file.read_text(encoding="utf-8")
-                        else:
-                            content = f"[{ext.upper()[1:]} 解析失败: 未找到转换后的文件]"
-                    else:
-                        error_msg = result.stderr[:200] if result.stderr else "未知错误"
-                        content = f"[{ext.upper()[1:]} 解析失败: {error_msg}]"
-                except subprocess.TimeoutExpired:
-                    content = f"[{ext.upper()[1:]} 解析失败: 转换超时（>{DOCUMENT_CONVERT_TIMEOUT_SECONDS}s）]"
-                except Exception as e:
-                    print(f"转换文档失败: {e}")
-                    content = f"[{ext.upper()[1:]} 解析失败: {str(e)[:200]}]"
+            source_hash = _compute_file_sha256(filepath)
+            converted_cache_key = build_converted_cache_key(source_hash, ext)
+            cached_markdown = get_converted_cache_content(converted_cache_key)
+            if cached_markdown.strip():
+                content = cached_markdown
+                if ENABLE_DEBUG_LOG:
+                    print(f"📋 命中转换缓存: ext={ext}, hash={source_hash[:12]}")
             else:
-                content = f"[{ext.upper()[1:]} 文件: {filename}] (转换脚本不存在)"
+                convert_script = SKILL_DIR / "scripts" / "convert_doc.py"
+                if convert_script.exists():
+                    try:
+                        result = subprocess.run(
+                            ["uv", "run", str(convert_script), "convert", str(filepath)],
+                            capture_output=True,
+                            text=True,
+                            cwd=str(SKILL_DIR),
+                            timeout=DOCUMENT_CONVERT_TIMEOUT_SECONDS,
+                        )
+                        if result.returncode == 0:
+                            converted_file = CONVERTED_DIR / f"{filepath.stem}.md"
+                            if converted_file.exists():
+                                content = converted_file.read_text(encoding="utf-8")
+                                if content.strip():
+                                    save_converted_cache_content(
+                                        converted_cache_key,
+                                        content,
+                                        source_ext=ext,
+                                        source_hash=source_hash,
+                                    )
+                                if _use_postgres_shared_meta_storage():
+                                    try:
+                                        converted_file.unlink()
+                                    except Exception:
+                                        pass
+                            else:
+                                content = f"[{ext.upper()[1:]} 解析失败: 未找到转换后的文件]"
+                        else:
+                            error_msg = result.stderr[:200] if result.stderr else "未知错误"
+                            content = f"[{ext.upper()[1:]} 解析失败: {error_msg}]"
+                    except subprocess.TimeoutExpired:
+                        content = f"[{ext.upper()[1:]} 解析失败: 转换超时（>{DOCUMENT_CONVERT_TIMEOUT_SECONDS}s）]"
+                    except Exception as e:
+                        print(f"转换文档失败: {e}")
+                        content = f"[{ext.upper()[1:]} 解析失败: {str(e)[:200]}]"
+                else:
+                    content = f"[{ext.upper()[1:]} 文件: {filename}] (转换脚本不存在)"
     except UnicodeDecodeError as e:
         return jsonify({"error": f"文件编码错误: {str(e)}"}), 400
     except Exception as e:
@@ -29074,6 +29822,27 @@ def upload_document(session_id):
 
     if not content or not content.strip():
         return jsonify({"error": "文件解析后内容为空"}), 400
+
+    upload_archive = {}
+    if is_object_storage_enabled():
+        try:
+            upload_archive = upload_file_to_object_storage(
+                filepath,
+                object_key=build_object_storage_key(
+                    "uploads",
+                    "sessions",
+                    session_id,
+                    filename=display_filename,
+                ),
+                content_type=str(file.content_type or _guess_content_type(display_filename)),
+                metadata={
+                    "session_id": session_id,
+                    "owner_user_id": str(user_id),
+                    "original_filename": display_filename,
+                },
+            )
+        except Exception as exc:
+            return jsonify({"error": f"文件归档到对象存储失败: {exc}"}), 500
 
     # 读取内容完成后再短暂加锁写回，避免文档转换阻塞整个会话。
     with locked_session_for_user(session_id, user_id) as latest_loaded:
@@ -29089,7 +29858,15 @@ def upload_document(session_id):
             "content": content[:10000],  # 限制长度
             "source": "upload",  # 用户上传
             "uploaded_at": get_utc_now(),
+            "original_size": int(file_size or 0),
         }
+        if upload_archive:
+            uploaded_document.update({
+                "storage_backend": upload_archive.get("storage_backend"),
+                "object_key": upload_archive.get("object_key"),
+                "bucket": upload_archive.get("bucket"),
+                "content_type": upload_archive.get("content_type"),
+            })
         uploaded_document["doc_id"] = build_reference_material_doc_id(
             uploaded_document,
             index=len(latest_session["reference_materials"]),
@@ -29721,11 +30498,73 @@ def run_report_generation_job(
     action: str = "generate",
 ) -> None:
     """后台生成报告任务。"""
+    job_started_at = _time.perf_counter()
+    report_runtime_durations = {
+        "session_load_ms": 0.0,
+        "evidence_pack_ms": 0.0,
+        "draft_gen_ms": 0.0,
+        "review_ms": 0.0,
+        "salvage_ms": 0.0,
+        "failover_ms": 0.0,
+        "legacy_fallback_ms": 0.0,
+        "persist_ms": 0.0,
+    }
+
+    def _job_elapsed_ms(started_at: float) -> float:
+        return max(0.0, (_time.perf_counter() - float(started_at or _time.perf_counter())) * 1000.0)
+
+    def _merge_pipeline_timings(payload: Optional[dict]) -> None:
+        if not isinstance(payload, dict):
+            return
+        timings = payload.get("timings")
+        if not isinstance(timings, dict):
+            return
+        for key in ("evidence_pack_ms", "draft_gen_ms", "review_ms"):
+            report_runtime_durations[key] = round(
+                max(float(report_runtime_durations.get(key, 0.0) or 0.0), _safe_float(timings.get(key), 0.0)),
+                2,
+            )
+
+    def _build_report_runtime_summary(path: str = "", reason: str = "", outcome: str = "completed") -> dict:
+        timings = dict(report_runtime_durations)
+        timings["total_ms"] = round(_job_elapsed_ms(job_started_at), 2)
+        summary = {
+            "path": str(path or ""),
+            "reason": str(reason or ""),
+            "outcome": str(outcome or ""),
+            "timings": timings,
+        }
+        return summary
+
+    def _record_report_runtime(outcome: str, runtime_profile: str = "", path: str = "", reason: str = "") -> None:
+        runtime_summary = _build_report_runtime_summary(path=path, reason=reason, outcome=outcome)
+        set_report_generation_metadata(
+            session_id,
+            {
+                "runtime_timings": runtime_summary.get("timings", {}),
+                "runtime_summary": {
+                    "path": runtime_summary.get("path", ""),
+                    "reason": runtime_summary.get("reason", ""),
+                    "outcome": runtime_summary.get("outcome", ""),
+                },
+            },
+        )
+        record_report_generation_runtime_sample(
+            durations=runtime_summary.get("timings", {}),
+            outcome=outcome,
+            runtime_profile=runtime_profile,
+            path=path,
+            reason=reason,
+        )
+
     try:
         requested_action = "regenerate" if str(action or "").strip() == "regenerate" else "generate"
         selected_report_profile = normalize_report_profile_choice(report_profile, fallback=REPORT_V3_PROFILE)
+        selected_report_runtime_cfg = get_report_v3_runtime_config(selected_report_profile)
         set_report_generation_metadata(session_id, {"report_profile": selected_report_profile})
+        session_load_started_at = _time.perf_counter()
         loaded = load_session_for_user(session_id, user_id, include_missing=True)
+        report_runtime_durations["session_load_ms"] = round(_job_elapsed_ms(session_load_started_at), 2)
         session_file, session, state = loaded
         if state != "ok" or session_file is None or session is None:
             error_msg = "会话不存在或无权限"
@@ -29735,6 +30574,7 @@ def run_report_generation_job(
                 "error": error_msg,
                 "completed_at": get_utc_now(),
             })
+            _record_report_runtime("failed", runtime_profile=selected_report_profile, path="session_load", reason="session_unavailable")
             return
 
         # 数据迁移：兼容旧会话
@@ -29742,6 +30582,7 @@ def run_report_generation_job(
 
         def persist_report(content: str, quality_meta: Optional[dict] = None) -> tuple[Path, str]:
             """保存报告并更新会话状态。"""
+            persist_started_at = _time.perf_counter()
             filename = ""
             if requested_action == "regenerate":
                 filename = resolve_session_bound_report_name(session, user_id)
@@ -29774,6 +30615,10 @@ def run_report_generation_job(
                     session["current_report_updated_at"] = latest_session["current_report_updated_at"]
                     session["last_report_name"] = filename
 
+            report_runtime_durations["persist_ms"] = round(
+                float(report_runtime_durations.get("persist_ms", 0.0) or 0.0) + _job_elapsed_ms(persist_started_at),
+                2,
+            )
             return report_file, filename
 
         def build_v3_failure_debug(result: Optional[dict]) -> dict:
@@ -29842,6 +30687,7 @@ def run_report_generation_job(
             if not isinstance(quality_meta, dict):
                 quality_meta = {}
             session["last_report_quality_meta"] = quality_meta
+            _merge_pipeline_timings(result)
 
             debug_payload = {
                 "generated_at": get_utc_now(),
@@ -29887,6 +30733,12 @@ def run_report_generation_job(
                 "error": "",
                 "completed_at": get_utc_now(),
             })
+            _record_report_runtime(
+                "completed",
+                runtime_profile=result.get("profile", selected_report_profile),
+                path="v3_pipeline",
+                reason=status_reason,
+            )
             return True
 
         # 检查是否有 Claude API
@@ -29898,6 +30750,7 @@ def run_report_generation_job(
                 preferred_lane="report",
                 report_profile=selected_report_profile,
             )
+            _merge_pipeline_timings(v3_result)
 
             if v3_result and v3_result.get("report_content"):
                 if persist_v3_success_result(
@@ -29907,7 +30760,15 @@ def run_report_generation_job(
                 ):
                     return
 
-            primary_salvage = attempt_salvage_v3_review_failure(session, v3_result)
+            if bool(selected_report_runtime_cfg.get("salvage_on_quality_gate_failure", True)):
+                salvage_started_at = _time.perf_counter()
+                primary_salvage = attempt_salvage_v3_review_failure(session, v3_result)
+                report_runtime_durations["salvage_ms"] = round(
+                    float(report_runtime_durations.get("salvage_ms", 0.0) or 0.0) + _job_elapsed_ms(salvage_started_at),
+                    2,
+                )
+            else:
+                primary_salvage = {"attempted": False, "success": False, "note": "disabled_by_release_conservative_mode"}
             if isinstance(v3_result, dict):
                 v3_result["salvage_attempted"] = bool(primary_salvage.get("attempted", False))
                 v3_result["salvage_success"] = bool(primary_salvage.get("success", False))
@@ -29948,7 +30809,12 @@ def run_report_generation_job(
             failover_success = False
             failover_failure = None
 
-            if REPORT_V3_FAILOVER_ENABLED and can_use_v3_failover_lane() and should_retry_v3_with_failover(v3_result):
+            if (
+                REPORT_V3_FAILOVER_ENABLED
+                and bool(selected_report_runtime_cfg.get("failover_on_single_issue", True))
+                and can_use_v3_failover_lane()
+                and should_retry_v3_with_failover(v3_result)
+            ):
                 failover_attempted = True
                 if ENABLE_DEBUG_LOG:
                     print(
@@ -29965,6 +30831,7 @@ def run_report_generation_job(
                     ),
                 )
                 failover_suffix = f"_failover_{REPORT_V3_FAILOVER_LANE}"
+                failover_started_at = _time.perf_counter()
                 failover_result = generate_report_v3_pipeline(
                     session,
                     session_id=session_id,
@@ -29972,6 +30839,11 @@ def run_report_generation_job(
                     call_type_suffix=failover_suffix,
                     report_profile=selected_report_profile,
                 )
+                report_runtime_durations["failover_ms"] = round(
+                    float(report_runtime_durations.get("failover_ms", 0.0) or 0.0) + _job_elapsed_ms(failover_started_at),
+                    2,
+                )
+                _merge_pipeline_timings(failover_result)
                 if failover_result and failover_result.get("report_content"):
                     failover_success = True
                     if persist_v3_success_result(
@@ -29994,7 +30866,15 @@ def run_report_generation_job(
                     ):
                         return
 
-                failover_salvage = attempt_salvage_v3_review_failure(session, failover_result)
+                if bool(selected_report_runtime_cfg.get("salvage_on_quality_gate_failure", True)):
+                    failover_salvage_started_at = _time.perf_counter()
+                    failover_salvage = attempt_salvage_v3_review_failure(session, failover_result)
+                    report_runtime_durations["salvage_ms"] = round(
+                        float(report_runtime_durations.get("salvage_ms", 0.0) or 0.0) + _job_elapsed_ms(failover_salvage_started_at),
+                        2,
+                    )
+                else:
+                    failover_salvage = {"attempted": False, "success": False, "note": "disabled_by_release_conservative_mode"}
                 if isinstance(failover_result, dict):
                     failover_result["salvage_attempted"] = bool(failover_salvage.get("attempted", False))
                     failover_result["salvage_success"] = bool(failover_salvage.get("success", False))
@@ -30111,11 +30991,16 @@ def run_report_generation_job(
                 len(prompt),
                 timeout_cap=max(REPORT_API_TIMEOUT, REPORT_DRAFT_API_TIMEOUT + 60),
             )
+            legacy_started_at = _time.perf_counter()
             report_content = call_claude(
                 prompt,
                 max_tokens=min(MAX_TOKENS_REPORT, 7000),
                 call_type="report_legacy_fallback",
                 timeout=legacy_timeout,
+            )
+            report_runtime_durations["legacy_fallback_ms"] = round(
+                float(report_runtime_durations.get("legacy_fallback_ms", 0.0) or 0.0) + _job_elapsed_ms(legacy_started_at),
+                2,
             )
 
             if is_unusable_legacy_report_content(report_content):
@@ -30184,6 +31069,12 @@ def run_report_generation_job(
                     "error": "",
                     "completed_at": get_utc_now(),
                 })
+                _record_report_runtime(
+                    "completed",
+                    runtime_profile=selected_report_profile,
+                    path="legacy_ai_fallback",
+                    reason="v3_pipeline_fallback",
+                )
                 return
 
         # 回退到简单报告生成
@@ -30209,6 +31100,12 @@ def run_report_generation_job(
             "error": "",
             "completed_at": get_utc_now(),
         })
+        _record_report_runtime(
+            "completed",
+            runtime_profile=selected_report_profile,
+            path="simple_template_fallback",
+            reason="legacy_fallback_failed",
+        )
     except Exception as exc:
         error_detail = str(exc)[:200] or "未知错误"
         update_report_generation_status(session_id, "failed", message=f"报告生成失败：{error_detail}", active=False)
@@ -30217,6 +31114,12 @@ def run_report_generation_job(
             "error": error_detail,
             "completed_at": get_utc_now(),
         })
+        _record_report_runtime(
+            "failed",
+            runtime_profile=selected_report_profile if 'selected_report_profile' in locals() else "",
+            path="exception",
+            reason=error_detail,
+        )
         if ENABLE_DEBUG_LOG:
             print(f"❌ 报告生成异常: {error_detail}")
     finally:
@@ -31042,9 +31945,6 @@ def build_download_filename(url: str, name: str, content_type: str) -> str:
 
 
 def download_presentation_file(url: str, name: str = "") -> Optional[dict]:
-    downloads_dir = get_downloads_dir()
-    downloads_dir.mkdir(parents=True, exist_ok=True)
-
     headers = {}
     try:
         base_host = urlparse(get_refly_base_url()).netloc
@@ -31058,22 +31958,41 @@ def download_presentation_file(url: str, name: str = "") -> Optional[dict]:
     response.raise_for_status()
     content_type = response.headers.get("Content-Type", "")
     filename = build_download_filename(url, name, content_type)
-    file_path = ensure_unique_path(downloads_dir, filename)
-
+    chunks = []
     size = 0
-    with open(file_path, "wb") as file_handle:
-        for chunk in response.iter_content(chunk_size=1024 * 256):
-            if not chunk:
-                continue
-            file_handle.write(chunk)
-            size += len(chunk)
+    for chunk in response.iter_content(chunk_size=1024 * 256):
+        if not chunk:
+            continue
+        chunks.append(chunk)
+        size += len(chunk)
     response.close()
+    content = b"".join(chunks)
 
+    if is_object_storage_enabled():
+        uploaded = upload_bytes_to_object_storage(
+            content,
+            object_key=build_object_storage_key("presentations", filename=filename),
+            content_type=content_type or _guess_content_type(filename),
+            metadata={
+                "source_url": url,
+                "instance_scope_key": get_active_instance_scope_key(),
+            },
+        )
+        uploaded["url"] = url
+        uploaded["filename"] = filename
+        uploaded["size"] = size
+        return uploaded
+
+    downloads_dir = get_downloads_dir()
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+    file_path = ensure_unique_path(downloads_dir, filename)
+    file_path.write_bytes(content)
     return {
         "url": url,
         "path": str(file_path),
         "filename": file_path.name,
-        "size": size
+        "size": size,
+        "content_type": content_type or _guess_content_type(file_path.name),
     }
 
 
@@ -31095,7 +32014,20 @@ def get_report_presentation(filename):
     record = get_presentation_record(filename)
     if not record:
         return jsonify({"error": "演示文稿不存在"}), 404
-    path_str = record.get("path")
+    object_key = str(record.get("object_key") or "").strip()
+    if object_key:
+        try:
+            content, meta = download_object_storage_bytes(object_key)
+        except Exception:
+            return jsonify({"error": "演示文稿不存在"}), 404
+        return send_file(
+            BytesIO(content),
+            mimetype=str(record.get("content_type") or meta.get("content_type") or "application/octet-stream"),
+            as_attachment=False,
+            download_name=str(record.get("filename") or Path(object_key).name or "presentation"),
+        )
+
+    path_str = str(record.get("path") or "").strip()
     if not path_str:
         return jsonify({"error": "演示文稿不存在"}), 404
     file_path = Path(path_str)
@@ -31146,9 +32078,12 @@ def get_report_presentation_status(filename):
         clear_presentation_execution(filename)
         execution_id = ""
 
-    path_str = record.get("path")
+    object_key = str(record.get("object_key") or "").strip()
+    path_str = str(record.get("path") or "").strip()
     file_exists = False
-    if path_str:
+    if object_key:
+        file_exists = object_storage_key_exists(object_key)
+    elif path_str:
         file_path = Path(path_str)
         downloads_dir = get_downloads_dir()
         if file_path.exists() and is_path_under(file_path, downloads_dir):
@@ -41659,8 +42594,10 @@ def get_metrics():
     stats = metrics_collector.get_statistics(last_n=last_n)
     stats["list_endpoints"] = get_list_metrics_snapshot()
     stats["question_generation"] = get_question_generation_stats_snapshot()
+    stats["question_generation_runtime"] = get_question_generation_runtime_stats_snapshot()
     stats["search_decision"] = get_search_decision_stats_snapshot()
     stats["report_generation_queue"] = get_report_generation_worker_snapshot(include_positions=False)
+    stats["report_generation_runtime"] = get_report_generation_runtime_stats_snapshot()
     with list_overload_stats_lock:
         stats["list_overload"] = {
             "sessions_list_rejected": int(list_overload_stats.get("sessions_list", {}).get("rejected", 0) or 0),
@@ -41677,7 +42614,9 @@ def reset_metrics():
         metrics_collector.reset()
         reset_list_metrics()
         reset_question_generation_stats()
+        reset_question_generation_runtime_stats()
         reset_search_decision_stats()
+        reset_report_generation_runtime_stats()
         with list_overload_stats_lock:
             for endpoint_key in list_overload_stats.keys():
                 list_overload_stats[endpoint_key]["rejected"] = 0
@@ -41809,6 +42748,9 @@ class SelectiveAccessLogRequestHandler(WSGIRequestHandler):
         return super().log_request(code, size)
 
 
+migrate_presentation_assets_to_object_storage_if_needed()
+
+
 if __name__ == '__main__':
     ai_bootstrap_snapshot = get_ai_client_bootstrap_snapshot()
     ai_state_reason = str(ai_bootstrap_snapshot.get("reason", "") or "")
@@ -41828,6 +42770,14 @@ if __name__ == '__main__':
     print(f"Reports: {REPORTS_DIR}")
     print(f"AI 状态: {ai_state_label}")
     print(f"配置解析: mode={CONFIG_RESOLUTION_MODE}, env_keys={LOADED_ENV_KEY_COUNT}, env_files={len(LOADED_ENV_FILES)}")
+    print(
+        "对象存储: "
+        + (
+            f"✅ 已启用(bucket={OBJECT_STORAGE_BUCKET}, endpoint={OBJECT_STORAGE_ENDPOINT})"
+            if is_object_storage_enabled()
+            else "⚠️  未启用"
+        )
+    )
     question_endpoint = QUESTION_BASE_URL or "(Anthropic 官方默认地址)"
     report_endpoint = REPORT_BASE_URL or "(Anthropic 官方默认地址)"
     report_draft_endpoint = REPORT_DRAFT_BASE_URL or report_endpoint
