@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "a26faaf",
+  "committedAt": "2026-03-30T20:53:39+08:00",
+  "versionType": "major",
+  "title": "隐藏前台报告模式选择",
+  "changes": [
+    "前端移除报告生成模式选择与本地偏好存储，报告生成请求改为仅走后端默认配置",
+    "配置中心将 REPORT_V3_PROFILE 文案调整为报告生成模式，并补充前台隐藏说明",
+    "配置示例同步更新 REPORT_V3_PROFILE 注释，明确默认由配置项控制"
+  ],
+  "changedFiles": [
+    "web/app.js",
+    "web/config.example.py",
+    "web/index.html",
+    "web/server.py"
+  ]
+}

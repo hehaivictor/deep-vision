@@ -165,8 +165,8 @@ QUESTION_HEDGE_DELAY_BY_LANE = {"question": 1.5, "summary": 1.0, "report": 1.8, 
 # ============ 报告生成链路 ===========
 # 集中放置报告 V3 的档位、双阶段、质量门与失败兜底策略。
 # 留空为 `None` 的高级参数，会由 `server.py` 按 `balanced/quality` 档位自动补默认值。
-# 作用：设置报告 V3 默认使用的运行档位。
-REPORT_V3_PROFILE = "balanced"  # 默认报告档位：balanced / quality
+# 作用：设置报告 V3 默认使用的生成模式，前台不再单独让用户选择。
+REPORT_V3_PROFILE = "balanced"  # 报告生成模式：balanced / quality
 # 作用：设置报告链路默认调用超时时间（秒）。
 REPORT_API_TIMEOUT = 180.0
 # 作用：设置报告草案阶段的调用超时时间（秒）。

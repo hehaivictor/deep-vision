@@ -2645,11 +2645,12 @@ ADMIN_CONFIG_SETTINGS_GROUPS: list[dict[str, Any]] = [
         "items": [
             _admin_select(
                 "REPORT_V3_PROFILE",
-                "报告默认档位",
+                "报告生成模式",
                 [
-                    {"value": "balanced", "label": "balanced"},
-                    {"value": "quality", "label": "quality"},
+                    {"value": "balanced", "label": "平衡模式（balanced）"},
+                    {"value": "quality", "label": "精审模式（quality）"},
                 ],
+                description="用户前台不再展示报告模式切换，默认按这里的配置生成报告。",
             ),
             _admin_float("REPORT_API_TIMEOUT", "报告总超时"),
             _admin_float("REPORT_DRAFT_API_TIMEOUT", "报告草案超时"),
