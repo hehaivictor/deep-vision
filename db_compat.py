@@ -267,8 +267,16 @@ class PostgresConnectionWrapper:
     def _try_fetch_lastrowid(self) -> Optional[int]:
         try:
             with self._conn.cursor() as cursor:
-                cursor.execute("SELECT LASTVAL()")
-                row = cursor.fetchone()
+                savepoint_name = "sp_lastrowid_fetch"
+                cursor.execute(f"SAVEPOINT {savepoint_name}")
+                try:
+                    cursor.execute("SELECT LASTVAL()")
+                    row = cursor.fetchone()
+                    cursor.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+                except Exception:
+                    cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                    cursor.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+                    return None
                 if not row:
                     return None
                 return int(row[0])
@@ -336,4 +344,3 @@ def connect_db(target: object):
     conn = sqlite3.connect(text)
     conn.row_factory = sqlite3.Row
     return conn
-

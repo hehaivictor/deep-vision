@@ -28,6 +28,7 @@
 - `WECHAT_LOGIN_ENABLED`
 - `AUTH_DB_PATH`
 - `LICENSE_DB_PATH`
+- `META_INDEX_DB_PATH`
 - `LICENSE_CODE_SIGNING_SECRET`
 
 如果当前是内测或演示环境，并且仍在使用 `mock` 短信登录，建议在 `web/.env` 中显式配置固定测试码和演示管理员手机号，而不是尝试在 `site-config.js` 中处理。
@@ -41,6 +42,7 @@
 
 - `AUTH_DB_PATH`：用户、登录验证码、微信身份等个人鉴权数据
 - `LICENSE_DB_PATH`：License、License 事件与 License 签名元数据
+- `META_INDEX_DB_PATH`：会话主数据、报告元数据以及会话/报告索引数据（`session_store`、`report_meta_*`、`session_index`、`report_index`）
 
 如果从旧版本升级，服务启动时会自动把旧 `users.db` 中的 License 数据迁移到独立的 `licenses.db`。
 

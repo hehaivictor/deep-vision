@@ -108,10 +108,11 @@ python3 scripts/run_gunicorn.py
 
 配置模板以 [web/.env.example](web/.env.example) 为准，常用项如下：
 
-鉴权相关数据已拆分为两个 SQLite 库：
+鉴权与索引相关数据可按需落在 SQLite 或 PostgreSQL：
 
 - `AUTH_DB_PATH`：保存用户、登录验证码、微信身份等个人鉴权数据，默认 `data/auth/users.db`
 - `LICENSE_DB_PATH`：保存 License、License 事件与 License 签名元数据，默认 `data/auth/licenses.db`
+- `META_INDEX_DB_PATH`：保存会话主数据（`session_store`）、报告归属/分享等元数据，以及 `session_index` / `report_index` 索引，默认 `data/meta_index.db`
 
 应用首次升级到该版本时，会在启动时自动把旧 `users.db` 中的 License 数据迁移到独立的 `licenses.db`。
 
@@ -130,6 +131,7 @@ python3 scripts/run_gunicorn.py
   - `SECRET_KEY`
   - `AUTH_DB_PATH`
   - `LICENSE_DB_PATH`
+  - `META_INDEX_DB_PATH`
   - `LICENSE_ENFORCEMENT_ENABLED`
   - `LICENSE_CODE_SIGNING_SECRET`
   - `ADMIN_USER_IDS`
