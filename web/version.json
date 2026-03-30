@@ -1,7 +1,18 @@
 {
-  "version": "5.1.0",
+  "version": "5.2.0",
   "releaseDate": "2026-03-30",
   "changelog": [
+    {
+      "version": "5.2.0",
+      "date": "2026-03-30",
+      "type": "minor",
+      "title": "切换第二步为纯云端主存储",
+      "changes": [
+        "调整会话主数据在 PostgreSQL 模式下只读写 session_store，并停止本地 JSON 作为在线主存储",
+        "改造报告归属迁移审计回滚链路，统一接入 meta_index 元数据表与快照恢复",
+        "补齐管理后台入口参数传递，确保多实例场景下运维操作使用同一套云端元数据"
+      ]
+    },
     {
       "version": "5.1.0",
       "date": "2026-03-30",
