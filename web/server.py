@@ -57,6 +57,7 @@ from db_compat import (
     connect_db,
     db_target_exists,
     ensure_sqlite_parent_dir,
+    is_postgres_dsn,
     normalize_db_cache_key,
     resolve_db_target,
 )
@@ -242,6 +243,7 @@ ENV_MANAGED_CONFIG_EXACT_KEYS = {
     "LICENSE_CODE_SIGNING_SECRET",
     "LICENSE_DB_PATH",
     "LICENSE_ENFORCEMENT_ENABLED",
+    "META_INDEX_DB_PATH",
     "REFLY_API_URL",
     "REFLY_FILES_FIELD",
     "REFLY_INPUT_FIELD",
@@ -1871,6 +1873,7 @@ ASSESSMENT_SCORE_MAX_TOKENS = max(32, ASSESSMENT_SCORE_MAX_TOKENS)
 CONFIG_SECRET_KEY = _cfg_text("SECRET_KEY", "")
 CONFIG_AUTH_DB_PATH = _cfg_text("AUTH_DB_PATH", "")
 CONFIG_LICENSE_DB_PATH = _cfg_text("LICENSE_DB_PATH", "")
+CONFIG_META_INDEX_DB_PATH = _cfg_text("META_INDEX_DB_PATH", "")
 CONFIG_SCENARIOS_DIR = _cfg_text("SCENARIOS_DIR", "")
 CONFIG_BUILTIN_SCENARIOS_DIR = _cfg_text("BUILTIN_SCENARIOS_DIR", "")
 CONFIG_CUSTOM_SCENARIOS_DIR = _cfg_text("CUSTOM_SCENARIOS_DIR", "")
@@ -2262,6 +2265,10 @@ LICENSE_DB_PATH = resolve_db_target(
     default_path=Path(str(AUTH_DB_PATH)).expanduser().parent / "licenses.db" if "://" not in str(AUTH_DB_PATH) else AUTH_DIR / "licenses.db",
 )
 
+meta_index_db_from_config = CONFIG_META_INDEX_DB_PATH
+meta_index_db_from_env = os.environ.get("DEEPVISION_META_INDEX_DB_PATH", "")
+META_INDEX_DB_TARGET_RAW = str(meta_index_db_from_env or meta_index_db_from_config).strip()
+
 INSECURE_SECRET_KEY_PLACEHOLDERS = {
     "replace-with-a-strong-random-secret",
     "deepvision-dev-secret-key",
@@ -2347,6 +2354,7 @@ def _admin_setting(
     list_value_kind: str = "text",
     requires_restart: bool = True,
     value_codec: str = "",
+    advanced: bool = False,
 ) -> dict[str, Any]:
     return {
         "key": key,
@@ -2359,6 +2367,7 @@ def _admin_setting(
         "list_value_kind": list_value_kind,
         "requires_restart": bool(requires_restart),
         "value_codec": str(value_codec or ""),
+        "advanced": bool(advanced),
     }
 
 
@@ -2411,6 +2420,8 @@ ADMIN_ENV_SETTINGS_GROUPS: list[dict[str, Any]] = [
             _admin_bool("ENABLE_AI", "启用 AI", description="总开关，关闭后只保留非 AI 功能。"),
             _admin_bool("ENABLE_WEB_SEARCH", "启用联网搜索", description="控制是否允许外部搜索。"),
             _admin_bool("ENABLE_VISION", "启用视觉能力", description="控制图片理解链路。"),
+            _admin_bool("AI_CLIENT_EAGER_INIT", "启动即初始化 AI 客户端", description="服务启动时预初始化各链路 AI 客户端。"),
+            _admin_bool("AI_CLIENT_INIT_CONNECTION_TEST", "初始化时连通性探测", description="客户端初始化时执行连通性检查。"),
             _admin_bool("ENABLE_DEBUG_LOG", "输出调试日志", description="打开后会记录更多排查日志。"),
             _admin_bool("FOCUS_GENERATION_ACCESS_LOG", "保留关键访问日志", description="只保留问题/报告关键接口访问日志。"),
             _admin_bool("SUPPRESS_STATUS_POLL_ACCESS_LOG", "隐藏状态轮询日志", description="减少状态轮询接口噪音。"),
@@ -2436,6 +2447,8 @@ ADMIN_ENV_SETTINGS_GROUPS: list[dict[str, Any]] = [
             _admin_int("GUNICORN_KEEPALIVE", "Keep-Alive", description="长连接保活秒数。"),
             _admin_setting("GUNICORN_WORKER_CLASS", "Worker 类型", description="常见值如 gthread。"),
             _admin_setting("GUNICORN_LOG_LEVEL", "Gunicorn 日志级别", description="如 info / warning / error。"),
+            _admin_setting("GUNICORN_ACCESSLOG", "Gunicorn 访问日志", description="默认输出到标准输出（-）。"),
+            _admin_setting("GUNICORN_ERRORLOG", "Gunicorn 错误日志", description="默认输出到标准错误（-）。"),
             _admin_bool("GUNICORN_PRELOAD_APP", "预加载应用", description="启动时预加载应用。"),
             _admin_setting("BUILTIN_SCENARIOS_DIR", "内置场景目录", description="系统场景配置目录。"),
             _admin_setting("CUSTOM_SCENARIOS_DIR", "自定义场景目录", description="用户自定义场景目录。"),
@@ -2451,6 +2464,7 @@ ADMIN_ENV_SETTINGS_GROUPS: list[dict[str, Any]] = [
             _admin_password("SECRET_KEY", "SECRET_KEY", description="Flask 会话与签名密钥。"),
             _admin_setting("AUTH_DB_PATH", "鉴权数据库路径", description="用户、登录与微信身份数据库路径。"),
             _admin_setting("LICENSE_DB_PATH", "License 数据库路径", description="License、事件与 License 元数据独立数据库路径。"),
+            _admin_setting("META_INDEX_DB_PATH", "会话与元数据数据库路径", description="会话主数据、报告元数据与会话/报告索引数据库路径，可配置为 PostgreSQL 连接串。"),
             _admin_password(
                 "LICENSE_CODE_SIGNING_SECRET",
                 "License 签名密钥",
@@ -2485,6 +2499,11 @@ ADMIN_ENV_SETTINGS_GROUPS: list[dict[str, Any]] = [
             _admin_setting("JD_SMS_TEMPLATE_ID_BIND", "绑定模板 ID", description="绑定手机号模板。"),
             _admin_setting("JD_SMS_TEMPLATE_ID_RECOVER", "恢复模板 ID", description="找回账号模板。"),
             _admin_float("JD_SMS_TIMEOUT", "短信接口超时", description="短信接口调用超时秒数。"),
+            _admin_int("SMS_CODE_LENGTH", "验证码位数", description="短信验证码长度。"),
+            _admin_int("SMS_CODE_TTL_SECONDS", "验证码有效期（秒）", description="单次验证码有效时长。"),
+            _admin_int("SMS_SEND_COOLDOWN_SECONDS", "发送冷却（秒）", description="同手机号发送最小间隔。"),
+            _admin_int("SMS_MAX_VERIFY_ATTEMPTS", "最大校验次数", description="单次验证码最大尝试次数。"),
+            _admin_int("SMS_MAX_SEND_PER_PHONE_PER_DAY", "单号日发送上限", description="同手机号每日最大发送次数。"),
         ],
     },
     {
@@ -2557,6 +2576,8 @@ ADMIN_ENV_SETTINGS_GROUPS: list[dict[str, Any]] = [
             _admin_password("WECHAT_APP_SECRET", "微信 AppSecret"),
             _admin_setting("WECHAT_REDIRECT_URI", "微信回调地址"),
             _admin_setting("WECHAT_OAUTH_SCOPE", "微信 OAuth Scope"),
+            _admin_float("WECHAT_OAUTH_TIMEOUT", "微信 OAuth 超时（秒）", description="微信 OAuth 网络请求超时。"),
+            _admin_int("WECHAT_OAUTH_STATE_TTL_SECONDS", "微信状态码有效期（秒）", description="OAuth state 的有效时长。"),
         ],
     },
 ]
@@ -2612,6 +2633,7 @@ ADMIN_CONFIG_SETTINGS_GROUPS: list[dict[str, Any]] = [
             _admin_float("QUESTION_HEDGED_DELAY_SECONDS", "Hedge 延迟秒数"),
             _admin_int("QUESTION_SESSION_HEDGE_BUDGET", "会话 Hedge 预算"),
             _admin_int("QUESTION_DIMENSION_HEDGE_BUDGET", "维度 Hedge 预算"),
+            _admin_float("LIST_API_RETRY_AFTER_SECONDS", "列表过载重试秒数", description="列表接口过载时的建议重试间隔。"),
         ],
     },
     {
@@ -2638,6 +2660,7 @@ ADMIN_CONFIG_SETTINGS_GROUPS: list[dict[str, Any]] = [
             _admin_int("REPORT_V3_REVIEW_BASE_ROUNDS", "基础审稿轮数"),
             _admin_bool("REPORT_V3_FAILOVER_ENABLED", "启用 Failover"),
             _admin_bool("REPORT_V3_RENDER_MERMAID_FROM_DATA", "渲染 Mermaid 图表"),
+            _admin_int("REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS", "报告队列重试秒数", description="报告队列繁忙时建议重试间隔。"),
         ],
     },
     {
@@ -2655,7 +2678,25 @@ ADMIN_CONFIG_SETTINGS_GROUPS: list[dict[str, Any]] = [
             _admin_int("SEARCH_MAX_RESULTS", "搜索结果数"),
             _admin_int("SEARCH_TIMEOUT", "搜索超时"),
             _admin_int("MAX_IMAGE_SIZE_MB", "图片大小上限 MB"),
+            _admin_int("DOCUMENT_CONVERT_TIMEOUT_SECONDS", "文档转换超时（秒）"),
             _admin_float("API_TIMEOUT", "通用 API 超时"),
+        ],
+    },
+    {
+        "id": "config_observability_cache",
+        "title": "观测与缓存（高级）",
+        "description": "用于性能与稳定性调优，建议评估后再调整。",
+        "source": "config",
+        "items": [
+            _admin_int("METRICS_ASYNC_BATCH_SIZE", "指标异步批大小", advanced=True),
+            _admin_float("METRICS_ASYNC_FLUSH_INTERVAL_SECONDS", "指标异步刷新间隔（秒）", advanced=True),
+            _admin_int("METRICS_ASYNC_MAX_PENDING", "指标异步待处理上限", advanced=True),
+            _admin_int("SEARCH_RESULT_CACHE_MAX_ENTRIES", "搜索结果缓存上限", advanced=True),
+            _admin_int("SEARCH_RESULT_CACHE_TTL_SECONDS", "搜索结果缓存 TTL（秒）", advanced=True),
+            _admin_int("SEARCH_DECISION_CACHE_MAX_ENTRIES", "搜索决策缓存上限", advanced=True),
+            _admin_int("SEARCH_DECISION_CACHE_TTL_SECONDS", "搜索决策缓存 TTL（秒）", advanced=True),
+            _admin_int("INTERVIEW_PROMPT_CACHE_MAX_ENTRIES", "访谈 Prompt 缓存上限", advanced=True),
+            _admin_int("INTERVIEW_PROMPT_CACHE_TTL_SECONDS", "访谈 Prompt 缓存 TTL（秒）", advanced=True),
         ],
     },
     {
@@ -3232,6 +3273,8 @@ def _get_admin_runtime_setting_value(source: str, key: str, *, site_values: Opti
         return str(AUTH_DB_PATH)
     if key == "LICENSE_DB_PATH":
         return str(LICENSE_DB_PATH)
+    if key == "META_INDEX_DB_PATH":
+        return str(get_meta_index_db_target())
     if key == "ADMIN_USER_IDS":
         return sorted(int(item) for item in ADMIN_USER_IDS)
     if key == "ADMIN_PHONE_NUMBERS":
@@ -4321,23 +4364,166 @@ def _set_interview_prompt_cache(
         }
 
 
-def safe_load_session(session_file: Path) -> dict:
-    """安全加载会话文件，处理 JSON 解析错误"""
+def _extract_session_id_from_session_file(session_file: Path) -> str:
+    target = Path(session_file)
+    name = target.name.strip()
+    if not name.endswith(".json"):
+        return ""
+    return name[:-5].strip()
+
+
+def _load_session_from_store(session_id: str) -> Optional[dict]:
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
     try:
-        return json.loads(session_file.read_text(encoding="utf-8"))
+        with get_meta_index_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT payload_json
+                FROM session_store
+                WHERE session_id = ?
+                LIMIT 1
+                """,
+                (sid,),
+            ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    payload_text = str(row["payload_json"] or "").strip()
+    if not payload_text:
+        return None
+    try:
+        payload = json.loads(payload_text)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _load_session_from_store_by_file_name(file_name: str) -> Optional[dict]:
+    name = str(file_name or "").strip()
+    if not name:
+        return None
+    try:
+        with get_meta_index_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT payload_json
+                FROM session_store
+                WHERE file_name = ?
+                LIMIT 1
+                """,
+                (name,),
+            ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    payload_text = str(row["payload_json"] or "").strip()
+    if not payload_text:
+        return None
+    try:
+        payload = json.loads(payload_text)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _get_session_store_signature(session_id: str = "", file_name: str = "") -> Optional[tuple[int, int]]:
+    sid = str(session_id or "").strip()
+    fname = str(file_name or "").strip()
+    if not sid and not fname:
+        return None
+    try:
+        with get_meta_index_connection() as conn:
+            if sid:
+                row = conn.execute(
+                    """
+                    SELECT payload_mtime_ns, payload_size
+                    FROM session_store
+                    WHERE session_id = ?
+                    LIMIT 1
+                    """,
+                    (sid,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT payload_mtime_ns, payload_size
+                    FROM session_store
+                    WHERE file_name = ?
+                    LIMIT 1
+                    """,
+                    (fname,),
+                ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    return (_safe_int(row["payload_mtime_ns"], 0), _safe_int(row["payload_size"], 0))
+
+
+def _delete_session_store_record(session_id: str = "", file_name: str = "") -> None:
+    sid = str(session_id or "").strip()
+    fname = str(file_name or "").strip()
+    if not sid and not fname:
+        return
+    try:
+        with get_meta_index_connection() as conn:
+            if sid and fname:
+                conn.execute(
+                    "DELETE FROM session_store WHERE session_id = ? OR file_name = ?",
+                    (sid, fname),
+                )
+            elif sid:
+                conn.execute("DELETE FROM session_store WHERE session_id = ?", (sid,))
+            else:
+                conn.execute("DELETE FROM session_store WHERE file_name = ?", (fname,))
+    except Exception:
+        return
+
+
+def safe_load_session(session_file: Path) -> dict:
+    """安全加载会话，优先读取会话存储表，失败再回退本地文件。"""
+    target = Path(session_file)
+    session_id = _extract_session_id_from_session_file(target)
+    if session_id:
+        store_payload = _load_session_from_store(session_id)
+        if isinstance(store_payload, dict):
+            return store_payload
+    else:
+        store_payload = _load_session_from_store_by_file_name(target.name)
+        if isinstance(store_payload, dict):
+            return store_payload
+
+    try:
+        return json.loads(target.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
     except json.JSONDecodeError as e:
-        _safe_log(f"⚠️ 会话文件损坏: {session_file}, 错误: {e}")
+        _safe_log(f"⚠️ 会话文件损坏: {target}, 错误: {e}")
         return None
     except Exception as e:
-        _safe_log(f"⚠️ 读取会话文件失败: {session_file}, 错误: {e}")
+        _safe_log(f"⚠️ 读取会话文件失败: {target}, 错误: {e}")
         return None
 
 
 def get_file_signature(file_path: Path) -> Optional[tuple[int, int]]:
+    target = Path(file_path)
     try:
-        stat = file_path.stat()
+        stat = target.stat()
         return (int(stat.st_mtime_ns), int(stat.st_size))
     except (FileNotFoundError, OSError):
+        session_id = _extract_session_id_from_session_file(target)
+        if session_id:
+            signature = _get_session_store_signature(session_id=session_id)
+            if signature is not None:
+                return signature
+        if target.name.endswith(".json"):
+            signature = _get_session_store_signature(file_name=target.name)
+            if signature is not None:
+                return signature
         return None
 
 
@@ -4833,17 +5019,548 @@ def _record_question_generation_fallback(reason: str) -> None:
 
 
 def get_meta_index_db_path() -> Path:
-    return DATA_DIR / "meta_index.db"
+    target = str(get_meta_index_db_target() or "").strip()
+    if target and not is_postgres_dsn(target):
+        return Path(target).expanduser().resolve()
+    return (DATA_DIR / "meta_index.db").resolve()
+
+
+def get_meta_index_db_target() -> str:
+    default_path = (DATA_DIR / "meta_index.db").resolve()
+    if not META_INDEX_DB_TARGET_RAW:
+        return str(default_path)
+    return resolve_db_target(
+        META_INDEX_DB_TARGET_RAW,
+        root_dir=SKILL_DIR,
+        default_path=default_path,
+    )
+
+
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _meta_index_table_row_count(conn: Any, table_name: str) -> int:
+    row = conn.execute(f"SELECT COUNT(1) AS total FROM {table_name}").fetchone()
+    return _safe_int((row["total"] if row else 0), 0)
+
+
+def _sqlite_table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (str(table_name or "").strip(),),
+    ).fetchone()
+    return row is not None
+
+
+def _load_legacy_meta_index_rows(db_path: Path, table_name: str) -> list[dict]:
+    legacy_path = Path(db_path).expanduser().resolve()
+    if not legacy_path.exists():
+        return []
+    with sqlite3.connect(str(legacy_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        if not _sqlite_table_exists(conn, table_name):
+            return []
+        rows = conn.execute(f"SELECT * FROM {table_name}").fetchall()
+    return [dict(row) for row in rows]
+
+
+def _migrate_legacy_meta_index_if_needed(conn: Any, db_target: str) -> None:
+    if not is_postgres_dsn(db_target):
+        return
+
+    session_count = _meta_index_table_row_count(conn, "session_index")
+    report_count = _meta_index_table_row_count(conn, "report_index")
+    if session_count > 0 and report_count > 0:
+        return
+
+    legacy_path = (DATA_DIR / "meta_index.db").resolve()
+    if not legacy_path.exists():
+        return
+
+    session_rows: list[dict] = []
+    report_rows: list[dict] = []
+    if session_count <= 0:
+        session_rows = _load_legacy_meta_index_rows(legacy_path, "session_index")
+    if report_count <= 0:
+        report_rows = _load_legacy_meta_index_rows(legacy_path, "report_index")
+
+    if not session_rows and not report_rows:
+        return
+
+    indexed_now = datetime.now(timezone.utc).isoformat()
+
+    if session_rows:
+        payloads = []
+        for row in session_rows:
+            session_id = str(row.get("session_id") or "").strip()
+            file_name = str(row.get("file_name") or "").strip()
+            owner_user_id = _safe_int(row.get("owner_user_id"), 0)
+            if not session_id or not file_name or owner_user_id <= 0:
+                continue
+            payloads.append(
+                (
+                    session_id,
+                    file_name,
+                    owner_user_id,
+                    str(row.get("instance_scope_key") or "").strip(),
+                    str(row.get("topic") or ""),
+                    str(row.get("status") or "in_progress"),
+                    str(row.get("created_at") or ""),
+                    str(row.get("updated_at") or ""),
+                    _safe_int(row.get("interview_count"), 0),
+                    str(row.get("scenario_id") or ""),
+                    str(row.get("scenario_config_json") or "{}"),
+                    str(row.get("dimensions_json") or "{}"),
+                    _safe_int(row.get("file_mtime_ns"), 0),
+                    _safe_int(row.get("file_size"), 0),
+                    str(row.get("indexed_at") or "") or indexed_now,
+                )
+            )
+        if payloads:
+            conn.executemany(
+                """
+                INSERT INTO session_index (
+                    session_id, file_name, owner_user_id, instance_scope_key, topic, status,
+                    created_at, updated_at, interview_count, scenario_id,
+                    scenario_config_json, dimensions_json, file_mtime_ns,
+                    file_size, indexed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    file_name=excluded.file_name,
+                    owner_user_id=excluded.owner_user_id,
+                    instance_scope_key=excluded.instance_scope_key,
+                    topic=excluded.topic,
+                    status=excluded.status,
+                    created_at=excluded.created_at,
+                    updated_at=excluded.updated_at,
+                    interview_count=excluded.interview_count,
+                    scenario_id=excluded.scenario_id,
+                    scenario_config_json=excluded.scenario_config_json,
+                    dimensions_json=excluded.dimensions_json,
+                    file_mtime_ns=excluded.file_mtime_ns,
+                    file_size=excluded.file_size,
+                    indexed_at=excluded.indexed_at
+                """,
+                payloads,
+            )
+
+    if report_rows:
+        payloads = []
+        for row in report_rows:
+            file_name = str(row.get("file_name") or "").strip()
+            owner_user_id = _safe_int(row.get("owner_user_id"), 0)
+            if not file_name or owner_user_id <= 0:
+                continue
+            payloads.append(
+                (
+                    file_name,
+                    owner_user_id,
+                    str(row.get("instance_scope_key") or "").strip(),
+                    1 if bool(_safe_int(row.get("deleted"), 0)) else 0,
+                    _safe_int(row.get("size"), 0),
+                    str(row.get("created_at") or ""),
+                    str(row.get("session_id") or ""),
+                    str(row.get("topic") or ""),
+                    str(row.get("scenario_name") or ""),
+                    str(row.get("report_template") or ""),
+                    str(row.get("report_type") or ""),
+                    _safe_int(row.get("file_mtime_ns"), 0),
+                    _safe_int(row.get("file_size"), 0),
+                    str(row.get("indexed_at") or "") or indexed_now,
+                )
+            )
+        if payloads:
+            conn.executemany(
+                """
+                INSERT INTO report_index (
+                    file_name, owner_user_id, instance_scope_key, deleted, size, created_at,
+                    session_id, topic, scenario_name, report_template, report_type,
+                    file_mtime_ns, file_size, indexed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(file_name) DO UPDATE SET
+                    owner_user_id=excluded.owner_user_id,
+                    instance_scope_key=excluded.instance_scope_key,
+                    deleted=excluded.deleted,
+                    size=excluded.size,
+                    created_at=excluded.created_at,
+                    session_id=excluded.session_id,
+                    topic=excluded.topic,
+                    scenario_name=excluded.scenario_name,
+                    report_template=excluded.report_template,
+                    report_type=excluded.report_type,
+                    file_mtime_ns=excluded.file_mtime_ns,
+                    file_size=excluded.file_size,
+                    indexed_at=excluded.indexed_at
+                """,
+                payloads,
+            )
+
+    if ENABLE_DEBUG_LOG:
+        _safe_log(
+            f"✅ 已将旧 meta_index.db 迁移到 PostgreSQL: session_index={len(session_rows)}, report_index={len(report_rows)}"
+        )
+
+
+def _table_exists(conn: Any, table_name: str) -> bool:
+    safe_name = str(table_name or "").strip()
+    if not safe_name:
+        return False
+    row = conn.execute(
+        """
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = current_schema() AND table_name = ?
+        LIMIT 1
+        """,
+        (safe_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _postgres_column_data_type(conn: Any, table_name: str, column_name: str) -> str:
+    row = conn.execute(
+        """
+        SELECT data_type
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = ?
+          AND column_name = ?
+        LIMIT 1
+        """,
+        (str(table_name or "").strip(), str(column_name or "").strip()),
+    ).fetchone()
+    if not row:
+        return ""
+
+    data_type = ""
+    try:
+        data_type = row["data_type"]
+    except Exception:
+        try:
+            data_type = row[0]
+        except Exception:
+            data_type = ""
+    return str(data_type or "").strip().lower()
+
+
+def _ensure_postgres_meta_index_bigint_columns(conn: Any, db_target: str) -> None:
+    if not is_postgres_dsn(db_target):
+        return
+
+    targets = [
+        ("session_index", "file_mtime_ns"),
+        ("session_index", "file_size"),
+        ("report_index", "file_mtime_ns"),
+        ("report_index", "file_size"),
+        ("session_store", "payload_mtime_ns"),
+        ("session_store", "payload_size"),
+    ]
+    for table_name, column_name in targets:
+        if not _table_exists(conn, table_name):
+            continue
+        data_type = _postgres_column_data_type(conn, table_name, column_name)
+        if not data_type or data_type in {"bigint", "int8"}:
+            continue
+        conn.execute(
+            f"ALTER TABLE {table_name} ALTER COLUMN {column_name} TYPE BIGINT USING {column_name}::BIGINT"
+        )
+
+
+def _load_session_payload_from_disk(session_file: Path) -> Optional[dict]:
+    try:
+        return json.loads(session_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _build_session_store_record(session_file: Path, session_data: dict) -> Optional[dict]:
+    if not isinstance(session_data, dict):
+        return None
+    session_id = str(session_data.get("session_id") or "").strip()
+    if not session_id:
+        return None
+    try:
+        owner_user_id = int(session_data.get("owner_user_id"))
+    except (TypeError, ValueError):
+        owner_user_id = 0
+    if owner_user_id <= 0:
+        return None
+
+    payload_text = json.dumps(session_data, ensure_ascii=False, indent=2)
+    signature = get_file_signature(session_file)
+    if signature is None:
+        signature = (int(_time.time_ns()), len(payload_text.encode("utf-8")))
+    return {
+        "session_id": session_id,
+        "file_name": session_file.name,
+        "owner_user_id": owner_user_id,
+        "instance_scope_key": get_session_instance_scope_key(session_data),
+        "payload_json": payload_text,
+        "created_at": str(session_data.get("created_at") or ""),
+        "updated_at": str(session_data.get("updated_at") or ""),
+        "payload_mtime_ns": int(signature[0]),
+        "payload_size": int(signature[1]),
+    }
+
+
+def _upsert_session_store_record(conn: Any, record: dict) -> None:
+    if not isinstance(record, dict):
+        return
+    conn.execute(
+        """
+        INSERT INTO session_store (
+            session_id, file_name, owner_user_id, instance_scope_key,
+            payload_json, created_at, updated_at, payload_mtime_ns, payload_size
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+            file_name=excluded.file_name,
+            owner_user_id=excluded.owner_user_id,
+            instance_scope_key=excluded.instance_scope_key,
+            payload_json=excluded.payload_json,
+            created_at=excluded.created_at,
+            updated_at=excluded.updated_at,
+            payload_mtime_ns=excluded.payload_mtime_ns,
+            payload_size=excluded.payload_size
+        """,
+        (
+            record["session_id"],
+            record["file_name"],
+            record["owner_user_id"],
+            record["instance_scope_key"],
+            record["payload_json"],
+            record["created_at"],
+            record["updated_at"],
+            record["payload_mtime_ns"],
+            record["payload_size"],
+        ),
+    )
+
+
+def _migrate_legacy_session_store_if_needed(conn: Any) -> None:
+    if _meta_index_table_row_count(conn, "session_store") > 0:
+        return
+
+    migrated_count = 0
+    for session_file in SESSIONS_DIR.glob("*.json"):
+        session_data = _load_session_payload_from_disk(session_file)
+        record = _build_session_store_record(session_file, session_data)
+        if not record:
+            continue
+        _upsert_session_store_record(conn, record)
+        migrated_count += 1
+
+    if migrated_count > 0 and ENABLE_DEBUG_LOG:
+        _safe_log(f"✅ 已迁移会话主数据到 session_store: {migrated_count}")
+
+
+def _load_text_json_file(file_path: Path, default):
+    target = Path(file_path)
+    if not target.exists():
+        return default
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+    return payload
+
+
+def _migrate_legacy_report_meta_if_needed(conn: Any) -> None:
+    owner_count = _meta_index_table_row_count(conn, "report_meta_owners")
+    scope_count = _meta_index_table_row_count(conn, "report_meta_scopes")
+    share_count = _meta_index_table_row_count(conn, "report_meta_solution_shares")
+    deleted_report_count = _meta_index_table_row_count(conn, "report_meta_deleted_reports")
+    deleted_doc_count = _meta_index_table_row_count(conn, "report_meta_deleted_docs")
+
+    now_iso = get_utc_now()
+
+    if owner_count <= 0:
+        payload = _load_text_json_file(REPORT_OWNERS_FILE, {})
+        if isinstance(payload, dict):
+            rows = []
+            for name, owner in payload.items():
+                if not isinstance(name, str):
+                    continue
+                try:
+                    owner_id = int(owner)
+                except (TypeError, ValueError):
+                    continue
+                if owner_id <= 0:
+                    continue
+                rows.append((name, owner_id, now_iso))
+            if rows:
+                conn.executemany(
+                    """
+                    INSERT INTO report_meta_owners(file_name, owner_user_id, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(file_name) DO UPDATE SET
+                        owner_user_id=excluded.owner_user_id,
+                        updated_at=excluded.updated_at
+                    """,
+                    rows,
+                )
+
+    if scope_count <= 0:
+        payload = _load_text_json_file(REPORT_SCOPES_FILE, {})
+        if isinstance(payload, dict):
+            rows = []
+            for name, scope in payload.items():
+                if not isinstance(name, str):
+                    continue
+                normalized_scope = normalize_instance_scope_key(scope)
+                if not normalized_scope:
+                    continue
+                rows.append((name, normalized_scope, now_iso))
+            if rows:
+                conn.executemany(
+                    """
+                    INSERT INTO report_meta_scopes(file_name, instance_scope_key, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(file_name) DO UPDATE SET
+                        instance_scope_key=excluded.instance_scope_key,
+                        updated_at=excluded.updated_at
+                    """,
+                    rows,
+                )
+
+    if share_count <= 0:
+        payload = _load_text_json_file(REPORT_SOLUTION_SHARES_FILE, {})
+        if isinstance(payload, dict):
+            rows = []
+            for token, record in payload.items():
+                normalized_token = str(token or "").strip()
+                if not re.fullmatch(r"[A-Za-z0-9_-]{16,160}", normalized_token):
+                    continue
+                if not normalized_token or not isinstance(record, dict):
+                    continue
+                report_name = normalize_solution_report_filename(record.get("report_name"))
+                if not report_name:
+                    continue
+                try:
+                    owner_id = int(record.get("owner_user_id", 0))
+                except (TypeError, ValueError):
+                    owner_id = 0
+                if owner_id <= 0:
+                    continue
+                created_at = str(record.get("created_at") or "")
+                updated_at = str(record.get("updated_at") or "") or created_at or now_iso
+                rows.append((normalized_token, report_name, owner_id, created_at or now_iso, updated_at))
+            if rows:
+                conn.executemany(
+                    """
+                    INSERT INTO report_meta_solution_shares(
+                        share_token, report_name, owner_user_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(share_token) DO UPDATE SET
+                        report_name=excluded.report_name,
+                        owner_user_id=excluded.owner_user_id,
+                        created_at=excluded.created_at,
+                        updated_at=excluded.updated_at
+                    """,
+                    rows,
+                )
+
+    if deleted_report_count <= 0:
+        payload = _load_text_json_file(DELETED_REPORTS_FILE, {})
+        deleted = payload.get("deleted", []) if isinstance(payload, dict) else []
+        rows = []
+        if isinstance(deleted, list):
+            for report_name in deleted:
+                name = str(report_name or "").strip()
+                if not name:
+                    continue
+                rows.append((name, now_iso))
+        if rows:
+            conn.executemany(
+                """
+                INSERT INTO report_meta_deleted_reports(file_name, deleted_at)
+                VALUES (?, ?)
+                ON CONFLICT(file_name) DO UPDATE SET
+                    deleted_at=excluded.deleted_at
+                """,
+                rows,
+            )
+
+    if deleted_doc_count <= 0:
+        payload = _load_text_json_file(DELETED_DOCS_FILE, {})
+        records = []
+        if isinstance(payload, dict):
+            materials = []
+            if isinstance(payload.get("reference_materials"), list):
+                materials.extend(payload.get("reference_materials"))
+            if isinstance(payload.get("reference_docs"), list):
+                materials.extend(payload.get("reference_docs"))
+            if isinstance(payload.get("research_docs"), list):
+                materials.extend(payload.get("research_docs"))
+            for item in materials:
+                if not isinstance(item, dict):
+                    continue
+                session_id = str(item.get("session_id") or "").strip()
+                doc_name = str(item.get("doc_name") or "").strip()
+                doc_id = str(item.get("doc_id") or "").strip()
+                if not session_id or not doc_name:
+                    continue
+                deleted_at = str(item.get("deleted_at") or "") or now_iso
+                records.append((session_id, doc_name, doc_id, deleted_at, now_iso))
+        if records:
+            conn.executemany(
+                """
+                INSERT INTO report_meta_deleted_docs(
+                    session_id, doc_name, doc_id, deleted_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, doc_name, doc_id) DO UPDATE SET
+                    deleted_at=excluded.deleted_at,
+                    updated_at=excluded.updated_at
+                """,
+                records,
+            )
+
+
+def _iter_session_payload_entries() -> list[tuple[Path, dict]]:
+    entries: list[tuple[Path, dict]] = []
+    if _use_postgres_shared_meta_storage():
+        rows = []
+        try:
+            with get_meta_index_connection() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT file_name, payload_json
+                    FROM session_store
+                    """
+                ).fetchall()
+        except Exception:
+            rows = []
+        for row in rows:
+            file_name = str(row["file_name"] or "").strip()
+            payload_text = str(row["payload_json"] or "").strip()
+            if not file_name or not payload_text:
+                continue
+            try:
+                payload = json.loads(payload_text)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            entries.append(((SESSIONS_DIR / file_name), payload))
+        return entries
+
+    for session_file in SESSIONS_DIR.glob("*.json"):
+        payload = safe_load_session(session_file)
+        if isinstance(payload, dict):
+            entries.append((session_file, payload))
+    return entries
 
 
 def ensure_meta_index_schema() -> None:
-    db_path = get_meta_index_db_path().resolve()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    db_path_text = str(db_path)
+    db_target_text = str(get_meta_index_db_target() or "").strip()
+    ensure_sqlite_parent_dir(db_target_text)
 
     with meta_index_state_lock:
-        if meta_index_state.get("db_path") != db_path_text:
-            meta_index_state["db_path"] = db_path_text
+        if meta_index_state.get("db_path") != db_target_text:
+            meta_index_state["db_path"] = db_target_text
             meta_index_state["schema_ready"] = False
             meta_index_state["sessions_bootstrapped"] = False
             meta_index_state["reports_bootstrapped"] = False
@@ -4851,7 +5568,7 @@ def ensure_meta_index_schema() -> None:
         if meta_index_state.get("schema_ready"):
             return
 
-        with sqlite3.connect(db_path, timeout=5) as conn:
+        with connect_db(db_target_text) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
 
@@ -4870,8 +5587,8 @@ def ensure_meta_index_schema() -> None:
                     scenario_id TEXT NOT NULL DEFAULT '',
                     scenario_config_json TEXT NOT NULL DEFAULT '{}',
                     dimensions_json TEXT NOT NULL DEFAULT '{}',
-                    file_mtime_ns INTEGER NOT NULL DEFAULT 0,
-                    file_size INTEGER NOT NULL DEFAULT 0,
+                    file_mtime_ns BIGINT NOT NULL DEFAULT 0,
+                    file_size BIGINT NOT NULL DEFAULT 0,
                     indexed_at TEXT NOT NULL
                 )
                 """
@@ -4904,8 +5621,8 @@ def ensure_meta_index_schema() -> None:
                     scenario_name TEXT NOT NULL DEFAULT '',
                     report_template TEXT NOT NULL DEFAULT '',
                     report_type TEXT NOT NULL DEFAULT '',
-                    file_mtime_ns INTEGER NOT NULL DEFAULT 0,
-                    file_size INTEGER NOT NULL DEFAULT 0,
+                    file_mtime_ns BIGINT NOT NULL DEFAULT 0,
+                    file_size BIGINT NOT NULL DEFAULT 0,
                     indexed_at TEXT NOT NULL
                 )
                 """
@@ -4932,14 +5649,89 @@ def ensure_meta_index_schema() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_report_index_owner_scope_deleted_created ON report_index(owner_user_id, instance_scope_key, deleted, created_at DESC)"
             )
 
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_store (
+                    session_id TEXT PRIMARY KEY,
+                    file_name TEXT NOT NULL UNIQUE,
+                    owner_user_id INTEGER NOT NULL,
+                    instance_scope_key TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    payload_mtime_ns BIGINT NOT NULL DEFAULT 0,
+                    payload_size BIGINT NOT NULL DEFAULT 0
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_session_store_owner_scope_updated ON session_store(owner_user_id, instance_scope_key, updated_at DESC)"
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS report_meta_owners (
+                    file_name TEXT PRIMARY KEY,
+                    owner_user_id INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS report_meta_scopes (
+                    file_name TEXT PRIMARY KEY,
+                    instance_scope_key TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS report_meta_solution_shares (
+                    share_token TEXT PRIMARY KEY,
+                    report_name TEXT NOT NULL,
+                    owner_user_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_report_meta_solution_shares_report_owner ON report_meta_solution_shares(report_name, owner_user_id)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS report_meta_deleted_reports (
+                    file_name TEXT PRIMARY KEY,
+                    deleted_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS report_meta_deleted_docs (
+                    session_id TEXT NOT NULL,
+                    doc_name TEXT NOT NULL,
+                    doc_id TEXT NOT NULL DEFAULT '',
+                    deleted_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY(session_id, doc_name, doc_id)
+                )
+                """
+            )
+
+            _ensure_postgres_meta_index_bigint_columns(conn, db_target_text)
+            _migrate_legacy_meta_index_if_needed(conn, db_target_text)
+            _migrate_legacy_session_store_if_needed(conn)
+            _migrate_legacy_report_meta_if_needed(conn)
+
         meta_index_state["schema_ready"] = True
 
 
-def get_meta_index_connection() -> sqlite3.Connection:
+def get_meta_index_connection():
     ensure_meta_index_schema()
-    conn = sqlite3.connect(get_meta_index_db_path().resolve(), timeout=5)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return connect_db(get_meta_index_db_target())
 
 
 def _decode_index_json(raw_text: str, default):
@@ -5076,11 +5868,28 @@ def _write_json_atomic(file_path: Path, payload: object) -> None:
 
 
 def save_session_json_and_sync(session_file: Path, session_data: dict) -> None:
-    _write_text_atomic(
-        session_file,
-        json.dumps(session_data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    payload_text = json.dumps(session_data, ensure_ascii=False, indent=2)
+    _write_text_atomic(session_file, payload_text, encoding="utf-8")
+
+    try:
+        signature = get_file_signature(session_file) or (int(_time.time_ns()), len(payload_text.encode("utf-8")))
+        record = {
+            "session_id": str(session_data.get("session_id") or "").strip(),
+            "file_name": session_file.name,
+            "owner_user_id": _safe_int(session_data.get("owner_user_id"), 0),
+            "instance_scope_key": get_session_instance_scope_key(session_data),
+            "payload_json": payload_text,
+            "created_at": str(session_data.get("created_at") or ""),
+            "updated_at": str(session_data.get("updated_at") or ""),
+            "payload_mtime_ns": int(signature[0]),
+            "payload_size": int(signature[1]),
+        }
+        if record["session_id"] and int(record["owner_user_id"]) > 0:
+            with get_meta_index_connection() as conn:
+                _upsert_session_store_record(conn, record)
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            _safe_log(f"⚠️ 同步 session_store 失败: {session_file.name}, 错误: {exc}")
 
     try:
         record = _build_session_index_record(session_file, session_data)
@@ -5122,15 +5931,23 @@ def remove_session_index_record(session_id: str = "", file_name: str = "") -> No
             conn.execute("DELETE FROM session_index WHERE session_id = ?", (sid,))
         else:
             conn.execute("DELETE FROM session_index WHERE file_name = ?", (fname,))
+    _delete_session_store_record(session_id=sid, file_name=fname)
 
 
-def rebuild_session_index_from_disk() -> None:
+def rebuild_session_index_from_disk(*, full_reset: Optional[bool] = None) -> None:
+    if full_reset is None:
+        full_reset = not is_postgres_dsn(get_meta_index_db_target())
+
     records = []
-    for session_file in SESSIONS_DIR.glob("*.json"):
-        session_data = safe_load_session(session_file)
+    for session_file, session_data in _iter_session_payload_entries():
         record = _build_session_index_record(session_file, session_data)
         if record:
             records.append(record)
+
+    if not full_reset:
+        for record in records:
+            _upsert_session_index_record(record)
+        return
 
     with get_meta_index_connection() as conn:
         conn.execute("DELETE FROM session_index")
@@ -5169,6 +5986,7 @@ def rebuild_session_index_from_disk() -> None:
 
 def ensure_session_index_bootstrapped() -> None:
     ensure_meta_index_schema()
+    is_pg_target = is_postgres_dsn(get_meta_index_db_target())
 
     with meta_index_state_lock:
         if meta_index_state.get("sessions_bootstrapped"):
@@ -5176,7 +5994,11 @@ def ensure_session_index_bootstrapped() -> None:
         meta_index_state["sessions_bootstrapped"] = True
 
     try:
-        rebuild_session_index_from_disk()
+        if is_pg_target:
+            with get_meta_index_connection() as conn:
+                if _meta_index_table_row_count(conn, "session_index") > 0:
+                    return
+        rebuild_session_index_from_disk(full_reset=not is_pg_target)
     except Exception as exc:
         with meta_index_state_lock:
             meta_index_state["sessions_bootstrapped"] = False
@@ -5284,8 +6106,7 @@ def build_report_binding_metadata_from_session(session_data: dict, report_name: 
 def collect_direct_bound_report_metadata_from_sessions() -> dict:
     metadata_map = {}
     expected_scope = get_active_instance_scope_key()
-    for session_file in SESSIONS_DIR.glob("*.json"):
-        session_data = safe_load_session(session_file)
+    for _session_file, session_data in _iter_session_payload_entries():
         if not isinstance(session_data, dict):
             continue
         if not is_instance_scope_visible(get_session_instance_scope_key(session_data), expected_scope=expected_scope):
@@ -5441,7 +6262,10 @@ def sync_report_index_for_filename(
     _upsert_report_index_record(record)
 
 
-def rebuild_report_index_from_sources() -> None:
+def rebuild_report_index_from_sources(*, full_reset: Optional[bool] = None) -> None:
+    if full_reset is None:
+        full_reset = not is_postgres_dsn(get_meta_index_db_target())
+
     owner_map = load_report_owners()
     scope_map = load_report_scopes()
     deleted_set = get_deleted_reports()
@@ -5457,6 +6281,11 @@ def rebuild_report_index_from_sources() -> None:
         )
         if record:
             records.append(record)
+
+    if not full_reset:
+        for record in records:
+            _upsert_report_index_record(record)
+        return
 
     with get_meta_index_connection() as conn:
         conn.execute("DELETE FROM report_index")
@@ -5493,6 +6322,7 @@ def rebuild_report_index_from_sources() -> None:
 
 def ensure_report_index_bootstrapped() -> None:
     ensure_meta_index_schema()
+    is_pg_target = is_postgres_dsn(get_meta_index_db_target())
 
     with meta_index_state_lock:
         if meta_index_state.get("reports_bootstrapped"):
@@ -5500,7 +6330,11 @@ def ensure_report_index_bootstrapped() -> None:
         meta_index_state["reports_bootstrapped"] = True
 
     try:
-        rebuild_report_index_from_sources()
+        if is_pg_target:
+            with get_meta_index_connection() as conn:
+                if _meta_index_table_row_count(conn, "report_index") > 0:
+                    return
+        rebuild_report_index_from_sources(full_reset=not is_pg_target)
     except Exception as exc:
         with meta_index_state_lock:
             meta_index_state["reports_bootstrapped"] = False
@@ -9832,9 +10666,9 @@ def trigger_current_dimension_prefetch(session: dict, current_dimension: str, se
     normalized_signature = _normalize_session_signature_value(session_signature)
     if normalized_signature is None:
         session_file = SESSIONS_DIR / f"{session_id}.json"
-        if not session_file.exists():
-            return
         normalized_signature = get_file_signature(session_file)
+        if normalized_signature is None:
+            return
 
     question_cache_key = _build_question_result_cache_key(session_id, dimension, normalized_signature)
     cached_question_payload = _get_question_result_cache(question_cache_key)
@@ -9862,11 +10696,12 @@ def trigger_current_dimension_prefetch(session: dict, current_dimension: str, se
                 return
 
             session_file = SESSIONS_DIR / f"{session_id}.json"
-            if not session_file.exists():
+            session_data = safe_load_session(session_file)
+            if not isinstance(session_data, dict):
                 return
-
-            session_data = json.loads(session_file.read_text(encoding="utf-8"))
             fresh_signature = get_file_signature(session_file)
+            if fresh_signature is None:
+                return
             if normalized_signature is not None and fresh_signature != normalized_signature:
                 if ENABLE_DEBUG_LOG:
                     print(f"⏭️  放弃过期当前维度预生成: session={session_id}, dim={dimension}")
@@ -10026,11 +10861,12 @@ def trigger_prefetch_if_needed(session: dict, current_dimension: str, session_si
 
             # 重新读取会话数据（可能已更新）
             session_file = SESSIONS_DIR / f"{session_id}.json"
-            if not session_file.exists():
+            session_data = safe_load_session(session_file)
+            if not isinstance(session_data, dict):
                 return
-
-            session_data = json.loads(session_file.read_text(encoding="utf-8"))
             fresh_signature = get_file_signature(session_file)
+            if fresh_signature is None:
+                return
             if normalized_signature is not None and fresh_signature != normalized_signature:
                 if ENABLE_DEBUG_LOG:
                     print(f"⏭️  放弃过期预生成: session={session_id}, dim={next_dimension}")
@@ -10104,15 +10940,13 @@ def prefetch_first_question(session_id: str):
         session_id: 会话ID
     """
     session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return
-
-    try:
-        initial_session_data = json.loads(session_file.read_text(encoding="utf-8"))
-    except Exception:
+    initial_session_data = safe_load_session(session_file)
+    if not isinstance(initial_session_data, dict):
         return
 
     initial_signature = get_file_signature(session_file)
+    if initial_signature is None:
+        return
     first_dim = get_dimension_order_for_session(initial_session_data)[0] if get_dimension_order_for_session(initial_session_data) else "customer_needs"
     question_cache_key = _build_question_result_cache_key(session_id, first_dim, initial_signature)
     owner_event, is_owner = _begin_question_prefetch_inflight(question_cache_key)
@@ -10133,11 +10967,12 @@ def prefetch_first_question(session_id: str):
                     print(f"⏭️  跳过首题预生成（主链路繁忙）: session={session_id}")
                 return
 
-            if not session_file.exists():
+            session_data = safe_load_session(session_file)
+            if not isinstance(session_data, dict):
                 return
-
-            session_data = json.loads(session_file.read_text(encoding="utf-8"))
             fresh_signature = get_file_signature(session_file)
+            if fresh_signature is None:
+                return
             if fresh_signature != initial_signature:
                 if ENABLE_DEBUG_LOG:
                     print(f"⏭️  放弃过期首题预生成: session={session_id}")
@@ -12012,7 +12847,34 @@ def get_session_instance_scope_key(session: dict) -> str:
     return get_record_instance_scope_key(session.get(INSTANCE_SCOPE_FIELD))
 
 
+def _use_postgres_shared_meta_storage() -> bool:
+    return is_postgres_dsn(get_meta_index_db_target())
+
+
 def load_report_scopes() -> dict:
+    if _use_postgres_shared_meta_storage():
+        rows = []
+        try:
+            with get_meta_index_connection() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT file_name, instance_scope_key
+                    FROM report_meta_scopes
+                    """
+                ).fetchall()
+        except Exception:
+            rows = []
+
+        normalized = {}
+        for row in rows:
+            name = str(row["file_name"] or "").strip()
+            scope_key = normalize_instance_scope_key(row["instance_scope_key"])
+            if not name or not scope_key:
+                continue
+            normalized[name] = scope_key
+        record_list_cache_metric("report_scope", hit=False)
+        return normalized
+
     with REPORT_SCOPES_LOCK:
         signature = get_file_signature(REPORT_SCOPES_FILE)
         cached_signature = report_scopes_cache.get("signature")
@@ -12057,6 +12919,26 @@ def save_report_scopes(data: dict) -> None:
                 continue
             normalized[name] = normalized_scope
 
+    if _use_postgres_shared_meta_storage():
+        with get_meta_index_connection() as conn:
+            conn.execute("DELETE FROM report_meta_scopes")
+            if normalized:
+                conn.executemany(
+                    """
+                    INSERT INTO report_meta_scopes(file_name, instance_scope_key, updated_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    [
+                        (name, scope_key, get_utc_now())
+                        for name, scope_key in normalized.items()
+                    ],
+                )
+        with REPORT_SCOPES_LOCK:
+            _write_json_atomic(REPORT_SCOPES_FILE, normalized)
+            report_scopes_cache["signature"] = None
+            report_scopes_cache["data"] = {}
+        return
+
     with REPORT_SCOPES_LOCK:
         _write_json_atomic(REPORT_SCOPES_FILE, normalized)
         report_scopes_cache["signature"] = get_file_signature(REPORT_SCOPES_FILE)
@@ -12074,6 +12956,35 @@ def set_report_scope_key(filename: str, scope_key: object) -> None:
         return
 
     normalized_scope = normalize_instance_scope_key(scope_key)
+    if _use_postgres_shared_meta_storage():
+        with get_meta_index_connection() as conn:
+            if normalized_scope:
+                conn.execute(
+                    """
+                    INSERT INTO report_meta_scopes(file_name, instance_scope_key, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(file_name) DO UPDATE SET
+                        instance_scope_key=excluded.instance_scope_key,
+                        updated_at=excluded.updated_at
+                    """,
+                    (name, normalized_scope, get_utc_now()),
+                )
+            else:
+                conn.execute("DELETE FROM report_meta_scopes WHERE file_name = ?", (name,))
+
+        # 保留本地镜像文件，便于运维脚本排查
+        with REPORT_SCOPES_LOCK:
+            with named_file_lock("sidecar", "report_scopes"):
+                scopes = load_report_scopes()
+                if normalized_scope:
+                    scopes[name] = normalized_scope
+                else:
+                    scopes.pop(name, None)
+                _write_json_atomic(REPORT_SCOPES_FILE, scopes)
+                report_scopes_cache["signature"] = None
+                report_scopes_cache["data"] = {}
+        return
+
     with REPORT_SCOPES_LOCK:
         with named_file_lock("sidecar", "report_scopes"):
             scopes = load_report_scopes()
@@ -12094,6 +13005,34 @@ def normalize_solution_share_token(raw_token: object) -> str:
 
 
 def load_solution_share_map() -> dict:
+    if _use_postgres_shared_meta_storage():
+        rows = []
+        try:
+            with get_meta_index_connection() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT share_token, report_name, owner_user_id, created_at, updated_at
+                    FROM report_meta_solution_shares
+                    """
+                ).fetchall()
+        except Exception:
+            rows = []
+
+        normalized = {}
+        for row in rows:
+            token = normalize_solution_share_token(row["share_token"])
+            report_name = normalize_solution_report_filename(row["report_name"])
+            owner_user_id = _safe_int(row["owner_user_id"], 0)
+            if not token or not report_name or owner_user_id <= 0:
+                continue
+            normalized[token] = {
+                "report_name": report_name,
+                "owner_user_id": owner_user_id,
+                "created_at": str(row["created_at"] or ""),
+                "updated_at": str(row["updated_at"] or ""),
+            }
+        return normalized
+
     with REPORT_SOLUTION_SHARES_LOCK:
         signature = get_file_signature(REPORT_SOLUTION_SHARES_FILE)
         cached_signature = report_solution_shares_cache.get("signature")
@@ -12160,6 +13099,33 @@ def save_solution_share_map(data: dict) -> None:
                 "updated_at": str(raw_record.get("updated_at") or ""),
             }
 
+    if _use_postgres_shared_meta_storage():
+        with get_meta_index_connection() as conn:
+            conn.execute("DELETE FROM report_meta_solution_shares")
+            if normalized:
+                conn.executemany(
+                    """
+                    INSERT INTO report_meta_solution_shares(
+                        share_token, report_name, owner_user_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            token,
+                            record["report_name"],
+                            int(record["owner_user_id"]),
+                            str(record["created_at"] or ""),
+                            str(record["updated_at"] or ""),
+                        )
+                        for token, record in normalized.items()
+                    ],
+                )
+        with REPORT_SOLUTION_SHARES_LOCK:
+            _write_json_atomic(REPORT_SOLUTION_SHARES_FILE, normalized)
+            report_solution_shares_cache["signature"] = None
+            report_solution_shares_cache["data"] = {}
+        return
+
     with REPORT_SOLUTION_SHARES_LOCK:
         _write_json_atomic(REPORT_SOLUTION_SHARES_FILE, normalized)
         report_solution_shares_cache["signature"] = get_file_signature(REPORT_SOLUTION_SHARES_FILE)
@@ -12183,6 +13149,56 @@ def create_or_get_solution_share(report_name: str, owner_user_id: int) -> dict:
     owner_id = int(owner_user_id)
     if not normalized_report_name or owner_id <= 0:
         raise ValueError("分享参数无效")
+
+    if _use_postgres_shared_meta_storage():
+        created_payload = None
+        with get_meta_index_connection() as conn:
+            existing = conn.execute(
+                """
+                SELECT share_token, created_at, updated_at
+                FROM report_meta_solution_shares
+                WHERE report_name = ? AND owner_user_id = ?
+                LIMIT 1
+                """,
+                (normalized_report_name, owner_id),
+            ).fetchone()
+            if existing:
+                return {
+                    "share_token": str(existing["share_token"] or ""),
+                    "report_name": normalized_report_name,
+                    "owner_user_id": owner_id,
+                    "created_at": str(existing["created_at"] or ""),
+                    "updated_at": str(existing["updated_at"] or ""),
+                }
+
+            created_at = get_utc_now()
+            for _attempt in range(8):
+                share_token = normalize_solution_share_token(secrets.token_urlsafe(24))
+                if not share_token:
+                    continue
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO report_meta_solution_shares(
+                            share_token, report_name, owner_user_id, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (share_token, normalized_report_name, owner_id, created_at, created_at),
+                    )
+                    created_payload = {
+                        "share_token": share_token,
+                        "report_name": normalized_report_name,
+                        "owner_user_id": owner_id,
+                        "created_at": created_at,
+                        "updated_at": created_at,
+                    }
+                    break
+                except Exception:
+                    continue
+        if isinstance(created_payload, dict):
+            _write_json_atomic(REPORT_SOLUTION_SHARES_FILE, load_solution_share_map())
+            return created_payload
+        raise RuntimeError("生成分享链接失败，请稍后重试")
 
     with named_file_lock("sidecar", "solution_shares"):
         with REPORT_SOLUTION_SHARES_LOCK:
@@ -12220,6 +13236,15 @@ def delete_solution_shares_for_report(report_name: str) -> None:
     if not normalized_report_name:
         return
 
+    if _use_postgres_shared_meta_storage():
+        with get_meta_index_connection() as conn:
+            conn.execute(
+                "DELETE FROM report_meta_solution_shares WHERE report_name = ?",
+                (normalized_report_name,),
+            )
+        _write_json_atomic(REPORT_SOLUTION_SHARES_FILE, load_solution_share_map())
+        return
+
     with named_file_lock("sidecar", "solution_shares"):
         with REPORT_SOLUTION_SHARES_LOCK:
             shares = load_solution_share_map()
@@ -12244,6 +13269,23 @@ def build_solution_share_url(share_token: str) -> str:
 
 def get_deleted_reports() -> set:
     """获取已删除报告的列表"""
+    if _use_postgres_shared_meta_storage():
+        try:
+            with get_meta_index_connection() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT file_name
+                    FROM report_meta_deleted_reports
+                    """
+                ).fetchall()
+        except Exception:
+            return set()
+        return {
+            str(row["file_name"] or "").strip()
+            for row in rows
+            if str(row["file_name"] or "").strip()
+        }
+
     if not DELETED_REPORTS_FILE.exists():
         return set()
     try:
@@ -12254,6 +13296,29 @@ def get_deleted_reports() -> set:
 
 
 def load_report_owners() -> dict:
+    if _use_postgres_shared_meta_storage():
+        rows = []
+        try:
+            with get_meta_index_connection() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT file_name, owner_user_id
+                    FROM report_meta_owners
+                    """
+                ).fetchall()
+        except Exception:
+            rows = []
+
+        normalized = {}
+        for row in rows:
+            name = str(row["file_name"] or "").strip()
+            owner_id = _safe_int(row["owner_user_id"], 0)
+            if not name or owner_id <= 0:
+                continue
+            normalized[name] = owner_id
+        record_list_cache_metric("report_owner", hit=False)
+        return normalized
+
     with REPORT_OWNERS_LOCK:
         signature = get_file_signature(REPORT_OWNERS_FILE)
         cached_signature = report_owners_cache.get("signature")
@@ -12304,6 +13369,26 @@ def save_report_owners(data: dict) -> None:
                 continue
             normalized[name] = owner_id
 
+    if _use_postgres_shared_meta_storage():
+        with get_meta_index_connection() as conn:
+            conn.execute("DELETE FROM report_meta_owners")
+            if normalized:
+                conn.executemany(
+                    """
+                    INSERT INTO report_meta_owners(file_name, owner_user_id, updated_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    [
+                        (name, int(owner_id), get_utc_now())
+                        for name, owner_id in normalized.items()
+                    ],
+                )
+        with REPORT_OWNERS_LOCK:
+            _write_json_atomic(REPORT_OWNERS_FILE, normalized)
+            report_owners_cache["signature"] = None
+            report_owners_cache["data"] = {}
+        return
+
     with REPORT_OWNERS_LOCK:
         _write_json_atomic(REPORT_OWNERS_FILE, normalized)
         report_owners_cache["signature"] = get_file_signature(REPORT_OWNERS_FILE)
@@ -12320,11 +13405,32 @@ def get_report_owner_id(filename: str) -> int:
 
 def set_report_owner_id(filename: str, owner_user_id: int) -> None:
     owner_id = int(owner_user_id)
-    with REPORT_OWNERS_LOCK:
-        with named_file_lock("sidecar", "report_owners"):
-            owners = load_report_owners()
-            owners[filename] = owner_id
-            save_report_owners(owners)
+    if _use_postgres_shared_meta_storage():
+        with get_meta_index_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO report_meta_owners(file_name, owner_user_id, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(file_name) DO UPDATE SET
+                    owner_user_id=excluded.owner_user_id,
+                    updated_at=excluded.updated_at
+                """,
+                (filename, owner_id, get_utc_now()),
+            )
+        # 保留本地镜像
+        with REPORT_OWNERS_LOCK:
+            with named_file_lock("sidecar", "report_owners"):
+                owners = load_report_owners()
+                owners[filename] = owner_id
+                _write_json_atomic(REPORT_OWNERS_FILE, owners)
+                report_owners_cache["signature"] = None
+                report_owners_cache["data"] = {}
+    else:
+        with REPORT_OWNERS_LOCK:
+            with named_file_lock("sidecar", "report_owners"):
+                owners = load_report_owners()
+                owners[filename] = owner_id
+                save_report_owners(owners)
     set_report_scope_key(filename, get_active_instance_scope_key())
     try:
         sync_report_index_for_filename(filename, owner_user_id=owner_id)
@@ -12385,13 +13491,15 @@ def get_current_user_id_or_none() -> Optional[int]:
 
 def load_session_for_user(session_id: str, user_id: int, include_missing: bool = False):
     session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
+    session_data = safe_load_session(session_file)
+    if session_data is None:
+        if session_file.exists():
+            return None, "会话数据损坏", 500
         if include_missing:
             return None, None, "not_found"
         return None, "会话不存在", 404
 
-    session_data = safe_load_session(session_file)
-    if session_data is None:
+    if not isinstance(session_data, dict):
         return None, "会话数据损坏", 500
 
     if not ensure_session_owner(session_data, user_id):
@@ -12415,10 +13523,25 @@ def enforce_report_owner_or_404(filename: str, user_id: int) -> tuple[Optional[P
 
 def mark_report_as_deleted(filename: str):
     """标记报告为已删除（不真正删除文件）"""
-    with named_file_lock("sidecar", "deleted_reports"):
-        deleted = get_deleted_reports()
-        deleted.add(filename)
-        _write_json_atomic(DELETED_REPORTS_FILE, {"deleted": sorted(deleted)})
+    if _use_postgres_shared_meta_storage():
+        with get_meta_index_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO report_meta_deleted_reports(file_name, deleted_at)
+                VALUES (?, ?)
+                ON CONFLICT(file_name) DO UPDATE SET
+                    deleted_at=excluded.deleted_at
+                """,
+                (str(filename or "").strip(), get_utc_now()),
+            )
+        # 本地镜像
+        deleted = sorted(get_deleted_reports())
+        _write_json_atomic(DELETED_REPORTS_FILE, {"deleted": deleted})
+    else:
+        with named_file_lock("sidecar", "deleted_reports"):
+            deleted = get_deleted_reports()
+            deleted.add(filename)
+            _write_json_atomic(DELETED_REPORTS_FILE, {"deleted": sorted(deleted)})
     try:
         sync_report_index_for_filename(filename, deleted=True)
     except Exception as exc:
@@ -12432,13 +13555,19 @@ def unmark_report_as_deleted(filename: str) -> None:
     if not name:
         return
 
-    with named_file_lock("sidecar", "deleted_reports"):
-        deleted = get_deleted_reports()
-        if name not in deleted:
-            return
+    if _use_postgres_shared_meta_storage():
+        with get_meta_index_connection() as conn:
+            conn.execute("DELETE FROM report_meta_deleted_reports WHERE file_name = ?", (name,))
+        deleted = sorted(get_deleted_reports())
+        _write_json_atomic(DELETED_REPORTS_FILE, {"deleted": deleted})
+    else:
+        with named_file_lock("sidecar", "deleted_reports"):
+            deleted = get_deleted_reports()
+            if name not in deleted:
+                return
 
-        deleted.discard(name)
-        _write_json_atomic(DELETED_REPORTS_FILE, {"deleted": sorted(deleted)})
+            deleted.discard(name)
+            _write_json_atomic(DELETED_REPORTS_FILE, {"deleted": sorted(deleted)})
     try:
         sync_report_index_for_filename(name, deleted=False)
     except Exception as exc:
@@ -12657,6 +13786,30 @@ def unique_non_empty_strings(items) -> list:
 
 def get_deleted_docs() -> dict:
     """获取已删除文档的记录"""
+    if _use_postgres_shared_meta_storage():
+        try:
+            with get_meta_index_connection() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT session_id, doc_name, doc_id, deleted_at
+                    FROM report_meta_deleted_docs
+                    ORDER BY updated_at DESC
+                    """
+                ).fetchall()
+        except Exception:
+            rows = []
+        return {
+            "reference_materials": [
+                {
+                    "session_id": str(row["session_id"] or ""),
+                    "doc_name": str(row["doc_name"] or ""),
+                    "doc_id": str(row["doc_id"] or ""),
+                    "deleted_at": str(row["deleted_at"] or ""),
+                }
+                for row in rows
+            ]
+        }
+
     if not DELETED_DOCS_FILE.exists():
         return {"reference_materials": []}
     try:
@@ -12704,6 +13857,28 @@ def mark_doc_as_deleted(session_id: str, doc_name: str, doc_type: str = "referen
         doc_type: 文档类型（默认 'reference_materials'）
         doc_id: 文档唯一标识
     """
+    if _use_postgres_shared_meta_storage():
+        sid = str(session_id or "").strip()
+        name = str(doc_name or "").strip()
+        token = str(doc_id or "").strip()
+        if not sid or not name:
+            return
+        now_iso = get_utc_now()
+        with get_meta_index_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO report_meta_deleted_docs(
+                    session_id, doc_name, doc_id, deleted_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, doc_name, doc_id) DO UPDATE SET
+                    deleted_at=excluded.deleted_at,
+                    updated_at=excluded.updated_at
+                """,
+                (sid, name, token, now_iso, now_iso),
+            )
+        _write_json_atomic(DELETED_DOCS_FILE, get_deleted_docs())
+        return
+
     with named_file_lock("sidecar", "deleted_docs"):
         deleted = get_deleted_docs()
         record = {
@@ -13851,9 +15026,6 @@ def update_context_summary(session_id: str) -> None:
         return
 
     session_file = SESSIONS_DIR / f"{session_id}.json"
-    if not session_file.exists():
-        return
-
     session = safe_load_session(session_file)
     if not isinstance(session, dict):
         return
@@ -23851,7 +25023,7 @@ def load_sessions_for_user_from_files(user_id_int: int) -> list[dict]:
     sessions = []
     active_files = set()
     expected_scope = get_active_instance_scope_key()
-    for session_file in SESSIONS_DIR.glob("*.json"):
+    for session_file, _session_data in _iter_session_payload_entries():
         active_files.add(session_file.name)
         data = get_cached_session_list_payload(session_file)
         if not isinstance(data, dict):
@@ -24199,7 +25371,8 @@ def delete_session(session_id):
             return jsonify({"error": "会话不存在"}), 404
 
         session_file_name = session_file.name
-        session_file.unlink()
+        if session_file.exists():
+            session_file.unlink()
     remove_session_index_record(session_id=session_id, file_name=session_file_name)
 
     # ========== 步骤7: 清理缓存和状态 ==========
@@ -24235,13 +25408,12 @@ def batch_delete_sessions():
         try:
             with named_file_lock("sessions", session_id):
                 session_file = SESSIONS_DIR / f"{session_id}.json"
-                if not session_file.exists():
-                    missing_sessions.append(session_id)
-                    continue
-
                 session = safe_load_session(session_file)
-                if session is None:
-                    skipped_sessions.append({"session_id": session_id, "reason": "会话数据损坏"})
+                if not isinstance(session, dict):
+                    if not session_file.exists():
+                        missing_sessions.append(session_id)
+                    else:
+                        skipped_sessions.append({"session_id": session_id, "reason": "会话数据损坏"})
                     continue
 
                 if not ensure_session_owner(session, user_id):
@@ -24265,7 +25437,8 @@ def batch_delete_sessions():
                             deleted_reports.add(report_name)
 
                 session_file_name = session_file.name
-                session_file.unlink()
+                if session_file.exists():
+                    session_file.unlink()
 
             remove_session_index_record(session_id=session_id, file_name=session_file_name)
             invalidate_prefetch(session_id)

@@ -899,7 +899,23 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.assertIn("site", catalog_payload)
             self.assertTrue(any(group.get("id") == "env_resolution" for group in catalog_payload["env"]["groups"]))
             self.assertTrue(any(group.get("id") == "config_models" for group in catalog_payload["config"]["groups"]))
+            self.assertTrue(any(group.get("id") == "config_observability_cache" for group in catalog_payload["config"]["groups"]))
             self.assertTrue(any(group.get("id") == "site_home_copy" for group in catalog_payload["site"]["groups"]))
+
+            env_resolution_group = next(group for group in catalog_payload["env"]["groups"] if group.get("id") == "env_resolution")
+            env_resolution_keys = {item.get("key") for item in env_resolution_group.get("items", [])}
+            self.assertIn("AI_CLIENT_EAGER_INIT", env_resolution_keys)
+            self.assertIn("AI_CLIENT_INIT_CONNECTION_TEST", env_resolution_keys)
+
+            env_deploy_group = next(group for group in catalog_payload["env"]["groups"] if group.get("id") == "env_deploy")
+            env_deploy_keys = {item.get("key") for item in env_deploy_group.get("items", [])}
+            self.assertIn("GUNICORN_ACCESSLOG", env_deploy_keys)
+            self.assertIn("GUNICORN_ERRORLOG", env_deploy_keys)
+
+            config_observability_group = next(group for group in catalog_payload["config"]["groups"] if group.get("id") == "config_observability_cache")
+            observability_items = {item.get("key"): item for item in config_observability_group.get("items", [])}
+            self.assertIn("METRICS_ASYNC_BATCH_SIZE", observability_items)
+            self.assertTrue(observability_items["METRICS_ASYNC_BATCH_SIZE"].get("advanced"))
 
             save_env_resp = self.client.post(
                 "/api/admin/config-center/save",

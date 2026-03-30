@@ -163,6 +163,7 @@ function deepVision() {
         adminConfigSource: 'env',
         adminConfigSearch: '',
         adminConfigShowSecrets: false,
+        adminConfigShowAdvanced: false,
         adminConfigActiveGroupId: {
             env: '',
             config: '',
@@ -1699,6 +1700,7 @@ function deepVision() {
             this.adminConfigSource = 'env';
             this.adminConfigSearch = '';
             this.adminConfigShowSecrets = false;
+            this.adminConfigShowAdvanced = false;
             this.adminConfigActiveGroupId = {
                 env: '',
                 config: '',
@@ -2685,10 +2687,12 @@ function deepVision() {
             const normalized = this.normalizeAdminConfigSource(source);
             const payload = this.getAdminConfigSourcePayload(normalized);
             const groups = Array.isArray(payload?.groups) ? payload.groups : [];
+            const showAdvanced = !!this.adminConfigShowAdvanced;
             return groups
                 .map((group) => {
                     const items = Array.isArray(group?.items) ? group.items : [];
-                    const visibleItems = items.filter((item) => this.matchesAdminConfigSearchParts([
+                    const visibleScopeItems = showAdvanced ? items : items.filter(item => !item?.advanced);
+                    const visibleItems = visibleScopeItems.filter((item) => this.matchesAdminConfigSearchParts([
                         group?.title,
                         group?.description,
                         item?.label,
@@ -2700,7 +2704,7 @@ function deepVision() {
                         ...group,
                         visibleItems,
                         visibleItemCount: visibleItems.length,
-                        totalItemCount: items.length,
+                        totalItemCount: visibleScopeItems.length,
                     };
                 })
                 .filter((group) => Array.isArray(group.visibleItems) && group.visibleItems.length > 0);
