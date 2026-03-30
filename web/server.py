@@ -33,6 +33,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import tempfile
 import time as _time
 import requests
 from functools import wraps
@@ -3480,6 +3481,11 @@ scenario_loader = get_scenario_loader(
     builtin_dir=BUILTIN_SCENARIOS_DIR,
     custom_dir=CUSTOM_SCENARIOS_DIR,
     migrate_legacy_custom_dir=Path.home() / ".deepvision" / "scenarios" / "custom",
+    meta_index_db_path=resolve_db_target(
+        META_INDEX_DB_TARGET_RAW,
+        root_dir=SKILL_DIR,
+        default_path=DATA_DIR / "meta_index.db",
+    ),
 )
 
 # Web Search 状态追踪（用于前端呼吸灯效果）
@@ -5526,6 +5532,430 @@ def _migrate_legacy_report_meta_if_needed(conn: Any) -> None:
             )
 
 
+def _parse_optional_datetime(value: object) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except Exception:
+        return None
+
+
+def _use_pure_cloud_report_storage() -> bool:
+    return _use_postgres_shared_meta_storage()
+
+
+def _build_report_store_record(
+    file_name: str,
+    content_markdown: str,
+    *,
+    created_at: str = "",
+    updated_at: str = "",
+    signature: Optional[tuple[int, int]] = None,
+) -> Optional[dict]:
+    normalized_name = normalize_solution_report_filename(file_name)
+    if not normalized_name:
+        return None
+
+    content_text = str(content_markdown or "")
+    if signature is None:
+        signature = (int(_time.time_ns()), len(content_text.encode("utf-8")))
+
+    now_iso = get_utc_now()
+    created_text = str(created_at or "").strip() or now_iso
+    updated_text = str(updated_at or "").strip() or created_text or now_iso
+    return {
+        "file_name": normalized_name,
+        "content_markdown": content_text,
+        "created_at": created_text,
+        "updated_at": updated_text,
+        "content_mtime_ns": int(signature[0]),
+        "content_size": int(signature[1]),
+    }
+
+
+def _upsert_report_store_record(conn: Any, record: dict) -> None:
+    if not isinstance(record, dict):
+        return
+    conn.execute(
+        """
+        INSERT INTO report_store(
+            file_name, content_markdown, created_at, updated_at, content_mtime_ns, content_size
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(file_name) DO UPDATE SET
+            content_markdown=excluded.content_markdown,
+            created_at=excluded.created_at,
+            updated_at=excluded.updated_at,
+            content_mtime_ns=excluded.content_mtime_ns,
+            content_size=excluded.content_size
+        """,
+        (
+            record["file_name"],
+            record["content_markdown"],
+            record["created_at"],
+            record["updated_at"],
+            record["content_mtime_ns"],
+            record["content_size"],
+        ),
+    )
+
+
+def _load_report_store_row(file_name: str):
+    normalized_name = normalize_solution_report_filename(file_name)
+    if not normalized_name or not _use_pure_cloud_report_storage():
+        return None
+    try:
+        with get_meta_index_connection() as conn:
+            return conn.execute(
+                """
+                SELECT file_name, content_markdown, created_at, updated_at, content_mtime_ns, content_size
+                FROM report_store
+                WHERE file_name = ?
+                LIMIT 1
+                """,
+                (normalized_name,),
+            ).fetchone()
+    except Exception:
+        return None
+
+
+def _migrate_legacy_report_store_if_needed(conn: Any) -> None:
+    if _meta_index_table_row_count(conn, "report_store") > 0:
+        return
+
+    migrated_count = 0
+    for report_file in REPORTS_DIR.glob("*.md"):
+        try:
+            content_text = report_file.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        signature = get_file_signature(report_file)
+        if signature is None:
+            continue
+        try:
+            stat = report_file.stat()
+            created_at = datetime.fromtimestamp(stat.st_mtime).isoformat()
+        except Exception:
+            created_at = get_utc_now()
+        record = _build_report_store_record(
+            report_file.name,
+            content_text,
+            created_at=created_at,
+            updated_at=created_at,
+            signature=signature,
+        )
+        if not record:
+            continue
+        _upsert_report_store_record(conn, record)
+        migrated_count += 1
+
+    if migrated_count > 0 and ENABLE_DEBUG_LOG:
+        _safe_log(f"✅ 已迁移报告正文到 report_store: {migrated_count}")
+
+
+def _load_report_artifact_payload(table_name: str, report_name: str, legacy_path: Path) -> dict:
+    normalized_name = normalize_solution_report_filename(report_name)
+    if not normalized_name:
+        return {}
+
+    if _use_pure_cloud_report_storage():
+        try:
+            with get_meta_index_connection() as conn:
+                row = conn.execute(
+                    f"""
+                    SELECT payload_json
+                    FROM {table_name}
+                    WHERE report_name = ?
+                    LIMIT 1
+                    """,
+                    (normalized_name,),
+                ).fetchone()
+        except Exception:
+            row = None
+        if row:
+            try:
+                payload = json.loads(str(row["payload_json"] or ""))
+            except Exception:
+                payload = {}
+            return payload if isinstance(payload, dict) else {}
+
+    if not legacy_path.exists() or not legacy_path.is_file():
+        return {}
+    try:
+        payload = json.loads(legacy_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _save_report_artifact_payload(table_name: str, report_name: str, payload: dict, legacy_path: Path) -> None:
+    normalized_name = normalize_solution_report_filename(report_name)
+    if not normalized_name or not isinstance(payload, dict) or not payload:
+        return
+
+    payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
+    if _use_pure_cloud_report_storage():
+        with get_meta_index_connection() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO {table_name}(report_name, payload_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(report_name) DO UPDATE SET
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at
+                """,
+                (normalized_name, payload_text, get_utc_now()),
+            )
+        try:
+            if legacy_path.exists():
+                legacy_path.unlink()
+        except Exception:
+            pass
+        return
+
+    _write_text_atomic(legacy_path, payload_text, encoding="utf-8")
+
+
+def _delete_report_artifact_payload(table_name: str, report_name: str, legacy_path: Path) -> None:
+    normalized_name = normalize_solution_report_filename(report_name)
+    if not normalized_name:
+        return
+
+    if _use_pure_cloud_report_storage():
+        with get_meta_index_connection() as conn:
+            conn.execute(f"DELETE FROM {table_name} WHERE report_name = ?", (normalized_name,))
+    try:
+        if legacy_path.exists():
+            legacy_path.unlink()
+    except Exception:
+        pass
+
+
+def _migrate_legacy_report_artifacts_if_needed(conn: Any) -> None:
+    if _meta_index_table_row_count(conn, "report_solution_sidecars") <= 0:
+        rows = []
+        for artifact_path in REPORTS_DIR.glob(f"*{SOLUTION_SIDECAR_SUFFIX}"):
+            report_name = normalize_solution_report_filename(
+                artifact_path.name[: -len(SOLUTION_SIDECAR_SUFFIX)]
+            )
+            if not report_name:
+                continue
+            try:
+                payload_text = artifact_path.read_text(encoding="utf-8")
+                payload = json.loads(payload_text)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            rows.append((report_name, json.dumps(payload, ensure_ascii=False, indent=2), get_utc_now()))
+        if rows:
+            conn.executemany(
+                """
+                INSERT INTO report_solution_sidecars(report_name, payload_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(report_name) DO UPDATE SET
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at
+                """,
+                rows,
+            )
+
+    if _meta_index_table_row_count(conn, "report_solution_payload_caches") <= 0:
+        rows = []
+        for artifact_path in REPORTS_DIR.glob(f"*{SOLUTION_PAYLOAD_CACHE_SUFFIX}"):
+            report_name = normalize_solution_report_filename(
+                artifact_path.name[: -len(SOLUTION_PAYLOAD_CACHE_SUFFIX)]
+            )
+            if not report_name:
+                continue
+            try:
+                payload_text = artifact_path.read_text(encoding="utf-8")
+                payload = json.loads(payload_text)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            rows.append((report_name, json.dumps(payload, ensure_ascii=False, indent=2), get_utc_now()))
+        if rows:
+            conn.executemany(
+                """
+                INSERT INTO report_solution_payload_caches(report_name, payload_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(report_name) DO UPDATE SET
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at
+                """,
+                rows,
+            )
+
+    if _meta_index_table_row_count(conn, "presentation_map_store") <= 0:
+        payload = _load_text_json_file(PRESENTATION_MAP_FILE, {})
+        if isinstance(payload, dict) and payload:
+            rows = []
+            for raw_name, record in payload.items():
+                report_name = normalize_presentation_report_filename(raw_name)
+                if not report_name or not isinstance(record, dict):
+                    continue
+                rows.append((report_name, json.dumps(record, ensure_ascii=False, indent=2), get_utc_now()))
+            if rows:
+                conn.executemany(
+                    """
+                    INSERT INTO presentation_map_store(report_name, record_json, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(report_name) DO UPDATE SET
+                        record_json=excluded.record_json,
+                        updated_at=excluded.updated_at
+                    """,
+                    rows,
+                )
+
+    if _meta_index_table_row_count(conn, "summary_cache_store") <= 0:
+        rows = []
+        for cache_file in SUMMARIES_DIR.glob("*.txt"):
+            doc_hash = str(cache_file.stem or "").strip()
+            if not doc_hash:
+                continue
+            try:
+                summary_text = cache_file.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            rows.append((doc_hash, summary_text, get_utc_now()))
+        if rows:
+            conn.executemany(
+                """
+                INSERT INTO summary_cache_store(doc_hash, summary_text, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(doc_hash) DO UPDATE SET
+                    summary_text=excluded.summary_text,
+                    updated_at=excluded.updated_at
+                """,
+                rows,
+            )
+
+
+def _load_report_content(file_name: str) -> str:
+    normalized_name = normalize_solution_report_filename(file_name)
+    if not normalized_name:
+        return ""
+
+    if _use_pure_cloud_report_storage():
+        row = _load_report_store_row(normalized_name)
+        if row:
+            return str(row["content_markdown"] or "")
+
+    report_path = REPORTS_DIR / normalized_name
+    if not report_path.exists() or not report_path.is_file():
+        return ""
+    try:
+        return report_path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+def _get_report_generated_at(file_name: str) -> Optional[datetime]:
+    normalized_name = normalize_solution_report_filename(file_name)
+    if not normalized_name:
+        return None
+
+    if _use_pure_cloud_report_storage():
+        row = _load_report_store_row(normalized_name)
+        if row:
+            mtime_ns = _safe_int(row["content_mtime_ns"], 0)
+            if mtime_ns > 0:
+                try:
+                    return datetime.fromtimestamp(mtime_ns / 1_000_000_000)
+                except Exception:
+                    pass
+            return _parse_optional_datetime(row["updated_at"]) or _parse_optional_datetime(row["created_at"])
+
+    report_path = REPORTS_DIR / normalized_name
+    try:
+        return datetime.fromtimestamp(report_path.stat().st_mtime)
+    except Exception:
+        return None
+
+
+def _get_report_store_signature(file_name: str) -> Optional[tuple[int, int]]:
+    normalized_name = normalize_solution_report_filename(file_name)
+    if not normalized_name:
+        return None
+
+    if _use_pure_cloud_report_storage():
+        row = _load_report_store_row(normalized_name)
+        if row:
+            return (
+                _safe_int(row["content_mtime_ns"], 0),
+                _safe_int(row["content_size"], 0),
+            )
+
+    report_path = REPORTS_DIR / normalized_name
+    return get_file_signature(report_path)
+
+
+def _report_exists(file_name: str) -> bool:
+    normalized_name = normalize_solution_report_filename(file_name)
+    if not normalized_name:
+        return False
+    if _use_pure_cloud_report_storage() and _load_report_store_row(normalized_name):
+        return True
+    report_path = REPORTS_DIR / normalized_name
+    return report_path.exists() and report_path.is_file()
+
+
+def save_report_content_and_sync(file_name: str, content: str) -> Path:
+    normalized_name = normalize_solution_report_filename(file_name)
+    if not normalized_name:
+        raise ValueError("报告文件名无效")
+
+    normalized_content = normalize_report_time_fields(content)
+    report_path = REPORTS_DIR / normalized_name
+    signature = (int(_time.time_ns()), len(normalized_content.encode("utf-8")))
+    report_created_at = get_utc_now()
+
+    if not _use_pure_cloud_report_storage():
+        _write_text_atomic(report_path, normalized_content, encoding="utf-8")
+        signature = get_file_signature(report_path) or signature
+        generated_at = _get_report_generated_at(normalized_name)
+        report_created_at = generated_at.isoformat() if isinstance(generated_at, datetime) else report_created_at
+
+    with get_meta_index_connection() as conn:
+        record = _build_report_store_record(
+            normalized_name,
+            normalized_content,
+            created_at=report_created_at,
+            updated_at=report_created_at,
+            signature=signature,
+        )
+        if record:
+            _upsert_report_store_record(conn, record)
+
+    return report_path
+
+
+def _materialize_report_file_for_local_use(file_name: str, report_content: str = "") -> Path:
+    normalized_name = normalize_solution_report_filename(file_name)
+    if not normalized_name:
+        raise FileNotFoundError("报告文件名无效")
+
+    report_path = REPORTS_DIR / normalized_name
+    if report_path.exists() and report_path.is_file():
+        return report_path
+
+    effective_content = str(report_content or "")
+    if not effective_content.strip():
+        effective_content = _load_report_content(normalized_name)
+    if not effective_content.strip():
+        raise FileNotFoundError(f"报告不存在: {normalized_name}")
+
+    fd, temp_name = tempfile.mkstemp(prefix=f"{Path(normalized_name).stem}-", suffix=".md")
+    os.close(fd)
+    temp_path = Path(temp_name)
+    temp_path.write_text(effective_content, encoding="utf-8")
+    return temp_path
+
+
 def _iter_session_payload_entries() -> list[tuple[Path, dict]]:
     entries: list[tuple[Path, dict]] = []
     if _use_postgres_shared_meta_storage():
@@ -5677,6 +6107,22 @@ def ensure_meta_index_schema() -> None:
 
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS report_store (
+                    file_name TEXT PRIMARY KEY,
+                    content_markdown TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    content_mtime_ns BIGINT NOT NULL DEFAULT 0,
+                    content_size BIGINT NOT NULL DEFAULT 0
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_report_store_updated ON report_store(updated_at DESC)"
+            )
+
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS report_meta_owners (
                     file_name TEXT PRIMARY KEY,
                     owner_user_id INTEGER NOT NULL,
@@ -5727,11 +6173,64 @@ def ensure_meta_index_schema() -> None:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS custom_scenarios (
+                    scenario_id TEXT PRIMARY KEY,
+                    owner_user_id INTEGER NOT NULL,
+                    instance_scope_key TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_custom_scenarios_owner_scope_updated ON custom_scenarios(owner_user_id, instance_scope_key, updated_at DESC)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS report_solution_sidecars (
+                    report_name TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS report_solution_payload_caches (
+                    report_name TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS presentation_map_store (
+                    report_name TEXT PRIMARY KEY,
+                    record_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS summary_cache_store (
+                    doc_hash TEXT PRIMARY KEY,
+                    summary_text TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
 
             _ensure_postgres_meta_index_bigint_columns(conn, db_target_text)
             _migrate_legacy_meta_index_if_needed(conn, db_target_text)
             _migrate_legacy_session_store_if_needed(conn)
+            _migrate_legacy_report_store_if_needed(conn)
             _migrate_legacy_report_meta_if_needed(conn)
+            _migrate_legacy_report_artifacts_if_needed(conn)
 
         meta_index_state["schema_ready"] = True
 
@@ -6155,16 +6654,10 @@ def _build_report_index_record(
     if int(owner_user_id) <= 0:
         return None
 
-    reports_root = REPORTS_DIR.resolve()
-    report_path = (REPORTS_DIR / name).resolve()
-    if report_path.parent != reports_root:
-        return None
-
-    signature = get_file_signature(report_path)
+    signature = _get_report_store_signature(name)
     if signature is None:
         return None
 
-    stat = report_path.stat()
     normalized_binding = normalize_report_binding_metadata(binding_metadata)
     sidecar_binding = empty_report_binding_metadata()
     sidecar = read_solution_sidecar(name)
@@ -6183,13 +6676,15 @@ def _build_report_index_record(
         if value:
             merged_binding[key] = value
 
+    generated_at = _get_report_generated_at(name)
+    created_at = generated_at.isoformat() if isinstance(generated_at, datetime) else ""
     return {
         "file_name": name,
         "owner_user_id": int(owner_user_id),
         "instance_scope_key": get_record_instance_scope_key(instance_scope_key),
         "deleted": 1 if deleted else 0,
-        "size": int(stat.st_size),
-        "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        "size": int(signature[1]),
+        "created_at": created_at,
         "session_id": merged_binding.get("session_id", ""),
         "topic": merged_binding.get("topic", ""),
         "scenario_name": merged_binding.get("scenario_name", ""),
@@ -10021,6 +10516,32 @@ init_license_db()
 
 
 def load_presentation_map() -> dict:
+    if _use_pure_cloud_report_storage():
+        try:
+            with get_meta_index_connection() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT report_name, record_json
+                    FROM presentation_map_store
+                    """
+                ).fetchall()
+        except Exception:
+            rows = []
+
+        normalized = {}
+        for row in rows:
+            name = normalize_presentation_report_filename(row["report_name"])
+            if not name:
+                continue
+            try:
+                record = json.loads(str(row["record_json"] or ""))
+            except Exception:
+                continue
+            if not isinstance(record, dict):
+                continue
+            normalized[name] = record
+        return normalized
+
     if not PRESENTATION_MAP_FILE.exists():
         return {}
     try:
@@ -10056,6 +10577,37 @@ def load_presentation_map() -> dict:
 
 
 def save_presentation_map(data: dict) -> None:
+    if _use_pure_cloud_report_storage():
+        normalized = {}
+        if isinstance(data, dict):
+            for raw_name, record in data.items():
+                name = normalize_presentation_report_filename(raw_name)
+                if not name or not isinstance(record, dict):
+                    continue
+                normalized[name] = record
+        try:
+            with get_meta_index_connection() as conn:
+                conn.execute("DELETE FROM presentation_map_store")
+                if normalized:
+                    conn.executemany(
+                        """
+                        INSERT INTO presentation_map_store(report_name, record_json, updated_at)
+                        VALUES (?, ?, ?)
+                        """,
+                        [
+                            (name, json.dumps(record, ensure_ascii=False, indent=2), get_utc_now())
+                            for name, record in normalized.items()
+                        ],
+                    )
+            try:
+                if PRESENTATION_MAP_FILE.exists():
+                    PRESENTATION_MAP_FILE.unlink()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return
+
     try:
         _write_json_atomic(PRESENTATION_MAP_FILE, data)
     except Exception:
@@ -10507,10 +11059,7 @@ def schedule_solution_payload_prewarm(report_name: str, report_content: str = ""
         try:
             effective_content = str(report_content or "")
             if not effective_content.strip():
-                report_file = REPORTS_DIR / normalized
-                if not report_file.exists() or not report_file.is_file():
-                    return
-                effective_content = report_file.read_text(encoding="utf-8")
+                effective_content = _load_report_content(normalized)
             if not effective_content.strip():
                 return
             build_solution_payload_from_report(normalized, effective_content, allow_ai_enhancement=False)
@@ -10535,12 +11084,7 @@ def ensure_solution_payload_ready(report_name: str, report_content: str = "", se
 
     effective_content = str(report_content or "")
     if not effective_content.strip():
-        report_file = REPORTS_DIR / normalized
-        if report_file.exists() and report_file.is_file():
-            try:
-                effective_content = report_file.read_text(encoding="utf-8")
-            except Exception:
-                effective_content = ""
+        effective_content = _load_report_content(normalized)
     if not effective_content.strip():
         return False
 
@@ -13524,14 +14068,14 @@ def load_session_for_user(session_id: str, user_id: int, include_missing: bool =
 
 
 def enforce_report_owner_or_404(filename: str, user_id: int) -> tuple[Optional[Path], Optional[tuple]]:
-    report_file = REPORTS_DIR / filename
-    if not report_file.exists():
+    normalized_name = normalize_solution_report_filename(filename)
+    if not normalized_name or not _report_exists(normalized_name):
         return None, (jsonify({"error": "报告不存在"}), 404)
 
-    if not ensure_report_owner(filename, user_id):
+    if not ensure_report_owner(normalized_name, user_id):
         return None, (jsonify({"error": "报告不存在"}), 404)
 
-    return report_file, None
+    return REPORTS_DIR / normalized_name, None
 
 
 def mark_report_as_deleted(filename: str):
@@ -13666,13 +14210,14 @@ def find_reports_by_session_topic(session: dict) -> list:
     session_scope_key = get_session_instance_scope_key(session)
     suffix = f"-{topic_slug}.md"
     matched = []
-    for report_file in REPORTS_DIR.glob("deep-vision-*.md"):
-        report_name = report_file.name
+    for report_name, report_owner_id in load_report_owners().items():
+        if report_owner_id != owner_user_id:
+            continue
         if not report_name.endswith(suffix):
             continue
-        if get_report_owner_id(report_name) != owner_user_id:
-            continue
         if get_report_scope_key(report_name) != session_scope_key:
+            continue
+        if not _report_exists(report_name):
             continue
         matched.append(report_name)
     return matched
@@ -13684,11 +14229,7 @@ def is_report_bound_to_session(filename: str, session: dict, user_id: int) -> bo
     if not name or not name.endswith(".md"):
         return False
 
-    reports_root = REPORTS_DIR.resolve()
-    report_path = (REPORTS_DIR / name).resolve()
-    if report_path.parent != reports_root:
-        return False
-    if not report_path.exists() or not report_path.is_file():
+    if not _report_exists(name):
         return False
 
     try:
@@ -13757,8 +14298,7 @@ def get_bound_reports_for_session(session: dict) -> list[str]:
         direct_candidates.append(last_report_name)
 
     for report_name in direct_candidates:
-        report_path = REPORTS_DIR / report_name
-        if not report_path.exists() or not report_path.is_file():
+        if not _report_exists(report_name):
             continue
         owner_ok = owner_user_id <= 0 or get_report_owner_id(report_name) == owner_user_id
         scope_ok = not session_scope_key or get_report_scope_key(report_name) == session_scope_key
@@ -14718,6 +15258,30 @@ def get_cached_summary(doc_hash: str) -> Optional[str]:
     if not SUMMARY_CACHE_ENABLED:
         return None
 
+    if _use_pure_cloud_report_storage():
+        try:
+            with get_meta_index_connection() as conn:
+                row = conn.execute(
+                    """
+                    SELECT summary_text
+                    FROM summary_cache_store
+                    WHERE doc_hash = ?
+                    LIMIT 1
+                    """,
+                    (str(doc_hash or "").strip(),),
+                ).fetchone()
+        except Exception as e:
+            if ENABLE_DEBUG_LOG:
+                print(f"⚠️  读取摘要缓存失败: {e}")
+            row = None
+        if row:
+            summary = str(row["summary_text"] or "")
+            if summary:
+                if ENABLE_DEBUG_LOG:
+                    print(f"📋 使用缓存的文档摘要: {doc_hash}")
+                return summary
+        return None
+
     cache_file = SUMMARIES_DIR / f"{doc_hash}.txt"
     if cache_file.exists():
         try:
@@ -14734,6 +15298,32 @@ def get_cached_summary(doc_hash: str) -> Optional[str]:
 def save_summary_cache(doc_hash: str, summary: str) -> None:
     """保存文档摘要到缓存"""
     if not SUMMARY_CACHE_ENABLED:
+        return
+
+    if _use_pure_cloud_report_storage():
+        try:
+            with get_meta_index_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO summary_cache_store(doc_hash, summary_text, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(doc_hash) DO UPDATE SET
+                        summary_text=excluded.summary_text,
+                        updated_at=excluded.updated_at
+                    """,
+                    (str(doc_hash or "").strip(), str(summary or ""), get_utc_now()),
+                )
+            if ENABLE_DEBUG_LOG:
+                print(f"💾 摘要已缓存: {doc_hash}")
+            try:
+                cache_file = SUMMARIES_DIR / f"{doc_hash}.txt"
+                if cache_file.exists():
+                    cache_file.unlink()
+            except Exception:
+                pass
+        except Exception as e:
+            if ENABLE_DEBUG_LOG:
+                print(f"⚠️  保存摘要缓存失败: {e}")
         return
 
     cache_file = SUMMARIES_DIR / f"{doc_hash}.txt"
@@ -25436,8 +26026,7 @@ def batch_delete_sessions():
                 if delete_reports:
                     linked_reports = get_bound_reports_for_session(session)
                     for report_name in linked_reports:
-                        report_file = REPORTS_DIR / report_name
-                        if report_file.exists():
+                        if _report_exists(report_name):
                             mark_report_as_deleted(report_name)
                             delete_solution_sidecar(report_name)
                             delete_solution_shares_for_report(report_name)
@@ -29159,9 +29748,7 @@ def run_report_generation_job(
             if not filename:
                 filename = build_session_report_filename(session, now=datetime.now())
 
-            report_file = REPORTS_DIR / filename
-            normalized_content = normalize_report_time_fields(content)
-            _write_text_atomic(report_file, normalized_content, encoding="utf-8")
+            report_file = save_report_content_and_sync(filename, content)
             unmark_report_as_deleted(filename)
             set_report_owner_id(filename, user_id)
 
@@ -30898,7 +31485,6 @@ def load_reports_for_user_from_files(user_id_int: int) -> list[dict]:
     deleted = get_deleted_reports()
     owner_map = load_report_owners()
     expected_scope = get_active_instance_scope_key()
-    reports_root = REPORTS_DIR.resolve()
     binding_map = collect_direct_bound_report_metadata_from_sessions()
     reports = []
     for report_name, owner_id in owner_map.items():
@@ -30910,19 +31496,15 @@ def load_reports_for_user_from_files(user_id_int: int) -> list[dict]:
             continue
         if not isinstance(report_name, str) or not report_name.endswith(".md"):
             continue
-
-        report_path = (REPORTS_DIR / report_name).resolve()
-        if report_path.parent != reports_root:
+        if not _report_exists(report_name):
             continue
-        if not report_path.exists() or not report_path.is_file():
-            continue
-
-        stat = report_path.stat()
+        signature = _get_report_store_signature(report_name) or (0, 0)
+        generated_at = _get_report_generated_at(report_name)
         reports.append(
             build_report_list_item(
                 report_name,
-                int(stat.st_size),
-                datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                int(signature[1]),
+                generated_at.isoformat() if isinstance(generated_at, datetime) else "",
                 binding_metadata=binding_map.get(report_name),
             )
         )
@@ -31885,14 +32467,11 @@ def get_solution_payload_cache_path(report_name: str) -> Path:
 
 
 def read_solution_sidecar(report_name: str) -> dict:
-    path = get_solution_sidecar_path(report_name)
-    if not path.exists() or not path.is_file():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    return _load_report_artifact_payload(
+        "report_solution_sidecars",
+        report_name,
+        get_solution_sidecar_path(report_name),
+    )
 
 
 def _collect_direct_bound_report_names(session: dict) -> list[str]:
@@ -31976,8 +32555,12 @@ def write_solution_sidecar(report_name: str, snapshot: dict) -> None:
     payload = copy.deepcopy(snapshot)
     payload["version"] = SOLUTION_SNAPSHOT_VERSION
     payload["report_name"] = report_name
-    path = get_solution_sidecar_path(report_name)
-    _write_text_atomic(path, json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _save_report_artifact_payload(
+        "report_solution_sidecars",
+        report_name,
+        payload,
+        get_solution_sidecar_path(report_name),
+    )
     delete_solution_payload_cache(report_name)
 
 
@@ -32014,13 +32597,11 @@ def read_solution_payload_cache(
     expected_source_mode: str,
     expected_source_hash: str,
 ) -> dict:
-    path = get_solution_payload_cache_path(report_name)
-    if not path.exists() or not path.is_file():
-        return {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    payload = _load_report_artifact_payload(
+        "report_solution_payload_caches",
+        report_name,
+        get_solution_payload_cache_path(report_name),
+    )
     if not isinstance(payload, dict):
         return {}
     if str(payload.get("cache_version") or "") != SOLUTION_PAYLOAD_CACHE_VERSION:
@@ -32050,26 +32631,28 @@ def write_solution_payload_cache(
         "generated_at": get_utc_now(),
         "payload": copy.deepcopy(payload),
     }
-    path = get_solution_payload_cache_path(report_name)
-    _write_text_atomic(path, json.dumps(cache_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _save_report_artifact_payload(
+        "report_solution_payload_caches",
+        report_name,
+        cache_payload,
+        get_solution_payload_cache_path(report_name),
+    )
 
 
 def delete_solution_payload_cache(report_name: str) -> None:
-    path = get_solution_payload_cache_path(report_name)
-    try:
-        if path.exists():
-            path.unlink()
-    except Exception:
-        return
+    _delete_report_artifact_payload(
+        "report_solution_payload_caches",
+        report_name,
+        get_solution_payload_cache_path(report_name),
+    )
 
 
 def delete_solution_sidecar(report_name: str) -> None:
-    try:
-        path = get_solution_sidecar_path(report_name)
-        if path.exists():
-            path.unlink()
-    except Exception:
-        pass
+    _delete_report_artifact_payload(
+        "report_solution_sidecars",
+        report_name,
+        get_solution_sidecar_path(report_name),
+    )
     delete_solution_payload_cache(report_name)
 
 
@@ -39920,11 +40503,8 @@ def get_report(filename):
         response, status_code = owner_error
         return response, status_code
 
-    content = report_file.read_text(encoding="utf-8")
-    try:
-        generated_at = datetime.fromtimestamp(report_file.stat().st_mtime)
-    except Exception:
-        generated_at = None
+    content = _load_report_content(filename)
+    generated_at = _get_report_generated_at(filename)
     content = normalize_report_time_fields(content, generated_at=generated_at)
     return jsonify({"name": filename, "content": content})
 
@@ -39944,11 +40524,8 @@ def get_report_solution(filename):
         response, status_code = owner_error
         return response, status_code
 
-    content = report_file.read_text(encoding="utf-8")
-    try:
-        generated_at = datetime.fromtimestamp(report_file.stat().st_mtime)
-    except Exception:
-        generated_at = None
+    content = _load_report_content(normalized)
+    generated_at = _get_report_generated_at(normalized)
     content = normalize_report_time_fields(content, generated_at=generated_at)
     payload = build_solution_payload_from_report(
         normalized,
@@ -40001,8 +40578,7 @@ def get_public_solution_by_share_token(share_token):
     if not report_name:
         return jsonify({"error": "分享链接不存在或已失效"}), 404
 
-    report_file = REPORTS_DIR / report_name
-    if not report_file.exists() or not report_file.is_file():
+    if not _report_exists(report_name):
         return jsonify({"error": "分享链接不存在或已失效"}), 404
 
     try:
@@ -40014,11 +40590,8 @@ def get_public_solution_by_share_token(share_token):
     if report_name in get_deleted_reports():
         return jsonify({"error": "分享链接不存在或已失效"}), 404
 
-    content = report_file.read_text(encoding="utf-8")
-    try:
-        generated_at = datetime.fromtimestamp(report_file.stat().st_mtime)
-    except Exception:
-        generated_at = None
+    content = _load_report_content(report_name)
+    generated_at = _get_report_generated_at(report_name)
     content = normalize_report_time_fields(content, generated_at=generated_at)
     payload = copy.deepcopy(build_solution_payload_from_report(
         report_name,
@@ -40050,7 +40623,7 @@ def export_report_appendix_pdf(filename):
     if not REPORTLAB_AVAILABLE:
         return jsonify({"error": "服务端 PDF 导出能力不可用"}), 503
 
-    report_content = report_file.read_text(encoding="utf-8")
+    report_content = _load_report_content(filename)
     appendix_markdown = extract_appendix_markdown_from_report(report_content)
     if not appendix_markdown:
         return jsonify({"error": "未找到附录内容"}), 404
@@ -40101,9 +40674,14 @@ def send_report_to_refly(filename):
     execution_id = ""
 
     try:
-        report_content = report_file.read_text(encoding="utf-8")
+        report_content = _load_report_content(filename)
         report_title = report_content.strip().splitlines()[0].lstrip("#").strip() if report_content else ""
-        upload_response = upload_refly_file(report_file)
+        materialized_report_file = _materialize_report_file_for_local_use(filename, report_content)
+        try:
+            upload_response = upload_refly_file(materialized_report_file)
+        finally:
+            if materialized_report_file != report_file:
+                materialized_report_file.unlink(missing_ok=True)
         file_keys = extract_refly_file_keys(upload_response)
         run_response = run_refly_workflow(report_content, file_keys=file_keys)
         execution_id = (
@@ -40441,7 +41019,7 @@ def batch_delete_reports():
     for report_name in report_names:
         report_file, owner_error = enforce_report_owner_or_404(report_name, user_id)
         if owner_error:
-            if report_file is None and not (REPORTS_DIR / report_name).exists():
+            if report_file is None and not _report_exists(report_name):
                 missing_reports.append(report_name)
             else:
                 skipped_reports.append({"name": report_name, "reason": "无权限或报告不存在"})
@@ -41115,15 +41693,27 @@ def reset_metrics():
 def get_summaries_info():
     """获取智能摘要缓存信息"""
     try:
-        cache_files = list(SUMMARIES_DIR.glob("*.txt"))
-        total_size = sum(f.stat().st_size for f in cache_files)
+        if _use_pure_cloud_report_storage():
+            with get_meta_index_connection() as conn:
+                total_row = conn.execute(
+                    """
+                    SELECT COUNT(1) AS total, COALESCE(SUM(LENGTH(summary_text)), 0) AS total_size
+                    FROM summary_cache_store
+                    """
+                ).fetchone()
+            cached_count = int((total_row["total"] if total_row else 0) or 0)
+            total_size = int((total_row["total_size"] if total_row else 0) or 0)
+        else:
+            cache_files = list(SUMMARIES_DIR.glob("*.txt"))
+            cached_count = len(cache_files)
+            total_size = sum(f.stat().st_size for f in cache_files)
 
         return jsonify({
             "enabled": ENABLE_SMART_SUMMARY,
             "cache_enabled": SUMMARY_CACHE_ENABLED,
             "threshold": SMART_SUMMARY_THRESHOLD,
             "target_length": SMART_SUMMARY_TARGET,
-            "cached_count": len(cache_files),
+            "cached_count": cached_count,
             "cache_size_bytes": total_size,
             "cache_size_kb": round(total_size / 1024, 2),
         })
@@ -41136,14 +41726,20 @@ def get_summaries_info():
 def clear_summaries_cache():
     """清空智能摘要缓存"""
     try:
-        cache_files = list(SUMMARIES_DIR.glob("*.txt"))
-        deleted_count = 0
-        for f in cache_files:
-            try:
-                f.unlink()
-                deleted_count += 1
-            except Exception:
-                pass
+        if _use_pure_cloud_report_storage():
+            with get_meta_index_connection() as conn:
+                total_row = conn.execute("SELECT COUNT(1) AS total FROM summary_cache_store").fetchone()
+                deleted_count = int((total_row["total"] if total_row else 0) or 0)
+                conn.execute("DELETE FROM summary_cache_store")
+        else:
+            cache_files = list(SUMMARIES_DIR.glob("*.txt"))
+            deleted_count = 0
+            for f in cache_files:
+                try:
+                    f.unlink()
+                    deleted_count += 1
+                except Exception:
+                    pass
 
         return jsonify({
             "success": True,

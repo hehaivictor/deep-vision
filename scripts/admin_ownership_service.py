@@ -701,6 +701,78 @@ def _upsert_session_store_rows(conn, rows: list[dict[str, Any]]) -> None:
     )
 
 
+def _ensure_custom_scenarios_meta_table(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS custom_scenarios (
+            scenario_id TEXT PRIMARY KEY,
+            owner_user_id INTEGER NOT NULL,
+            instance_scope_key TEXT NOT NULL DEFAULT '',
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_custom_scenarios_owner_scope_updated ON custom_scenarios(owner_user_id, instance_scope_key, updated_at DESC)"
+    )
+
+
+def _build_custom_scenario_update_row(row: dict[str, Any], target_user_id: int, updated_at: str) -> dict[str, Any]:
+    payload_text = str(row.get("payload_json") or "").strip()
+    try:
+        payload = json.loads(payload_text) if payload_text else {}
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload["owner_user_id"] = int(target_user_id)
+    meta = payload.get("meta")
+    if isinstance(meta, dict) and "owner_user_id" in meta:
+        meta["owner_user_id"] = int(target_user_id)
+    payload["updated_at"] = updated_at
+    updated_payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
+    return {
+        "scenario_id": str(row.get("scenario_id") or "").strip(),
+        "owner_user_id": int(target_user_id),
+        "instance_scope_key": str(row.get("instance_scope_key") or "").strip(),
+        "payload_json": updated_payload_text,
+        "created_at": str(row.get("created_at") or "").strip(),
+        "updated_at": updated_at,
+    }
+
+
+def _upsert_custom_scenario_rows(conn, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    _ensure_custom_scenarios_meta_table(conn)
+    conn.executemany(
+        """
+        INSERT INTO custom_scenarios (
+            scenario_id, owner_user_id, instance_scope_key, payload_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(scenario_id) DO UPDATE SET
+            owner_user_id = excluded.owner_user_id,
+            instance_scope_key = excluded.instance_scope_key,
+            payload_json = excluded.payload_json,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at
+        """,
+        [
+            (
+                row["scenario_id"],
+                row["owner_user_id"],
+                row["instance_scope_key"],
+                row["payload_json"],
+                row["created_at"],
+                row["updated_at"],
+            )
+            for row in rows
+        ],
+    )
+
+
 def _capture_meta_storage_snapshot(
     *,
     backup_dir: Path,
@@ -710,6 +782,7 @@ def _capture_meta_storage_snapshot(
     report_owner_absent: list[str],
     solution_share_rows: list[dict[str, Any]],
     solution_share_absent: list[str],
+    custom_scenario_rows: list[dict[str, Any]],
 ) -> Optional[Path]:
     if not backup_dir or not _use_meta_index_storage(meta_index_db_path):
         return None
@@ -722,6 +795,7 @@ def _capture_meta_storage_snapshot(
         "report_owner_absent": sorted({str(name).strip() for name in report_owner_absent if str(name).strip()}),
         "solution_share_rows": solution_share_rows,
         "solution_share_absent": sorted({str(token).strip() for token in solution_share_absent if str(token).strip()}),
+        "custom_scenario_rows": custom_scenario_rows,
     }
     snapshot_path = backup_dir / "meta" / "meta-storage-snapshot.json"
     _write_json_snapshot(snapshot_path, snapshot)
@@ -743,6 +817,7 @@ def restore_meta_storage_snapshot(*, snapshot_path: Path, meta_index_db_path: st
     report_owner_absent = [str(item).strip() for item in snapshot.get("report_owner_absent", []) if str(item).strip()]
     solution_share_rows = [item for item in snapshot.get("solution_share_rows", []) if isinstance(item, dict)]
     solution_share_absent = [str(item).strip() for item in snapshot.get("solution_share_absent", []) if str(item).strip()]
+    custom_scenario_rows = [item for item in snapshot.get("custom_scenario_rows", []) if isinstance(item, dict)]
 
     restored = {
         "session_store_rows": 0,
@@ -750,6 +825,7 @@ def restore_meta_storage_snapshot(*, snapshot_path: Path, meta_index_db_path: st
         "report_owner_deleted": 0,
         "solution_share_rows": 0,
         "solution_share_deleted": 0,
+        "custom_scenario_rows": 0,
     }
 
     with get_meta_index_connection(meta_index_db_path) as conn:
@@ -800,6 +876,9 @@ def restore_meta_storage_snapshot(*, snapshot_path: Path, meta_index_db_path: st
         for token in solution_share_absent:
             conn.execute("DELETE FROM report_meta_solution_shares WHERE share_token = ?", (token,))
         restored["solution_share_deleted"] = len(solution_share_absent)
+
+        _upsert_custom_scenario_rows(conn, custom_scenario_rows)
+        restored["custom_scenario_rows"] = len(custom_scenario_rows)
 
     return restored
 
@@ -878,7 +957,20 @@ def count_owned_reports(
     return matched
 
 
-def count_owned_custom_scenarios(custom_scenarios_dir: Path, owner_user_id: int) -> int:
+def count_owned_custom_scenarios(
+    custom_scenarios_dir: Path,
+    owner_user_id: int,
+    meta_index_db_path: Optional[str] = None,
+) -> int:
+    if _use_meta_index_storage(meta_index_db_path):
+        with get_meta_index_connection(str(meta_index_db_path)) as conn:
+            _ensure_custom_scenarios_meta_table(conn)
+            row = conn.execute(
+                "SELECT COUNT(1) AS count FROM custom_scenarios WHERE owner_user_id = ?",
+                (int(owner_user_id),),
+            ).fetchone()
+        return parse_owner_id((row or {}).get("count") if isinstance(row, dict) else row["count"] if row else 0)
+
     matched = 0
     if not custom_scenarios_dir.exists():
         return 0
@@ -932,7 +1024,11 @@ def build_account_merge_asset_counts(
             user_id,
             meta_index_db_path=meta_index_db_path,
         ),
-        "custom_scenarios": count_owned_custom_scenarios(custom_scenarios_dir, user_id),
+        "custom_scenarios": count_owned_custom_scenarios(
+            custom_scenarios_dir,
+            user_id,
+            meta_index_db_path=meta_index_db_path,
+        ),
         "solution_shares": count_owned_solution_shares(
             report_solution_shares_file,
             user_id,
@@ -993,6 +1089,49 @@ def list_owned_report_names(
         for report_file in sorted(reports_dir.glob("*.md"))
         if parse_owner_id(owners.get(report_file.name, 0)) == int(owner_user_id)
     ]
+
+
+def list_owned_custom_scenario_records(
+    custom_scenarios_dir: Path,
+    owner_user_id: int,
+    meta_index_db_path: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    if _use_meta_index_storage(meta_index_db_path):
+        with get_meta_index_connection(str(meta_index_db_path)) as conn:
+            _ensure_custom_scenarios_meta_table(conn)
+            return _fetch_all_dicts(
+                conn,
+                """
+                SELECT scenario_id, owner_user_id, instance_scope_key, payload_json, created_at, updated_at
+                FROM custom_scenarios
+                WHERE owner_user_id = ?
+                ORDER BY updated_at DESC, scenario_id DESC
+                """,
+                (int(owner_user_id),),
+            )
+
+    rows: list[dict[str, Any]] = []
+    if not custom_scenarios_dir.exists():
+        return rows
+    for scenario_file in sorted(custom_scenarios_dir.glob("*.json")):
+        try:
+            payload = json.loads(scenario_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if parse_owner_id(payload.get("owner_user_id")) != int(owner_user_id):
+            continue
+        rows.append({
+            "scenario_id": str(payload.get("id") or scenario_file.stem),
+            "owner_user_id": parse_owner_id(payload.get("owner_user_id")),
+            "instance_scope_key": str(payload.get("instance_scope_key") or "").strip(),
+            "payload_json": json.dumps(payload, ensure_ascii=False, indent=2),
+            "created_at": str(payload.get("created_at") or "").strip(),
+            "updated_at": str(payload.get("updated_at") or "").strip(),
+            "file_name": scenario_file.name,
+        })
+    return rows
 
 
 def list_owned_solution_share_records(
@@ -1190,27 +1329,27 @@ def run_account_merge(
             )
     summary["reports"]["examples"] = reports_examples
 
-    source_scenario_files: list[Path] = []
-    if custom_scenarios_dir.exists():
-        for scenario_file in sorted(custom_scenarios_dir.glob("*.json")):
-            try:
-                payload = json.loads(scenario_file.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            if parse_owner_id(payload.get("owner_user_id")) != normalized_source_user_id:
-                continue
-            source_scenario_files.append(scenario_file)
-            if len(scenarios_examples) < examples_limit:
-                scenarios_examples.append(
-                    {
-                        "scenario_id": str(payload.get("id") or scenario_file.stem),
-                        "file_name": scenario_file.name,
-                        "from_owner": normalized_source_user_id,
-                        "to_owner": normalized_target_user_id,
-                    }
-                )
+    source_scenario_rows = list_owned_custom_scenario_records(
+        custom_scenarios_dir,
+        normalized_source_user_id,
+        meta_index_db_path=meta_index_db_path,
+    )
+    source_scenario_files = [
+        custom_scenarios_dir / str(row.get("file_name") or "").strip()
+        for row in source_scenario_rows
+        if str(row.get("file_name") or "").strip()
+    ]
+    for scenario_row in source_scenario_rows:
+        scenario_name = str(scenario_row.get("file_name") or "").strip() or f"{scenario_row.get('scenario_id')}.json"
+        if len(scenarios_examples) < examples_limit:
+            scenarios_examples.append(
+                {
+                    "scenario_id": str(scenario_row.get("scenario_id") or "").strip(),
+                    "file_name": scenario_name,
+                    "from_owner": normalized_source_user_id,
+                    "to_owner": normalized_target_user_id,
+                }
+            )
     summary["custom_scenarios"]["examples"] = scenarios_examples
 
     solution_shares_payload = list_owned_solution_share_records(
@@ -1316,6 +1455,7 @@ def run_account_merge(
                         for token, record in solution_shares_payload.items()
                     ],
                     solution_share_absent=[],
+                    custom_scenario_rows=source_scenario_rows,
                 )
                 if meta_snapshot_path is not None:
                     summary["meta_storage_snapshot"] = {
@@ -1339,8 +1479,11 @@ def run_account_merge(
                         backup_file_once(report_solution_shares_file, shares_backup)
                     else:
                         backup_absent_marker_once(shares_absent_marker)
-            for scenario_file in source_scenario_files:
-                backup_file_once(scenario_file, backup_dir / "custom_scenarios" / scenario_file.name)
+            if _use_meta_index_storage(meta_index_db_path):
+                pass
+            else:
+                for scenario_file in source_scenario_files:
+                    backup_file_once(scenario_file, backup_dir / "custom_scenarios" / scenario_file.name)
 
         now_iso = utc_now_iso()
         with get_auth_db_connection(auth_db_path) as conn:
@@ -1454,6 +1597,11 @@ def run_account_merge(
                             now_iso,
                         ),
                     )
+                updated_scenario_rows = [
+                    _build_custom_scenario_update_row(row, normalized_target_user_id, now_iso)
+                    for row in source_scenario_rows
+                ]
+                _upsert_custom_scenario_rows(meta_conn, updated_scenario_rows)
         else:
             for session_file in source_session_files:
                 payload = json.loads(session_file.read_text(encoding="utf-8"))
@@ -1479,15 +1627,16 @@ def run_account_merge(
                     meta_index_db_path=meta_index_db_path,
                 )
 
-        for scenario_file in source_scenario_files:
-            payload = json.loads(scenario_file.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict):
-                continue
-            payload["owner_user_id"] = normalized_target_user_id
-            meta = payload.get("meta")
-            if isinstance(meta, dict) and "owner_user_id" in meta:
-                meta["owner_user_id"] = normalized_target_user_id
-            scenario_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not _use_meta_index_storage(meta_index_db_path):
+            for scenario_file in source_scenario_files:
+                payload = json.loads(scenario_file.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict):
+                    continue
+                payload["owner_user_id"] = normalized_target_user_id
+                meta = payload.get("meta")
+                if isinstance(meta, dict) and "owner_user_id" in meta:
+                    meta["owner_user_id"] = normalized_target_user_id
+                scenario_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         if backup_dir:
             metadata_file = backup_dir / "metadata.json"
@@ -1717,6 +1866,7 @@ def run_ownership_migration(
             report_owner_absent=meta_snapshot_report_owner_absent,
             solution_share_rows=[],
             solution_share_absent=[],
+            custom_scenario_rows=[],
         )
         if snapshot_path is not None:
             summary["meta_storage_snapshot"] = {

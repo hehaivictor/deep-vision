@@ -7,14 +7,19 @@
 """
 
 import json
+import sys
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import secrets
 import shutil
 
-
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from db_compat import connect_db, is_postgres_dsn
+
 DEFAULT_LEGACY_SCENARIOS_DIR = PROJECT_ROOT / "data" / "scenarios"
 DEFAULT_BUILTIN_SCENARIOS_DIR = PROJECT_ROOT / "resources" / "scenarios" / "builtin"
 DEFAULT_CUSTOM_SCENARIOS_DIR = PROJECT_ROOT / "data" / "scenarios" / "custom"
@@ -56,6 +61,7 @@ class ScenarioLoader:
         builtin_dir: Optional[Path] = None,
         custom_dir: Optional[Path] = None,
         migrate_legacy_custom_dir: Optional[Path] = None,
+        meta_index_db_path: Optional[str] = None,
     ):
         """
         初始化场景加载器
@@ -65,6 +71,7 @@ class ScenarioLoader:
             builtin_dir: 内置场景目录（推荐）
             custom_dir: 用户自定义场景目录（推荐）
             migrate_legacy_custom_dir: 历史自定义场景目录，用于一次性迁移
+            meta_index_db_path: PostgreSQL 模式下的元数据库目标
         """
         legacy_root = Path(scenarios_dir).expanduser() if scenarios_dir is not None else None
 
@@ -95,13 +102,163 @@ class ScenarioLoader:
         else:
             self.legacy_custom_dir = DEFAULT_LEGACY_SCENARIOS_DIR / "custom"
 
+        self.meta_index_db_path = str(meta_index_db_path or "").strip()
+        self._use_db_storage = is_postgres_dsn(self.meta_index_db_path)
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._keywords_index: Dict[str, List[str]] = {}  # keyword -> [scenario_ids]
+        if self._use_db_storage:
+            self._ensure_custom_scenarios_table()
         self._migrate_legacy_custom_scenarios()
         self._load_all_scenarios()
 
+    def _get_meta_index_connection(self):
+        if not self._use_db_storage:
+            raise RuntimeError("当前未启用数据库自定义场景存储")
+        return connect_db(self.meta_index_db_path)
+
+    def _ensure_custom_scenarios_table(self) -> None:
+        with self._get_meta_index_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS custom_scenarios (
+                    scenario_id TEXT PRIMARY KEY,
+                    owner_user_id INTEGER NOT NULL,
+                    instance_scope_key TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_custom_scenarios_owner_scope_updated ON custom_scenarios(owner_user_id, instance_scope_key, updated_at DESC)"
+            )
+
+    def _load_custom_scenario_rows_from_db(self) -> List[Dict[str, Any]]:
+        self._ensure_custom_scenarios_table()
+        with self._get_meta_index_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT scenario_id, payload_json
+                FROM custom_scenarios
+                ORDER BY updated_at DESC, scenario_id DESC
+                """
+            ).fetchall()
+        results: List[Dict[str, Any]] = []
+        for row in rows:
+            payload_text = str(row["payload_json"] or "").strip()
+            if not payload_text:
+                continue
+            try:
+                scenario = json.loads(payload_text)
+            except Exception as exc:
+                print(f"[ScenarioLoader] 加载数据库自定义场景失败: {row['scenario_id']}, 错误: {exc}")
+                continue
+            if not isinstance(scenario, dict):
+                continue
+            results.append(scenario)
+        return results
+
+    def _build_custom_scenario_row(self, scenario: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(scenario or {})
+        now_iso = datetime.utcnow().isoformat()
+        scenario_id = str(payload.get("id") or "").strip()
+        payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
+        return {
+            "scenario_id": scenario_id,
+            "owner_user_id": int(payload.get("owner_user_id") or 0),
+            "instance_scope_key": str(payload.get("instance_scope_key") or "").strip(),
+            "payload_json": payload_text,
+            "created_at": str(payload.get("created_at") or "").strip() or now_iso,
+            "updated_at": str(payload.get("updated_at") or "").strip() or now_iso,
+        }
+
+    def _upsert_custom_scenario_row(self, scenario: Dict[str, Any]) -> None:
+        row = self._build_custom_scenario_row(scenario)
+        if not row["scenario_id"] or int(row["owner_user_id"]) <= 0:
+            raise RuntimeError("自定义场景缺少 scenario_id 或 owner_user_id，无法写入数据库")
+        with self._get_meta_index_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO custom_scenarios(
+                    scenario_id, owner_user_id, instance_scope_key, payload_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(scenario_id) DO UPDATE SET
+                    owner_user_id = excluded.owner_user_id,
+                    instance_scope_key = excluded.instance_scope_key,
+                    payload_json = excluded.payload_json,
+                    created_at = excluded.created_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    row["scenario_id"],
+                    row["owner_user_id"],
+                    row["instance_scope_key"],
+                    row["payload_json"],
+                    row["created_at"],
+                    row["updated_at"],
+                ),
+            )
+
+    def _delete_custom_scenario_row(self, scenario_id: str) -> None:
+        with self._get_meta_index_connection() as conn:
+            conn.execute("DELETE FROM custom_scenarios WHERE scenario_id = ?", (str(scenario_id or "").strip(),))
+
+    def _migrate_custom_scenarios_dir_to_db(self, source_dir: Path) -> None:
+        if not source_dir.exists() or not source_dir.is_dir():
+            return
+        migrated = 0
+        skipped = 0
+        failed = 0
+        for json_file in sorted(source_dir.glob("*.json")):
+            scenario = self._load_json(json_file)
+            if not scenario or "id" not in scenario:
+                failed += 1
+                continue
+            scenario["builtin"] = False
+            scenario["custom"] = True
+            scenario_id = str(scenario.get("id") or "").strip()
+            try:
+                with self._get_meta_index_connection() as conn:
+                    exists = conn.execute(
+                        "SELECT 1 FROM custom_scenarios WHERE scenario_id = ? LIMIT 1",
+                        (scenario_id,),
+                    ).fetchone()
+                if exists:
+                    try:
+                        json_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    skipped += 1
+                    continue
+                self._upsert_custom_scenario_row(scenario)
+                try:
+                    json_file.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                migrated += 1
+            except Exception as exc:
+                failed += 1
+                print(f"[ScenarioLoader] 迁移自定义场景到数据库失败: {json_file}, 错误: {exc}")
+        if migrated:
+            print(f"[ScenarioLoader] 已迁移 {migrated} 个自定义场景到数据库")
+        if skipped:
+            print(f"[ScenarioLoader] 自定义场景数据库中已存在，跳过 {skipped} 个文件")
+        if failed:
+            print(f"[ScenarioLoader] 自定义场景迁移失败 {failed} 个文件")
+
     def _migrate_legacy_custom_scenarios(self) -> None:
         """将历史自定义场景目录下的 JSON 自动迁移到当前自定义目录。"""
+        if self._use_db_storage:
+            self._migrate_custom_scenarios_dir_to_db(self.legacy_custom_dir)
+            try:
+                same_dir = self.legacy_custom_dir.resolve() == self.custom_dir.resolve()
+            except Exception:
+                same_dir = False
+            if not same_dir:
+                self._migrate_custom_scenarios_dir_to_db(self.custom_dir)
+            return
+
         legacy_dir = self.legacy_custom_dir
         target_dir = self.custom_dir
 
@@ -156,7 +313,14 @@ class ScenarioLoader:
                     self._index_keywords(scenario)
 
         # 加载自定义场景
-        if self.custom_dir.exists():
+        if self._use_db_storage:
+            for scenario in self._load_custom_scenario_rows_from_db():
+                if scenario and "id" in scenario:
+                    scenario["builtin"] = False
+                    scenario["custom"] = True
+                    self._cache[scenario["id"]] = scenario
+                    self._index_keywords(scenario)
+        elif self.custom_dir.exists():
             for json_file in self.custom_dir.glob("*.json"):
                 scenario = self._load_json(json_file)
                 if scenario and "id" in scenario:
@@ -200,6 +364,13 @@ class ScenarioLoader:
                 self._keywords_index[keyword_lower] = []
             if scenario_id not in self._keywords_index[keyword_lower]:
                 self._keywords_index[keyword_lower].append(scenario_id)
+
+    def _remove_from_keyword_index(self, scenario_id: str) -> None:
+        for keyword, scenario_ids in list(self._keywords_index.items()):
+            if scenario_id in scenario_ids:
+                scenario_ids.remove(scenario_id)
+                if not scenario_ids:
+                    del self._keywords_index[keyword]
 
     def get_scenario(self, scenario_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -483,14 +654,20 @@ class ScenarioLoader:
         scenario["builtin"] = False
         scenario["custom"] = True
 
-        # 保存到文件
-        self.custom_dir.mkdir(parents=True, exist_ok=True)
-        file_path = self.custom_dir / f"{scenario_id}.json"
+        if self._use_db_storage:
+            self._upsert_custom_scenario_row(scenario)
+            file_path = self.custom_dir / f"{scenario_id}.json"
+            if file_path.exists():
+                file_path.unlink(missing_ok=True)
+        else:
+            self.custom_dir.mkdir(parents=True, exist_ok=True)
+            file_path = self.custom_dir / f"{scenario_id}.json"
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(scenario, f, ensure_ascii=False, indent=2)
 
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(scenario, f, ensure_ascii=False, indent=2)
-
-        # 更新缓存
+        existing = self._cache.get(scenario_id)
+        if isinstance(existing, dict):
+            self._remove_from_keyword_index(scenario_id)
         self._cache[scenario_id] = scenario
         self._index_keywords(scenario)
 
@@ -510,20 +687,22 @@ class ScenarioLoader:
         if not scenario or scenario.get("builtin", False):
             return False
 
-        # 删除文件
-        file_path = self.custom_dir / f"{scenario_id}.json"
-        if file_path.exists():
-            file_path.unlink()
+        if self._use_db_storage:
+            self._delete_custom_scenario_row(scenario_id)
+            for local_dir in (self.custom_dir, self.legacy_custom_dir):
+                file_path = local_dir / f"{scenario_id}.json"
+                if file_path.exists():
+                    file_path.unlink(missing_ok=True)
+        else:
+            file_path = self.custom_dir / f"{scenario_id}.json"
+            if file_path.exists():
+                file_path.unlink()
 
         # 从缓存移除
         del self._cache[scenario_id]
 
         # 从关键词索引移除
-        for keyword, scenario_ids in list(self._keywords_index.items()):
-            if scenario_id in scenario_ids:
-                scenario_ids.remove(scenario_id)
-                if not scenario_ids:
-                    del self._keywords_index[keyword]
+        self._remove_from_keyword_index(scenario_id)
 
         return True
 
@@ -538,6 +717,7 @@ def get_scenario_loader(
     builtin_dir: Optional[Path] = None,
     custom_dir: Optional[Path] = None,
     migrate_legacy_custom_dir: Optional[Path] = None,
+    meta_index_db_path: Optional[str] = None,
 ) -> ScenarioLoader:
     """
     获取场景加载器单例
@@ -559,6 +739,7 @@ def get_scenario_loader(
             builtin_dir=builtin_dir,
             custom_dir=custom_dir,
             migrate_legacy_custom_dir=migrate_legacy_custom_dir,
+            meta_index_db_path=meta_index_db_path,
         )
 
     return _scenario_loader
