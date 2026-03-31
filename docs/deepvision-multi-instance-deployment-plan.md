@@ -50,7 +50,7 @@
 | 持久导出资产 / 二进制产物 | 前端导出结果与后续异步产物 | S3 兼容对象存储 + PostgreSQL 元数据 | 已迁移（新导出） | P1 | 报告/附录 `md/pdf/docx` 新导出会自动归档到对象存储；历史导出结果无稳定引用，不做自动回填 |
 | 转换产物 | `data/converted/*.md` | Redis 或 PostgreSQL 缓存表 | 已迁移到 PostgreSQL 缓存表 | P2 | 上传转换优先查 PostgreSQL 缓存，未命中才调用本地转换 |
 | 摘要缓存 | `data/summaries/*.txt` | Redis 优先，其次 PostgreSQL 缓存表 | 已迁移到 PostgreSQL 缓存表 | P2 | 当前已数据库化；后续如需更低延迟可再切 Redis |
-| 运行配置（前端展示配置） | `web/site-config.js` | 静态发布或 PostgreSQL 配置表 | 未迁移 | P2 | 已不再承担演示文稿/方案权限开关，只保留纯前端展示配置 |
+| 运行配置（前端展示配置） | `web/site-config.js` | PostgreSQL `site_config_store` + 动态 `/site-config.js` | 已迁移 | P2 | 已不再承担演示文稿/方案权限开关，只保留纯前端展示配置 |
 | 本地临时文件 | `data/temp/` | 本地临时目录 | 保留本地 | P3 | 仅用于短时中转，不得承载业务真相 |
 | 本地锁文件 | `data/.locks/` | 本地锁或 Redis 锁 | 保留本地 | P3 | 仅实例内有效，不能作为多实例全局一致性机制 |
 | 指标文件 | `data/metrics/api_metrics.json` | 日志平台 / Prometheus / 外部监控 | 未迁移 | P3 | 不建议用本地文件做多实例聚合 |
@@ -128,9 +128,8 @@
 
 1. 为对象存储补充持久导出资产的生命周期清理与历史列表展示。
 2. 如有更高并发或更低延迟需求，再把转换缓存从 PostgreSQL 缓存表切到 Redis。
-3. `site-config.js` 从实例本地可变文件改为静态发布或数据库配置。
-4. 清理 `data/` 中仍被当作主数据源的目录，保留 `temp/` 与必要 scratch 目录。
-5. 为对象存储补充批量回填、监控告警与回滚策略。
+3. 清理 `data/` 中仍被当作主数据源的目录，保留 `temp/` 与必要 scratch 目录。
+4. 为对象存储补充批量回填、监控告警与回滚策略。
 
 ## Object Storage Config
 

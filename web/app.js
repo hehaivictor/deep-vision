@@ -2817,7 +2817,7 @@ function deepVision() {
         getAdminConfigSourceLabel(source = this.adminConfigSource) {
             const normalized = this.normalizeAdminConfigSource(source);
             if (normalized === 'config') return 'config.py';
-            if (normalized === 'site') return 'site-config.js';
+            if (normalized === 'site') return '共享前端配置';
             return '.env';
         },
 

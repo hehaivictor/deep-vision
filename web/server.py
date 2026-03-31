@@ -3097,6 +3097,57 @@ def _read_admin_site_config_values(site_config_path: Path, *, strict: bool = Fal
     return payload if isinstance(payload, dict) else {}
 
 
+def _normalize_site_config_payload(payload: Any) -> dict[str, Any]:
+    return copy.deepcopy(payload) if isinstance(payload, dict) else {}
+
+
+def _load_site_config_store_values(conn: Any) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT payload_json
+        FROM site_config_store
+        WHERE config_name = 'default'
+        LIMIT 1
+        """
+    ).fetchone()
+    if not row:
+        return {}
+    try:
+        payload = json.loads(str(row["payload_json"] or "{}"))
+    except Exception:
+        return {}
+    return _normalize_site_config_payload(payload)
+
+
+def _upsert_site_config_store_values(conn: Any, values: dict[str, Any]) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO site_config_store(config_name, payload_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(config_name) DO UPDATE SET
+            payload_json = excluded.payload_json,
+            updated_at = excluded.updated_at
+        """,
+        (
+            "default",
+            json.dumps(_normalize_site_config_payload(values), ensure_ascii=False),
+            now_iso,
+        ),
+    )
+
+
+def load_runtime_site_config_values() -> dict[str, Any]:
+    try:
+        with get_meta_index_connection() as conn:
+            stored = _load_site_config_store_values(conn)
+    except Exception:
+        stored = {}
+    if stored:
+        return stored
+    return _read_admin_site_config_values(get_admin_site_config_file_path())
+
+
 def _mask_admin_sensitive_value(value: object) -> str:
     text = str(value or "")
     if not text:
@@ -3371,22 +3422,20 @@ def _render_admin_site_config_file(values: dict[str, Any]) -> str:
 
 
 def _write_admin_site_config_updates(updates: dict[str, Any]) -> Path:
-    site_config_path = get_admin_site_config_file_path()
-    site_config_path.parent.mkdir(parents=True, exist_ok=True)
-
     with ADMIN_SETTINGS_WRITE_LOCK:
-        existing_values = _read_admin_site_config_values(site_config_path, strict=site_config_path.exists())
+        existing_values = load_runtime_site_config_values()
         merged_values = copy.deepcopy(existing_values) if isinstance(existing_values, dict) else {}
         for key, value in updates.items():
             _set_admin_nested_setting_value(merged_values, key, value)
-        site_config_path.write_text(_render_admin_site_config_file(merged_values), encoding="utf-8")
+        with get_meta_index_connection() as conn:
+            _upsert_site_config_store_values(conn, merged_values)
 
-    return site_config_path
+    return Path(str(get_meta_index_db_target()))
 
 
 def _get_admin_runtime_source_label(source: str, key: str) -> str:
     if source == "site":
-        return "site-config.js（刷新页面后生效）"
+        return "共享数据库 site_config_store（刷新页面后生效）"
     if os.environ.get(f"DEEPVISION_{key}") is not None:
         return "DEEPVISION_ 环境变量"
     if os.environ.get(key) is not None:
@@ -3480,7 +3529,7 @@ def _build_admin_settings_source_payload(source: str) -> dict[str, Any]:
     site_config_path = get_admin_site_config_file_path()
     env_values = _read_env_file_map(env_path)
     config_managed_values = _read_admin_managed_config_values(config_path)
-    site_values = _read_admin_site_config_values(site_config_path)
+    site_values = load_runtime_site_config_values()
     groups_payload = []
     for group in ADMIN_SETTINGS_GROUPS_BY_SOURCE[source]:
         groups_payload.append({
@@ -3517,8 +3566,10 @@ def _build_admin_settings_source_payload(source: str) -> dict[str, Any]:
             }
         else:
             file_meta = {
-                "path": str(site_config_path),
-                "exists": site_config_path.exists(),
+                "path": str(get_meta_index_db_target()),
+                "exists": True,
+                "storage": "site_config_store",
+                "fallback_path": str(site_config_path),
                 "top_level_keys": sorted(site_values.keys()),
             }
 
@@ -3543,8 +3594,8 @@ def build_admin_config_center_payload() -> dict[str, Any]:
                     "hint": "配置会写入 config.py 的托管区块。大多数改动需要重启服务后完全生效。",
                 },
                 "site": {
-                    "mode_label": "前端静态配置",
-                    "hint": "配置会写入 site-config.js。保存后请刷新浏览器页面以应用最新前端配置。",
+                    "mode_label": "共享数据库配置",
+                    "hint": "配置会写入共享数据库，并由 /site-config.js 动态输出。保存后请刷新浏览器页面以应用最新前端配置。",
                 },
             },
         },
@@ -3582,7 +3633,7 @@ def save_admin_config_group(source: str, group_id: str, values: Optional[dict[st
         source_label = "config.py"
     else:
         target_path = _write_admin_site_config_updates(parsed_updates)
-        source_label = "site-config.js"
+        source_label = "共享数据库 site_config_store"
 
     return {
         "success": True,
@@ -6211,6 +6262,18 @@ def _migrate_legacy_report_store_if_needed(conn: Any) -> None:
         _safe_log(f"✅ 已迁移报告正文到 report_store: {migrated_count}")
 
 
+def _migrate_legacy_site_config_if_needed(conn: Any) -> None:
+    if _meta_index_table_row_count(conn, "site_config_store") > 0:
+        return
+    site_config_path = get_admin_site_config_file_path()
+    legacy_values = _read_admin_site_config_values(site_config_path)
+    if not legacy_values:
+        return
+    _upsert_site_config_store_values(conn, legacy_values)
+    if ENABLE_DEBUG_LOG:
+        _safe_log("✅ 已迁移 site-config.js 到 site_config_store")
+
+
 def _load_report_artifact_payload(table_name: str, report_name: str, legacy_path: Path) -> dict:
     normalized_name = normalize_solution_report_filename(report_name)
     if not normalized_name:
@@ -7097,6 +7160,15 @@ def ensure_meta_index_schema() -> None:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS site_config_store (
+                    config_name TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS summary_cache_store (
                     doc_hash TEXT PRIMARY KEY,
                     summary_text TEXT NOT NULL DEFAULT '',
@@ -7149,6 +7221,7 @@ def ensure_meta_index_schema() -> None:
             _migrate_legacy_report_store_if_needed(conn)
             _migrate_legacy_report_meta_if_needed(conn)
             _migrate_legacy_report_artifacts_if_needed(conn)
+            _migrate_legacy_site_config_if_needed(conn)
 
         meta_index_state["schema_ready"] = True
 
@@ -26354,6 +26427,16 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
 @app.route('/')
 def index():
     return send_from_directory(str(WEB_DIR), 'index.html')
+
+
+@app.route('/site-config.js')
+def serve_site_config():
+    content = _render_admin_site_config_file(load_runtime_site_config_values())
+    response = make_response(content)
+    response.headers["Content-Type"] = "application/javascript; charset=utf-8"
+    response.headers["Cache-Control"] = "no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.route('/<path:filename>')
