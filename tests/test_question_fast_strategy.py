@@ -408,8 +408,8 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.addCleanup(setattr, self.server, "build_interview_prompt", original_build)
         self.addCleanup(setattr, self.server, "_select_question_generation_runtime_profile", original_select)
 
-        def fake_build(session, dimension, all_dim_logs, session_id=None, session_signature=None, output_mode="full", search_mode="default"):
-            calls.append(output_mode)
+        def fake_build(session, dimension, all_dim_logs, session_id=None, session_signature=None, output_mode="full", search_mode="default", runtime_probe=False):
+            calls.append(f"{output_mode}:{'probe' if runtime_probe else 'actual'}")
             return (
                 f"PROMPT:{output_mode}",
                 [],
@@ -454,7 +454,7 @@ class QuestionFastStrategyTests(unittest.TestCase):
             allow_fast_path=True,
         )
 
-        self.assertEqual(calls, ["full", "light"])
+        self.assertEqual(calls, ["full:probe", "light:probe"])
         self.assertEqual(prepared["full_prompt"], "PROMPT:full")
         self.assertEqual(prepared["fast_prompt"], "PROMPT:light")
         self.assertEqual(prepared["runtime_profile"]["fast_prompt_mode"], "light")
@@ -508,7 +508,7 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.addCleanup(setattr, self.server, "build_interview_prompt", original_build)
         self.addCleanup(setattr, self.server, "_select_question_generation_runtime_profile", original_select)
 
-        def fake_build(session, dimension, all_dim_logs, session_id=None, session_signature=None, output_mode="full", search_mode="default"):
+        def fake_build(session, dimension, all_dim_logs, session_id=None, session_signature=None, output_mode="full", search_mode="default", runtime_probe=False):
             if output_mode == "full":
                 return (
                     "FULL_PROMPT",
@@ -579,6 +579,48 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertEqual(prepared["runtime_profile"]["fast_prompt_mode"], "light")
         self.assertTrue(prepared["runtime_profile"]["fast_allow_compacted_docs"])
         self.assertNotIn("light_prompt_truncated_docs", prepared["runtime_profile"]["selection_reason"])
+
+    def test_build_prompt_runtime_probe_skips_smart_summary(self):
+        original_summary = self.server.summarize_document
+        self.addCleanup(setattr, self.server, "summarize_document", original_summary)
+
+        def fail_summary(*_args, **_kwargs):
+            raise AssertionError("runtime_probe 不应触发智能摘要")
+
+        self.server.summarize_document = fail_summary
+        session = {
+            "topic": "机加工艺方案评审",
+            "session_id": "sid",
+            "reference_materials": [
+                {
+                    "name": "超长资料",
+                    "content": "资料片段 " * 600,
+                }
+            ],
+            "interview_log": [],
+            "scenario_config": {
+                "dimensions": [
+                    {
+                        "id": "target_architecture",
+                        "name": "目标架构",
+                        "description": "确认边界和部署约束",
+                    }
+                ]
+            },
+        }
+
+        prompt, truncated_docs, meta = self.server.build_interview_prompt(
+            session,
+            "target_architecture",
+            [],
+            output_mode="full",
+            runtime_probe=True,
+        )
+
+        self.assertTrue(meta["runtime_probe"])
+        self.assertEqual(meta["search_mode"], "rule_only")
+        self.assertTrue(len(prompt) > 0)
+        self.assertIsInstance(truncated_docs, list)
 
     def test_generate_question_allows_fast_with_compacted_reference_docs(self):
         calls = []

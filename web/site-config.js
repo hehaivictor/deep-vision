@@ -326,12 +326,6 @@ const SITE_CONFIG = {
   "version": {
     "current": "1.26.0",
     "configFile": "version.json"
-  },
-  "presentation": {
-    "enabled": false
-  },
-  "solution": {
-    "enabled": false
   }
 };
 

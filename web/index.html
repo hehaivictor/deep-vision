@@ -789,9 +789,19 @@
                              x-transition:leave-start="opacity-100 translate-y-0 scale-100"
                              x-transition:leave-end="opacity-0 -translate-y-1 scale-95"
                              @click.outside="showAccountMenu = false"
-                             class="theme-menu account-menu dv-popover-panel absolute right-0 mt-2 w-56 rounded-xl border border-gray-200 bg-white p-2 shadow-lg z-50">
+                            class="theme-menu account-menu dv-popover-panel absolute right-0 mt-2 w-56 rounded-xl border border-gray-200 bg-white p-2 shadow-lg z-50">
                             <div class="px-2.5 py-2 space-y-1">
-                                <p class="text-xs font-semibold text-primary tracking-wide">当前账号</p>
+                                <div class="flex items-center justify-between gap-3">
+                                    <p class="text-xs font-semibold text-primary tracking-wide">当前账号</p>
+                                    <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
+                                          :class="currentLevelInfo?.key === 'professional'
+                                              ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                                              : (currentLevelInfo?.key === 'standard'
+                                                  ? 'bg-sky-50 text-sky-700 border border-sky-200'
+                                                  : 'bg-emerald-50 text-emerald-700 border border-emerald-200')"
+                                          :title="currentLevelInfo?.description || ''"
+                                          x-text="currentLevelInfo?.name || '体验版'"></span>
+                                </div>
                                 <p class="text-xs text-muted break-all" x-text="getCurrentAccountDisplay()"></p>
                             </div>
                             <div class="account-menu-divider my-2"></div>
@@ -2329,8 +2339,7 @@
                         </div>
                     </div>
 
-                    <template x-if="!selectedReport">
-                        <div class="space-y-4">
+                    <div x-show="!selectedReport" x-cloak class="space-y-4">
                             <div class="flex items-center gap-2 text-sm text-muted" x-show="filteredReports.length > 0 || reportBatchMode">
                                 <span>共 <span x-text="filteredReports.length"></span> 条</span>
                                 <template x-if="reportGroupBy !== 'none'">
@@ -2487,15 +2496,15 @@
                                 </template>
                             </div>
                             </template>
-                        </div>
-                    </template>
+                    </div>
 
                     <!-- 报告详情 -->
-                    <template x-if="selectedReport">
-                        <section class="dv-report-detail-layout"
-                                 :class="{ 'is-enhancing': reportDetailEnhancing }"
-                                 :aria-busy="reportDetailEnhancing ? 'true' : 'false'"
-                                 x-ref="reportDetailView">
+                    <section x-show="selectedReport"
+                             x-cloak
+                             class="dv-report-detail-layout"
+                             :class="{ 'is-enhancing': reportDetailEnhancing }"
+                             :aria-busy="reportDetailEnhancing ? 'true' : 'false'"
+                             x-ref="reportDetailView">
                             <div class="dv-report-detail-loading" x-show="reportDetailEnhancing" x-cloak aria-hidden="true">
                                 <div class="dv-report-detail-loading-card">
                                     <div class="dv-report-detail-loading-bar is-wide"></div>
@@ -2544,14 +2553,14 @@
                                             返回报告列表
                                         </button>
                                         <div class="dv-report-toolbar">
-                                            <button type="button" x-show="isSolutionEnabled()" @click="openSolutionPage(selectedReport)"
+                                            <button type="button" x-show="canViewSolutionPage()" @click="openSolutionPage(selectedReport)"
                                                     class="report-action-secondary dv-report-toolbar-btn px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2">
                                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>
                                                 </svg>
                                                 查看方案
                                             </button>
-                                            <div class="flex flex-col gap-1" x-show="isPresentationEnabled()">
+                                            <div class="flex flex-col gap-1" x-show="isPresentationEnabled() && canGeneratePresentation()">
                                                 <button @click="isPresentationGeneratingCurrentReport() ? stopPresentationGeneration() : generatePresentation()"
                                                         x-show="!presentationPdfUrl"
                                                         :class="isPresentationGeneratingCurrentReport() ? 'report-action-generate-progressing cursor-wait' : 'report-action-generate cursor-pointer'"
@@ -2570,7 +2579,7 @@
                                                     </span>
                                                 </button>
                                             </div>
-                                            <button x-show="isPresentationEnabled() && presentationPdfUrl && !isPresentationGeneratingCurrentReport()"
+                                            <button x-show="isPresentationEnabled() && canGeneratePresentation() && presentationPdfUrl && !isPresentationGeneratingCurrentReport()"
                                                     @click="openPresentationPdf()"
                                                     class="report-action-secondary dv-report-toolbar-btn px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2">
                                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2579,7 +2588,7 @@
                                                 </svg>
                                                 查看演示文稿
                                             </button>
-                                            <div class="relative" x-data="{
+                                            <div class="relative" x-show="hasAnyReportDownloadOption()" x-data="{
                                                 downloadMenuOpen: false,
                                                 lastFocusedEl: null,
                                                 openMenu() {
@@ -2616,7 +2625,8 @@
                                                      x-transition:leave-end="opacity-0 transform scale-95 -translate-y-1.5"
                                                      @keydown.escape.prevent.stop="closeMenu()"
                                                      class="dv-popover-panel absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-lg border border-gray-200 py-2 z-50">
-                                                    <button @click="downloadReport('md'); closeMenu()"
+                                                    <button x-show="canExportFormat('report', 'md')"
+                                                            @click="downloadReport('md'); closeMenu()"
                                                             x-ref="firstMenuItem"
                                                             class="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-3 cursor-pointer transition-colors">
                                                         <svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2627,7 +2637,8 @@
                                                             <div class="text-xs text-gray-500">.md 源文件</div>
                                                         </div>
                                                     </button>
-                                                    <button @click="downloadReport('pdf'); closeMenu()"
+                                                    <button x-show="canExportFormat('report', 'pdf')"
+                                                            @click="downloadReport('pdf'); closeMenu()"
                                                             class="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-3 cursor-pointer transition-colors">
                                                         <svg class="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>
@@ -2637,7 +2648,8 @@
                                                             <div class="text-xs text-gray-500">适合打印分享</div>
                                                         </div>
                                                     </button>
-                                                    <button @click="downloadReport('docx'); closeMenu()"
+                                                    <button x-show="canExportFormat('report', 'docx')"
+                                                            @click="downloadReport('docx'); closeMenu()"
                                                             class="w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-3 cursor-pointer transition-colors">
                                                         <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
@@ -2717,7 +2729,6 @@
                                 </article>
                             </div>
                         </section>
-                    </template>
                 </div>
             </template>
 
@@ -3042,6 +3053,56 @@
                                                 恢复跟随默认值
                                             </button>
                                         </div>
+                                        <div class="border-t border-dashed border-gray-200 pt-5 space-y-4">
+                                            <div class="flex items-center justify-between gap-3">
+                                                <div>
+                                                    <h3 class="text-base font-semibold text-primary">演示文稿全局开关</h3>
+                                                    <p class="text-sm text-muted mt-1">用于 Refly 故障、配额控制或灰度期间的全站熔断，不再依赖 site-config。</p>
+                                                </div>
+                                                <span class="inline-flex items-center justify-center whitespace-nowrap leading-none min-w-[4.5rem] px-2.5 py-1 rounded-full border text-xs font-medium"
+                                                      :class="presentationFeatureEnabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-gray-50 text-gray-600'"
+                                                      x-text="presentationFeatureEnabled ? '已开启' : '未开启'"></span>
+                                            </div>
+                                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                                                <div class="rounded-xl bg-slate-50 px-3 py-3">
+                                                    <div class="text-xs text-muted">当前生效值</div>
+                                                    <div class="mt-1 font-semibold text-primary" x-text="presentationFeatureEnabled ? '已开启' : '已关闭'"></div>
+                                                    <div class="mt-1 text-xs text-muted" x-text="getAdminPresentationFeatureSourceLabel()"></div>
+                                                </div>
+                                                <div class="rounded-xl bg-slate-50 px-3 py-3">
+                                                    <div class="text-xs text-muted">.env 默认值</div>
+                                                    <div class="mt-1 font-semibold text-primary"
+                                                         x-text="getAdminPresentationFeatureState()?.default_enabled ? '已开启' : '已关闭'"></div>
+                                                    <div class="mt-1 text-xs text-muted"
+                                                         x-text="getAdminPresentationFeatureState()?.default_source_label || '.env 默认值'"></div>
+                                                </div>
+                                                <div class="rounded-xl bg-slate-50 px-3 py-3 sm:col-span-2">
+                                                    <div class="text-xs text-muted">运行时覆盖</div>
+                                                    <div class="mt-1 font-semibold text-primary" x-text="getAdminPresentationFeatureOverrideLabel()"></div>
+                                                    <div class="mt-1 text-xs text-muted"
+                                                         x-text="getAdminPresentationFeatureState()?.updated_at ? `最近调整：${formatDate(getAdminPresentationFeatureState().updated_at)}` : '当前没有单独覆盖值时，将跟随默认值。'"></div>
+                                                </div>
+                                            </div>
+                                            <div class="flex flex-wrap gap-2">
+                                                <button @click="toggleAdminPresentationFeature(true)"
+                                                        :disabled="presentationFeatureEnabled || adminPresentationFeatureMutating"
+                                                        class="whitespace-nowrap px-3.5 py-2 rounded-lg text-sm font-medium transition-colors border cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                                        :class="presentationFeatureEnabled ? 'border-gray-200 bg-gray-100 text-gray-400' : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'">
+                                                    <span x-text="adminPresentationFeatureMutating ? '处理中...' : '开启演示并写回默认值'"></span>
+                                                </button>
+                                                <button @click="toggleAdminPresentationFeature(false)"
+                                                        :disabled="!presentationFeatureEnabled || adminPresentationFeatureMutating"
+                                                        class="whitespace-nowrap px-3.5 py-2 rounded-lg text-sm font-medium transition-colors border cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                                        :class="!presentationFeatureEnabled ? 'border-gray-200 bg-gray-100 text-gray-400' : 'border-gray-200 bg-white text-secondary hover:bg-gray-50'">
+                                                    <span x-text="adminPresentationFeatureMutating ? '处理中...' : '关闭演示并写回默认值'"></span>
+                                                </button>
+                                                <button @click="followAdminPresentationFeatureDefault()"
+                                                        :disabled="adminPresentationFeatureMutating || getAdminPresentationFeatureState()?.source !== 'runtime_override'"
+                                                        class="whitespace-nowrap px-3.5 py-2 rounded-lg text-sm font-medium transition-colors border cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed border-gray-200 bg-white text-secondary hover:bg-gray-50">
+                                                    恢复跟随默认值
+                                                </button>
+                                            </div>
+                                        </div>
                                         <template x-if="adminLicenseSummary">
                                             <div class="grid grid-cols-2 gap-3 text-sm">
                                                 <div class="rounded-xl bg-slate-50 px-3 py-3">
@@ -3080,7 +3141,16 @@
                                                        x-model="adminLicenseGenerateForm.duration_days"
                                                        class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
                                             </label>
-                                            <label class="space-y-1 md:col-span-2 xl:col-span-1">
+                                            <label class="space-y-1">
+                                                <span class="text-xs font-medium text-muted">用户级别</span>
+                                                <select x-model="adminLicenseGenerateForm.level_key"
+                                                        class="w-full px-3 pr-10 py-2.5 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                    <option value="experience">体验版</option>
+                                                    <option value="standard">标准版</option>
+                                                    <option value="professional">专业版</option>
+                                                </select>
+                                            </label>
+                                            <label class="space-y-1 md:col-span-2 xl:col-span-3">
                                                 <span class="text-xs font-medium text-muted">备注</span>
                                                 <input type="text"
                                                        x-model.trim="adminLicenseGenerateForm.note"
@@ -3113,6 +3183,9 @@
                                             <p class="text-sm text-muted mt-1">
                                                 批次号：<span class="font-mono text-primary" x-text="adminLicenseGeneratedBatch?.batch_id || '-'"></span>
                                             </p>
+                                            <p class="text-sm text-muted mt-1">
+                                                用户级别：<span class="text-primary" x-text="adminLicenseGeneratedBatch?.level_name || '-'"></span>
+                                            </p>
                                         </div>
                                         <div class="flex flex-wrap gap-2">
                                             <button @click="copyAdminGeneratedLicenses()"
@@ -3139,6 +3212,7 @@
                                                 <div class="rounded-xl bg-white border border-border px-3 py-3">
                                                     <div class="font-mono text-sm font-semibold text-primary break-all" x-text="item.code"></div>
                                                     <div class="text-xs text-muted mt-2">
+                                                        <div>级别：<span class="text-primary" x-text="item.level_name || adminLicenseGeneratedBatch?.level_name || '-'"></span></div>
                                                         <div>生效：<span x-text="item.activation_starts_validity ? '激活后开始' : (item.not_before_at ? formatDate(item.not_before_at) : '-')"></span></div>
                                                         <div class="mt-1" x-show="item.activation_starts_validity">有效期：<span x-text="formatLicenseDurationDays(item.duration_days)"></span></div>
                                                         <div class="mt-1" x-show="!item.activation_starts_validity">到期：<span x-text="item.expires_at ? formatDate(item.expires_at) : '-'"></span></div>
@@ -3174,6 +3248,16 @@
                                                 <option value="expired">已过期</option>
                                                 <option value="revoked">已撤销</option>
                                                 <option value="replaced">已替换</option>
+                                            </select>
+                                        </label>
+                                        <label class="space-y-1">
+                                            <span class="text-xs font-medium text-muted">用户级别</span>
+                                            <select x-model="adminLicenseFilters.level_key"
+                                                    class="w-full px-3 pr-10 py-2.5 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                <option value="">全部</option>
+                                                <option value="experience">体验版</option>
+                                                <option value="standard">标准版</option>
+                                                <option value="professional">专业版</option>
                                             </select>
                                         </label>
                                         <label class="space-y-1">
@@ -3334,7 +3418,7 @@
                                                         </select>
                                                     </label>
                                                 </div>
-                                                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[minmax(0,160px)_minmax(0,160px)] gap-3 items-end">
+                                                <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[minmax(0,160px)_minmax(0,160px)_minmax(0,160px)] gap-3 items-end">
                                                     <label class="space-y-1">
                                                         <span class="text-xs font-medium text-muted">快速状态筛选</span>
                                                         <select x-model="adminLicenseFilters.status"
@@ -3347,6 +3431,17 @@
                                                             <option value="expired">已过期</option>
                                                             <option value="revoked">已撤销</option>
                                                             <option value="replaced">已替换</option>
+                                                        </select>
+                                                    </label>
+                                                    <label class="space-y-1">
+                                                        <span class="text-xs font-medium text-muted">快速级别筛选</span>
+                                                        <select x-model="adminLicenseFilters.level_key"
+                                                                @change="applyAdminLicenseListTools()"
+                                                                class="w-full px-3 pr-10 py-2 text-sm border border-gray-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary">
+                                                            <option value="">全部级别</option>
+                                                            <option value="experience">体验版</option>
+                                                            <option value="standard">标准版</option>
+                                                            <option value="professional">专业版</option>
                                                         </select>
                                                     </label>
                                                     <label class="space-y-1">
@@ -3379,12 +3474,13 @@
 
                                         <div x-show="!adminLicenseListLoading" x-cloak class="space-y-4">
                                             <div class="overflow-x-auto rounded-2xl border border-border bg-white">
-                                                <table class="min-w-[1120px] w-full text-sm">
+                                                <table class="min-w-[1220px] w-full text-sm">
                                                     <thead class="bg-gray-50 text-muted">
                                                         <tr>
                                                             <th class="w-16 px-3 py-3 text-left font-medium whitespace-nowrap">选择</th>
                                                             <th class="w-24 px-3 py-3 text-left font-medium whitespace-nowrap">状态</th>
                                                             <th class="min-w-[220px] px-3 py-3 text-left font-medium whitespace-nowrap">掩码 License</th>
+                                                            <th class="min-w-[120px] px-3 py-3 text-left font-medium whitespace-nowrap">用户级别</th>
                                                             <th class="min-w-[180px] px-3 py-3 text-left font-medium whitespace-nowrap">批次</th>
                                                             <th class="min-w-[160px] px-3 py-3 text-left font-medium whitespace-nowrap">绑定账号</th>
                                                             <th class="min-w-[200px] px-3 py-3 text-left font-medium whitespace-nowrap">生效 / 到期</th>
@@ -3411,6 +3507,10 @@
                                                                 <td class="px-3 py-3 align-top min-w-[220px]">
                                                                     <div class="font-mono text-primary break-all" x-text="item.masked_code || '-'"></div>
                                                                     <div class="text-xs text-muted mt-1" x-text="`#${item.id}`"></div>
+                                                                </td>
+                                                                <td class="px-3 py-3 align-top min-w-[120px]">
+                                                                    <div class="text-primary" x-text="item.level_name || '-'"></div>
+                                                                    <div class="text-xs text-muted mt-1" x-text="item.level_key || '-'"></div>
                                                                 </td>
                                                                 <td class="px-3 py-3 align-top min-w-[180px]">
                                                                     <div class="text-primary break-all" x-text="item.batch_id || '-'"></div>
@@ -3510,6 +3610,10 @@
                                                         <div>
                                                             <div class="text-xs text-muted">绑定账号</div>
                                                             <div class="text-primary mt-1" x-text="adminLicenseDetail?.bound_account || '未绑定'"></div>
+                                                        </div>
+                                                        <div>
+                                                            <div class="text-xs text-muted">用户级别</div>
+                                                            <div class="text-primary mt-1" x-text="adminLicenseDetail?.level_name || '-'"></div>
                                                         </div>
                                                         <div>
                                                             <div class="text-xs text-muted">生效时间</div>

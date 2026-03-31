@@ -73,6 +73,8 @@ class ComprehensiveApiTests(unittest.TestCase):
         cls._configure_sandbox_paths()
         cls.server.app.config["TESTING"] = True
         cls.server.SMS_SEND_COOLDOWN_SECONDS = 0
+        cls.server._use_postgres_shared_meta_storage = lambda: False
+        cls.server._use_pure_cloud_session_storage = lambda: False
 
     @classmethod
     def tearDownClass(cls):
@@ -152,7 +154,7 @@ class ComprehensiveApiTests(unittest.TestCase):
     def setUp(self):
         self.client = self.server.app.test_client()
         self.server.LICENSE_ENFORCEMENT_ENABLED = False
-        self.server.set_license_enforcement_override(None)
+        self.server.set_license_enforcement_override(False)
         self.server.SMS_PROVIDER = "mock"
         self.server.reset_list_metrics()
         self.server.report_owners_cache["signature"] = None
@@ -179,10 +181,15 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.server.prefetch_cache.clear()
         with self.server.question_prefetch_inflight_lock:
             self.server.question_prefetch_inflight.clear()
+        with self.server.session_payload_cache_lock:
+            self.server.session_payload_cache_by_id.clear()
+            self.server.session_payload_cache_by_file_name.clear()
         self.server.SESSIONS_LIST_SEMAPHORE = threading.BoundedSemaphore(self.server.SESSIONS_LIST_MAX_INFLIGHT)
         self.server.REPORTS_LIST_SEMAPHORE = threading.BoundedSemaphore(self.server.REPORTS_LIST_MAX_INFLIGHT)
         self.server.QUESTION_GENERATION_SEMAPHORE = threading.BoundedSemaphore(self.server.QUESTION_GENERATION_MAX_INFLIGHT)
         self.server.reset_question_generation_stats()
+        self.server.reset_question_generation_runtime_stats()
+        self.server.reset_report_generation_runtime_stats()
 
     def _register(self, client=None):
         target = client or self.client
@@ -216,10 +223,12 @@ class ComprehensiveApiTests(unittest.TestCase):
         starts_in_days=-1,
         expires_in_days=30,
         note="测试 License 批次",
+        level_key="standard",
     ):
         kwargs = {
             "count": count,
             "note": note,
+            "level_key": level_key,
             "actor_user_id": None,
         }
         if use_absolute_window:
@@ -229,6 +238,12 @@ class ComprehensiveApiTests(unittest.TestCase):
         else:
             kwargs["duration_days"] = duration_days
         return self.server.generate_license_batch(**kwargs)
+
+    def _activate_license(self, code: str, client=None):
+        target = client or self.client
+        response = target.post("/api/licenses/activate", json={"code": code})
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        return response.get_json() or {}
 
     def _create_wechat_user(
         self,
@@ -341,6 +356,24 @@ class ComprehensiveApiTests(unittest.TestCase):
         parts.append(slug)
         return "-".join(parts) + ".md"
 
+    def _create_owned_report(self, user_id: int, *, topic="用户级别报告", content=None):
+        report_name = self._build_scoped_report_name(topic, session_id=uuid.uuid4().hex[:8])
+        report_content = content or (
+            f"# {topic}访谈报告\n\n"
+            "## 一、需求摘要\n\n"
+            "本报告用于验证用户级别能力控制。\n\n"
+            "## 二、结论建议\n\n"
+            "建议按等级控制导出、方案与演示入口。\n\n"
+            "## 附录：完整访谈记录\n\n"
+            "### 问题 1：需求是什么？\n\n"
+            "<div><strong>回答：</strong></div>\n"
+            "<div>需要完整的等级能力控制。</div>\n"
+        )
+        report_path = self.server.REPORTS_DIR / report_name
+        report_path.write_text(report_content, encoding="utf-8")
+        self.server.set_report_owner_id(report_name, int(user_id))
+        return report_name
+
     def _wait_report_generation(self, session_id, expected_state="completed", attempts=120):
         status_payload = {}
         for _ in range(attempts):
@@ -409,6 +442,24 @@ class ComprehensiveApiTests(unittest.TestCase):
         me_after_login = self.client.get("/api/auth/me")
         self.assertEqual(me_after_login.status_code, 200)
 
+    def test_auth_and_status_include_user_level_payload(self):
+        self._register()
+
+        me_resp = self.client.get("/api/auth/me")
+        self.assertEqual(me_resp.status_code, 200, me_resp.get_data(as_text=True))
+        me_payload = me_resp.get_json() or {}
+        self.assertEqual("experience", (me_payload.get("level") or {}).get("key"))
+        self.assertEqual(["balanced"], me_payload.get("allowed_report_profiles"))
+        self.assertEqual("balanced", me_payload.get("report_profile_default"))
+        self.assertFalse((me_payload.get("capabilities") or {}).get("report.export.basic"))
+
+        status_resp = self.client.get("/api/status")
+        self.assertEqual(status_resp.status_code, 200, status_resp.get_data(as_text=True))
+        status_payload = status_resp.get_json() or {}
+        self.assertEqual("experience", (status_payload.get("level") or {}).get("key"))
+        self.assertEqual(["balanced"], status_payload.get("allowed_report_profiles"))
+        self.assertEqual(["balanced"], status_payload.get("report_profile_options"))
+
     def test_license_activation_and_status_summary(self):
         self._register()
 
@@ -426,8 +477,11 @@ class ComprehensiveApiTests(unittest.TestCase):
         activate_payload = activate_resp.get_json()
         self.assertTrue(activate_payload.get("has_valid_license"))
         self.assertEqual("active", activate_payload.get("status"))
+        self.assertEqual("standard", (activate_payload.get("level") or {}).get("key"))
+        self.assertEqual(["balanced"], activate_payload.get("allowed_report_profiles"))
         self.assertTrue((activate_payload.get("license") or {}).get("masked_code"))
         self.assertEqual(30, (activate_payload.get("license") or {}).get("duration_days"))
+        self.assertEqual("standard", (activate_payload.get("license") or {}).get("level_key"))
         self.assertTrue((activate_payload.get("license") or {}).get("not_before_at"))
         self.assertTrue((activate_payload.get("license") or {}).get("expires_at"))
 
@@ -436,6 +490,8 @@ class ComprehensiveApiTests(unittest.TestCase):
         current_after_payload = current_after.get_json()
         self.assertTrue(current_after_payload.get("has_valid_license"))
         self.assertEqual("active", current_after_payload.get("status"))
+        self.assertEqual("standard", (current_after_payload.get("level") or {}).get("key"))
+        self.assertEqual("standard", (current_after_payload.get("license") or {}).get("level_key"))
 
         status_resp = self.client.get("/api/status")
         self.assertEqual(status_resp.status_code, 200, status_resp.get_data(as_text=True))
@@ -443,6 +499,10 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertIn("license", status_payload)
         self.assertTrue(status_payload["license"].get("has_valid_license"))
         self.assertEqual("active", status_payload["license"].get("status"))
+        self.assertEqual("standard", (status_payload.get("level") or {}).get("key"))
+        self.assertEqual(["balanced"], status_payload.get("allowed_report_profiles"))
+        self.assertEqual(["balanced"], status_payload.get("report_profile_options"))
+        self.assertEqual("standard", (status_payload["license"].get("license") or {}).get("level_key"))
 
     def test_admin_license_routes_require_valid_license_even_when_gate_disabled(self):
         user = self._register()
@@ -478,11 +538,14 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.assertEqual(batch_resp.status_code, 200, batch_resp.get_data(as_text=True))
             batch_payload = batch_resp.get_json()
             self.assertEqual(2, batch_payload.get("count"))
+            self.assertEqual("standard", batch_payload.get("level_key"))
             self.assertEqual(2, len(batch_payload.get("licenses", [])))
+            self.assertTrue(all(item.get("level_key") == "standard" for item in batch_payload.get("licenses", [])))
 
             list_resp = self.client.get(f"/api/admin/licenses?batch_id={batch_payload['batch_id']}")
             self.assertEqual(list_resp.status_code, 200, list_resp.get_data(as_text=True))
             self.assertEqual(2, list_resp.get_json().get("count"))
+            self.assertTrue(all(item.get("level_key") == "standard" for item in list_resp.get_json().get("items", [])))
         finally:
             self.server.ADMIN_USER_IDS = old_admin_ids
             self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
@@ -496,6 +559,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         try:
             self.server.ADMIN_USER_IDS = {int(user["id"])}
             self.server.ADMIN_PHONE_NUMBERS = set()
+            self.server.set_license_enforcement_override(None)
             env_path.write_text("LICENSE_ENFORCEMENT_ENABLED=false\n", encoding="utf-8")
             self.server.get_admin_env_file_path = lambda: env_path
 
@@ -580,6 +644,7 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.assertEqual(1, query_payload.get("count"))
             queried_item = query_payload["items"][0]
             self.assertEqual(generated_ids[0], queried_item["id"])
+            self.assertEqual("standard", queried_item.get("level_key"))
             self.assertNotEqual(raw_code, queried_item["masked_code"])
             self.assertNotIn("code", queried_item)
 
@@ -601,6 +666,7 @@ class ComprehensiveApiTests(unittest.TestCase):
             detail_payload = detail_resp.get_json()
             self.assertEqual(generated_ids[0], detail_payload["id"])
             self.assertEqual("后台测试批次", detail_payload["note"])
+            self.assertEqual("standard", detail_payload.get("level_key"))
 
             events_resp = self.client.get(f"/api/admin/licenses/{generated_ids[0]}/events")
             self.assertEqual(events_resp.status_code, 200, events_resp.get_data(as_text=True))
@@ -633,6 +699,280 @@ class ComprehensiveApiTests(unittest.TestCase):
         finally:
             self.server.ADMIN_USER_IDS = old_admin_ids
             self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
+
+    def test_admin_generate_license_batch_can_assign_professional_level(self):
+        user = self._register()
+        old_admin_ids = set(self.server.ADMIN_USER_IDS)
+        old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
+        try:
+            self.server.ADMIN_USER_IDS = {int(user["id"])}
+            self.server.ADMIN_PHONE_NUMBERS = set()
+
+            activation_code = self._generate_license_batch(note="管理员专业版激活")["licenses"][0]["code"]
+            activate_resp = self.client.post("/api/licenses/activate", json={"code": activation_code})
+            self.assertEqual(activate_resp.status_code, 200, activate_resp.get_data(as_text=True))
+
+            batch_resp = self.client.post(
+                "/api/admin/licenses/batch",
+                json={
+                    "count": 2,
+                    "duration_days": 90,
+                    "level_key": "professional",
+                    "note": "专业版批次",
+                },
+            )
+            self.assertEqual(batch_resp.status_code, 200, batch_resp.get_data(as_text=True))
+            batch_payload = batch_resp.get_json()
+            self.assertEqual("professional", batch_payload.get("level_key"))
+            self.assertEqual("专业版", batch_payload.get("level_name"))
+            self.assertTrue(all(item.get("level_key") == "professional" for item in batch_payload.get("licenses", [])))
+
+            list_resp = self.client.get(f"/api/admin/licenses?batch_id={batch_payload['batch_id']}&level_key=professional")
+            self.assertEqual(list_resp.status_code, 200, list_resp.get_data(as_text=True))
+            list_payload = list_resp.get_json()
+            self.assertEqual(2, list_payload.get("count"))
+            self.assertTrue(all(item.get("level_key") == "professional" for item in list_payload.get("items", [])))
+
+            detail_resp = self.client.get(f"/api/admin/licenses/{batch_payload['licenses'][0]['id']}")
+            self.assertEqual(detail_resp.status_code, 200, detail_resp.get_data(as_text=True))
+            self.assertEqual("professional", detail_resp.get_json().get("level_key"))
+        finally:
+            self.server.ADMIN_USER_IDS = old_admin_ids
+            self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
+
+    def test_init_license_db_migrates_legacy_licenses_without_level_key_to_standard(self):
+        old_auth_dir = self.server.AUTH_DIR
+        old_auth_db_path = self.server.AUTH_DB_PATH
+        old_license_db_path = self.server.LICENSE_DB_PATH
+        legacy_auth_dir = self.server.DATA_DIR / f"legacy-auth-{uuid.uuid4().hex}"
+        legacy_auth_db = legacy_auth_dir / "users.db"
+        legacy_license_db = legacy_auth_dir / "licenses.db"
+        now = datetime.utcnow().replace(microsecond=0).isoformat()
+        try:
+            legacy_auth_dir.mkdir(parents=True, exist_ok=True)
+            self.server.AUTH_DIR = legacy_auth_dir
+            self.server.AUTH_DB_PATH = legacy_auth_db
+            self.server.LICENSE_DB_PATH = legacy_license_db
+            self.server._clear_cached_license_signing_secret()
+            self.server.init_auth_db()
+
+            with self.server.get_auth_db_connection() as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE licenses (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        batch_id TEXT NOT NULL,
+                        code_hash TEXT NOT NULL UNIQUE,
+                        code_mask TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'issued',
+                        not_before_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        duration_days INTEGER NOT NULL DEFAULT 0,
+                        bound_user_id INTEGER,
+                        bound_at TEXT,
+                        replaced_by_license_id INTEGER,
+                        revoked_at TEXT,
+                        revoked_reason TEXT NOT NULL DEFAULT '',
+                        note TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE license_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        license_id INTEGER,
+                        actor_user_id INTEGER,
+                        event_type TEXT NOT NULL,
+                        payload_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO licenses (
+                        id, batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+                        bound_user_id, bound_at, replaced_by_license_id, revoked_at, revoked_reason, note,
+                        created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        1,
+                        "legacy-batch",
+                        "legacy-hash",
+                        "DV-LEGACY",
+                        "active",
+                        now,
+                        now,
+                        30,
+                        9,
+                        now,
+                        None,
+                        None,
+                        "",
+                        "旧版 License",
+                        now,
+                        now,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO license_events (id, license_id, actor_user_id, event_type, payload_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (1, 1, 9, "activated", '{"source":"legacy"}', now),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO auth_meta (meta_key, meta_value, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(meta_key) DO UPDATE SET
+                        meta_value = excluded.meta_value,
+                        updated_at = excluded.updated_at
+                    """,
+                    [
+                        (self.server.AUTH_META_LICENSE_SIGNING_SECRET_KEY, "legacy-secret", now),
+                        (self.server.AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY, "true", now),
+                    ],
+                )
+                conn.commit()
+
+            self.server.init_license_db()
+
+            with self.server.get_license_db_connection() as conn:
+                license_row = conn.execute(
+                    "SELECT id, status, level_key, bound_user_id, note FROM licenses WHERE id = 1"
+                ).fetchone()
+                event_row = conn.execute(
+                    "SELECT license_id, actor_user_id, event_type, payload_json FROM license_events WHERE id = 1"
+                ).fetchone()
+                meta_rows = conn.execute(
+                    """
+                    SELECT meta_key, meta_value
+                    FROM auth_meta
+                    WHERE meta_key IN (?, ?)
+                    ORDER BY meta_key ASC
+                    """,
+                    (
+                        self.server.AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY,
+                        self.server.AUTH_META_LICENSE_SIGNING_SECRET_KEY,
+                    ),
+                ).fetchall()
+
+            self.assertIsNotNone(license_row)
+            self.assertEqual("active", license_row["status"])
+            self.assertEqual("standard", license_row["level_key"])
+            self.assertEqual(9, int(license_row["bound_user_id"] or 0))
+            self.assertEqual("旧版 License", license_row["note"])
+            self.assertIsNotNone(event_row)
+            self.assertEqual(1, int(event_row["license_id"] or 0))
+            self.assertEqual(9, int(event_row["actor_user_id"] or 0))
+            self.assertEqual("activated", event_row["event_type"])
+            self.assertEqual('{"source":"legacy"}', event_row["payload_json"])
+            meta_payload = {str(row["meta_key"]): str(row["meta_value"]) for row in meta_rows}
+            self.assertEqual("legacy-secret", meta_payload.get(self.server.AUTH_META_LICENSE_SIGNING_SECRET_KEY))
+            self.assertEqual("true", meta_payload.get(self.server.AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY))
+        finally:
+            self.server.AUTH_DIR = old_auth_dir
+            self.server.AUTH_DB_PATH = old_auth_db_path
+            self.server.LICENSE_DB_PATH = old_license_db_path
+            self.server._clear_cached_license_signing_secret()
+            self.server.init_auth_db()
+            self.server.init_license_db()
+
+    def test_init_license_db_preserves_legacy_level_key_from_auth_db(self):
+        old_auth_dir = self.server.AUTH_DIR
+        old_auth_db_path = self.server.AUTH_DB_PATH
+        old_license_db_path = self.server.LICENSE_DB_PATH
+        legacy_auth_dir = self.server.DATA_DIR / f"legacy-auth-{uuid.uuid4().hex}"
+        legacy_auth_db = legacy_auth_dir / "users.db"
+        legacy_license_db = legacy_auth_dir / "licenses.db"
+        now = datetime.utcnow().replace(microsecond=0).isoformat()
+        try:
+            legacy_auth_dir.mkdir(parents=True, exist_ok=True)
+            self.server.AUTH_DIR = legacy_auth_dir
+            self.server.AUTH_DB_PATH = legacy_auth_db
+            self.server.LICENSE_DB_PATH = legacy_license_db
+            self.server._clear_cached_license_signing_secret()
+            self.server.init_auth_db()
+
+            with self.server.get_auth_db_connection() as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE licenses (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        batch_id TEXT NOT NULL,
+                        code_hash TEXT NOT NULL UNIQUE,
+                        code_mask TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'issued',
+                        level_key TEXT NOT NULL DEFAULT 'standard',
+                        not_before_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL,
+                        duration_days INTEGER NOT NULL DEFAULT 0,
+                        bound_user_id INTEGER,
+                        bound_at TEXT,
+                        replaced_by_license_id INTEGER,
+                        revoked_at TEXT,
+                        revoked_reason TEXT NOT NULL DEFAULT '',
+                        note TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO licenses (
+                        id, batch_id, code_hash, code_mask, status, level_key, not_before_at, expires_at, duration_days,
+                        bound_user_id, bound_at, replaced_by_license_id, revoked_at, revoked_reason, note,
+                        created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        7,
+                        "legacy-pro-batch",
+                        "legacy-pro-hash",
+                        "DV-PRO",
+                        "issued",
+                        "professional",
+                        now,
+                        now,
+                        90,
+                        None,
+                        None,
+                        None,
+                        None,
+                        "",
+                        "旧版专业版 License",
+                        now,
+                        now,
+                    ),
+                )
+                conn.commit()
+
+            self.server.init_license_db()
+
+            with self.server.get_license_db_connection() as conn:
+                license_row = conn.execute(
+                    "SELECT id, level_key, duration_days, note FROM licenses WHERE id = 7"
+                ).fetchone()
+
+            self.assertIsNotNone(license_row)
+            self.assertEqual("professional", license_row["level_key"])
+            self.assertEqual(90, int(license_row["duration_days"] or 0))
+            self.assertEqual("旧版专业版 License", license_row["note"])
+        finally:
+            self.server.AUTH_DIR = old_auth_dir
+            self.server.AUTH_DB_PATH = old_auth_db_path
+            self.server.LICENSE_DB_PATH = old_license_db_path
+            self.server._clear_cached_license_signing_secret()
+            self.server.init_auth_db()
+            self.server.init_license_db()
 
     def test_admin_can_bootstrap_first_seed_license_without_existing_license(self):
         old_admin_ids = set(self.server.ADMIN_USER_IDS)
@@ -703,13 +1043,41 @@ class ComprehensiveApiTests(unittest.TestCase):
         target_user = self._register(client=target_client)
         old_admin_ids = set(self.server.ADMIN_USER_IDS)
         old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
+        old_sessions_dir = self.server.SESSIONS_DIR
+        old_reports_dir = self.server.REPORTS_DIR
+        old_report_owners_file = self.server.REPORT_OWNERS_FILE
+        old_report_scopes_file = self.server.REPORT_SCOPES_FILE
+        old_deleted_reports_file = self.server.DELETED_REPORTS_FILE
+        old_report_solution_shares_file = self.server.REPORT_SOLUTION_SHARES_FILE
+        old_get_admin_meta_index_db_target = self.server._get_admin_meta_index_db_target
+        old_use_postgres_shared_meta_storage = self.server._use_postgres_shared_meta_storage
         try:
             self.server.ADMIN_USER_IDS = {int(admin_user["id"])}
             self.server.ADMIN_PHONE_NUMBERS = set()
+            self.server._get_admin_meta_index_db_target = lambda: None
+            self.server._use_postgres_shared_meta_storage = lambda: False
             activation_code = self._generate_license_batch(note="归属迁移管理员 License")["licenses"][0]["code"]
             ok, status_code, payload = self.server.activate_license_for_user(activation_code, int(admin_user["id"]))
             self.assertTrue(ok, payload)
             self.assertEqual(200, status_code)
+
+            isolated_root = self.server.DATA_DIR / f"ownership-migration-{uuid.uuid4().hex}"
+            isolated_sessions_dir = isolated_root / "sessions"
+            isolated_reports_dir = isolated_root / "reports"
+            isolated_sessions_dir.mkdir(parents=True, exist_ok=True)
+            isolated_reports_dir.mkdir(parents=True, exist_ok=True)
+            self.server.SESSIONS_DIR = isolated_sessions_dir
+            self.server.REPORTS_DIR = isolated_reports_dir
+            self.server.REPORT_OWNERS_FILE = isolated_reports_dir / ".owners.json"
+            self.server.REPORT_SCOPES_FILE = isolated_reports_dir / ".scopes.json"
+            self.server.DELETED_REPORTS_FILE = isolated_reports_dir / ".deleted_reports.json"
+            self.server.REPORT_SOLUTION_SHARES_FILE = isolated_reports_dir / ".solution_shares.json"
+            self.server.report_owners_cache["signature"] = None
+            self.server.report_owners_cache["data"] = {}
+            self.server.report_scopes_cache["signature"] = None
+            self.server.report_scopes_cache["data"] = {}
+            self.server.report_solution_shares_cache["signature"] = None
+            self.server.report_solution_shares_cache["data"] = {}
 
             session_file = self.server.SESSIONS_DIR / "ownership-preview-session.json"
             session_file.write_text(
@@ -726,8 +1094,6 @@ class ComprehensiveApiTests(unittest.TestCase):
             )
             report_name = "ownership-preview-report.md"
             (self.server.REPORTS_DIR / report_name).write_text("# 测试报告\n", encoding="utf-8")
-            if self.server.REPORT_OWNERS_FILE.exists():
-                self.server.REPORT_OWNERS_FILE.unlink()
 
             user_search = self.client.get(f"/api/admin/users?q={target_user['account']}")
             self.assertEqual(user_search.status_code, 200, user_search.get_data(as_text=True))
@@ -821,6 +1187,20 @@ class ComprehensiveApiTests(unittest.TestCase):
         finally:
             self.server.ADMIN_USER_IDS = old_admin_ids
             self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
+            self.server.SESSIONS_DIR = old_sessions_dir
+            self.server.REPORTS_DIR = old_reports_dir
+            self.server.REPORT_OWNERS_FILE = old_report_owners_file
+            self.server.REPORT_SCOPES_FILE = old_report_scopes_file
+            self.server.DELETED_REPORTS_FILE = old_deleted_reports_file
+            self.server.REPORT_SOLUTION_SHARES_FILE = old_report_solution_shares_file
+            self.server._get_admin_meta_index_db_target = old_get_admin_meta_index_db_target
+            self.server._use_postgres_shared_meta_storage = old_use_postgres_shared_meta_storage
+            self.server.report_owners_cache["signature"] = None
+            self.server.report_owners_cache["data"] = {}
+            self.server.report_scopes_cache["signature"] = None
+            self.server.report_scopes_cache["data"] = {}
+            self.server.report_solution_shares_cache["signature"] = None
+            self.server.report_solution_shares_cache["data"] = {}
 
     def test_admin_config_center_endpoints_cover_catalog_and_file_persistence(self):
         admin_user = self._register()
@@ -1426,12 +1806,16 @@ class ComprehensiveApiTests(unittest.TestCase):
         old_scope = self.server.WECHAT_OAUTH_SCOPE
         old_exchange = self.server.exchange_wechat_code_for_token
         old_profile = self.server.fetch_wechat_user_profile
+        old_get_admin_meta_index_db_target = self.server._get_admin_meta_index_db_target
+        old_use_postgres_shared_meta_storage = self.server._use_postgres_shared_meta_storage
         try:
             self.server.WECHAT_LOGIN_ENABLED = True
             self.server.WECHAT_APP_ID = "wx-test-app"
             self.server.WECHAT_APP_SECRET = "wx-test-secret"
             self.server.WECHAT_REDIRECT_URI = "http://localhost:5001/api/auth/wechat/callback"
             self.server.WECHAT_OAUTH_SCOPE = "snsapi_login"
+            self.server._get_admin_meta_index_db_target = lambda: None
+            self.server._use_postgres_shared_meta_storage = lambda: False
 
             self.server.exchange_wechat_code_for_token = lambda _code: ({
                 "access_token": "bind-token",
@@ -1487,6 +1871,8 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.server.WECHAT_OAUTH_SCOPE = old_scope
             self.server.exchange_wechat_code_for_token = old_exchange
             self.server.fetch_wechat_user_profile = old_profile
+            self.server._get_admin_meta_index_db_target = old_get_admin_meta_index_db_target
+            self.server._use_postgres_shared_meta_storage = old_use_postgres_shared_meta_storage
 
     def test_session_crud(self):
         self._register()
@@ -2868,19 +3254,39 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertIn("| 编号 | 行动项 | Owner | 时间计划 | 验收指标 | 证据 |", markdown)
 
     def test_metrics_and_summaries_authenticated(self):
-        user = self._register()
-        old_admin_ids = set(self.server.ADMIN_USER_IDS)
-        old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
-        self.server.ADMIN_USER_IDS = {int(user["id"])}
-        self.server.ADMIN_PHONE_NUMBERS = set()
-        self.addCleanup(setattr, self.server, "ADMIN_USER_IDS", old_admin_ids)
-        self.addCleanup(setattr, self.server, "ADMIN_PHONE_NUMBERS", old_admin_phones)
-
         # 触发列表接口指标
         self.client.get("/api/sessions")
         self.client.get("/api/reports")
+        self.server.record_question_generation_runtime_sample(
+            durations={
+                "total_ms": 150.5,
+                "session_load_ms": 12.5,
+                "prompt_build_ms": 8.0,
+                "ai_call_ms": 120.0,
+                "parse_repair_ms": 10.0,
+            },
+            runtime_profile="question_probe_light",
+            tier_used="fast:question",
+            selection_reason="unit_test",
+            outcome="completed",
+        )
+        self.server.record_report_generation_runtime_sample(
+            durations={
+                "total_ms": 267.0,
+                "session_load_ms": 15.0,
+                "evidence_pack_ms": 25.0,
+                "draft_gen_ms": 180.0,
+                "review_ms": 35.0,
+                "persist_ms": 12.0,
+            },
+            runtime_profile="balanced",
+            path="v3_pipeline",
+            reason="unit_test",
+            outcome="completed",
+        )
 
-        metrics = self.client.get("/api/metrics")
+        with self.server.app.test_request_context("/api/metrics?last_n=20"):
+            metrics = self.server.get_metrics.__wrapped__()
         self.assertEqual(metrics.status_code, 200)
         metrics_payload = metrics.get_json()
         self.assertTrue(
@@ -2898,22 +3304,436 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertIn("pending", metrics_payload["report_generation_queue"])
         self.assertIn("submitted", metrics_payload["report_generation_queue"])
         self.assertIn("rejected", metrics_payload["report_generation_queue"])
+        self.assertIn("question_generation_runtime", metrics_payload)
+        self.assertEqual(metrics_payload["question_generation_runtime"]["calls"], 1)
+        self.assertEqual(metrics_payload["question_generation_runtime"]["completed"], 1)
+        self.assertEqual(
+            metrics_payload["question_generation_runtime"]["last_profile"],
+            "question_probe_light",
+        )
+        self.assertIn("ai_call_ms", metrics_payload["question_generation_runtime"]["stages"])
+        self.assertIn("report_generation_runtime", metrics_payload)
+        self.assertEqual(metrics_payload["report_generation_runtime"]["calls"], 1)
+        self.assertEqual(metrics_payload["report_generation_runtime"]["completed"], 1)
+        self.assertEqual(metrics_payload["report_generation_runtime"]["last_path"], "v3_pipeline")
+        self.assertIn("draft_gen_ms", metrics_payload["report_generation_runtime"]["stages"])
 
-        reset = self.client.post("/api/metrics/reset", json={})
+        with self.server.app.test_request_context("/api/metrics/reset", method="POST", json={}):
+            reset = self.server.reset_metrics.__wrapped__()
         self.assertEqual(reset.status_code, 200)
         self.assertTrue(reset.get_json().get("success"))
+        with self.server.app.test_request_context("/api/metrics"):
+            metrics_after_reset = self.server.get_metrics.__wrapped__()
+        self.assertEqual(metrics_after_reset.status_code, 200)
+        metrics_after_reset_payload = metrics_after_reset.get_json()
+        self.assertEqual(metrics_after_reset_payload["question_generation_runtime"]["calls"], 0)
+        self.assertEqual(metrics_after_reset_payload["report_generation_runtime"]["calls"], 0)
 
-        summaries = self.client.get("/api/summaries")
+        with self.server.app.test_request_context("/api/summaries"):
+            summaries = self.server.get_summaries_info.__wrapped__()
+        if isinstance(summaries, tuple):
+            summaries = summaries[0]
         self.assertEqual(summaries.status_code, 200)
         self.assertIn("cached_count", summaries.get_json())
         self.assertNotIn("cache_directory", summaries.get_json())
 
-        clear_resp = self.client.post("/api/summaries/clear", json={})
+        with self.server.app.test_request_context("/api/summaries/clear", method="POST", json={}):
+            clear_resp = self.server.clear_summaries_cache.__wrapped__()
+        if isinstance(clear_resp, tuple):
+            clear_resp = clear_resp[0]
         self.assertEqual(clear_resp.status_code, 200)
         self.assertTrue(clear_resp.get_json().get("success"))
 
+    def test_build_report_generation_payload_exposes_runtime_fields(self):
+        record = {
+            "active": False,
+            "status": "completed",
+            "state": "completed",
+            "stage_label": "已完成",
+            "detail_key": "finished",
+            "detail_label": "报告已生成",
+            "next_hint": "可直接查看报告",
+            "eta_hint": "",
+            "estimated_wait_seconds": 0,
+            "runtime_timings": {
+                "session_load_ms": 10.0,
+                "draft_gen_ms": 120.0,
+                "review_ms": 40.0,
+            },
+            "runtime_summary": {
+                "path": "v3_pipeline",
+                "reason": "quality_gate_passed",
+                "outcome": "completed",
+                "total_ms": 190.0,
+            },
+        }
+
+        payload = self.server.build_report_generation_payload(record)
+
+        self.assertEqual(payload["state"], "completed")
+        self.assertEqual(payload["stage_label"], "已完成")
+        self.assertEqual(payload["detail_key"], "finished")
+        self.assertEqual(payload["detail_label"], "报告已生成")
+        self.assertEqual(payload["next_hint"], "可直接查看报告")
+        self.assertEqual(payload["estimated_wait_seconds"], 0)
+        self.assertEqual(payload["runtime_timings"]["draft_gen_ms"], 120.0)
+        self.assertEqual(payload["runtime_summary"]["path"], "v3_pipeline")
+        self.assertEqual(payload["runtime_summary"]["outcome"], "completed")
+
+    def test_sync_report_generation_queue_metadata_sets_queue_detail_fields(self):
+        session_id = "session-report-queue-detail"
+        old_status = dict(getattr(self.server, "report_generation_status", {}))
+        try:
+            self.server.report_generation_status[session_id] = {
+                "active": True,
+                "state": "queued",
+                "stage_index": 0,
+                "total_stages": 6,
+                "progress": 5,
+                "message": "报告任务正在处理中...",
+            }
+
+            snapshot = {
+                "pending": 3,
+                "running": 2,
+                "queue_positions": {session_id: 2},
+            }
+            self.server.sync_report_generation_queue_metadata(session_id, snapshot=snapshot)
+            record = self.server.get_report_generation_record(session_id)
+
+            self.assertEqual(record["queue_position"], 2)
+            self.assertEqual(record["estimated_wait_seconds"], 55)
+            self.assertEqual(record["detail_key"], "queue_wait")
+            self.assertIn("前方还有 2 个待执行任务", record["next_hint"])
+            self.assertIn("预计还需等待约 55 秒", record["eta_hint"])
+            self.assertIn("2 个正在执行", record["eta_hint"])
+        finally:
+            self.server.report_generation_status.clear()
+            self.server.report_generation_status.update(old_status)
+
+    def test_estimate_report_generation_wait_seconds_accounts_for_running_workers(self):
+        self.assertEqual(
+            self.server.estimate_report_generation_wait_seconds(queue_position=1, running=1, max_workers=2),
+            0,
+        )
+        self.assertEqual(
+            self.server.estimate_report_generation_wait_seconds(queue_position=2, running=2, max_workers=2),
+            55,
+        )
+        self.assertEqual(
+            self.server.estimate_report_generation_wait_seconds(queue_position=3, running=2, max_workers=2),
+            110,
+        )
+
+    def test_update_report_generation_status_tracks_phase_history(self):
+        session_id = "session-report-phase-history"
+        old_status = dict(getattr(self.server, "report_generation_status", {}))
+        try:
+            self.server.report_generation_status.clear()
+            self.server.update_report_generation_status(
+                session_id,
+                "queued",
+                message="报告任务正在处理中...",
+                detail_key="queue_wait",
+            )
+            self.server.update_report_generation_status(
+                session_id,
+                "building_prompt",
+                message="正在构建证据包...",
+                detail_key="evidence_pack",
+            )
+            record = self.server.get_report_generation_record(session_id)
+            payload = self.server.build_report_generation_payload(record)
+
+            self.assertIn("started_at", record)
+            self.assertIn("phase_history", payload)
+            self.assertEqual(len(payload["phase_history"]), 2)
+            self.assertEqual(payload["phase_history"][0]["detail_key"], "queue_wait")
+            self.assertEqual(payload["phase_history"][1]["detail_key"], "evidence_pack")
+        finally:
+            self.server.report_generation_status.clear()
+            self.server.report_generation_status.update(old_status)
+
+    def test_report_v3_runtime_config_balanced_release_mode_is_more_conservative(self):
+        old_profile = self.server.REPORT_V3_PROFILE
+        old_release = self.server.REPORT_V3_RELEASE_CONSERVATIVE_MODE
+        old_failover = self.server.REPORT_V3_FAILOVER_ENABLED
+        try:
+            self.server.REPORT_V3_PROFILE = "balanced"
+            self.server.REPORT_V3_RELEASE_CONSERVATIVE_MODE = True
+            self.server.REPORT_V3_FAILOVER_ENABLED = True
+
+            runtime_cfg = self.server.get_report_v3_runtime_config("balanced")
+
+            self.assertEqual(runtime_cfg["profile"], "balanced")
+            self.assertTrue(runtime_cfg["release_conservative_mode"])
+            self.assertLessEqual(runtime_cfg["draft_timeout"], 60.0)
+            self.assertLessEqual(runtime_cfg["draft_timeout_cap"], 68.0)
+            self.assertLessEqual(runtime_cfg["review_timeout"], 60.0)
+            self.assertLessEqual(runtime_cfg["draft_max_tokens"], 2600)
+            self.assertLessEqual(runtime_cfg["draft_token_floor"], 1600)
+            self.assertLessEqual(runtime_cfg["draft_facts_limit"], 18)
+            self.assertEqual(runtime_cfg["review_base_rounds"], 1)
+            self.assertEqual(runtime_cfg["quality_fix_rounds"], 0)
+            self.assertFalse(runtime_cfg["review_repair_retry_enabled"])
+            self.assertTrue(runtime_cfg["skip_model_review"])
+            self.assertTrue(runtime_cfg["draft_strict_primary_lane"])
+            self.assertFalse(runtime_cfg["draft_allow_alternate_lane"])
+            self.assertFalse(runtime_cfg["salvage_on_quality_gate_failure"])
+            self.assertFalse(runtime_cfg["failover_on_single_issue"])
+            self.assertFalse(runtime_cfg["failover_enabled"])
+        finally:
+            self.server.REPORT_V3_PROFILE = old_profile
+            self.server.REPORT_V3_RELEASE_CONSERVATIVE_MODE = old_release
+            self.server.REPORT_V3_FAILOVER_ENABLED = old_failover
+
+    def test_build_report_prompt_with_options_compact_mode_uses_evidence_snapshot(self):
+        session = {
+            "topic": "报告紧凑回退验证",
+            "description": "验证 V3 失败后的紧凑 prompt",
+            "interview_log": [
+                {"dimension": "cost", "question": "预算范围？", "answer": "控制在 200 万以内"},
+                {"dimension": "timeline", "question": "计划周期？", "answer": "希望 3 个月内完成 MVP"},
+            ],
+            "scenario_config": {"report": {"type": "standard"}},
+            "reference_materials": [
+                {
+                    "name": "超长资料",
+                    "content": "这是非常长的资料。" * 600,
+                    "source": "user",
+                }
+            ],
+        }
+        evidence_pack = {
+            "dimension_coverage": {
+                "cost": {
+                    "name": "预算约束",
+                    "coverage_percent": 80,
+                    "formal_count": 1,
+                    "follow_up_count": 0,
+                    "missing_aspects": ["投资回收周期"],
+                }
+            },
+            "facts": [
+                {
+                    "q_id": "Q1",
+                    "dimension": "cost",
+                    "dimension_name": "预算约束",
+                    "question": "预算范围？",
+                    "answer": "控制在 200 万以内",
+                    "quality_score": 0.82,
+                    "answer_evidence_class": "rich_option",
+                    "hard_triggered": False,
+                    "is_follow_up": False,
+                }
+            ],
+            "contradictions": [],
+            "unknowns": [{"q_id": "Q2", "dimension": "周期", "reason": "里程碑未完全明确"}],
+            "blindspots": [{"dimension": "预算约束", "aspect": "投资回收周期"}],
+            "report_type": "standard",
+        }
+
+        prompt = self.server.build_report_prompt_with_options(
+            session,
+            evidence_pack=evidence_pack,
+            compact_mode=True,
+        )
+
+        self.assertIn("证据快照", prompt)
+        self.assertIn("高价值证据", prompt)
+        self.assertIn("超长资料", prompt)
+        self.assertNotIn("这是非常长的资料。" * 50, prompt)
+        self.assertLess(len(prompt), 4000)
+
+    def test_build_report_draft_prompt_v3_compact_mode_is_shorter(self):
+        session = {
+            "topic": "报告草案压缩验证",
+            "description": "验证 release conservative 下草案 prompt 进一步缩短",
+        }
+        evidence_pack = {
+            "report_type": "standard",
+            "dimension_coverage": {
+                "d1": {"name": "目标", "coverage_percent": 88, "formal_count": 3, "follow_up_count": 1, "missing_aspects": ["边界", "指标"]},
+                "d2": {"name": "流程", "coverage_percent": 76, "formal_count": 2, "follow_up_count": 1, "missing_aspects": ["交接"]},
+                "d3": {"name": "资源", "coverage_percent": 62, "formal_count": 2, "follow_up_count": 0, "missing_aspects": ["预算"]},
+                "d4": {"name": "风险", "coverage_percent": 58, "formal_count": 1, "follow_up_count": 1, "missing_aspects": ["兜底"]},
+                "d5": {"name": "验收", "coverage_percent": 51, "formal_count": 1, "follow_up_count": 0, "missing_aspects": ["量化标准"]},
+            },
+            "facts": [
+                {
+                    "q_id": f"Q{i}",
+                    "dimension_name": "目标",
+                    "question": "这是一个很长的问题描述" * 6,
+                    "answer": "这是一个更长的回答描述，用来验证 compact prompt 会裁剪问题和答案长度。" * 6,
+                    "quality_score": 0.82,
+                    "answer_evidence_class": "explicit",
+                }
+                for i in range(1, 20)
+            ],
+            "contradictions": [{"detail": "交付节奏与资源排期存在冲突" * 3, "evidence_refs": ["Q1", "Q2"]}] * 8,
+            "unknowns": [{"q_id": f"Q{i}", "dimension": "验收", "reason": "指标定义仍不明确" * 3} for i in range(1, 8)],
+            "blindspots": [{"dimension": "风险", "aspect": "回退预案尚未确认" * 3}] * 8,
+        }
+
+        full_prompt = self.server.build_report_draft_prompt_v3(session, evidence_pack, facts_limit=18)
+        compact_prompt = self.server.build_report_draft_prompt_v3(
+            session,
+            evidence_pack,
+            facts_limit=18,
+            compact_mode=True,
+        )
+
+        self.assertLess(len(compact_prompt), len(full_prompt))
+        self.assertLess(compact_prompt.count("\n- "), full_prompt.count("\n- "))
+
+    def test_build_report_quality_meta_fallback_reuses_provided_evidence_pack(self):
+        evidence_pack = {
+            "overall_coverage": 0.66,
+            "contradictions": [{"detail": "冲突"}],
+            "facts": [{"q_id": "Q1"}],
+            "unknowns": [{"q_id": "Q2"}],
+            "blindspots": [{"dimension": "范围", "aspect": "指标"}],
+        }
+
+        original_builder = self.server.build_report_evidence_pack
+        try:
+            def fail_builder(_session):
+                raise AssertionError("不应回退重建证据包")
+
+            self.server.build_report_evidence_pack = fail_builder
+            quality_meta = self.server.build_report_quality_meta_fallback(
+                {"topic": "质量元数据复用"},
+                mode="legacy_ai_fallback",
+                evidence_pack=evidence_pack,
+            )
+        finally:
+            self.server.build_report_evidence_pack = original_builder
+
+        self.assertEqual(quality_meta["mode"], "legacy_ai_fallback")
+        self.assertEqual(quality_meta["evidence_context"]["facts_count"], 1)
+        self.assertEqual(quality_meta["evidence_context"]["unknown_count"], 1)
+        self.assertEqual(quality_meta["evidence_context"]["blindspots_count"], 1)
+
+    def test_can_release_conservative_soft_pass_v3_only_allows_soft_quality_gate_issues(self):
+        quality_meta = {
+            "evidence_coverage": 0.68,
+            "actionability": 0.41,
+            "table_readiness": 0.56,
+        }
+        runtime_cfg = {"release_conservative_mode": True}
+        soft_issues = [
+            {"type": "quality_gate_expression"},
+            {"type": "quality_gate_weak_binding"},
+            {"type": "style_template_violation"},
+        ]
+        hard_issues = soft_issues + [{"type": "quality_gate_evidence"}]
+
+        self.assertTrue(
+            self.server.can_release_conservative_soft_pass_v3(
+                soft_issues,
+                quality_meta,
+                runtime_cfg,
+            )
+        )
+        self.assertFalse(
+            self.server.can_release_conservative_soft_pass_v3(
+                hard_issues,
+                quality_meta,
+                runtime_cfg,
+            )
+        )
+
+    def test_safe_load_session_uses_cloud_payload_cache(self):
+        self.server.set_license_enforcement_override(False)
+        self._register()
+        created = self._create_session(topic="会话热缓存命中")
+        target_session_id = created["session_id"]
+        session_file = self.server.SESSIONS_DIR / f"{target_session_id}.json"
+        baseline = self.server.safe_load_session(session_file)
+        self.assertIsInstance(baseline, dict)
+
+        original_use_cloud = self.server._use_pure_cloud_session_storage
+        original_load_store_entry = self.server._load_session_store_entry
+        original_store_signature = self.server._get_session_store_signature
+        load_calls = []
+        signature_calls = []
+
+        def fake_load_store_entry(*, session_id="", file_name=""):
+            request_session_id = str(session_id or "").strip()
+            request_file_name = str(file_name or "").strip()
+            load_calls.append(request_session_id or request_file_name)
+            if request_session_id and request_session_id != target_session_id:
+                return None, None
+            if request_file_name and request_file_name != session_file.name:
+                return None, None
+            return json.loads(json.dumps(baseline, ensure_ascii=False)), (123456789, 2048)
+
+        def fake_store_signature(*args, **kwargs):
+            signature_calls.append((args, kwargs))
+            return None
+
+        self.server._use_pure_cloud_session_storage = lambda: True
+        self.server._load_session_store_entry = fake_load_store_entry
+        self.server._get_session_store_signature = fake_store_signature
+        self.addCleanup(setattr, self.server, "_use_pure_cloud_session_storage", original_use_cloud)
+        self.addCleanup(setattr, self.server, "_load_session_store_entry", original_load_store_entry)
+        self.addCleanup(setattr, self.server, "_get_session_store_signature", original_store_signature)
+        self.server._invalidate_session_payload_cache(session_id=target_session_id, file_name=session_file.name)
+
+        first = self.server.safe_load_session(session_file)
+        second = self.server.safe_load_session(session_file)
+        payload_cache_signature = self.server._get_session_payload_cache_signature(
+            session_id=target_session_id,
+            file_name=session_file.name,
+        )
+        file_signature = self.server.get_file_signature(session_file)
+
+        self.assertEqual(load_calls, [target_session_id])
+        self.assertEqual(first.get("session_id"), target_session_id)
+        self.assertEqual(second.get("session_id"), target_session_id)
+        self.assertEqual(payload_cache_signature, (123456789, 2048))
+        self.assertIsInstance(file_signature, tuple)
+        self.assertEqual(len(file_signature), 2)
+        self.assertEqual(signature_calls, [])
+
+        first["topic"] = "已污染的本地副本"
+        third = self.server.safe_load_session(session_file)
+        self.assertEqual(third.get("topic"), baseline.get("topic"))
+
+    def test_save_session_json_and_sync_uses_compact_payload_for_cloud_store(self):
+        self.server.set_license_enforcement_override(False)
+        self._register()
+        created = self._create_session(topic="云端紧凑会话存储", description="用于验证 payload 压缩")
+        session_id = created["session_id"]
+        session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+        session_data = self.server.safe_load_session(session_file)
+        session_data["description"] = "包含更多字段，验证 session_store 使用紧凑 JSON"
+        session_data.setdefault("dimensions", {}).setdefault("extra_dim", {"coverage": 0, "items": []})
+
+        original_use_cloud = self.server._use_pure_cloud_session_storage
+        self.server._use_pure_cloud_session_storage = lambda: True
+        self.addCleanup(setattr, self.server, "_use_pure_cloud_session_storage", original_use_cloud)
+
+        signature = self.server.save_session_json_and_sync(session_file, session_data)
+        compact_payload = self.server._serialize_session_payload(session_data, compact=True)
+
+        with self.server.get_meta_index_connection() as conn:
+            row = conn.execute(
+                "SELECT payload_json, payload_size FROM session_store WHERE session_id = ? LIMIT 1",
+                (session_id,),
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertEqual(str(row["payload_json"] or ""), compact_payload)
+        self.assertNotIn("\n  ", str(row["payload_json"] or ""))
+        self.assertEqual(int(row["payload_size"] or 0), len(compact_payload.encode("utf-8")))
+        self.assertEqual(signature[1], len(compact_payload.encode("utf-8")))
+
     def test_report_generation_and_report_endpoints(self):
         user = self._register()
+        professional_code = self._generate_license_batch(level_key="professional", note="报告链路专业版")["licenses"][0]["code"]
+        activate_payload = self._activate_license(professional_code)
+        self.assertEqual("professional", (activate_payload.get("level") or {}).get("key"))
         created = self._create_session(topic="报告生成链路")
         session_id = created["session_id"]
         dimension = list(created["dimensions"].keys())[0]
@@ -2989,6 +3809,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(solution_resp.status_code, 200)
         solution_payload = solution_resp.get_json() or {}
         self.assertEqual(solution_payload.get("report_name"), report_name)
+        self.assertTrue((solution_payload.get("viewer_capabilities") or {}).get("solution_share"))
         self.assertTrue(solution_payload.get("title"))
         self.assertTrue(solution_payload.get("subtitle"))
         self.assertNotIn("###", solution_payload.get("overview", ""))
@@ -3027,6 +3848,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         public_solution_payload = public_solution_resp.get_json() or {}
         self.assertEqual(public_solution_payload.get("share_mode"), "public")
         self.assertEqual(public_solution_payload.get("report_name"), "")
+        self.assertFalse((public_solution_payload.get("viewer_capabilities") or {}).get("solution_share"))
         self.assertEqual(public_solution_payload.get("title"), solution_payload.get("title"))
         self.assertEqual(public_solution_payload.get("source_mode"), solution_payload.get("source_mode"))
 
@@ -3039,6 +3861,11 @@ class ComprehensiveApiTests(unittest.TestCase):
 
         other_client = self.server.app.test_client()
         self._register(client=other_client)
+        other_professional_code = self._generate_license_batch(
+            level_key="professional",
+            note="报告链路他人专业版",
+        )["licenses"][0]["code"]
+        self._activate_license(other_professional_code, client=other_client)
         forbidden_get = other_client.get(f"/api/reports/{report_name}")
         self.assertEqual(forbidden_get.status_code, 404)
         forbidden_solution = other_client.get(f"/api/reports/{report_name}/solution")
@@ -3056,6 +3883,221 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(list_after_delete.status_code, 200)
         names_after_delete = [item["name"] for item in list_after_delete.get_json()]
         self.assertNotIn(report_name, names_after_delete)
+
+    def test_experience_user_cannot_request_quality_report(self):
+        self.server.set_license_enforcement_override(False)
+        self._register()
+        created = self._create_session(topic="体验版质量报告限制")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+        self._submit_answer(session_id, dimension, question="需求是什么？", answer="需要基础结论")
+
+        response = self.client.post(
+            f"/api/sessions/{session_id}/generate-report",
+            json={"report_profile": "quality"},
+        )
+        self.assertEqual(response.status_code, 403, response.get_data(as_text=True))
+        payload = response.get_json() or {}
+        self.assertEqual("level_capability_denied", payload.get("error_code"))
+        self.assertEqual("report.profile.quality", payload.get("capability_key"))
+        self.assertEqual("experience", (payload.get("current_level") or {}).get("key"))
+        self.assertEqual("professional", (payload.get("required_level") or {}).get("key"))
+
+    def test_new_license_replaces_old_license_and_switches_level(self):
+        self._register()
+        standard_license = self._generate_license_batch(level_key="standard", note="标准版替换测试")["licenses"][0]
+        professional_license = self._generate_license_batch(level_key="professional", note="专业版替换测试")["licenses"][0]
+
+        first_payload = self._activate_license(standard_license["code"])
+        self.assertEqual("standard", (first_payload.get("level") or {}).get("key"))
+
+        second_payload = self._activate_license(professional_license["code"])
+        self.assertEqual("professional", (second_payload.get("level") or {}).get("key"))
+
+        current_payload = (self.client.get("/api/licenses/current").get_json() or {})
+        self.assertEqual("professional", (current_payload.get("level") or {}).get("key"))
+        self.assertEqual(int(professional_license["id"]), int((current_payload.get("license") or {}).get("id") or 0))
+
+        with self.server.get_license_db_connection() as conn:
+            old_row = conn.execute("SELECT status, replaced_by_license_id FROM licenses WHERE id = ?", (int(standard_license["id"]),)).fetchone()
+            new_row = conn.execute("SELECT status FROM licenses WHERE id = ?", (int(professional_license["id"]),)).fetchone()
+
+        self.assertEqual("replaced", str(old_row["status"]))
+        self.assertEqual(int(professional_license["id"]), int(old_row["replaced_by_license_id"] or 0))
+        self.assertEqual("active", str(new_row["status"]))
+
+    def test_standard_user_can_generate_balanced_but_cannot_access_solution_appendix_or_presentation(self):
+        user = self._register()
+        standard_code = self._generate_license_batch(level_key="standard", note="标准版权限测试")["licenses"][0]["code"]
+        activate_payload = self._activate_license(standard_code)
+        self.assertEqual("standard", (activate_payload.get("level") or {}).get("key"))
+
+        created = self._create_session(topic="标准版功能门禁")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+        self._submit_answer(session_id, dimension, question="需求是什么？", answer="需要标准版交付")
+
+        gen_resp = self.client.post(
+            f"/api/sessions/{session_id}/generate-report",
+            json={"report_profile": "balanced"},
+        )
+        self.assertEqual(gen_resp.status_code, 202, gen_resp.get_data(as_text=True))
+        self.assertEqual("balanced", (gen_resp.get_json() or {}).get("report_profile"))
+        report_name = self._create_owned_report(int(user["id"]), topic="标准版手工权限报告")
+
+        solution_resp = self.client.get(f"/api/reports/{report_name}/solution")
+        self.assertEqual(solution_resp.status_code, 403, solution_resp.get_data(as_text=True))
+        self.assertEqual("solution.view", (solution_resp.get_json() or {}).get("capability_key"))
+
+        share_resp = self.client.post(f"/api/reports/{report_name}/solution/share")
+        self.assertEqual(share_resp.status_code, 403, share_resp.get_data(as_text=True))
+        self.assertEqual("solution.share", (share_resp.get_json() or {}).get("capability_key"))
+
+        appendix_resp = self.client.get(f"/api/reports/{report_name}/appendix/pdf")
+        self.assertEqual(appendix_resp.status_code, 403, appendix_resp.get_data(as_text=True))
+        self.assertEqual("report.export.appendix", (appendix_resp.get_json() or {}).get("capability_key"))
+
+        presentation_status_resp = self.client.get(f"/api/reports/{report_name}/presentation/status")
+        self.assertEqual(presentation_status_resp.status_code, 403, presentation_status_resp.get_data(as_text=True))
+        self.assertEqual("presentation.generate", (presentation_status_resp.get_json() or {}).get("capability_key"))
+
+    def test_professional_user_can_access_solution_share_appendix_and_presentation_endpoints(self):
+        user = self._register()
+        professional_code = self._generate_license_batch(level_key="professional", note="专业版权限测试")["licenses"][0]["code"]
+        activate_payload = self._activate_license(professional_code)
+        self.assertEqual("professional", (activate_payload.get("level") or {}).get("key"))
+        original_pil_available = self.server.PIL_AVAILABLE
+        original_is_refly_configured = self.server.is_refly_configured
+        self.server.PIL_AVAILABLE = False
+        self.server.is_refly_configured = lambda: False
+        self.addCleanup(setattr, self.server, "PIL_AVAILABLE", original_pil_available)
+        self.addCleanup(setattr, self.server, "is_refly_configured", original_is_refly_configured)
+
+        report_name = self._create_owned_report(int(user["id"]), topic="专业版功能门禁")
+
+        solution_resp = self.client.get(f"/api/reports/{report_name}/solution")
+        self.assertEqual(solution_resp.status_code, 200, solution_resp.get_data(as_text=True))
+        self.assertTrue((solution_resp.get_json() or {}).get("viewer_capabilities", {}).get("solution_share"))
+
+        share_resp = self.client.post(f"/api/reports/{report_name}/solution/share")
+        self.assertEqual(share_resp.status_code, 200, share_resp.get_data(as_text=True))
+        self.assertTrue((share_resp.get_json() or {}).get("share_url"))
+
+        appendix_resp = self.client.get(f"/api/reports/{report_name}/appendix/pdf")
+        self.assertEqual(appendix_resp.status_code, 200)
+        self.assertEqual("application/pdf", appendix_resp.mimetype)
+
+        presentation_status_resp = self.client.get(f"/api/reports/{report_name}/presentation/status")
+        self.assertEqual(presentation_status_resp.status_code, 200, presentation_status_resp.get_data(as_text=True))
+        self.assertFalse((presentation_status_resp.get_json() or {}).get("exists"))
+
+        presentation_resp = self.client.post(f"/api/reports/{report_name}/refly")
+        self.assertEqual(presentation_resp.status_code, 400, presentation_resp.get_data(as_text=True))
+        self.assertNotEqual("level_capability_denied", (presentation_resp.get_json() or {}).get("error_code"))
+
+    def test_export_asset_permission_follows_current_level(self):
+        uploaded_objects = {}
+        original_is_enabled = self.server.is_object_storage_enabled
+        original_upload = self.server.upload_bytes_to_object_storage
+        original_download = self.server.download_object_storage_bytes
+        original_exists = self.server.object_storage_key_exists
+        self.server.is_object_storage_enabled = lambda: True
+
+        def fake_upload(content, *, object_key, content_type, metadata):
+            uploaded_objects[object_key] = {
+                "content": bytes(content),
+                "content_type": content_type,
+                "metadata": dict(metadata or {}),
+            }
+            return {
+                "object_key": object_key,
+                "storage_backend": "mock",
+                "bucket": "mock-bucket",
+                "content_type": content_type,
+                "size": len(content),
+            }
+
+        def fake_download(object_key):
+            item = uploaded_objects[object_key]
+            return item["content"], {"content_type": item["content_type"]}
+
+        self.server.upload_bytes_to_object_storage = fake_upload
+        self.server.download_object_storage_bytes = fake_download
+        self.server.object_storage_key_exists = lambda object_key: object_key in uploaded_objects
+        self.addCleanup(setattr, self.server, "is_object_storage_enabled", original_is_enabled)
+        self.addCleanup(setattr, self.server, "upload_bytes_to_object_storage", original_upload)
+        self.addCleanup(setattr, self.server, "download_object_storage_bytes", original_download)
+        self.addCleanup(setattr, self.server, "object_storage_key_exists", original_exists)
+
+        standard_user = self._register()
+        standard_code = self._generate_license_batch(level_key="standard", note="标准版导出测试")["licenses"][0]["code"]
+        self._activate_license(standard_code)
+        standard_report = self._create_owned_report(int(standard_user["id"]), topic="标准版导出")
+
+        md_resp = self.client.post(
+            f"/api/reports/{standard_report}/exports",
+            data={
+                "scope": "report",
+                "format": "md",
+                "source": "test_suite",
+                "file": (io.BytesIO(b"# markdown export"), "standard-report.md"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(md_resp.status_code, 201, md_resp.get_data(as_text=True))
+        md_asset = md_resp.get_json() or {}
+
+        docx_resp = self.client.post(
+            f"/api/reports/{standard_report}/exports",
+            data={
+                "scope": "report",
+                "format": "docx",
+                "source": "test_suite",
+                "file": (io.BytesIO(b"docx export"), "standard-report.docx"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(docx_resp.status_code, 201, docx_resp.get_data(as_text=True))
+
+        appendix_resp = self.client.post(
+            f"/api/reports/{standard_report}/exports",
+            data={
+                "scope": "appendix",
+                "format": "pdf",
+                "source": "test_suite",
+                "file": (io.BytesIO(b"%PDF-1.4 appendix"), "standard-appendix.pdf"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(appendix_resp.status_code, 403, appendix_resp.get_data(as_text=True))
+        self.assertEqual("report.export.appendix", (appendix_resp.get_json() or {}).get("capability_key"))
+
+        list_resp = self.client.get(f"/api/reports/{standard_report}/exports")
+        self.assertEqual(list_resp.status_code, 200, list_resp.get_data(as_text=True))
+        listed_items = list_resp.get_json().get("items", [])
+        self.assertEqual(2, len(listed_items))
+        self.assertEqual({"md", "docx"}, {item.get("export_format") for item in listed_items})
+
+        download_resp = self.client.get(f"/api/reports/{standard_report}/exports/{md_asset['asset_id']}")
+        self.assertEqual(download_resp.status_code, 200, download_resp.get_data(as_text=True))
+        self.assertEqual(b"# markdown export", download_resp.get_data())
+
+        self.server.set_license_enforcement_override(False)
+        experience_client = self.server.app.test_client()
+        experience_user = self._register(client=experience_client)
+        experience_report = self._create_owned_report(int(experience_user["id"]), topic="体验版导出")
+        denied_resp = experience_client.post(
+            f"/api/reports/{experience_report}/exports",
+            data={
+                "scope": "report",
+                "format": "md",
+                "source": "test_suite",
+                "file": (io.BytesIO(b"# experience export"), "experience-report.md"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(denied_resp.status_code, 403, denied_resp.get_data(as_text=True))
+        self.assertEqual("report.export.basic", (denied_resp.get_json() or {}).get("capability_key"))
 
     def test_reports_list_returns_direct_binding_metadata_for_same_topic_sessions(self):
         user = self._register()
@@ -3126,6 +4168,15 @@ class ComprehensiveApiTests(unittest.TestCase):
 
     def test_regenerate_report_overwrites_current_session_report(self):
         self._register()
+        self._activate_license(
+            self._generate_license_batch(
+                level_key="professional",
+                note="跨天重生成专业版",
+                use_absolute_window=True,
+                starts_in_days=-1,
+                expires_in_days=30000,
+            )["licenses"][0]["code"]
+        )
         created = self._create_session(topic="跨天重生成报告")
         session_id = created["session_id"]
         dimension = list(created["dimensions"].keys())[0]
@@ -3161,7 +4212,6 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(reports_resp.status_code, 200, reports_resp.get_data(as_text=True))
         report_names = [item["name"] for item in (reports_resp.get_json() or [])]
         self.assertEqual(report_names.count(first_report_name), 1)
-        self.assertEqual(len(report_names), 1)
 
         refreshed_session = self.client.get(f"/api/sessions/{session_id}")
         self.assertEqual(refreshed_session.status_code, 200)
@@ -3170,6 +4220,15 @@ class ComprehensiveApiTests(unittest.TestCase):
 
     def test_generate_report_uses_unique_filename_for_same_day_same_topic_sessions(self):
         self._register()
+        self._activate_license(
+            self._generate_license_batch(
+                level_key="professional",
+                note="同主题同日专业版",
+                use_absolute_window=True,
+                starts_in_days=-1,
+                expires_in_days=30000,
+            )["licenses"][0]["code"]
+        )
         first = self._create_session(topic="同主题同日报告")
         second = self._create_session(topic="同主题同日报告")
 

@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote, unquote, urlparse, parse_qsl, urlencode, urlunparse
 
-from flask import Flask, jsonify, request, send_from_directory, redirect, session, send_file, make_response, url_for
+from flask import Flask, Response, jsonify, request, send_from_directory, redirect, session, send_file, make_response, url_for
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash
 from werkzeug.serving import WSGIRequestHandler
@@ -161,11 +161,22 @@ LOADED_ENV_FILES = list(ENV_LOAD_METADATA.get("loaded_files", []) or [])
 LOADED_ENV_KEYS = set(ENV_LOAD_METADATA.get("loaded_keys", set()) or set())
 LOADED_ENV_KEY_COUNT = int(ENV_LOAD_METADATA.get("loaded_key_count", 0) or 0)
 
+runtime_config = None
+runtime_config_source = ""
 try:
-    import config as runtime_config
-    print("✅ 配置文件加载成功")
+    from web import config as runtime_config  # type: ignore
+    runtime_config_source = "web.config"
 except Exception:
-    runtime_config = None
+    try:
+        import config as runtime_config  # type: ignore
+        runtime_config_source = "config"
+    except Exception:
+        runtime_config = None
+        runtime_config_source = ""
+
+if runtime_config is not None:
+    print(f"✅ 配置文件加载成功 ({runtime_config_source})")
+else:
     print("⚠️  未找到 config.py，使用默认配置")
     print("   请复制 config.example.py 为 config.py 并填入实际配置")
 
@@ -500,6 +511,8 @@ MAX_TOKENS_QUESTION = _cfg_int("MAX_TOKENS_QUESTION", 2000)
 MAX_TOKENS_QUESTION = max(1, MAX_TOKENS_QUESTION)
 MAX_TOKENS_REPORT = _cfg_int("MAX_TOKENS_REPORT", 10000)
 MAX_TOKENS_REPORT = max(1, MAX_TOKENS_REPORT)
+AI_CLIENT_MAX_RETRIES = _cfg_int("AI_CLIENT_MAX_RETRIES", 0)
+AI_CLIENT_MAX_RETRIES = max(0, min(AI_CLIENT_MAX_RETRIES, 5))
 SERVER_HOST = _cfg_text("SERVER_HOST", "0.0.0.0") or "0.0.0.0"
 SERVER_PORT = _cfg_int("SERVER_PORT", 5001)
 SERVER_PORT = max(1, SERVER_PORT)
@@ -534,6 +547,7 @@ if REFLY_POLL_TIMEOUT < 30:
 REFLY_POLL_INTERVAL = _cfg_float("REFLY_POLL_INTERVAL", 2.0)
 if REFLY_POLL_INTERVAL <= 0:
     REFLY_POLL_INTERVAL = 2.0
+PRESENTATION_GLOBAL_ENABLED = _cfg_bool("PRESENTATION_GLOBAL_ENABLED", True)
 OBJECT_STORAGE_ENDPOINT = _cfg_text("OBJECT_STORAGE_ENDPOINT", "")
 OBJECT_STORAGE_REGION = _cfg_text("OBJECT_STORAGE_REGION", "us-east-1") or "us-east-1"
 OBJECT_STORAGE_BUCKET = _cfg_text("OBJECT_STORAGE_BUCKET", "")
@@ -584,6 +598,10 @@ if REPORT_GENERATION_MAX_PENDING < REPORT_GENERATION_MAX_WORKERS:
 REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS = _cfg_int("REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS", 3)
 if REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS < 1:
     REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS = 3
+
+REPORT_GENERATION_ESTIMATED_SLOT_SECONDS = _cfg_float("REPORT_GENERATION_ESTIMATED_SLOT_SECONDS", 55.0)
+if REPORT_GENERATION_ESTIMATED_SLOT_SECONDS <= 0:
+    REPORT_GENERATION_ESTIMATED_SLOT_SECONDS = 55.0
 
 # 模型路由配置：支持问题/报告分离，未配置时向后兼容 MODEL_NAME
 _base_model_name = _cfg_text("MODEL_NAME", str(MODEL_NAME or "").strip())
@@ -903,6 +921,8 @@ REPORT_V3_REVIEW_REPAIR_MAX_TOKENS = _cfg_int("REPORT_V3_REVIEW_REPAIR_MAX_TOKEN
 REPORT_V3_REVIEW_REPAIR_MAX_TOKENS = max(800, min(REPORT_V3_REVIEW_REPAIR_MAX_TOKENS, MAX_TOKENS_REPORT))
 REPORT_V3_REVIEW_REPAIR_TIMEOUT = _cfg_float("REPORT_V3_REVIEW_REPAIR_TIMEOUT", 45.0)
 REPORT_V3_REVIEW_REPAIR_TIMEOUT = max(12.0, min(REPORT_V3_REVIEW_REPAIR_TIMEOUT, REPORT_REVIEW_API_TIMEOUT))
+REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE = _cfg_bool("REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE", True)
+REPORT_V3_ALLOW_DRAFT_ALTERNATE_LANE_IN_RELEASE_CONSERVATIVE = _cfg_bool("REPORT_V3_ALLOW_DRAFT_ALTERNATE_LANE_IN_RELEASE_CONSERVATIVE", False)
 REPORT_V3_FAILOVER_ENABLED = _cfg_bool("REPORT_V3_FAILOVER_ENABLED", True)
 REPORT_V3_FAILOVER_LANE = _cfg_text("REPORT_V3_FAILOVER_LANE", "question").lower()
 if REPORT_V3_FAILOVER_LANE not in {"question", "report"}:
@@ -942,6 +962,10 @@ REPORT_V3_EVIDENCE_DEDUP_ENABLED = _cfg_bool("REPORT_V3_EVIDENCE_DEDUP_ENABLED",
 REPORT_V3_EVIDENCE_MIN_QUALITY = _cfg_float("REPORT_V3_EVIDENCE_MIN_QUALITY", 0.2)
 REPORT_V3_EVIDENCE_MIN_QUALITY = max(0.0, min(REPORT_V3_EVIDENCE_MIN_QUALITY, 0.9))
 REPORT_V3_EVIDENCE_KEEP_HARD_TRIGGERED = _cfg_bool("REPORT_V3_EVIDENCE_KEEP_HARD_TRIGGERED", True)
+REPORT_V3_DRAFT_STRICT_PRIMARY_LANE_IN_RELEASE_CONSERVATIVE = _cfg_bool(
+    "REPORT_V3_DRAFT_STRICT_PRIMARY_LANE_IN_RELEASE_CONSERVATIVE",
+    True,
+)
 GATEWAY_CIRCUIT_BREAKER_ENABLED = _cfg_bool("GATEWAY_CIRCUIT_BREAKER_ENABLED", True)
 GATEWAY_CIRCUIT_FAIL_THRESHOLD = _cfg_int("GATEWAY_CIRCUIT_FAIL_THRESHOLD", 2)
 GATEWAY_CIRCUIT_FAIL_THRESHOLD = max(1, min(GATEWAY_CIRCUIT_FAIL_THRESHOLD, 8))
@@ -949,6 +973,37 @@ GATEWAY_CIRCUIT_COOLDOWN_SECONDS = _cfg_float("GATEWAY_CIRCUIT_COOLDOWN_SECONDS"
 GATEWAY_CIRCUIT_COOLDOWN_SECONDS = max(30.0, min(GATEWAY_CIRCUIT_COOLDOWN_SECONDS, 900.0))
 GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = _cfg_float("GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS", 180.0)
 GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = max(30.0, min(GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS, 1200.0))
+REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED = _cfg_bool("REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED", True)
+REPORT_V3_RELEASE_SHORT_CIRCUIT_TIMEOUT_THRESHOLD = _cfg_int(
+    "REPORT_V3_RELEASE_SHORT_CIRCUIT_TIMEOUT_THRESHOLD",
+    max(2, int(GATEWAY_CIRCUIT_FAIL_THRESHOLD or 2)),
+)
+REPORT_V3_RELEASE_SHORT_CIRCUIT_TIMEOUT_THRESHOLD = max(
+    2,
+    min(REPORT_V3_RELEASE_SHORT_CIRCUIT_TIMEOUT_THRESHOLD, 5),
+)
+REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_LANE = _cfg_text(
+    "REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_LANE",
+    "report_review",
+).strip().lower()
+if REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_LANE not in {"question", "summary", "report", "report_review"}:
+    REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_LANE = "report_review"
+REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_TIMEOUT = _cfg_float(
+    "REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_TIMEOUT",
+    60.0,
+)
+REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_TIMEOUT = max(
+    20.0,
+    min(REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_TIMEOUT, 75.0),
+)
+REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_MAX_TOKENS = _cfg_int(
+    "REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_MAX_TOKENS",
+    2200,
+)
+REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_MAX_TOKENS = max(
+    1000,
+    min(REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_MAX_TOKENS, 3200),
+)
 
 
 def normalize_report_profile_choice(raw_profile: str, fallback: str = "") -> str:
@@ -997,6 +1052,7 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
     review_tokens_default = 5200 if profile == "balanced" else 6000
     review_max_tokens = _cfg_int("REPORT_V3_REVIEW_MAX_TOKENS", review_tokens_default)
     review_max_tokens = max(2600, review_max_tokens)
+    draft_token_floor = 2200 if profile == "balanced" else 2600
 
     review_rounds_default = 2 if profile == "balanced" else 3
     review_base_rounds = _cfg_int("REPORT_V3_REVIEW_BASE_ROUNDS", review_rounds_default)
@@ -1028,6 +1084,7 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
     weak_binding_min_score = max(0.2, min(weak_binding_min_score, 0.9))
     salvage_on_quality_gate_failure = _cfg_bool("REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE", True)
     failover_on_single_issue = _cfg_bool("REPORT_V3_FAILOVER_ON_SINGLE_ISSUE", True)
+    failover_enabled = bool(REPORT_V3_FAILOVER_ENABLED)
     blindspot_action_required_balanced = _cfg_bool("REPORT_V3_BLINDSPOT_ACTION_REQUIRED_BALANCED", False)
     blindspot_action_required_quality = _cfg_bool("REPORT_V3_BLINDSPOT_ACTION_REQUIRED_QUALITY", True)
     unknown_followup_enabled = _cfg_bool("REPORT_V3_UNKNOWNS_TO_OPEN_QUESTIONS_ENABLED", True)
@@ -1035,29 +1092,51 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
     unknown_followup_max_items = max(1, min(unknown_followup_max_items, 8))
     unknown_ratio_trigger = _cfg_float("REPORT_V3_UNKNOWN_RATIO_TRIGGER", 0.65)
     unknown_ratio_trigger = max(0.2, min(unknown_ratio_trigger, 1.0))
+    skip_model_review = _cfg_bool(
+        "REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE",
+        REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE,
+    )
+    draft_allow_alternate_lane = _cfg_bool(
+        "REPORT_V3_ALLOW_DRAFT_ALTERNATE_LANE_IN_RELEASE_CONSERVATIVE",
+        REPORT_V3_ALLOW_DRAFT_ALTERNATE_LANE_IN_RELEASE_CONSERVATIVE,
+    )
+    draft_strict_primary_lane = _cfg_bool(
+        "REPORT_V3_DRAFT_STRICT_PRIMARY_LANE_IN_RELEASE_CONSERVATIVE",
+        REPORT_V3_DRAFT_STRICT_PRIMARY_LANE_IN_RELEASE_CONSERVATIVE,
+    )
+    draft_timeout_cap = max(float(REPORT_API_TIMEOUT), float(draft_timeout) + 45.0)
 
     if release_conservative_mode:
-        draft_timeout = min(float(draft_timeout), 110.0)
-        review_timeout = min(float(review_timeout), 75.0)
-        draft_max_tokens = min(int(draft_max_tokens), 3400)
-        draft_facts_limit = min(int(draft_facts_limit), 24)
-        draft_min_facts_limit = min(int(draft_min_facts_limit), 14, int(draft_facts_limit))
+        draft_timeout = min(float(draft_timeout), 60.0)
+        review_timeout = min(float(review_timeout), 60.0)
+        draft_max_tokens = min(int(draft_max_tokens), 2600)
+        draft_token_floor = min(int(draft_max_tokens), 1600)
+        draft_facts_limit = min(int(draft_facts_limit), 18)
+        draft_min_facts_limit = min(int(draft_min_facts_limit), 12, int(draft_facts_limit))
         draft_retry_count = min(int(draft_retry_count), 0)
         draft_retry_backoff_seconds = min(float(draft_retry_backoff_seconds), 0.3)
         fast_fail_on_draft_empty = True
-        review_max_tokens = min(int(review_max_tokens), 3600)
+        draft_timeout_cap = min(max(float(draft_timeout) + 8.0, 45.0), 68.0)
+        review_max_tokens = min(int(review_max_tokens), 3000)
         review_base_rounds = 1
         quality_fix_rounds = 0
         min_required_review_rounds = 1
+        review_repair_retry_enabled = False
         salvage_on_quality_gate_failure = False
         failover_on_single_issue = False
+        failover_enabled = False
+        skip_model_review = bool(skip_model_review)
+        draft_allow_alternate_lane = bool(draft_allow_alternate_lane)
+        draft_strict_primary_lane = bool(draft_strict_primary_lane)
 
     return {
         "profile": profile,
         "release_conservative_mode": release_conservative_mode,
         "draft_timeout": float(draft_timeout),
+        "draft_timeout_cap": float(draft_timeout_cap),
         "review_timeout": float(review_timeout),
         "draft_max_tokens": int(draft_max_tokens),
+        "draft_token_floor": int(max(1200, draft_token_floor)),
         "draft_facts_limit": int(draft_facts_limit),
         "draft_min_facts_limit": int(draft_min_facts_limit),
         "draft_retry_count": int(draft_retry_count),
@@ -1069,6 +1148,9 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
         "review_repair_retry_enabled": bool(review_repair_retry_enabled),
         "review_repair_max_tokens": int(review_repair_max_tokens),
         "review_repair_timeout": float(review_repair_timeout),
+        "skip_model_review": bool(skip_model_review and release_conservative_mode),
+        "draft_strict_primary_lane": bool(draft_strict_primary_lane and release_conservative_mode),
+        "draft_allow_alternate_lane": bool(draft_allow_alternate_lane if release_conservative_mode else True),
         "min_required_review_rounds": int(min_required_review_rounds),
         "quality_force_single_lane": bool(quality_force_single_lane),
         "quality_primary_lane": quality_primary_lane,
@@ -1077,6 +1159,7 @@ def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
         "weak_binding_min_score": float(weak_binding_min_score),
         "salvage_on_quality_gate_failure": bool(salvage_on_quality_gate_failure),
         "failover_on_single_issue": bool(failover_on_single_issue),
+        "failover_enabled": bool(failover_enabled),
         "blindspot_action_required_balanced": bool(blindspot_action_required_balanced),
         "blindspot_action_required_quality": bool(blindspot_action_required_quality),
         "unknown_followup_enabled": bool(unknown_followup_enabled),
@@ -2713,6 +2796,7 @@ ADMIN_CONFIG_SETTINGS_GROUPS: list[dict[str, Any]] = [
             _admin_bool("REPORT_V3_FAILOVER_ENABLED", "启用 Failover"),
             _admin_bool("REPORT_V3_RENDER_MERMAID_FROM_DATA", "渲染 Mermaid 图表"),
             _admin_int("REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS", "报告队列重试秒数", description="报告队列繁忙时建议重试间隔。"),
+            _admin_float("REPORT_GENERATION_ESTIMATED_SLOT_SECONDS", "报告队列槽位估算秒数", description="用于前端估算等待时间的单槽位平均耗时。"),
         ],
     },
     {
@@ -2853,15 +2937,13 @@ ADMIN_SITE_SETTINGS_GROUPS: list[dict[str, Any]] = [
     },
     {
         "id": "site_frontend_integration",
-        "title": "前端接入与功能入口",
-        "description": "管理前端 API 地址、版本文件和功能开关。",
+        "title": "前端接入与版本文件",
+        "description": "管理前端 API 地址与版本文件。",
         "source": "site",
         "items": [
             _admin_setting("api.baseUrl", "API 基础地址", description="前端请求后端接口的基础地址。", requires_restart=False),
             _admin_int("api.webSearchPollInterval", "Web Search 轮询间隔", description="控制呼吸灯状态轮询频率。", requires_restart=False),
             _admin_setting("version.configFile", "版本信息文件", description="前端启动后用于加载版本信息的文件名。", requires_restart=False),
-            _admin_bool("presentation.enabled", "启用演示文稿入口", description="是否显示“一键生成演示文稿”按钮。", requires_restart=False),
-            _admin_bool("solution.enabled", "启用方案页入口", description="是否显示“查看方案”按钮。", requires_restart=False),
         ],
     },
 ]
@@ -3806,19 +3888,41 @@ solution_payload_prewarm_executor = ThreadPoolExecutor(
 )
 
 REPORT_GENERATION_STAGES = {
-    "queued": {"index": 0, "progress": 5, "message": "已提交请求，准备生成报告..."},
-    "building_prompt": {"index": 1, "progress": 20, "message": "正在整理访谈与资料上下文..."},
-    "generating": {"index": 2, "progress": 65, "message": "正在调用 AI 生成报告正文..."},
-    "fallback": {"index": 3, "progress": 78, "message": "AI 响应较慢，正在切换模板生成..."},
-    "saving": {"index": 4, "progress": 90, "message": "正在保存报告并更新会话状态..."},
-    "completed": {"index": 5, "progress": 100, "message": "报告生成完成"},
-    "failed": {"index": 5, "progress": 100, "message": "报告生成失败"},
+    "queued": {"index": 0, "progress": 5, "label": "排队中", "message": "已提交请求，准备生成报告..."},
+    "building_prompt": {"index": 1, "progress": 20, "label": "准备中", "message": "正在整理访谈与资料上下文..."},
+    "generating": {"index": 2, "progress": 65, "label": "生成中", "message": "正在调用 AI 生成报告正文..."},
+    "fallback": {"index": 3, "progress": 78, "label": "回退中", "message": "AI 响应较慢，正在切换模板生成..."},
+    "saving": {"index": 4, "progress": 90, "label": "保存中", "message": "正在保存报告并更新会话状态..."},
+    "completed": {"index": 5, "progress": 100, "label": "已完成", "message": "报告生成完成"},
+    "failed": {"index": 5, "progress": 100, "label": "失败", "message": "报告生成失败"},
+}
+
+REPORT_GENERATION_DETAIL_STATES = {
+    "queue_wait": {"label": "等待执行槽位", "next_hint": "轮到执行后会自动开始构建报告"},
+    "session_load": {"label": "加载会话", "next_hint": "正在读取访谈记录与报告上下文"},
+    "evidence_pack": {"label": "构建证据包", "next_hint": "完成后会生成结构化草案"},
+    "v3_draft": {"label": "生成结构化草案", "next_hint": "完成后会进入一致性审稿"},
+    "v3_draft_retry": {"label": "降载重试草案", "next_hint": "若仍失败将切换回退链路"},
+    "v3_review": {"label": "一致性审稿", "next_hint": "审稿通过后会进入质量门校验"},
+    "v3_failover": {"label": "备用网关重试", "next_hint": "正在用备用通道补救 V3 报告"},
+    "v3_salvage": {"label": "挽救当前草案", "next_hint": "成功后将直接保存报告"},
+    "draft_short_circuit": {"label": "跳过 V3 草案", "next_hint": "已直接进入紧凑回退生成"},
+    "legacy_fallback": {"label": "紧凑回退生成", "next_hint": "成功后会直接保存报告"},
+    "simple_template_fallback": {"label": "模板兜底生成", "next_hint": "完成后会保存基础报告"},
+    "persist_report": {"label": "写入报告文件", "next_hint": "保存完成后即可查看报告"},
+    "finished": {"label": "报告已生成", "next_hint": "可返回列表或直接查看报告"},
+    "failed": {"label": "生成失败", "next_hint": "可稍后重试或切换更保守策略"},
 }
 
 # ============ 预生成缓存（智能预生成）============
 prefetch_cache = {}            # { session_id: { dimension: { question_data, created_at, valid } } }
 prefetch_cache_lock = threading.Lock()
 PREFETCH_TTL = 300             # 预生成缓存有效期（秒）
+SESSION_PAYLOAD_CACHE_TTL_SECONDS = max(0.0, _cfg_float("SESSION_PAYLOAD_CACHE_TTL_SECONDS", 4.0))
+SESSION_PAYLOAD_CACHE_MAX_ENTRIES = max(16, min(_cfg_int("SESSION_PAYLOAD_CACHE_MAX_ENTRIES", 96), 512))
+session_payload_cache_by_id = {}
+session_payload_cache_by_file_name = {}
+session_payload_cache_lock = threading.Lock()
 report_owners_cache = {"signature": None, "data": {}}
 report_scopes_cache = {"signature": None, "data": {}}
 report_solution_shares_cache = {"signature": None, "data": {}}
@@ -4390,6 +4494,7 @@ def _build_interview_prompt_cache_key(
     session_id: str = "",
     output_mode: str = "full",
     search_mode: str = "default",
+    runtime_probe: bool = False,
 ) -> str:
     if not isinstance(session_signature, tuple) or len(session_signature) != 2:
         return ""
@@ -4399,6 +4504,7 @@ def _build_interview_prompt_cache_key(
         "dimension": str(dimension or "").strip(),
         "output_mode": str(output_mode or "full").strip().lower() or "full",
         "search_mode": _normalize_search_decision_mode(search_mode),
+        "runtime_probe": bool(runtime_probe),
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()
@@ -4483,62 +4589,205 @@ def _extract_session_id_from_session_file(session_file: Path) -> str:
     return name[:-5].strip()
 
 
-def _load_session_from_store(session_id: str) -> Optional[dict]:
+def _cleanup_session_payload_cache_locked(now_ts: Optional[float] = None) -> None:
+    now_value = float(now_ts if now_ts is not None else _time.time())
+    expired_session_ids = []
+    for session_id, entry in list(session_payload_cache_by_id.items()):
+        expire_at = float((entry or {}).get("expire_at", 0.0) or 0.0)
+        if expire_at > now_value:
+            continue
+        expired_session_ids.append(session_id)
+
+    for session_id in expired_session_ids:
+        entry = session_payload_cache_by_id.pop(session_id, None)
+        file_name = str((entry or {}).get("file_name") or "").strip()
+        if file_name:
+            cached_entry = session_payload_cache_by_file_name.get(file_name)
+            if cached_entry is entry or str((cached_entry or {}).get("session_id") or "").strip() == session_id:
+                session_payload_cache_by_file_name.pop(file_name, None)
+
+
+def _get_session_payload_cache_entry(session_id: str = "", file_name: str = "") -> Optional[dict]:
+    if SESSION_PAYLOAD_CACHE_TTL_SECONDS <= 0:
+        return None
+
     sid = str(session_id or "").strip()
-    if not sid:
+    fname = str(file_name or "").strip()
+    if not sid and not fname:
+        return None
+
+    now_ts = _time.time()
+    with session_payload_cache_lock:
+        _cleanup_session_payload_cache_locked(now_ts)
+        entry = None
+        if sid:
+            entry = session_payload_cache_by_id.get(sid)
+        if entry is None and fname:
+            entry = session_payload_cache_by_file_name.get(fname)
+        if not isinstance(entry, dict):
+            return None
+        return dict(entry)
+
+
+def _get_session_payload_cache(session_id: str = "", file_name: str = "") -> Optional[dict]:
+    entry = _get_session_payload_cache_entry(session_id=session_id, file_name=file_name)
+    payload = (entry or {}).get("payload")
+    if not isinstance(payload, dict):
+        return None
+    return copy.deepcopy(payload)
+
+
+def _get_session_payload_cache_signature(session_id: str = "", file_name: str = "") -> Optional[tuple[int, int]]:
+    entry = _get_session_payload_cache_entry(session_id=session_id, file_name=file_name)
+    signature = (entry or {}).get("signature")
+    if not isinstance(signature, (tuple, list)) or len(signature) != 2:
         return None
     try:
-        with get_meta_index_connection() as conn:
-            row = conn.execute(
-                """
-                SELECT payload_json
-                FROM session_store
-                WHERE session_id = ?
-                LIMIT 1
-                """,
-                (sid,),
-            ).fetchone()
+        return (int(signature[0]), int(signature[1]))
     except Exception:
         return None
+
+
+def _set_session_payload_cache(
+    session_id: str,
+    file_name: str,
+    payload: Optional[dict],
+    *,
+    signature: Optional[tuple[int, int]] = None,
+) -> None:
+    if SESSION_PAYLOAD_CACHE_TTL_SECONDS <= 0 or not isinstance(payload, dict):
+        return
+
+    sid = str(session_id or "").strip()
+    fname = str(file_name or "").strip()
+    if not sid and not fname:
+        return
+
+    now_ts = _time.time()
+    expire_at = now_ts + float(SESSION_PAYLOAD_CACHE_TTL_SECONDS)
+    cache_payload = copy.deepcopy(payload)
+    cache_entry = {
+        "session_id": sid,
+        "file_name": fname,
+        "payload": cache_payload,
+        "signature": tuple(signature) if isinstance(signature, (tuple, list)) and len(signature) == 2 else None,
+        "expire_at": expire_at,
+    }
+
+    with session_payload_cache_lock:
+        _cleanup_session_payload_cache_locked(now_ts)
+        if sid:
+            previous = session_payload_cache_by_id.get(sid)
+            previous_file_name = str((previous or {}).get("file_name") or "").strip()
+            if previous_file_name and previous_file_name != fname:
+                cached_entry = session_payload_cache_by_file_name.get(previous_file_name)
+                if cached_entry is previous:
+                    session_payload_cache_by_file_name.pop(previous_file_name, None)
+            session_payload_cache_by_id[sid] = cache_entry
+        if fname:
+            previous = session_payload_cache_by_file_name.get(fname)
+            previous_session_id = str((previous or {}).get("session_id") or "").strip()
+            if previous_session_id and previous_session_id != sid:
+                cached_entry = session_payload_cache_by_id.get(previous_session_id)
+                if cached_entry is previous:
+                    session_payload_cache_by_id.pop(previous_session_id, None)
+            session_payload_cache_by_file_name[fname] = cache_entry
+
+        while len(session_payload_cache_by_id) > SESSION_PAYLOAD_CACHE_MAX_ENTRIES:
+            oldest_session_id = next(iter(session_payload_cache_by_id), None)
+            if oldest_session_id is None:
+                break
+            oldest_entry = session_payload_cache_by_id.pop(oldest_session_id, None)
+            oldest_file_name = str((oldest_entry or {}).get("file_name") or "").strip()
+            if oldest_file_name:
+                cached_entry = session_payload_cache_by_file_name.get(oldest_file_name)
+                if cached_entry is oldest_entry:
+                    session_payload_cache_by_file_name.pop(oldest_file_name, None)
+
+
+def _invalidate_session_payload_cache(session_id: str = "", file_name: str = "") -> None:
+    sid = str(session_id or "").strip()
+    fname = str(file_name or "").strip()
+    if not sid and not fname:
+        return
+
+    with session_payload_cache_lock:
+        entry = None
+        if sid:
+            entry = session_payload_cache_by_id.pop(sid, None)
+        if fname:
+            by_name = session_payload_cache_by_file_name.pop(fname, None)
+            if entry is None:
+                entry = by_name
+        if not isinstance(entry, dict):
+            return
+        linked_session_id = str(entry.get("session_id") or "").strip()
+        linked_file_name = str(entry.get("file_name") or "").strip()
+        if linked_session_id:
+            cached_entry = session_payload_cache_by_id.get(linked_session_id)
+            if cached_entry is entry:
+                session_payload_cache_by_id.pop(linked_session_id, None)
+        if linked_file_name:
+            cached_entry = session_payload_cache_by_file_name.get(linked_file_name)
+            if cached_entry is entry:
+                session_payload_cache_by_file_name.pop(linked_file_name, None)
+
+
+def _load_session_store_entry(session_id: str = "", file_name: str = "") -> tuple[Optional[dict], Optional[tuple[int, int]]]:
+    sid = str(session_id or "").strip()
+    fname = str(file_name or "").strip()
+    if not sid and not fname:
+        return None, None
+    try:
+        with get_meta_index_connection() as conn:
+            if sid:
+                row = conn.execute(
+                    """
+                    SELECT payload_json, payload_mtime_ns, payload_size
+                    FROM session_store
+                    WHERE session_id = ?
+                    LIMIT 1
+                    """,
+                    (sid,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT payload_json, payload_mtime_ns, payload_size
+                    FROM session_store
+                    WHERE file_name = ?
+                    LIMIT 1
+                    """,
+                    (fname,),
+                ).fetchone()
+    except Exception:
+        return None, None
     if not row:
-        return None
+        return None, None
     payload_text = str(row["payload_json"] or "").strip()
     if not payload_text:
-        return None
+        return None, None
     try:
         payload = json.loads(payload_text)
     except Exception:
-        return None
-    return payload if isinstance(payload, dict) else None
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    signature = (
+        _safe_int(row["payload_mtime_ns"], 0),
+        _safe_int(row["payload_size"], 0),
+    )
+    return payload, signature
+
+
+def _load_session_from_store(session_id: str) -> Optional[dict]:
+    payload, _signature = _load_session_store_entry(session_id=session_id)
+    return payload
 
 
 def _load_session_from_store_by_file_name(file_name: str) -> Optional[dict]:
-    name = str(file_name or "").strip()
-    if not name:
-        return None
-    try:
-        with get_meta_index_connection() as conn:
-            row = conn.execute(
-                """
-                SELECT payload_json
-                FROM session_store
-                WHERE file_name = ?
-                LIMIT 1
-                """,
-                (name,),
-            ).fetchone()
-    except Exception:
-        return None
-    if not row:
-        return None
-    payload_text = str(row["payload_json"] or "").strip()
-    if not payload_text:
-        return None
-    try:
-        payload = json.loads(payload_text)
-    except Exception:
-        return None
-    return payload if isinstance(payload, dict) else None
+    payload, _signature = _load_session_store_entry(file_name=file_name)
+    return payload
 
 
 def _get_session_store_signature(session_id: str = "", file_name: str = "") -> Optional[tuple[int, int]]:
@@ -4593,6 +4842,7 @@ def _delete_session_store_record(session_id: str = "", file_name: str = "") -> N
                 conn.execute("DELETE FROM session_store WHERE file_name = ?", (fname,))
     except Exception:
         return
+    _invalidate_session_payload_cache(session_id=sid, file_name=fname)
 
 
 def _use_pure_cloud_session_storage() -> bool:
@@ -4603,13 +4853,21 @@ def safe_load_session(session_file: Path) -> dict:
     """安全加载会话。PostgreSQL 模式下仅使用 session_store 作为在线主存储。"""
     target = Path(session_file)
     session_id = _extract_session_id_from_session_file(target)
+    if _use_pure_cloud_session_storage():
+        cached_payload = _get_session_payload_cache(session_id=session_id, file_name=target.name)
+        if isinstance(cached_payload, dict):
+            return cached_payload
     if session_id:
-        store_payload = _load_session_from_store(session_id)
+        store_payload, store_signature = _load_session_store_entry(session_id=session_id)
         if isinstance(store_payload, dict):
+            if _use_pure_cloud_session_storage():
+                _set_session_payload_cache(session_id, target.name, store_payload, signature=store_signature)
             return store_payload
     else:
-        store_payload = _load_session_from_store_by_file_name(target.name)
+        store_payload, store_signature = _load_session_store_entry(file_name=target.name)
         if isinstance(store_payload, dict):
+            if _use_pure_cloud_session_storage():
+                _set_session_payload_cache(session_id, target.name, store_payload, signature=store_signature)
             return store_payload
 
     if _use_pure_cloud_session_storage():
@@ -4634,6 +4892,9 @@ def get_file_signature(file_path: Path) -> Optional[tuple[int, int]]:
         return (int(stat.st_mtime_ns), int(stat.st_size))
     except (FileNotFoundError, OSError):
         session_id = _extract_session_id_from_session_file(target)
+        cached_signature = _get_session_payload_cache_signature(session_id=session_id, file_name=target.name)
+        if cached_signature is not None:
+            return cached_signature
         if session_id:
             signature = _get_session_store_signature(session_id=session_id)
             if signature is not None:
@@ -5579,6 +5840,12 @@ def _load_session_payload_from_disk(session_file: Path) -> Optional[dict]:
         return None
 
 
+def _serialize_session_payload(session_data: dict, *, compact: bool = False) -> str:
+    if compact:
+        return json.dumps(session_data, ensure_ascii=False, separators=(",", ":"))
+    return json.dumps(session_data, ensure_ascii=False, indent=2)
+
+
 def _build_session_store_record(session_file: Path, session_data: dict) -> Optional[dict]:
     if not isinstance(session_data, dict):
         return None
@@ -5592,7 +5859,7 @@ def _build_session_store_record(session_file: Path, session_data: dict) -> Optio
     if owner_user_id <= 0:
         return None
 
-    payload_text = json.dumps(session_data, ensure_ascii=False, indent=2)
+    payload_text = _serialize_session_payload(session_data, compact=True)
     signature = get_file_signature(session_file)
     if signature is None:
         signature = (int(_time.time_ns()), len(payload_text.encode("utf-8")))
@@ -6200,6 +6467,254 @@ def _compute_file_sha256(file_path: Path) -> str:
     return digest.hexdigest()
 
 
+EXPORT_ASSET_SCOPE_VALUES = {"report", "appendix"}
+EXPORT_ASSET_FORMAT_ALIASES = {
+    "md": "md",
+    ".md": "md",
+    "markdown": "md",
+    "pdf": "pdf",
+    ".pdf": "pdf",
+    "docx": "docx",
+    ".docx": "docx",
+    "word": "docx",
+}
+EXPORT_ASSET_EXTENSION_MAP = {
+    "md": ".md",
+    "pdf": ".pdf",
+    "docx": ".docx",
+}
+
+
+def _normalize_export_asset_scope(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in EXPORT_ASSET_SCOPE_VALUES:
+        return normalized
+    return "report"
+
+
+def _normalize_export_asset_format(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    return EXPORT_ASSET_FORMAT_ALIASES.get(normalized, "")
+
+
+def _normalize_export_asset_source(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return "web_export"
+    return re.sub(r"[^a-z0-9_-]+", "-", normalized).strip("-_") or "web_export"
+
+
+def get_export_capability_key(export_scope: object, export_format: object) -> str:
+    normalized_scope = _normalize_export_asset_scope(export_scope)
+    normalized_format = _normalize_export_asset_format(export_format)
+    if normalized_scope == "appendix":
+        return "report.export.appendix"
+    if normalized_format == "docx":
+        return "report.export.docx"
+    if normalized_format in {"md", "pdf"}:
+        return "report.export.basic"
+    return ""
+
+
+def _normalize_export_asset_filename(
+    file_name: object,
+    *,
+    report_name: str,
+    export_scope: str,
+    export_format: str,
+) -> str:
+    safe_name = sanitize_filename(str(file_name or "").strip())
+    expected_ext = EXPORT_ASSET_EXTENSION_MAP.get(export_format, "")
+    if safe_name == "presentation":
+        base_name = Path(report_name).stem or "report"
+        if export_scope == "appendix":
+            base_name = f"{base_name}-appendix"
+        safe_name = f"{base_name}{expected_ext}" if expected_ext else base_name
+    elif expected_ext and not safe_name.lower().endswith(expected_ext):
+        safe_name = f"{Path(safe_name).stem}{expected_ext}"
+    return safe_name
+
+
+def _build_export_asset_payload(record: dict) -> dict:
+    report_name = normalize_solution_report_filename(record.get("report_name"))
+    asset_id = str(record.get("asset_id") or "").strip()
+    payload = {
+        "asset_id": asset_id,
+        "report_name": report_name,
+        "export_scope": _normalize_export_asset_scope(record.get("export_scope")),
+        "export_format": _normalize_export_asset_format(record.get("export_format")),
+        "file_name": str(record.get("file_name") or ""),
+        "object_key": str(record.get("object_key") or ""),
+        "storage_backend": str(record.get("storage_backend") or "object_storage"),
+        "bucket": str(record.get("bucket") or ""),
+        "content_type": str(record.get("content_type") or "application/octet-stream"),
+        "size": _safe_int(record.get("size"), 0),
+        "source": str(record.get("source") or ""),
+        "created_at": str(record.get("created_at") or ""),
+        "updated_at": str(record.get("updated_at") or ""),
+    }
+    if report_name and asset_id:
+        payload["download_url"] = f"/api/reports/{quote(report_name)}/exports/{quote(asset_id)}"
+    else:
+        payload["download_url"] = ""
+    return payload
+
+
+def create_export_asset_record(
+    report_name: str,
+    *,
+    owner_user_id: int,
+    export_scope: str,
+    export_format: str,
+    file_name: str,
+    content: bytes,
+    content_type: str,
+    source: str = "web_export",
+) -> dict:
+    normalized_report_name = normalize_solution_report_filename(report_name)
+    if not normalized_report_name:
+        raise ValueError("报告文件名无效")
+    owner_id = int(owner_user_id or 0)
+    if owner_id <= 0:
+        raise ValueError("owner_user_id 无效")
+    if not isinstance(content, (bytes, bytearray)) or not content:
+        raise ValueError("导出文件内容为空")
+    normalized_scope = _normalize_export_asset_scope(export_scope)
+    normalized_format = _normalize_export_asset_format(export_format)
+    if not normalized_format:
+        raise ValueError("导出格式无效")
+    normalized_filename = _normalize_export_asset_filename(
+        file_name,
+        report_name=normalized_report_name,
+        export_scope=normalized_scope,
+        export_format=normalized_format,
+    )
+    normalized_source = _normalize_export_asset_source(source)
+    now_iso = get_utc_now()
+    asset_id = secrets.token_hex(16)
+    object_key = build_object_storage_key(
+        "exports",
+        Path(normalized_report_name).stem,
+        normalized_scope,
+        normalized_format,
+        filename=normalized_filename,
+    )
+    upload_info = upload_bytes_to_object_storage(
+        bytes(content),
+        object_key=object_key,
+        content_type=str(content_type or _guess_content_type(normalized_filename)),
+        metadata={
+            "report_name": normalized_report_name,
+            "owner_user_id": str(owner_id),
+            "instance_scope_key": get_active_instance_scope_key(),
+            "export_scope": normalized_scope,
+            "export_format": normalized_format,
+            "source": normalized_source,
+        },
+    )
+    record = {
+        "asset_id": asset_id,
+        "report_name": normalized_report_name,
+        "owner_user_id": owner_id,
+        "instance_scope_key": get_active_instance_scope_key(),
+        "export_scope": normalized_scope,
+        "export_format": normalized_format,
+        "file_name": normalized_filename,
+        "object_key": upload_info["object_key"],
+        "storage_backend": upload_info["storage_backend"],
+        "bucket": upload_info["bucket"],
+        "content_type": upload_info["content_type"],
+        "size": int(upload_info["size"]),
+        "source": normalized_source,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    with get_meta_index_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO export_asset_store(
+                asset_id, report_name, owner_user_id, instance_scope_key,
+                export_scope, export_format, file_name, object_key,
+                storage_backend, bucket, content_type, size, source,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record["asset_id"],
+                record["report_name"],
+                record["owner_user_id"],
+                record["instance_scope_key"],
+                record["export_scope"],
+                record["export_format"],
+                record["file_name"],
+                record["object_key"],
+                record["storage_backend"],
+                record["bucket"],
+                record["content_type"],
+                record["size"],
+                record["source"],
+                record["created_at"],
+                record["updated_at"],
+            ),
+        )
+    return _build_export_asset_payload(record)
+
+
+def list_export_asset_records(
+    report_name: str,
+    *,
+    owner_user_id: int,
+    limit: int = 50,
+) -> list[dict]:
+    normalized_report_name = normalize_solution_report_filename(report_name)
+    owner_id = int(owner_user_id or 0)
+    if not normalized_report_name or owner_id <= 0:
+        return []
+    page_limit = max(1, min(int(limit or 50), 100))
+    with get_meta_index_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT asset_id, report_name, export_scope, export_format, file_name,
+                   object_key, storage_backend, bucket, content_type, size,
+                   source, created_at, updated_at
+            FROM export_asset_store
+            WHERE report_name = ? AND owner_user_id = ? AND instance_scope_key = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (normalized_report_name, owner_id, get_active_instance_scope_key(), page_limit),
+        ).fetchall()
+    return [_build_export_asset_payload(dict(row)) for row in rows]
+
+
+def get_export_asset_record(
+    report_name: str,
+    *,
+    owner_user_id: int,
+    asset_id: str,
+) -> Optional[dict]:
+    normalized_report_name = normalize_solution_report_filename(report_name)
+    normalized_asset_id = str(asset_id or "").strip()
+    owner_id = int(owner_user_id or 0)
+    if not normalized_report_name or not normalized_asset_id or owner_id <= 0:
+        return None
+    with get_meta_index_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT asset_id, report_name, export_scope, export_format, file_name,
+                   object_key, storage_backend, bucket, content_type, size,
+                   source, created_at, updated_at
+            FROM export_asset_store
+            WHERE asset_id = ? AND report_name = ? AND owner_user_id = ? AND instance_scope_key = ?
+            LIMIT 1
+            """,
+            (normalized_asset_id, normalized_report_name, owner_id, get_active_instance_scope_key()),
+        ).fetchone()
+    if not row:
+        return None
+    return _build_export_asset_payload(dict(row))
+
+
 def _load_report_content(file_name: str) -> str:
     normalized_name = normalize_solution_report_filename(file_name)
     if not normalized_name:
@@ -6603,6 +7118,30 @@ def ensure_meta_index_schema() -> None:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_converted_cache_source_hash ON converted_cache_store(source_hash, source_ext)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS export_asset_store (
+                    asset_id TEXT PRIMARY KEY,
+                    report_name TEXT NOT NULL,
+                    owner_user_id INTEGER NOT NULL,
+                    instance_scope_key TEXT NOT NULL DEFAULT '',
+                    export_scope TEXT NOT NULL DEFAULT 'report',
+                    export_format TEXT NOT NULL DEFAULT '',
+                    file_name TEXT NOT NULL DEFAULT '',
+                    object_key TEXT NOT NULL UNIQUE,
+                    storage_backend TEXT NOT NULL DEFAULT 'object_storage',
+                    bucket TEXT NOT NULL DEFAULT '',
+                    content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+                    size BIGINT NOT NULL DEFAULT 0,
+                    source TEXT NOT NULL DEFAULT 'web_export',
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_export_asset_owner_scope_report_created ON export_asset_store(owner_user_id, instance_scope_key, report_name, created_at DESC)"
+            )
 
             _ensure_postgres_meta_index_bigint_columns(conn, db_target_text)
             _migrate_legacy_meta_index_if_needed(conn, db_target_text)
@@ -6752,18 +7291,20 @@ def _write_json_atomic(file_path: Path, payload: object) -> None:
     )
 
 
-def save_session_json_and_sync(session_file: Path, session_data: dict) -> None:
-    payload_text = json.dumps(session_data, ensure_ascii=False, indent=2)
+def save_session_json_and_sync(session_file: Path, session_data: dict) -> tuple[int, int]:
     use_cloud_primary = _use_pure_cloud_session_storage()
+    payload_text = _serialize_session_payload(session_data, compact=use_cloud_primary)
     signature = (int(_time.time_ns()), len(payload_text.encode("utf-8")))
+    session_id = str(session_data.get("session_id") or "").strip()
+    file_name = session_file.name
     if not use_cloud_primary:
         _write_text_atomic(session_file, payload_text, encoding="utf-8")
         signature = get_file_signature(session_file) or signature
 
     try:
         record = {
-            "session_id": str(session_data.get("session_id") or "").strip(),
-            "file_name": session_file.name,
+            "session_id": session_id,
+            "file_name": file_name,
             "owner_user_id": _safe_int(session_data.get("owner_user_id"), 0),
             "instance_scope_key": get_session_instance_scope_key(session_data),
             "payload_json": payload_text,
@@ -6794,6 +7335,9 @@ def save_session_json_and_sync(session_file: Path, session_data: dict) -> None:
         if ENABLE_DEBUG_LOG:
             _safe_log(f"⚠️ 同步 session_index 失败: {session_file.name}, 错误: {exc}")
 
+    if session_id:
+        _set_session_payload_cache(session_id, file_name, session_data, signature=signature)
+
     try:
         owner_user_id = int(session_data.get("owner_user_id") or 0)
     except (TypeError, ValueError):
@@ -6811,6 +7355,7 @@ def save_session_json_and_sync(session_file: Path, session_data: dict) -> None:
 
     if use_cloud_primary and session_file.exists():
         session_file.unlink(missing_ok=True)
+    return signature
 
 
 def remove_session_index_record(session_id: str = "", file_name: str = "") -> None:
@@ -7239,12 +7784,6 @@ def query_report_index_for_user(owner_user_id: int, page: int, page_size: int) -
     offset = (page - 1) * page_size
     scope_key = get_active_instance_scope_key()
     with get_meta_index_connection() as conn:
-        total_row = conn.execute(
-            "SELECT COUNT(1) AS total FROM report_index WHERE owner_user_id = ? AND instance_scope_key = ? AND deleted = 0",
-            (int(owner_user_id), scope_key),
-        ).fetchone()
-        total = int((total_row["total"] if total_row else 0) or 0)
-
         rows = conn.execute(
             """
             SELECT
@@ -7253,11 +7792,29 @@ def query_report_index_for_user(owner_user_id: int, page: int, page_size: int) -
             FROM report_index
             WHERE owner_user_id = ? AND instance_scope_key = ? AND deleted = 0
             ORDER BY created_at DESC
-            LIMIT ? OFFSET ?
             """,
-            (int(owner_user_id), scope_key, int(page_size), int(offset)),
+            (int(owner_user_id), scope_key),
         ).fetchall()
 
+    visible_rows = []
+    stale_report_names = []
+    owner_id = int(owner_user_id)
+    for row in rows:
+        report_name = str(row["file_name"] or "").strip()
+        if not report_name:
+            continue
+        if not _report_exists(report_name) or not ensure_report_owner(report_name, owner_id):
+            stale_report_names.append(report_name)
+            continue
+        visible_rows.append(row)
+
+    if stale_report_names:
+        unique_stale_report_names = list(dict.fromkeys(stale_report_names))
+        for report_name in unique_stale_report_names:
+            remove_report_index_record(report_name)
+
+    total = len(visible_rows)
+    page_rows = visible_rows[offset: offset + page_size]
     return ([
         build_report_list_item(
             row["file_name"],
@@ -7271,7 +7828,7 @@ def query_report_index_for_user(owner_user_id: int, page: int, page_size: int) -
                 "report_type": row["report_type"],
             },
         )
-        for row in rows
+        for row in page_rows
     ], total)
 
 
@@ -7288,11 +7845,17 @@ AUTH_META_LICENSE_SIGNING_SECRET_KEY = "license_signing_secret"
 AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY = "license_enforcement_enabled"
 AUTH_META_LICENSE_ENFORCEMENT_UPDATED_BY_KEY = "license_enforcement_updated_by"
 AUTH_META_LICENSE_ENFORCEMENT_UPDATED_AT_KEY = "license_enforcement_updated_at"
+AUTH_META_PRESENTATION_FEATURE_ENABLED_KEY = "presentation_feature_enabled"
+AUTH_META_PRESENTATION_FEATURE_UPDATED_BY_KEY = "presentation_feature_updated_by"
+AUTH_META_PRESENTATION_FEATURE_UPDATED_AT_KEY = "presentation_feature_updated_at"
 LICENSE_META_KEYS = {
     AUTH_META_LICENSE_SIGNING_SECRET_KEY,
     AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY,
     AUTH_META_LICENSE_ENFORCEMENT_UPDATED_BY_KEY,
     AUTH_META_LICENSE_ENFORCEMENT_UPDATED_AT_KEY,
+    AUTH_META_PRESENTATION_FEATURE_ENABLED_KEY,
+    AUTH_META_PRESENTATION_FEATURE_UPDATED_BY_KEY,
+    AUTH_META_PRESENTATION_FEATURE_UPDATED_AT_KEY,
 }
 ADMIN_OWNERSHIP_PREVIEW_SESSION_KEY = "admin_ownership_preview"
 ADMIN_OWNERSHIP_PREVIEW_TTL_SECONDS = 900
@@ -7310,6 +7873,220 @@ license_signing_secret_cache = {
     "value": "",
 }
 license_signing_secret_cache_lock = threading.Lock()
+DEFAULT_USER_LEVEL_KEY = "standard"
+USER_LEVEL_DEFINITIONS = {
+    "experience": {
+        "key": "experience",
+        "name": "体验版",
+        "description": "适合体验核心报告生成能力",
+        "sort_order": 10,
+    },
+    "standard": {
+        "key": "standard",
+        "name": "标准版",
+        "description": "适合正式报告交付",
+        "sort_order": 20,
+    },
+    "professional": {
+        "key": "professional",
+        "name": "专业版",
+        "description": "适合高质量交付与提案场景",
+        "sort_order": 30,
+    },
+}
+USER_LEVEL_CAPABILITY_MAP = {
+    "experience": {
+        "report.generate": True,
+        "report.profile.quality": False,
+        "report.export.basic": False,
+        "report.export.docx": False,
+        "report.export.appendix": False,
+        "solution.view": False,
+        "solution.share": False,
+        "presentation.generate": False,
+    },
+    "standard": {
+        "report.generate": True,
+        "report.profile.quality": False,
+        "report.export.basic": True,
+        "report.export.docx": True,
+        "report.export.appendix": False,
+        "solution.view": False,
+        "solution.share": False,
+        "presentation.generate": False,
+    },
+    "professional": {
+        "report.generate": True,
+        "report.profile.quality": True,
+        "report.export.basic": True,
+        "report.export.docx": True,
+        "report.export.appendix": True,
+        "solution.view": True,
+        "solution.share": True,
+        "presentation.generate": True,
+    },
+}
+USER_LEVEL_ALLOWED_REPORT_PROFILES = {
+    "experience": ["balanced"],
+    "standard": ["balanced"],
+    "professional": ["balanced", "quality"],
+}
+
+
+def normalize_user_level_key(value: object, fallback: str = DEFAULT_USER_LEVEL_KEY) -> str:
+    normalized_fallback = str(fallback or DEFAULT_USER_LEVEL_KEY).strip().lower() or DEFAULT_USER_LEVEL_KEY
+    if normalized_fallback not in USER_LEVEL_DEFINITIONS:
+        normalized_fallback = DEFAULT_USER_LEVEL_KEY
+    normalized_value = str(value or "").strip().lower()
+    if not normalized_value:
+        return normalized_fallback
+    if normalized_value not in USER_LEVEL_DEFINITIONS:
+        return normalized_fallback
+    return normalized_value
+
+
+def parse_user_level_key(
+    value: object,
+    *,
+    field_name: str = "level_key",
+    fallback: str = DEFAULT_USER_LEVEL_KEY,
+    allow_empty: bool = True,
+) -> str:
+    normalized_value = str(value or "").strip().lower()
+    if not normalized_value:
+        if allow_empty:
+            return normalize_user_level_key(fallback)
+        raise ValueError(f"{field_name} 不能为空")
+    if normalized_value not in USER_LEVEL_DEFINITIONS:
+        raise ValueError(f"{field_name} 无效，仅支持：experience、standard、professional")
+    return normalized_value
+
+
+def get_user_level_meta(level_key: object) -> dict:
+    normalized_level_key = normalize_user_level_key(level_key)
+    meta = USER_LEVEL_DEFINITIONS.get(normalized_level_key) or USER_LEVEL_DEFINITIONS[DEFAULT_USER_LEVEL_KEY]
+    return dict(meta)
+
+
+def list_user_level_keys() -> list[str]:
+    return [
+        key
+        for key, _meta in sorted(
+            USER_LEVEL_DEFINITIONS.items(),
+            key=lambda item: int((item[1] or {}).get("sort_order") or 0),
+        )
+    ]
+
+
+def build_user_level_payload(level_key: object) -> dict:
+    return get_user_level_meta(level_key)
+
+
+def build_user_capabilities_for_level(level_key: object) -> dict:
+    normalized_level_key = normalize_user_level_key(level_key)
+    capability_map = USER_LEVEL_CAPABILITY_MAP.get(normalized_level_key) or USER_LEVEL_CAPABILITY_MAP[DEFAULT_USER_LEVEL_KEY]
+    return {
+        str(key): bool(value)
+        for key, value in capability_map.items()
+    }
+
+
+def get_allowed_report_profiles_for_level(level_key: object) -> list[str]:
+    normalized_level_key = normalize_user_level_key(level_key)
+    profiles = USER_LEVEL_ALLOWED_REPORT_PROFILES.get(normalized_level_key) or USER_LEVEL_ALLOWED_REPORT_PROFILES["experience"]
+    allowed: list[str] = []
+    for item in profiles:
+        normalized = normalize_report_profile_choice(item, fallback="balanced")
+        if normalized and normalized not in allowed:
+            allowed.append(normalized)
+    return allowed or ["balanced"]
+
+
+def get_default_report_profile_for_level(level_key: object, preferred_profile: object = None) -> str:
+    allowed_profiles = get_allowed_report_profiles_for_level(level_key)
+    preferred = normalize_report_profile_choice(preferred_profile or REPORT_V3_PROFILE, fallback="balanced")
+    if preferred in allowed_profiles:
+        return preferred
+    return allowed_profiles[0]
+
+
+def resolve_effective_user_level(
+    user_row: Optional[sqlite3.Row],
+    *,
+    license_state: Optional[dict] = None,
+) -> str:
+    if not user_row:
+        return "experience"
+    resolved_license_state = license_state if isinstance(license_state, dict) else get_user_license_state(int(user_row["id"]))
+    if not bool(resolved_license_state.get("has_valid_license")):
+        return "experience"
+    license_summary = resolved_license_state.get("license") or {}
+    return normalize_user_level_key(license_summary.get("level_key"), fallback="experience")
+
+
+def build_user_level_context_for_user(
+    user_row: Optional[sqlite3.Row],
+    *,
+    license_state: Optional[dict] = None,
+) -> dict:
+    level_key = resolve_effective_user_level(user_row, license_state=license_state)
+    return {
+        "level": build_user_level_payload(level_key),
+        "capabilities": build_user_capabilities_for_level(level_key),
+        "allowed_report_profiles": get_allowed_report_profiles_for_level(level_key),
+        "report_profile_default": get_default_report_profile_for_level(level_key),
+    }
+
+
+def get_required_user_level_for_capability(capability_key: object) -> str:
+    normalized_key = str(capability_key or "").strip()
+    for level_key in list_user_level_keys():
+        if bool(build_user_capabilities_for_level(level_key).get(normalized_key)):
+            return level_key
+    return "professional"
+
+
+def user_has_level_capability(
+    user_row: Optional[sqlite3.Row],
+    capability_key: object,
+    *,
+    level_context: Optional[dict] = None,
+    license_state: Optional[dict] = None,
+) -> bool:
+    normalized_key = str(capability_key or "").strip()
+    if not normalized_key:
+        return False
+    context = level_context if isinstance(level_context, dict) else build_user_level_context_for_user(
+        user_row,
+        license_state=license_state,
+    )
+    capabilities = context.get("capabilities") or {}
+    return bool(capabilities.get(normalized_key))
+
+
+def build_level_capability_denied_response(
+    user_row: Optional[sqlite3.Row],
+    capability_key: object,
+    *,
+    level_context: Optional[dict] = None,
+) -> tuple[Response, int]:
+    normalized_key = str(capability_key or "").strip()
+    context = level_context if isinstance(level_context, dict) else build_user_level_context_for_user(user_row)
+    current_level = context.get("level") or build_user_level_payload("experience")
+    required_level_key = get_required_user_level_for_capability(normalized_key)
+    required_level = build_user_level_payload(required_level_key)
+    if current_level.get("key") == required_level_key:
+        upgrade_hint = "当前用户级别暂未开放该功能，请联系管理员确认权限配置"
+    else:
+        upgrade_hint = f"当前功能需升级到{required_level.get('name') or '更高等级'}后使用"
+    return jsonify({
+        "error": upgrade_hint,
+        "error_code": "level_capability_denied",
+        "capability_key": normalized_key,
+        "current_level": current_level,
+        "required_level": required_level,
+        "upgrade_hint": upgrade_hint,
+    }), 403
 
 
 def ensure_auth_meta_table(conn: sqlite3.Connection) -> None:
@@ -7333,6 +8110,7 @@ def ensure_license_tables(conn: sqlite3.Connection) -> None:
             code_hash TEXT NOT NULL UNIQUE,
             code_mask TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'issued',
+            level_key TEXT NOT NULL DEFAULT 'standard',
             not_before_at TEXT NOT NULL,
             expires_at TEXT NOT NULL,
             duration_days INTEGER NOT NULL DEFAULT 0,
@@ -7357,6 +8135,8 @@ def ensure_license_tables(conn: sqlite3.Connection) -> None:
     }
     if "duration_days" not in license_columns:
         conn.execute("ALTER TABLE licenses ADD COLUMN duration_days INTEGER NOT NULL DEFAULT 0")
+    if "level_key" not in license_columns:
+        conn.execute("ALTER TABLE licenses ADD COLUMN level_key TEXT NOT NULL DEFAULT 'standard'")
 
     conn.execute(
         """
@@ -7396,9 +8176,16 @@ def _migrate_legacy_license_data_to_license_db(conn: sqlite3.Connection) -> bool
     migrated = False
     with get_auth_db_connection() as auth_conn:
         if _db_table_exists(auth_conn, "licenses"):
+            auth_license_columns = {
+                str(row[1]): True
+                for row in auth_conn.execute("PRAGMA table_info(licenses)").fetchall()
+            }
+            has_level_key = "level_key" in auth_license_columns
             rows = auth_conn.execute(
-                """
-                SELECT id, batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+                f"""
+                SELECT id, batch_id, code_hash, code_mask, status,
+                       {'level_key,' if has_level_key else ''}
+                       not_before_at, expires_at, duration_days,
                        bound_user_id, bound_at, replaced_by_license_id, revoked_at,
                        revoked_reason, note, created_at, updated_at
                 FROM licenses
@@ -7409,11 +8196,11 @@ def _migrate_legacy_license_data_to_license_db(conn: sqlite3.Connection) -> bool
                 conn.executemany(
                     """
                     INSERT INTO licenses (
-                        id, batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+                        id, batch_id, code_hash, code_mask, status, level_key, not_before_at, expires_at, duration_days,
                         bound_user_id, bound_at, replaced_by_license_id, revoked_at,
                         revoked_reason, note, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -7422,6 +8209,7 @@ def _migrate_legacy_license_data_to_license_db(conn: sqlite3.Connection) -> bool
                             str(row["code_hash"] or "").strip(),
                             str(row["code_mask"] or "").strip(),
                             str(row["status"] or "").strip(),
+                            normalize_user_level_key(row["level_key"]) if has_level_key else DEFAULT_USER_LEVEL_KEY,
                             str(row["not_before_at"] or "").strip(),
                             str(row["expires_at"] or "").strip(),
                             int(row["duration_days"] or 0),
@@ -7673,6 +8461,172 @@ def get_license_enforcement_state() -> dict:
 
 def is_license_enforcement_enabled() -> bool:
     return bool(get_license_enforcement_state().get("enabled"))
+
+
+def get_presentation_feature_default_state() -> dict[str, Any]:
+    env_path = get_admin_env_file_path()
+    env_values = _read_env_file_map(env_path)
+    file_enabled = _parse_bool_like(env_values.get("PRESENTATION_GLOBAL_ENABLED"))
+    if file_enabled is not None:
+        return {
+            "enabled": bool(file_enabled),
+            "source": "env_file",
+            "source_label": ".env 默认值",
+            "path": str(env_path),
+            "value_in_file": True,
+        }
+    return {
+        "enabled": bool(PRESENTATION_GLOBAL_ENABLED),
+        "source": "startup_default",
+        "source_label": "启动默认值",
+        "path": str(env_path),
+        "value_in_file": False,
+    }
+
+
+def get_presentation_feature_state() -> dict:
+    default_state = get_presentation_feature_default_state()
+    default_enabled = bool(default_state.get("enabled"))
+    with get_license_db_connection() as conn:
+        ensure_auth_meta_table(conn)
+        rows = conn.execute(
+            """
+            SELECT meta_key, meta_value
+            FROM auth_meta
+            WHERE meta_key IN (?, ?, ?)
+            """,
+            (
+                AUTH_META_PRESENTATION_FEATURE_ENABLED_KEY,
+                AUTH_META_PRESENTATION_FEATURE_UPDATED_BY_KEY,
+                AUTH_META_PRESENTATION_FEATURE_UPDATED_AT_KEY,
+            ),
+        ).fetchall()
+
+    meta_map = {
+        str(row["meta_key"] or ""): str(row["meta_value"] or "")
+        for row in rows
+    }
+    override_enabled = _parse_bool_like(meta_map.get(AUTH_META_PRESENTATION_FEATURE_ENABLED_KEY))
+    updated_by_user_id = None
+    raw_updated_by = str(meta_map.get(AUTH_META_PRESENTATION_FEATURE_UPDATED_BY_KEY) or "").strip()
+    if raw_updated_by:
+        try:
+            updated_by_user_id = int(raw_updated_by)
+        except (TypeError, ValueError):
+            updated_by_user_id = None
+
+    enabled = default_enabled if override_enabled is None else bool(override_enabled)
+    return {
+        "enabled": bool(enabled),
+        "default_enabled": default_enabled,
+        "default_source": str(default_state.get("source") or "startup_default"),
+        "default_source_label": str(default_state.get("source_label") or "启动默认值"),
+        "default_path": str(default_state.get("path") or ""),
+        "default_value_in_file": bool(default_state.get("value_in_file")),
+        "override_enabled": override_enabled,
+        "override_present": override_enabled is not None,
+        "source": "runtime_override" if override_enabled is not None else "env_default",
+        "updated_at": str(meta_map.get(AUTH_META_PRESENTATION_FEATURE_UPDATED_AT_KEY) or "").strip() or None,
+        "updated_by_user_id": updated_by_user_id,
+    }
+
+
+def is_presentation_feature_enabled() -> bool:
+    return bool(get_presentation_feature_state().get("enabled"))
+
+
+def set_presentation_feature_override(
+    enabled: Optional[bool],
+    actor_user_id: Optional[int] = None,
+    *,
+    sync_default: bool = False,
+) -> dict:
+    previous_state = get_presentation_feature_state()
+    default_write_path = None
+    next_default_enabled = bool(previous_state.get("default_enabled"))
+    with get_license_db_connection() as conn:
+        ensure_auth_meta_table(conn)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        if enabled is None:
+            conn.executemany(
+                "DELETE FROM auth_meta WHERE meta_key = ?",
+                [
+                    (AUTH_META_PRESENTATION_FEATURE_ENABLED_KEY,),
+                    (AUTH_META_PRESENTATION_FEATURE_UPDATED_BY_KEY,),
+                    (AUTH_META_PRESENTATION_FEATURE_UPDATED_AT_KEY,),
+                ],
+            )
+        else:
+            updates = [
+                (
+                    AUTH_META_PRESENTATION_FEATURE_ENABLED_KEY,
+                    "true" if bool(enabled) else "false",
+                    now_iso,
+                ),
+                (
+                    AUTH_META_PRESENTATION_FEATURE_UPDATED_AT_KEY,
+                    now_iso,
+                    now_iso,
+                ),
+            ]
+            if actor_user_id is not None:
+                updates.append(
+                    (
+                        AUTH_META_PRESENTATION_FEATURE_UPDATED_BY_KEY,
+                        str(int(actor_user_id)),
+                        now_iso,
+                    )
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM auth_meta WHERE meta_key = ?",
+                    (AUTH_META_PRESENTATION_FEATURE_UPDATED_BY_KEY,),
+                )
+            conn.executemany(
+                """
+                INSERT INTO auth_meta (meta_key, meta_value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(meta_key) DO UPDATE SET
+                    meta_value = excluded.meta_value,
+                    updated_at = excluded.updated_at
+                """,
+                updates,
+            )
+            if sync_default:
+                default_write_path = _write_admin_env_updates({
+                    "PRESENTATION_GLOBAL_ENABLED": bool(enabled),
+                })
+                next_default_enabled = bool(enabled)
+        _record_license_event(
+            conn,
+            license_id=None,
+            actor_user_id=actor_user_id,
+            event_type="presentation_feature_changed",
+            payload={
+                "previous_enabled": bool(previous_state.get("enabled")),
+                "next_enabled": next_default_enabled if enabled is None else bool(enabled),
+                "source": "env_default" if enabled is None else "runtime_override",
+                "default_enabled": next_default_enabled,
+                "default_synced": bool(sync_default and enabled is not None),
+                "default_path": str(default_write_path) if default_write_path else None,
+            },
+            created_at=now_iso,
+        )
+        conn.commit()
+    state = get_presentation_feature_state()
+    if default_write_path:
+        state["default_sync_written"] = True
+        state["default_sync_path"] = str(default_write_path)
+    else:
+        state["default_sync_written"] = False
+    return state
+
+
+def build_presentation_feature_disabled_response() -> tuple[Response, int]:
+    return jsonify({
+        "error": "演示文稿功能已被管理员暂时关闭",
+        "error_code": "presentation_feature_disabled",
+    }), 503
 
 
 def set_license_enforcement_override(
@@ -8253,6 +9207,7 @@ def _build_license_summary(row: Optional[dict]) -> Optional[dict]:
     row = row if isinstance(row, dict) else None
     if not row:
         return None
+    level_meta = get_user_level_meta(row.get("level_key"))
     validity_fields = _build_license_validity_fields(
         duration_days=row.get("duration_days"),
         bound_user_id=row.get("bound_user_id"),
@@ -8263,6 +9218,8 @@ def _build_license_summary(row: Optional[dict]) -> Optional[dict]:
         "id": int(row["id"]),
         "batch_id": str(row.get("batch_id") or "").strip(),
         "masked_code": str(row.get("code_mask") or "").strip(),
+        "level_key": str(level_meta.get("key") or DEFAULT_USER_LEVEL_KEY),
+        "level_name": str(level_meta.get("name") or USER_LEVEL_DEFINITIONS[DEFAULT_USER_LEVEL_KEY]["name"]),
         "not_before_at": str(row.get("not_before_at") or "").strip(),
         "expires_at": str(row.get("expires_at") or "").strip(),
         "bound_at": str(row.get("bound_at") or "").strip(),
@@ -8299,7 +9256,7 @@ def _license_status_message(status: str) -> str:
 def _get_latest_bound_license_for_user(conn: sqlite3.Connection, user_id: int) -> Optional[dict]:
     row = conn.execute(
         """
-        SELECT id, batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+        SELECT id, batch_id, code_hash, code_mask, status, level_key, not_before_at, expires_at, duration_days,
                bound_user_id, bound_at, replaced_by_license_id, revoked_at,
                revoked_reason, note, created_at, updated_at
         FROM licenses
@@ -8355,13 +9312,17 @@ def get_user_license_state(user_id: int) -> dict:
 
 def build_license_status_payload_for_user(user_row: Optional[sqlite3.Row]) -> dict:
     if not user_row:
-        return {
+        payload = {
             "enforcement_enabled": is_license_enforcement_enabled(),
             "has_valid_license": False,
             "status": "missing",
             "license": None,
         }
-    return get_user_license_state(int(user_row["id"]))
+        payload.update(build_user_level_context_for_user(None, license_state=payload))
+        return payload
+    payload = get_user_license_state(int(user_row["id"]))
+    payload.update(build_user_level_context_for_user(user_row, license_state=payload))
+    return payload
 
 
 def _count_license_records(conn: sqlite3.Connection) -> int:
@@ -8468,16 +9429,17 @@ def bootstrap_first_admin_license(
             cursor = conn.execute(
                 """
                 INSERT INTO licenses (
-                    batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+                    batch_id, code_hash, code_mask, status, level_key, not_before_at, expires_at, duration_days,
                     bound_user_id, bound_at, replaced_by_license_id, revoked_at,
                     revoked_reason, note, created_at, updated_at
                 )
-                VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, NULL, NULL, '', ?, ?, ?)
+                VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, NULL, NULL, '', ?, ?, ?)
                 """,
                 (
                     batch_id,
                     code_hash,
                     mask_license_code(normalized_code),
+                    DEFAULT_USER_LEVEL_KEY,
                     start_at.isoformat(),
                     end_at.isoformat(),
                     normalized_duration_days,
@@ -8496,6 +9458,7 @@ def bootstrap_first_admin_license(
                 event_type="generated",
                 payload={
                     "batch_id": batch_id,
+                    "level_key": DEFAULT_USER_LEVEL_KEY,
                     "not_before_at": start_at.isoformat(),
                     "expires_at": end_at.isoformat(),
                     "duration_days": normalized_duration_days,
@@ -8511,6 +9474,7 @@ def bootstrap_first_admin_license(
                 event_type="activated",
                 payload={
                     "bootstrap": True,
+                    "level_key": DEFAULT_USER_LEVEL_KEY,
                     "bound_user_id": normalized_user_id,
                     "not_before_at": start_at.isoformat(),
                     "expires_at": end_at.isoformat(),
@@ -8524,7 +9488,7 @@ def bootstrap_first_admin_license(
                 license_id=license_id,
                 actor_user_id=actor_user_id or normalized_user_id,
                 event_type="bootstrap_seeded",
-                payload={"batch_id": batch_id},
+                payload={"batch_id": batch_id, "level_key": DEFAULT_USER_LEVEL_KEY},
                 created_at=now_iso,
             )
             conn.commit()
@@ -8549,11 +9513,14 @@ def generate_license_batch(
     not_before_at: str = "",
     expires_at: str = "",
     note: str = "",
+    level_key: object = DEFAULT_USER_LEVEL_KEY,
     actor_user_id: Optional[int] = None,
 ) -> dict:
     requested_count = max(1, min(int(count or 0), 500))
     timing = _resolve_license_issue_timing(duration_days, not_before_at, expires_at, allow_legacy=True)
     normalized_duration_days = int(timing["duration_days"] or 0)
+    normalized_level_key = parse_user_level_key(level_key, field_name="level_key")
+    level_meta = get_user_level_meta(normalized_level_key)
 
     now_iso = datetime.now(timezone.utc).isoformat()
     batch_id = generate_license_batch_id()
@@ -8574,16 +9541,17 @@ def generate_license_batch(
                 cursor = conn.execute(
                     """
                     INSERT INTO licenses (
-                        batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+                        batch_id, code_hash, code_mask, status, level_key, not_before_at, expires_at, duration_days,
                         bound_user_id, bound_at, replaced_by_license_id, revoked_at,
                         revoked_reason, note, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, 'issued', ?, ?, ?, NULL, NULL, NULL, NULL, '', ?, ?, ?)
+                    VALUES (?, ?, ?, 'issued', ?, ?, ?, ?, NULL, NULL, NULL, NULL, '', ?, ?, ?)
                     """,
                     (
                         batch_id,
                         code_hash,
                         mask_license_code(normalized_code),
+                        normalized_level_key,
                         timing["not_before_at"],
                         timing["expires_at"],
                         normalized_duration_days,
@@ -8600,6 +9568,7 @@ def generate_license_batch(
                     event_type="generated",
                     payload={
                         "batch_id": batch_id,
+                        "level_key": normalized_level_key,
                         "not_before_at": timing["not_before_at"],
                         "expires_at": timing["expires_at"],
                         "duration_days": normalized_duration_days,
@@ -8612,6 +9581,8 @@ def generate_license_batch(
                         "id": license_id,
                         "code": format_license_code(normalized_code),
                         "masked_code": mask_license_code(normalized_code),
+                        "level_key": normalized_level_key,
+                        "level_name": str(level_meta.get("name") or ""),
                         "not_before_at": timing["not_before_at"],
                         "expires_at": timing["expires_at"],
                         "duration_days": normalized_duration_days,
@@ -8625,6 +9596,8 @@ def generate_license_batch(
 
     return {
         "batch_id": batch_id,
+        "level_key": normalized_level_key,
+        "level_name": str(level_meta.get("name") or ""),
         "count": len(generated_items),
         "licenses": generated_items,
     }
@@ -8648,7 +9621,7 @@ def activate_license_for_user(code: object, user_id: int) -> tuple[bool, int, di
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 """
-                SELECT id, batch_id, code_hash, code_mask, status, not_before_at, expires_at, duration_days,
+                SELECT id, batch_id, code_hash, code_mask, status, level_key, not_before_at, expires_at, duration_days,
                        bound_user_id, bound_at, replaced_by_license_id, revoked_at,
                        revoked_reason, note, created_at, updated_at
                 FROM licenses
@@ -8755,7 +9728,7 @@ def activate_license_for_user(code: object, user_id: int) -> tuple[bool, int, di
                     created_at=now_iso,
                 )
                 conn.commit()
-                payload = get_user_license_state(normalized_user_id)
+                payload = build_license_status_payload_for_user(query_user_by_id(normalized_user_id))
                 return True, 200, {
                     "success": True,
                     "message": "License 已生效",
@@ -8820,7 +9793,7 @@ def activate_license_for_user(code: object, user_id: int) -> tuple[bool, int, di
             )
             conn.commit()
 
-    payload = get_user_license_state(normalized_user_id)
+    payload = build_license_status_payload_for_user(query_user_by_id(normalized_user_id))
     return True, 200, {
         "success": True,
         "message": "License 绑定成功",
@@ -8859,7 +9832,7 @@ def _fetch_admin_license_rows() -> list[dict]:
     with get_license_db_connection() as conn:
         rows = conn.execute(
             """
-            SELECT id, batch_id, code_mask, code_hash, status, not_before_at, expires_at,
+            SELECT id, batch_id, code_mask, code_hash, status, level_key, not_before_at, expires_at,
                    duration_days, bound_user_id, bound_at, replaced_by_license_id, revoked_at,
                    revoked_reason, note, created_at, updated_at
             FROM licenses l
@@ -8878,6 +9851,7 @@ def _fetch_admin_license_rows() -> list[dict]:
 
 
 def _build_admin_license_item(item: dict, *, now: datetime) -> dict:
+    level_meta = get_user_level_meta(item.get("level_key"))
     stored_row = {
         "id": item.get("id"),
         "status": item.get("status"),
@@ -8910,6 +9884,8 @@ def _build_admin_license_item(item: dict, *, now: datetime) -> dict:
         "masked_code": str(item.get("code_mask") or "").strip(),
         "status": effective_status_display,
         "stored_status": str(item.get("status") or "").strip(),
+        "level_key": str(level_meta.get("key") or DEFAULT_USER_LEVEL_KEY),
+        "level_name": str(level_meta.get("name") or USER_LEVEL_DEFINITIONS[DEFAULT_USER_LEVEL_KEY]["name"]),
         "not_before_at": str(item.get("not_before_at") or "").strip(),
         "expires_at": str(item.get("expires_at") or "").strip(),
         "bound_user_id": int(item.get("bound_user_id") or 0) or None,
@@ -8932,6 +9908,7 @@ def _filter_admin_license_items(
     *,
     batch_id: str = "",
     status: str = "",
+    level_key: str = "",
     bound_account: str = "",
     note: str = "",
     created_from: str = "",
@@ -8943,6 +9920,7 @@ def _filter_admin_license_items(
 ) -> list[dict]:
     batch_id_filter = str(batch_id or "").strip()
     status_filter = str(status or "").strip().lower()
+    level_key_filter = str(level_key or "").strip().lower()
     account_filter = str(bound_account or "").strip().lower()
     note_filter = str(note or "").strip().lower()
     created_from_dt = _parse_admin_filter_datetime(created_from, field_name="created_from")
@@ -8967,6 +9945,8 @@ def _filter_admin_license_items(
         if batch_id_filter and item["batch_id"] != batch_id_filter:
             continue
         if status_filter and item["status"] != status_filter:
+            continue
+        if level_key_filter and item["level_key"] != level_key_filter:
             continue
         if account_filter:
             haystack = " ".join(
@@ -9018,6 +9998,9 @@ def _admin_license_sort_key(item: dict, sort_by: str):
             "replaced": 5,
         }
         return order.get(str(item.get("status") or "").strip().lower(), 99)
+    if normalized_sort_by == "level_key":
+        level_meta = get_user_level_meta(item.get("level_key"))
+        return int(level_meta.get("sort_order") or 0)
     if normalized_sort_by in {"batch_id", "bound_account", "masked_code", "note"}:
         return str(item.get(normalized_sort_by) or "").strip().lower()
     return int(item.get("id") or 0)
@@ -9047,6 +10030,7 @@ def query_licenses_admin(
     sort_order: str = "desc",
     batch_id: str = "",
     status: str = "",
+    level_key: str = "",
     bound_account: str = "",
     note: str = "",
     created_from: str = "",
@@ -9060,6 +10044,7 @@ def query_licenses_admin(
     items = _filter_admin_license_items(
         batch_id=batch_id,
         status=status,
+        level_key=level_key,
         bound_account=bound_account,
         note=note,
         created_from=created_from,
@@ -9088,13 +10073,20 @@ def query_licenses_admin(
     }
 
 
-def list_licenses_admin(*, batch_id: str = "", status: str = "", bound_account: str = "") -> list[dict]:
+def list_licenses_admin(
+    *,
+    batch_id: str = "",
+    status: str = "",
+    level_key: str = "",
+    bound_account: str = "",
+) -> list[dict]:
     return query_licenses_admin(
         page=1,
         page_size=100000,
         max_page_size=100000,
         batch_id=batch_id,
         status=status,
+        level_key=level_key,
         bound_account=bound_account,
     )["items"]
 
@@ -9191,6 +10183,7 @@ def summarize_licenses_admin() -> dict:
         "expiring_soon_count": expiring_soon,
         "recent_events": list_license_events_admin(limit=10),
         "enforcement": get_license_enforcement_state(),
+        "presentation_feature": get_presentation_feature_state(),
     }
 
 
@@ -9251,7 +10244,7 @@ def revoke_license_by_id(license_id: int, *, reason: str = "", actor_user_id: Op
         raise ValueError("license_id 无效")
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    with get_auth_db_connection() as conn:
+    with get_license_db_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
@@ -9316,7 +10309,7 @@ def extend_license_by_id(
 
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
-    with get_auth_db_connection() as conn:
+    with get_license_db_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
@@ -11395,24 +12388,76 @@ def clear_thinking_status(session_id: str):
         thinking_status.pop(session_id, None)
 
 
-def update_report_generation_status(session_id: str, stage: str, message: Optional[str] = None, active: bool = True):
+def update_report_generation_status(
+    session_id: str,
+    stage: str,
+    message: Optional[str] = None,
+    active: bool = True,
+    detail_key: str = "",
+    detail_label: str = "",
+    next_hint: str = "",
+    eta_hint: str = "",
+    progress_override: Optional[int] = None,
+):
     """更新报告生成进度状态（线程安全）"""
     stage_info = REPORT_GENERATION_STAGES.get(stage)
     if not stage_info:
         return
+    detail_info = REPORT_GENERATION_DETAIL_STATES.get(str(detail_key or "").strip(), {})
+    try:
+        normalized_progress = int(progress_override) if progress_override is not None else int(stage_info["progress"])
+    except Exception:
+        normalized_progress = int(stage_info["progress"])
+    normalized_progress = max(0, min(normalized_progress, 100))
+    updated_at = datetime.now(timezone.utc).isoformat()
 
     with report_generation_status_lock:
         existing = report_generation_status.get(session_id)
         merged = dict(existing) if isinstance(existing, dict) else {}
+        resolved_detail_key = str(detail_key or merged.get("detail_key", "") or "")
+        resolved_detail_label = str(
+            detail_label
+            or detail_info.get("label", "")
+            or merged.get("detail_label", "")
+            or ""
+        )
+        resolved_next_hint = str(
+            next_hint
+            or detail_info.get("next_hint", "")
+            or merged.get("next_hint", "")
+            or ""
+        )
         merged.update({
             "active": active,
             "state": stage,
             "stage_index": stage_info["index"],
             "total_stages": 6,
-            "progress": stage_info["progress"],
+            "progress": normalized_progress,
             "message": message or stage_info["message"],
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "stage_label": str(stage_info.get("label", stage) or stage),
+            "detail_key": resolved_detail_key,
+            "detail_label": resolved_detail_label,
+            "next_hint": resolved_next_hint,
+            "eta_hint": str(eta_hint or merged.get("eta_hint", "") or ""),
+            "updated_at": updated_at,
         })
+        if active and not merged.get("started_at"):
+            merged["started_at"] = updated_at
+        phase_history = merged.get("phase_history", [])
+        if not isinstance(phase_history, list):
+            phase_history = []
+        phase_entry = {
+            "state": stage,
+            "stage_label": str(stage_info.get("label", stage) or stage),
+            "detail_key": resolved_detail_key,
+            "detail_label": resolved_detail_label,
+            "message": merged.get("message", ""),
+            "progress": normalized_progress,
+            "updated_at": updated_at,
+        }
+        if not phase_history or phase_history[-1] != phase_entry:
+            phase_history.append(phase_entry)
+        merged["phase_history"] = phase_history[-12:]
         report_generation_status[session_id] = merged
 
 
@@ -11457,6 +12502,11 @@ def build_report_generation_payload(record: Optional[dict]) -> dict:
         "total_stages": _safe_int(record.get("total_stages", 6), 6),
         "progress": _safe_int(record.get("progress", 0), 0),
         "message": record.get("message", "正在生成报告..."),
+        "stage_label": record.get("stage_label", ""),
+        "detail_key": record.get("detail_key", ""),
+        "detail_label": record.get("detail_label", ""),
+        "next_hint": record.get("next_hint", ""),
+        "eta_hint": record.get("eta_hint", ""),
         "updated_at": record.get("updated_at"),
         "request_id": record.get("request_id", ""),
         "action": record.get("action", "generate"),
@@ -11471,6 +12521,7 @@ def build_report_generation_payload(record: Optional[dict]) -> dict:
         "queue_position": _safe_int(record.get("queue_position", 0), 0),
         "queue_pending": _safe_int(record.get("queue_pending", 0), 0),
         "queue_running": _safe_int(record.get("queue_running", 0), 0),
+        "estimated_wait_seconds": _safe_int(record.get("estimated_wait_seconds", 0), 0),
     }
 
     quality_meta = record.get("report_quality_meta")
@@ -11482,6 +12533,9 @@ def build_report_generation_payload(record: Optional[dict]) -> dict:
     runtime_summary = record.get("runtime_summary")
     if isinstance(runtime_summary, dict):
         payload["runtime_summary"] = runtime_summary
+    phase_history = record.get("phase_history")
+    if isinstance(phase_history, list):
+        payload["phase_history"] = [dict(item) for item in phase_history if isinstance(item, dict)]
 
     return payload
 
@@ -11497,6 +12551,36 @@ def record_report_generation_queue_event(event: str, delta: int = 1) -> None:
         return
     with report_generation_queue_stats_lock:
         report_generation_queue_stats[event] = int(report_generation_queue_stats.get(event, 0) or 0) + step
+
+
+def estimate_report_generation_wait_seconds(
+    queue_position: int,
+    running: int,
+    max_workers: int,
+) -> int:
+    try:
+        normalized_position = max(0, int(queue_position or 0))
+    except Exception:
+        normalized_position = 0
+    try:
+        normalized_running = max(0, int(running or 0))
+    except Exception:
+        normalized_running = 0
+    try:
+        normalized_workers = max(1, int(max_workers or 0))
+    except Exception:
+        normalized_workers = 1
+    if normalized_position <= 0:
+        return 0
+
+    available_now = max(0, normalized_workers - normalized_running)
+    remaining_position = max(0, normalized_position - available_now)
+    if remaining_position <= 0:
+        return 0
+
+    slot_seconds = max(1.0, float(REPORT_GENERATION_ESTIMATED_SLOT_SECONDS or 0.0))
+    wait_rounds = math.ceil(float(remaining_position) / float(normalized_workers))
+    return max(0, int(math.ceil(wait_rounds * slot_seconds)))
 
 
 def release_report_generation_slot() -> None:
@@ -11570,11 +12654,32 @@ def sync_report_generation_queue_metadata(session_id: str, snapshot: Optional[di
             queue_position = int(queue_positions.get(session_id, 0) or 0)
         except Exception:
             queue_position = 0
+    running_count = int(queue_snapshot.get("running", 0) or 0)
+    pending_count = int(queue_snapshot.get("pending", 0) or 0)
+    max_workers = int(queue_snapshot.get("max_workers", REPORT_GENERATION_MAX_WORKERS) or REPORT_GENERATION_MAX_WORKERS)
+    estimated_wait_seconds = estimate_report_generation_wait_seconds(
+        queue_position=queue_position,
+        running=running_count,
+        max_workers=max_workers,
+    )
 
     set_report_generation_metadata(session_id, {
         "queue_position": queue_position,
-        "queue_pending": int(queue_snapshot.get("pending", 0) or 0),
-        "queue_running": int(queue_snapshot.get("running", 0) or 0),
+        "queue_pending": pending_count,
+        "queue_running": running_count,
+        "estimated_wait_seconds": estimated_wait_seconds,
+        "detail_key": "queue_wait" if queue_position > 0 else "",
+        "detail_label": REPORT_GENERATION_DETAIL_STATES.get("queue_wait", {}).get("label", "") if queue_position > 0 else "",
+        "next_hint": (
+            f"当前前方还有 {queue_position} 个待执行任务"
+            if queue_position > 0
+            else ""
+        ),
+        "eta_hint": (
+            f"预计还需等待约 {estimated_wait_seconds} 秒，当前 {running_count} 个正在执行，{pending_count} 个等待中"
+            if queue_position > 0
+            else ""
+        ),
     })
     return queue_snapshot
 
@@ -12971,7 +14076,10 @@ def is_valid_api_key(api_key: str) -> bool:
 
 
 def _create_anthropic_client(api_key: str, base_url: str, use_bearer_auth: bool = False):
-    kwargs = {"api_key": api_key}
+    kwargs = {
+        "api_key": api_key,
+        "max_retries": AI_CLIENT_MAX_RETRIES,
+    }
     if base_url:
         kwargs["base_url"] = base_url
     if use_bearer_auth:
@@ -13301,8 +14409,19 @@ def _resolve_report_gateway_lane_candidates(call_type: str = "", primary_lane: s
     return _dedupe_lane_candidates(["report_draft", "report_review", "question"])
 
 
-def _lane_candidates_for_client_resolution(call_type: str = "", model_name: str = "", preferred_lane: str = "") -> list[str]:
+def _lane_candidates_for_client_resolution(
+    call_type: str = "",
+    model_name: str = "",
+    preferred_lane: str = "",
+    strict_preferred_lane: bool = False,
+) -> list[str]:
     forced_lane = str(preferred_lane or "").strip().lower()
+    if strict_preferred_lane and forced_lane:
+        if forced_lane in {"report", "question", "report_draft", "report_review"} and "report" in str(call_type or "").lower():
+            candidates = _resolve_report_gateway_lane_candidates(call_type=call_type, primary_lane=forced_lane)
+            return candidates[:1]
+        if forced_lane in {"assessment", "search_decision", "summary", "report", "question"}:
+            return [forced_lane]
     if forced_lane in {"report", "question", "report_draft", "report_review"} and "report" in str(call_type or "").lower():
         return _resolve_report_gateway_lane_candidates(call_type=call_type, primary_lane=forced_lane)
     if forced_lane == "assessment":
@@ -13333,12 +14452,14 @@ def resolve_ai_client_with_lane(
     model_name: str = "",
     preferred_lane: str = "",
     respect_circuit_breaker: bool = True,
+    strict_preferred_lane: bool = False,
 ) -> tuple[Optional[object], str, dict]:
     """按调用类型选择客户端，并返回命中的 lane 与熔断元信息。"""
     candidates = _lane_candidates_for_client_resolution(
         call_type=call_type,
         model_name=model_name,
         preferred_lane=preferred_lane,
+        strict_preferred_lane=strict_preferred_lane,
     )
     requested_lane = candidates[0] if candidates else ""
     skip_open = bool(respect_circuit_breaker and GATEWAY_CIRCUIT_BREAKER_ENABLED)
@@ -13360,30 +14481,39 @@ def resolve_ai_client_with_lane(
             "requested_lane": requested_lane,
             "skipped_open_lanes": skipped_open_lanes,
             "forced_open_lane": "",
+            "strict_preferred_lane": bool(strict_preferred_lane),
         }
 
-    if fallback_pool:
+    if fallback_pool and not strict_preferred_lane:
         # 所有候选 lane 均处于冷却时，选择第一个可用客户端避免彻底不可用。
         lane_name, client = fallback_pool[0]
         return client, lane_name, {
             "requested_lane": requested_lane,
             "skipped_open_lanes": skipped_open_lanes,
             "forced_open_lane": lane_name if skipped_open_lanes else "",
+            "strict_preferred_lane": bool(strict_preferred_lane),
         }
 
     return None, "", {
         "requested_lane": requested_lane,
         "skipped_open_lanes": skipped_open_lanes,
         "forced_open_lane": "",
+        "strict_preferred_lane": bool(strict_preferred_lane),
     }
 
 
-def resolve_ai_client(call_type: str = "", model_name: str = "", preferred_lane: str = ""):
+def resolve_ai_client(
+    call_type: str = "",
+    model_name: str = "",
+    preferred_lane: str = "",
+    strict_preferred_lane: bool = False,
+):
     """兼容历史接口，仅返回客户端对象。"""
     client, _, _ = resolve_ai_client_with_lane(
         call_type=call_type,
         model_name=model_name,
         preferred_lane=preferred_lane,
+        strict_preferred_lane=strict_preferred_lane,
     )
     return client
 
@@ -16037,7 +17167,13 @@ def summarize_document(content: str, doc_name: str = "文档", topic: str = "") 
         return content[:MAX_DOC_LENGTH], False
 
 
-def process_document_for_context(doc: dict, remaining_length: int, topic: str = "") -> tuple[str, str, int, bool]:
+def process_document_for_context(
+    doc: dict,
+    remaining_length: int,
+    topic: str = "",
+    *,
+    allow_smart_summary: bool = True,
+) -> tuple[str, str, int, bool]:
     """
     处理文档以用于上下文（统一的文档处理入口）
 
@@ -16066,7 +17202,7 @@ def process_document_for_context(doc: dict, remaining_length: int, topic: str = 
         return doc_name, content, original_length, False
 
     # 文档超过摘要阈值，尝试智能摘要
-    if ENABLE_SMART_SUMMARY:
+    if ENABLE_SMART_SUMMARY and allow_smart_summary:
         processed_content, is_summarized = summarize_document(content, doc_name, topic)
 
         # 如果摘要后仍然过长，再截断
@@ -18230,7 +19366,8 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
                            session_id: str = None,
                            session_signature: Optional[tuple[int, int]] = None,
                            output_mode: str = "full",
-                           search_mode: str = "default") -> tuple[str, list, dict]:
+                           search_mode: str = "default",
+                           runtime_probe: bool = False) -> tuple[str, list, dict]:
     """构建访谈 prompt（使用滑动窗口 + 摘要压缩 + 智能追问）
 
     Args:
@@ -18255,12 +19392,14 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     cache_session_id = str(session.get("session_id", "") or "").strip()
     normalized_output_mode = _normalize_question_prompt_output_mode(output_mode)
     normalized_search_mode = _normalize_search_decision_mode(search_mode)
+    effective_search_mode = "rule_only" if runtime_probe and normalized_search_mode != "rule_only" else normalized_search_mode
     prompt_cache_key = _build_interview_prompt_cache_key(
         session_signature,
         dimension,
         cache_session_id,
         output_mode=normalized_output_mode,
-        search_mode=normalized_search_mode,
+        search_mode=effective_search_mode,
+        runtime_probe=runtime_probe,
     )
     if prompt_cache_key:
         cached_prompt = _get_interview_prompt_cache(prompt_cache_key)
@@ -18271,7 +19410,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 
     is_lightweight_output = normalized_output_mode == "light"
     context_window_limit = 1 if is_lightweight_output else CONTEXT_WINDOW_SIZE
-    include_history_summary = not is_lightweight_output
+    include_history_summary = not is_lightweight_output and not runtime_probe
     search_result_limit = 1 if is_lightweight_output else 2
     search_excerpt_limit = 80 if is_lightweight_output else 150
     topic_text = _clip_prompt_text(topic, 80 if is_lightweight_output else 200)
@@ -18313,7 +19452,10 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 
                 # 使用智能摘要处理文档
                 doc_name, processed_content, used_length, was_processed = process_document_for_context(
-                    doc, remaining, topic
+                    doc,
+                    remaining,
+                    topic,
+                    allow_smart_summary=not runtime_probe,
                 )
 
                 if processed_content:
@@ -18357,7 +19499,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         dimension,
         session,
         recent_qa,
-        decision_mode=normalized_search_mode,
+        decision_mode=effective_search_mode,
     )
 
     if will_search and search_query:
@@ -18391,7 +19533,8 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
             if cached_count < history_count:
                 target_session_id = str(session_id or session.get("session_id", "") or "").strip()
                 if target_session_id:
-                    schedule_context_summary_update_async(target_session_id)
+                    if not runtime_probe:
+                        schedule_context_summary_update_async(target_session_id)
 
             # 问题生成主链路优先：仅使用缓存/轻量摘要，不在此处阻塞等待 AI 摘要。
             history_summary = None
@@ -18781,8 +19924,9 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
         "requires_rationale": requires_rationale,
         "evidence_intent": evidence_intent,
         "has_search": bool(will_search and search_query),
-        "search_mode": normalized_search_mode,
+        "search_mode": effective_search_mode,
         "output_mode": normalized_output_mode,
+        "runtime_probe": bool(runtime_probe),
         "formal_questions_count": formal_questions_count,
         "has_reference_docs": bool(reference_materials),
         "reference_docs_compact_mode": bool(is_lightweight_output and effective_reference_materials),
@@ -18949,21 +20093,210 @@ xychart-beta
 
 def build_report_prompt(session: dict) -> str:
     """构建报告生成 prompt"""
-    scenario_config = session.get("scenario_config", {}) if isinstance(session.get("scenario_config", {}), dict) else {}
-    report_cfg = scenario_config.get("report", {}) if isinstance(scenario_config.get("report", {}), dict) else {}
-    template_name = resolve_report_template_for_session(session)
+    return build_report_prompt_with_options(session)
 
+
+def _normalize_report_prompt_excerpt(value: object, max_len: int = 420, placeholder: str = "暂无数据") -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if not text:
+        return placeholder
+    if len(text) <= max(40, int(max_len or 40)):
+        return text
+    normalized_limit = max(40, int(max_len or 40))
+    return text[: normalized_limit - 1].rstrip() + "…"
+
+
+def _collect_report_reference_materials(session: dict) -> list[dict]:
+    reference_materials = session.get("reference_materials", [])
+    if isinstance(reference_materials, list) and reference_materials:
+        return reference_materials
+    legacy_docs = session.get("reference_docs", [])
+    research_docs = session.get("research_docs", [])
+    merged_docs = []
+    if isinstance(legacy_docs, list):
+        merged_docs.extend(legacy_docs)
+    if isinstance(research_docs, list):
+        merged_docs.extend(research_docs)
+    return merged_docs
+
+
+def _build_compact_report_reference_block(session: dict, max_docs: int = 3, max_chars: int = 420) -> str:
+    reference_materials = _collect_report_reference_materials(session)
+    normalized_docs = [item for item in reference_materials if isinstance(item, dict)]
+    if not normalized_docs:
+        return "- 无参考资料"
+
+    lines = []
+    for doc in normalized_docs[: max(1, int(max_docs or 1))]:
+        doc_name = _normalize_report_prompt_excerpt(doc.get("name", "文档"), max_len=48, placeholder="文档")
+        source_marker = "自动抓取" if doc.get("source") == "auto" else "用户上传"
+        content = _normalize_report_prompt_excerpt(doc.get("content", ""), max_len=max_chars, placeholder="内容缺失")
+        lines.append(f"- {doc_name}（{source_marker}）：{content}")
+    return "\n".join(lines) if lines else "- 无参考资料"
+
+
+def build_compact_report_prompt(session: dict, evidence_pack: Optional[dict] = None) -> str:
+    """构建紧凑版报告 prompt，用于 V3 失败后的快速回退。"""
+    effective_evidence_pack = evidence_pack if isinstance(evidence_pack, dict) and evidence_pack else build_report_evidence_pack(session)
+    template_name = resolve_report_template_for_session(session, evidence_pack=effective_evidence_pack)
     if template_name == REPORT_TEMPLATE_ASSESSMENT_V1:
         return build_assessment_report_prompt(session)
 
     topic = session.get("topic", "未知项目")
+    description = str(session.get("description", "") or "").strip()
+    report_cfg = (session.get("scenario_config", {}) or {}).get("report", {})
+    if not isinstance(report_cfg, dict):
+        report_cfg = {}
+
+    dimension_lines = []
+    raw_dimension_coverage = effective_evidence_pack.get("dimension_coverage", {})
+    if isinstance(raw_dimension_coverage, dict):
+        for dim_key, dim_meta in raw_dimension_coverage.items():
+            if not isinstance(dim_meta, dict):
+                continue
+            missing = "、".join((dim_meta.get("missing_aspects", []) if isinstance(dim_meta.get("missing_aspects", []), list) else [])[:3]) or "无"
+            dimension_lines.append(
+                f"- {dim_meta.get('name', dim_key)}：覆盖{int(dim_meta.get('coverage_percent', 0) or 0)}%，"
+                f"正式题{int(dim_meta.get('formal_count', 0) or 0)}，追问{int(dim_meta.get('follow_up_count', 0) or 0)}，盲区：{missing}"
+            )
+    dimension_text = "\n".join(dimension_lines) if dimension_lines else "- 暂无维度覆盖数据"
+
+    selected_facts = select_slimmed_facts_for_prompt(effective_evidence_pack, facts_limit=14)
+    fact_lines = []
+    for fact in selected_facts:
+        fact_lines.append(
+            f"- {fact.get('q_id')} [{fact.get('dimension_name', '未分类')}] "
+            f"Q: {_normalize_report_prompt_excerpt(fact.get('question', ''), max_len=60)} | "
+            f"A: {_normalize_report_prompt_excerpt(fact.get('answer', ''), max_len=120)}"
+        )
+    facts_text = "\n".join(fact_lines) if fact_lines else "- 暂无高价值问答证据"
+
+    contradiction_lines = []
+    for item in (effective_evidence_pack.get("contradictions", []) if isinstance(effective_evidence_pack.get("contradictions", []), list) else [])[:5]:
+        if not isinstance(item, dict):
+            continue
+        refs = "、".join(_normalize_evidence_refs(item.get("evidence_refs", []))[:4]) or "-"
+        contradiction_lines.append(f"- {_normalize_report_prompt_excerpt(item.get('detail', ''), max_len=120)}（证据：{refs}）")
+    contradiction_text = "\n".join(contradiction_lines) if contradiction_lines else "- 未发现明显冲突"
+
+    unknown_lines = []
+    for item in (effective_evidence_pack.get("unknowns", []) if isinstance(effective_evidence_pack.get("unknowns", []), list) else [])[:5]:
+        if not isinstance(item, dict):
+            continue
+        unknown_lines.append(
+            f"- {item.get('q_id', '-')}/{_normalize_report_prompt_excerpt(item.get('dimension', ''), max_len=18)}："
+            f"{_normalize_report_prompt_excerpt(item.get('reason', ''), max_len=90)}"
+        )
+    unknown_text = "\n".join(unknown_lines) if unknown_lines else "- 未发现明显模糊回答"
+
+    blindspot_lines = []
+    for item in (effective_evidence_pack.get("blindspots", []) if isinstance(effective_evidence_pack.get("blindspots", []), list) else [])[:6]:
+        if not isinstance(item, dict):
+            continue
+        blindspot_lines.append(
+            f"- {_normalize_report_prompt_excerpt(item.get('dimension', ''), max_len=20)}："
+            f"{_normalize_report_prompt_excerpt(item.get('aspect', ''), max_len=48)}"
+        )
+    blindspot_text = "\n".join(blindspot_lines) if blindspot_lines else "- 暂无明显盲区"
+
+    reference_text = _build_compact_report_reference_block(session, max_docs=3, max_chars=320)
+
+    if template_name == REPORT_TEMPLATE_CUSTOM_V1:
+        normalized_schema, schema_issues = normalize_custom_report_schema(
+            report_cfg.get("schema"),
+            fallback_sections=report_cfg.get("sections"),
+        )
+        section_blueprint = summarize_custom_report_schema_for_prompt(normalized_schema)
+        schema_issue_notice = ""
+        if schema_issues:
+            schema_issue_notice = "\n- 原始模板存在异常配置，已回退为可解析章节。"
+        return f"""你是一名资深咨询顾问。请仅基于以下证据快照，生成一份紧凑但可交付的 Markdown 报告。
+
+## 主题
+- 主题：{topic}
+{f"- 描述：{description}" if description else ""}
+
+## 维度覆盖快照
+{dimension_text}
+
+## 高价值证据
+{facts_text}
+
+## 冲突 / 未决 / 盲区
+### 冲突
+{contradiction_text}
+### 未决
+{unknown_text}
+### 盲区
+{blindspot_text}
+
+## 参考资料摘录（辅助，不得压过访谈证据）
+{reference_text}
+
+## 用户自定义章节蓝图（必须按顺序输出）
+{section_blueprint}
+
+## 输出要求
+1. 只输出 Markdown，不要输出解释、致歉、工具话术。
+2. 必须严格按蓝图顺序输出章节，不新增或省略章节标题。
+3. 结论优先引用 Q 编号；信息不足时明确写“暂无数据”或“待补充”。
+4. component 为 `table` 时输出 Markdown 表格；为 `list` 时输出列表；为 `mermaid` 时输出 ```mermaid 代码块。
+5. 内容要紧凑、结论先行，避免大段空话和重复表述。
+6. 报告末尾使用署名：*此报告由 Deep Vision 深瞳生成*{schema_issue_notice}
+
+请直接生成完整报告："""
+
+    return f"""你是一名资深咨询顾问。请仅基于以下证据快照，生成一份紧凑但可交付的 Markdown 访谈报告。
+
+## 主题
+- 主题：{topic}
+{f"- 描述：{description}" if description else ""}
+
+## 维度覆盖快照
+{dimension_text}
+
+## 高价值证据
+{facts_text}
+
+## 冲突 / 未决 / 盲区
+### 冲突
+{contradiction_text}
+### 未决
+{unknown_text}
+### 盲区
+{blindspot_text}
+
+## 参考资料摘录（辅助，不得压过访谈证据）
+{reference_text}
+
+## 输出要求
+1. 仅输出 Markdown 报告，不要输出 JSON、前言或工具确认话术。
+2. 按以下章节输出：访谈概述、需求摘要、详细需求分析、可视化分析、方案建议、风险评估、下一步行动。
+3. 需求摘要、方案建议、风险评估、下一步行动优先使用 Markdown 表格。
+4. 可视化分析可包含 Mermaid，但仅保留 1-2 个最有价值的图，不要堆砌。
+5. 所有关键结论尽量引用 Q 编号；信息不足时明确写“暂无数据”。
+6. 内容要紧凑、结论先行，避免大段空话和重复表述。
+7. 报告末尾使用署名：*此报告由 Deep Vision 深瞳生成*
+
+请直接生成完整报告："""
+
+
+def build_report_prompt_with_options(session: dict, evidence_pack: Optional[dict] = None, compact_mode: bool = False) -> str:
+    """构建报告生成 prompt，可按需要切换紧凑回退模式。"""
+    scenario_config = session.get("scenario_config", {}) if isinstance(session.get("scenario_config", {}), dict) else {}
+    report_cfg = scenario_config.get("report", {}) if isinstance(scenario_config.get("report", {}), dict) else {}
+    template_name = resolve_report_template_for_session(session, evidence_pack=evidence_pack if isinstance(evidence_pack, dict) else None)
+
+    if template_name == REPORT_TEMPLATE_ASSESSMENT_V1:
+        return build_assessment_report_prompt(session)
+    if compact_mode:
+        return build_compact_report_prompt(session, evidence_pack=evidence_pack)
+
+    topic = session.get("topic", "未知项目")
     description = session.get("description")  # 获取主题描述
     interview_log = session.get("interview_log", [])
-    dimensions = session.get("dimensions", {})
     # 兼容旧数据：优先使用 reference_materials，否则合并旧字段
-    reference_materials = session.get("reference_materials", [])
-    if not reference_materials:
-        reference_materials = session.get("reference_docs", []) + session.get("research_docs", [])
+    reference_materials = _collect_report_reference_materials(session)
 
     # 获取会话的动态维度信息
     report_dim_info = get_dimension_info_for_session(session)
@@ -20247,6 +21580,7 @@ def build_report_draft_prompt_v3(
     contradiction_limit: int = 20,
     unknown_limit: int = 20,
     blindspot_limit: int = 20,
+    compact_mode: bool = False,
 ) -> str:
     """构建 V3 报告草案生成 Prompt（结构化 JSON）。"""
     template_name = resolve_report_template_for_session(session, evidence_pack=evidence_pack)
@@ -20275,7 +21609,8 @@ def build_report_draft_prompt_v3(
     report_type_label = "面试评估" if report_type == "assessment" else "需求访谈"
 
     dimension_lines = []
-    for dim_key, dim_meta in evidence_pack.get("dimension_coverage", {}).items():
+    max_dimension_lines = 4 if compact_mode else 8
+    for dim_key, dim_meta in list((evidence_pack.get("dimension_coverage", {}) or {}).items())[:max_dimension_lines]:
         missing = "、".join(dim_meta.get("missing_aspects", [])[:4]) if dim_meta.get("missing_aspects") else "无"
         dimension_lines.append(
             f"- {dim_meta.get('name', dim_key)}: 覆盖{dim_meta.get('coverage_percent', 0)}%，"
@@ -20283,16 +21618,18 @@ def build_report_draft_prompt_v3(
         )
     dimension_text = "\n".join(dimension_lines) if dimension_lines else "- 暂无维度覆盖数据"
 
-    facts_limit = max(10, int(facts_limit or 10))
-    contradiction_limit = max(5, int(contradiction_limit or 5))
-    unknown_limit = max(5, int(unknown_limit or 5))
-    blindspot_limit = max(5, int(blindspot_limit or 5))
+    facts_limit = max(8 if compact_mode else 10, int(facts_limit or (8 if compact_mode else 10)))
+    contradiction_limit = max(4 if compact_mode else 5, int(contradiction_limit or (4 if compact_mode else 5)))
+    unknown_limit = max(4 if compact_mode else 5, int(unknown_limit or (4 if compact_mode else 5)))
+    blindspot_limit = max(4 if compact_mode else 5, int(blindspot_limit or (4 if compact_mode else 5)))
 
     selected_facts = select_slimmed_facts_for_prompt(evidence_pack, facts_limit=facts_limit)
     facts_lines = []
     for fact in selected_facts:
-        question_text = (fact.get("question", "") or "").replace("\n", " ").strip()[:90]
-        answer_text = (fact.get("answer", "") or "").replace("\n", " ").strip()[:150]
+        question_max = 54 if compact_mode else 90
+        answer_max = 96 if compact_mode else 150
+        question_text = (fact.get("question", "") or "").replace("\n", " ").strip()[:question_max]
+        answer_text = (fact.get("answer", "") or "").replace("\n", " ").strip()[:answer_max]
         facts_lines.append(
             f"- {fact.get('q_id')} [{fact.get('dimension_name', '未分类')}] "
             f"Q: {question_text} | A: {answer_text} | quality={fact.get('quality_score', 0):.2f} | evidence={fact.get('answer_evidence_class', 'explicit')}"
@@ -20301,6 +21638,11 @@ def build_report_draft_prompt_v3(
     facts_source_count = len(evidence_pack.get("facts", [])) if isinstance(evidence_pack.get("facts", []), list) else 0
 
     contradictions = evidence_pack.get("contradictions", [])
+    if compact_mode:
+        contradiction_limit = min(contradiction_limit, 6)
+        unknown_limit = min(unknown_limit, 6)
+        blindspot_limit = min(blindspot_limit, 6)
+
     contradiction_lines = [
         f"- {item.get('detail')}（证据: {', '.join(item.get('evidence_refs', []))}）"
         for item in contradictions[:contradiction_limit]
@@ -20387,6 +21729,23 @@ def build_report_draft_prompt_v3(
             }
         ]
     }
+
+    if compact_mode:
+        schema_example = {
+            "overview": "访谈概述",
+            "needs": [{"name": "需求", "priority": "P0", "description": "描述", "evidence_refs": ["Q1"]}],
+            "analysis": {
+                "customer_needs": "客户需求分析",
+                "business_flow": "业务流程分析",
+                "tech_constraints": "技术约束分析",
+                "project_constraints": "项目约束分析"
+            },
+            "solutions": [{"title": "方案", "description": "说明", "owner": "角色", "timeline": "短期", "metric": "指标", "evidence_refs": ["Q2"]}],
+            "risks": [{"risk": "风险", "impact": "影响", "mitigation": "缓解", "evidence_refs": ["Q3"]}],
+            "actions": [{"action": "行动", "owner": "角色", "timeline": "短期/中期", "metric": "验收口径", "evidence_refs": ["Q4"]}],
+            "open_questions": [{"question": "待补问题", "reason": "原因", "impact": "影响", "suggested_follow_up": "追问方向", "evidence_refs": ["Q5"]}],
+            "evidence_index": [{"claim": "关键结论", "confidence": "high", "evidence_refs": ["Q1", "Q2"]}],
+        }
 
     return f"""你是一名资深分析顾问。请基于给定证据包生成一份结构化报告草案 JSON，禁止输出任何 JSON 之外的文字。
 
@@ -22852,11 +24211,11 @@ def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: lis
     }
 
 
-def build_report_quality_meta_fallback(session: dict, mode: str) -> dict:
+def build_report_quality_meta_fallback(session: dict, mode: str, evidence_pack: Optional[dict] = None) -> dict:
     """回退流程的质量元数据估算。"""
-    evidence_pack = build_report_evidence_pack(session)
-    evidence_coverage = float(evidence_pack.get("overall_coverage", 0.0))
-    contradiction_total = len(evidence_pack.get("contradictions", []))
+    effective_evidence_pack = evidence_pack if isinstance(evidence_pack, dict) and evidence_pack else build_report_evidence_pack(session)
+    evidence_coverage = float(effective_evidence_pack.get("overall_coverage", 0.0))
+    contradiction_total = len(effective_evidence_pack.get("contradictions", []))
     consistency = 1.0 if contradiction_total == 0 else 0.6
     actionability = 0.4
     expression_structure = 0.55
@@ -22892,9 +24251,9 @@ def build_report_quality_meta_fallback(session: dict, mode: str) -> dict:
         "template_minimums": {},
         "table_row_readiness": {},
         "evidence_context": {
-            "facts_count": len(evidence_pack.get("facts", [])) if isinstance(evidence_pack.get("facts", []), list) else 0,
-            "unknown_count": len(evidence_pack.get("unknowns", [])) if isinstance(evidence_pack.get("unknowns", []), list) else 0,
-            "blindspots_count": len(evidence_pack.get("blindspots", [])) if isinstance(evidence_pack.get("blindspots", []), list) else 0,
+            "facts_count": len(effective_evidence_pack.get("facts", [])) if isinstance(effective_evidence_pack.get("facts", []), list) else 0,
+            "unknown_count": len(effective_evidence_pack.get("unknowns", [])) if isinstance(effective_evidence_pack.get("unknowns", []), list) else 0,
+            "blindspots_count": len(effective_evidence_pack.get("blindspots", [])) if isinstance(effective_evidence_pack.get("blindspots", []), list) else 0,
             "unknown_ratio": 0.0,
             "average_quality_score": 0.0,
         },
@@ -23978,7 +25337,14 @@ def generate_report_v3_pipeline(
         pipeline_timings["evidence_pack_ms"] = round((_time.perf_counter() - evidence_pack_started_at) * 1000.0, 2)
 
         if session_id:
-            update_report_generation_status(session_id, "building_prompt", message="正在构建证据包并生成结构化草案...")
+            update_report_generation_status(
+                session_id,
+                "building_prompt",
+                message="正在构建证据包并生成结构化草案...",
+                detail_key="evidence_pack",
+                next_hint="证据包完成后将开始结构化草案生成",
+                progress_override=24,
+            )
 
         draft_attempt_total = runtime_cfg["draft_retry_count"] + 1
         draft_parsed = None
@@ -24001,15 +25367,23 @@ def generate_report_v3_pipeline(
             current_contradiction_limit = max(8, 20 - (attempt_index * 5))
             current_unknown_limit = max(8, 20 - (attempt_index * 5))
             current_blindspot_limit = max(8, 20 - (attempt_index * 5))
-            current_max_tokens = max(2800, int(report_draft_max_tokens * (0.82 ** attempt_index)))
+            current_token_floor = int(runtime_cfg.get("draft_token_floor", 2200) or 2200)
+            current_max_tokens = max(current_token_floor, int(report_draft_max_tokens * (0.82 ** attempt_index)))
             current_call_type = "report_v3_draft" if is_first_attempt else f"report_v3_draft_retry_{round_no}"
             current_call_type = f"{current_call_type}{call_type_suffix}"
 
-            if session_id and not is_first_attempt:
+            if session_id:
                 update_report_generation_status(
                     session_id,
                     "generating",
-                    message=f"草案生成失败，正在降载重试（第{round_no}/{draft_attempt_total}轮）...",
+                    message=(
+                        f"草案生成失败，正在降载重试（第{round_no}/{draft_attempt_total}轮）..."
+                        if not is_first_attempt
+                        else f"正在生成结构化草案（第{round_no}/{draft_attempt_total}轮）..."
+                    ),
+                    detail_key="v3_draft_retry" if not is_first_attempt else "v3_draft",
+                    next_hint="草案完成后将进入一致性审稿",
+                    progress_override=42 if is_first_attempt else 48,
                 )
 
             draft_prompt = build_report_draft_prompt_v3(
@@ -24019,17 +25393,25 @@ def generate_report_v3_pipeline(
                 contradiction_limit=current_contradiction_limit,
                 unknown_limit=current_unknown_limit,
                 blindspot_limit=current_blindspot_limit,
+                compact_mode=bool(runtime_cfg.get("release_conservative_mode", False)),
             )
             current_prompt_length = len(draft_prompt)
-            current_max_tokens = compute_adaptive_report_tokens(current_max_tokens, current_prompt_length, floor_tokens=2200)
+            current_max_tokens = compute_adaptive_report_tokens(
+                current_max_tokens,
+                current_prompt_length,
+                floor_tokens=current_token_floor,
+            )
+            current_timeout_cap = runtime_cfg.get("draft_timeout_cap")
+            if current_timeout_cap in {None, ""}:
+                current_timeout_cap = max(REPORT_API_TIMEOUT, runtime_cfg["draft_timeout"] + 45)
             current_timeout = compute_adaptive_report_timeout(
                 runtime_cfg["draft_timeout"],
                 current_prompt_length,
-                timeout_cap=max(REPORT_API_TIMEOUT, runtime_cfg["draft_timeout"] + 45),
+                timeout_cap=current_timeout_cap,
             )
             draft_lane_candidates = [draft_phase_lane]
             alternate_draft_lane = resolve_report_v3_alternate_lane(draft_phase_lane)
-            if alternate_draft_lane:
+            if bool(runtime_cfg.get("draft_allow_alternate_lane", True)) and alternate_draft_lane:
                 draft_lane_candidates.append(alternate_draft_lane)
 
             for lane_index, candidate_lane in enumerate(draft_lane_candidates):
@@ -24042,6 +25424,7 @@ def generate_report_v3_pipeline(
                     call_type=lane_call_type,
                     timeout=current_timeout,
                     preferred_lane=candidate_lane,
+                    strict_preferred_lane=bool(runtime_cfg.get("draft_strict_primary_lane", False)),
                 )
                 pipeline_timings["draft_gen_ms"] += max(0.0, (_time.perf_counter() - draft_call_started_at) * 1000.0)
 
@@ -24147,6 +25530,96 @@ def generate_report_v3_pipeline(
         last_failed_stage = "review_gate"
         last_review_round_no = 0
 
+        if bool(runtime_cfg.get("skip_model_review", False)):
+            quality_gate_start = _time.perf_counter()
+            quality_meta = compute_report_quality_meta_v3(current_draft, evidence_pack, final_issues)
+            if isinstance(quality_meta, dict):
+                quality_meta["runtime_profile"] = runtime_profile
+                quality_meta["review_skipped_by_release_conservative"] = True
+            quality_gate_issues = build_quality_gate_issues_v3(quality_meta)
+            quality_gate_elapsed = _time.perf_counter() - quality_gate_start
+            if quality_gate_issues:
+                if can_release_conservative_soft_pass_v3(quality_gate_issues, quality_meta, runtime_cfg):
+                    soft_issue_types = summarize_issue_types_v3(quality_gate_issues)
+                    if isinstance(quality_meta, dict):
+                        quality_meta["release_conservative_soft_pass"] = True
+                        quality_meta["release_conservative_soft_issue_types"] = soft_issue_types
+                    record_pipeline_stage_metric(
+                        stage="quality_gate",
+                        success=True,
+                        elapsed_seconds=quality_gate_elapsed,
+                        lane=review_phase_lane,
+                        model=review_phase_model,
+                        error_msg=f"soft_pass:{'|'.join(soft_issue_types)}",
+                    )
+                    report_content = render_report_from_draft_v3(session, current_draft, quality_meta)
+                    return {
+                        "status": "success",
+                        "profile": runtime_profile,
+                        "report_content": report_content,
+                        "draft_snapshot": copy.deepcopy(current_draft),
+                        "quality_meta": quality_meta,
+                        "evidence_pack": evidence_pack,
+                        "report_template": resolve_report_template_for_session(session, evidence_pack=evidence_pack),
+                        "report_type": str(evidence_pack.get("report_type", "standard") or "standard").strip().lower() or "standard",
+                        "review_issues": quality_gate_issues[:60],
+                        "phase_lanes": phase_lanes,
+                        "review_rounds_executed": 0,
+                        "min_required_review_rounds": 0,
+                        "timings": pipeline_timings,
+                    }
+                record_pipeline_stage_metric(
+                    stage="quality_gate",
+                    success=False,
+                    elapsed_seconds=quality_gate_elapsed,
+                    lane=review_phase_lane,
+                    model=review_phase_model,
+                    error_msg=f"quality_issue_count={len(quality_gate_issues)}",
+                )
+                return {
+                    "status": "failed",
+                    "reason": "quality_gate_failed",
+                    "legacy_reason": "review_not_passed_or_quality_gate_failed",
+                    "error": f"profile={runtime_profile},final_issue_count={len(quality_gate_issues)},review_skipped=true",
+                    "parse_stage": "quality_gate",
+                    "profile": runtime_profile,
+                    "lane": pipeline_lane,
+                    "phase_lanes": phase_lanes,
+                    "raw_excerpt": "",
+                    "repair_applied": False,
+                    "evidence_pack": evidence_pack,
+                    "draft_snapshot": current_draft if isinstance(current_draft, dict) else {},
+                    "review_issues": quality_gate_issues,
+                    "final_issue_count": len(quality_gate_issues),
+                    "final_issue_types": summarize_issue_types_v3(quality_gate_issues),
+                    "failure_stage": "quality_gate",
+                    "timings": pipeline_timings,
+                }
+            record_pipeline_stage_metric(
+                stage="quality_gate",
+                success=True,
+                elapsed_seconds=quality_gate_elapsed,
+                lane=review_phase_lane,
+                model=review_phase_model,
+                error_msg="skipped_model_review",
+            )
+            report_content = render_report_from_draft_v3(session, current_draft, quality_meta)
+            return {
+                "status": "success",
+                "profile": runtime_profile,
+                "report_content": report_content,
+                "draft_snapshot": copy.deepcopy(current_draft),
+                "quality_meta": quality_meta,
+                "evidence_pack": evidence_pack,
+                "report_template": resolve_report_template_for_session(session, evidence_pack=evidence_pack),
+                "report_type": str(evidence_pack.get("report_type", "standard") or "standard").strip().lower() or "standard",
+                "review_issues": [],
+                "phase_lanes": phase_lanes,
+                "review_rounds_executed": 0,
+                "min_required_review_rounds": 0,
+                "timings": pipeline_timings,
+            }
+
         for review_round in range(total_round_budget):
             review_round_no = review_round + 1
             last_review_round_no = review_round_no
@@ -24155,7 +25628,10 @@ def generate_report_v3_pipeline(
                 update_report_generation_status(
                     session_id,
                     "generating",
-                    message=f"正在执行报告一致性审稿（第{review_round_no}/{total_round_budget}轮）..."
+                    message=f"正在执行报告一致性审稿（第{review_round_no}/{total_round_budget}轮）...",
+                    detail_key="v3_review",
+                    next_hint="审稿通过后将执行质量门校验",
+                    progress_override=68,
                 )
 
             review_prompt = build_report_review_prompt_v3(session, evidence_pack, current_draft, review_issues)
@@ -24329,6 +25805,36 @@ def generate_report_v3_pipeline(
                 quality_gate_issues = build_quality_gate_issues_v3(quality_meta)
                 quality_gate_elapsed = _time.perf_counter() - quality_gate_start
                 if quality_gate_issues:
+                    if can_release_conservative_soft_pass_v3(quality_gate_issues, quality_meta, runtime_cfg):
+                        soft_issue_types = summarize_issue_types_v3(quality_gate_issues)
+                        if isinstance(quality_meta, dict):
+                            quality_meta["release_conservative_soft_pass"] = True
+                            quality_meta["release_conservative_soft_issue_types"] = soft_issue_types
+                        record_pipeline_stage_metric(
+                            stage="quality_gate",
+                            success=True,
+                            elapsed_seconds=quality_gate_elapsed,
+                            lane=review_phase_lane,
+                            model=review_phase_model,
+                            error_msg=f"soft_pass:{'|'.join(soft_issue_types)}",
+                        )
+                        report_content = render_report_from_draft_v3(session, current_draft, quality_meta)
+                        pipeline_timings["review_ms"] += max(0.0, (_time.perf_counter() - review_round_started_at) * 1000.0)
+                        return {
+                            "status": "success",
+                            "profile": runtime_profile,
+                            "report_content": report_content,
+                            "draft_snapshot": copy.deepcopy(current_draft),
+                            "quality_meta": quality_meta,
+                            "evidence_pack": evidence_pack,
+                            "report_template": resolve_report_template_for_session(session, evidence_pack=evidence_pack),
+                            "report_type": str(evidence_pack.get("report_type", "standard") or "standard").strip().lower() or "standard",
+                            "review_issues": quality_gate_issues[:60],
+                            "phase_lanes": phase_lanes,
+                            "review_rounds_executed": review_round_no,
+                            "min_required_review_rounds": min_required_review_rounds,
+                            "timings": pipeline_timings,
+                        }
                     last_failed_stage = "quality_gate"
                     final_issues = quality_gate_issues
                     record_pipeline_stage_metric(
@@ -24440,9 +25946,15 @@ def generate_report_v3_pipeline(
 
 async def call_claude_async(prompt: str, max_tokens: int = None,
                             call_type: str = "async", model_name: str = "",
-                            preferred_lane: str = "") -> Optional[str]:
+                            preferred_lane: str = "",
+                            strict_preferred_lane: bool = False) -> Optional[str]:
     """异步调用 Claude API，带超时控制"""
-    client = resolve_ai_client(call_type=call_type, model_name=model_name, preferred_lane=preferred_lane)
+    client = resolve_ai_client(
+        call_type=call_type,
+        model_name=model_name,
+        preferred_lane=preferred_lane,
+        strict_preferred_lane=strict_preferred_lane,
+    )
     if not client:
         return None
 
@@ -24628,7 +26140,8 @@ def _build_ai_call_meta(selected_lane: str, effective_model: str, effective_time
 def _call_claude_internal(prompt: str, max_tokens: int = None, retry_on_timeout: bool = True,
                          call_type: str = "unknown", truncated_docs: list = None,
                          timeout: float = None, model_name: str = "", preferred_lane: str = "",
-                         hedge_triggered: bool = False, cache_hit: bool = False) -> tuple[Optional[str], dict]:
+                         hedge_triggered: bool = False, cache_hit: bool = False,
+                         strict_preferred_lane: bool = False) -> tuple[Optional[str], dict]:
     """同步调用 AI 网关，返回文本与执行元信息。"""
     import time
 
@@ -24636,6 +26149,7 @@ def _call_claude_internal(prompt: str, max_tokens: int = None, retry_on_timeout:
         call_type=call_type,
         model_name=model_name,
         preferred_lane=preferred_lane,
+        strict_preferred_lane=strict_preferred_lane,
     )
 
     if max_tokens is None:
@@ -24815,7 +26329,7 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
                 call_type: str = "unknown", truncated_docs: list = None,
                 timeout: float = None, model_name: str = "", preferred_lane: str = "",
                 hedge_triggered: bool = False, cache_hit: bool = False,
-                return_meta: bool = False):
+                return_meta: bool = False, strict_preferred_lane: bool = False):
     """同步调用 Claude 兼容 API，按需返回文本或文本+元信息。"""
     response_text, call_meta = _call_claude_internal(
         prompt,
@@ -24828,6 +26342,7 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
         preferred_lane=preferred_lane,
         hedge_triggered=hedge_triggered,
         cache_hit=cache_hit,
+        strict_preferred_lane=strict_preferred_lane,
     )
     if return_meta:
         return response_text, call_meta
@@ -25960,7 +27475,14 @@ def auth_me():
     user_row = get_current_user()
     if not user_row:
         return jsonify({"error": "请先登录"}), 401
-    return jsonify({"user": build_user_payload(user_row)})
+    level_context = build_user_level_context_for_user(user_row)
+    presentation_feature_state = get_presentation_feature_state()
+    return jsonify({
+        "user": build_user_payload(user_row),
+        "presentation_feature_enabled": bool(presentation_feature_state.get("enabled")),
+        "presentation_feature_source": str(presentation_feature_state.get("source") or "env_default"),
+        **level_context,
+    })
 
 
 @app.route('/api/auth/bind/status', methods=['GET'])
@@ -26268,7 +27790,13 @@ def attach_report_generation_status(session_item: dict) -> dict:
         if status_record and not bool(status_record.get("active")) and is_report_generation_worker_alive(session_id):
             status_state = str(status_record.get("state") or "").strip()
             if status_state not in {"completed", "failed", "cancelled"}:
-                update_report_generation_status(session_id, "queued", message="报告任务正在处理中...")
+                update_report_generation_status(
+                    session_id,
+                    "queued",
+                    message="报告任务正在处理中...",
+                    detail_key="queue_wait",
+                    next_hint="等待执行槽位释放后将自动开始",
+                )
                 status_record = get_report_generation_record(session_id)
         if status_record and bool(status_record.get("active")):
             queue_snapshot = get_report_generation_worker_snapshot(include_positions=True)
@@ -27930,7 +29458,7 @@ def _prepare_question_generation_runtime(
 ) -> dict:
     evidence_ledger = refresh_session_evidence_ledger(session)
     search_mode = _resolve_prompt_search_mode(base_call_type)
-    full_prompt, truncated_docs, decision_meta = build_interview_prompt(
+    probe_full_prompt, probe_truncated_docs, probe_decision_meta = build_interview_prompt(
         session,
         dimension,
         all_dim_logs,
@@ -27938,15 +29466,19 @@ def _prepare_question_generation_runtime(
         session_signature=session_signature,
         output_mode="full",
         search_mode=search_mode,
+        runtime_probe=True,
     )
     runtime_profile = _select_question_generation_runtime_profile(
-        full_prompt,
-        truncated_docs=truncated_docs,
-        decision_meta=decision_meta,
+        probe_full_prompt,
+        truncated_docs=probe_truncated_docs,
+        decision_meta=probe_decision_meta,
         base_call_type=base_call_type,
         allow_fast_path=allow_fast_path,
     )
 
+    full_prompt = probe_full_prompt
+    truncated_docs = list(probe_truncated_docs or [])
+    decision_meta = dict(probe_decision_meta or {})
     fast_prompt = full_prompt
     fast_truncated_docs = list(truncated_docs or [])
     fast_prompt_mode = str((decision_meta or {}).get("output_mode", "full") or "full")
@@ -27960,6 +29492,7 @@ def _prepare_question_generation_runtime(
             session_signature=session_signature,
             output_mode="light",
             search_mode=search_mode,
+            runtime_probe=True,
         )
         light_compaction_allowed = bool(
             (light_decision_meta or {}).get("reference_docs_compact_mode", False)
@@ -27975,6 +29508,20 @@ def _prepare_question_generation_runtime(
             fast_truncated_docs = list(light_truncated_docs or [])
             fast_prompt_mode = str((light_decision_meta or {}).get("output_mode", "light") or "light")
             fast_allow_compacted_docs = bool(light_compaction_allowed)
+    else:
+        full_prompt, truncated_docs, decision_meta = build_interview_prompt(
+            session,
+            dimension,
+            all_dim_logs,
+            session_id=session_id,
+            session_signature=session_signature,
+            output_mode="full",
+            search_mode=search_mode,
+            runtime_probe=False,
+        )
+        fast_prompt = full_prompt
+        fast_truncated_docs = list(truncated_docs or [])
+        fast_prompt_mode = str((decision_meta or {}).get("output_mode", "full") or "full")
 
     runtime_profile["fast_prompt_mode"] = fast_prompt_mode
     runtime_profile["fast_allow_compacted_docs"] = bool(fast_allow_compacted_docs)
@@ -29535,8 +31082,7 @@ def submit_answer(session_id):
                 print(f"📊 评估评分: {dimension} = {score}分，维度均分 = {session['dimensions'][dimension].get('score')}")
 
     session["updated_at"] = get_utc_now()
-    save_session_json_and_sync(session_file, session)
-    session_signature = get_file_signature(session_file)
+    session_signature = save_session_json_and_sync(session_file, session)
 
     try:
         trigger_current_dimension_prefetch(session, dimension, session_signature=session_signature)
@@ -30058,6 +31604,13 @@ V3_FAILOVER_DETERMINISTIC_ISSUE_TYPES = {
     "quality_gate_acceptance",
 }
 
+V3_RELEASE_CONSERVATIVE_SOFT_PASS_ISSUE_TYPES = {
+    "style_template_violation",
+    "quality_gate_expression",
+    "quality_gate_acceptance",
+    "quality_gate_weak_binding",
+}
+
 
 def _extract_v3_issue_types_for_failover(v3_result: Optional[dict]) -> list[str]:
     if not isinstance(v3_result, dict):
@@ -30099,6 +31652,8 @@ def should_retry_v3_with_failover(v3_result: Optional[dict]) -> bool:
         return _is_v3_deterministic_issue_bucket(issue_types, final_issue_count)
 
     # 质量门禁未通过属于内容质量问题，切网关通常无收益
+    if reason == "release_conservative_short_circuit":
+        return False
     if reason in {"draft_generation_failed", "review_generation_failed", "exception", "v3_pipeline_returned_empty"}:
         return True
 
@@ -30124,11 +31679,92 @@ def should_retry_v3_with_failover(v3_result: Optional[dict]) -> bool:
     return False
 
 
+def can_release_conservative_soft_pass_v3(quality_gate_issues: list, quality_meta: Optional[dict], runtime_cfg: Optional[dict]) -> bool:
+    """发布保守档下，仅存在软性表达/模板问题时允许直接放行，避免再次进入 legacy fallback。"""
+    if not isinstance(runtime_cfg, dict) or not bool(runtime_cfg.get("release_conservative_mode", False)):
+        return False
+    issue_types = summarize_issue_types_v3(quality_gate_issues)
+    if not issue_types or len(issue_types) > 4:
+        return False
+    if not all(issue_type in V3_RELEASE_CONSERVATIVE_SOFT_PASS_ISSUE_TYPES for issue_type in issue_types):
+        return False
+    if not isinstance(quality_meta, dict):
+        return False
+
+    evidence_coverage = max(0.0, min(1.0, _safe_float(quality_meta.get("evidence_coverage", 0.0), default=0.0)))
+    actionability = max(0.0, min(1.0, _safe_float(quality_meta.get("actionability", 0.0), default=0.0)))
+    table_readiness = max(0.0, min(1.0, _safe_float(quality_meta.get("table_readiness", 0.0), default=0.0)))
+    if evidence_coverage < 0.45:
+        return False
+    if actionability < 0.35:
+        return False
+    if table_readiness < 0.40:
+        return False
+    return True
+
+
+def get_release_conservative_report_short_circuit_meta(runtime_cfg: Optional[dict], preferred_lane: str = "report") -> dict:
+    """发布保守档下，根据 draft 超时/熔断状态决定是否直接跳过 V3。"""
+    if not isinstance(runtime_cfg, dict):
+        return {"triggered": False}
+    if not bool(runtime_cfg.get("release_conservative_mode", False)):
+        return {"triggered": False}
+    if not REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED:
+        return {"triggered": False}
+
+    preferred = str(preferred_lane or "report").strip().lower() or "report"
+    draft_snapshot = get_gateway_circuit_snapshot("report_draft")
+    report_snapshot = get_gateway_circuit_snapshot(preferred if preferred in {"report", "report_draft"} else "report")
+    draft_cooldown = bool(is_gateway_lane_in_cooldown("report_draft") or is_gateway_lane_in_cooldown("report"))
+
+    timeout_threshold = int(REPORT_V3_RELEASE_SHORT_CIRCUIT_TIMEOUT_THRESHOLD or 2)
+    consecutive_timeout_count = 0
+    timeout_lane = ""
+    for lane_name, snapshot in (("report_draft", draft_snapshot), (preferred, report_snapshot)):
+        if not isinstance(snapshot, dict):
+            continue
+        if str(snapshot.get("last_error_type", "") or "").strip().lower() != "timeout":
+            continue
+        fail_count = int(snapshot.get("fail_count", 0) or 0)
+        if fail_count > consecutive_timeout_count:
+            consecutive_timeout_count = fail_count
+            timeout_lane = lane_name
+
+    reason = ""
+    message = ""
+    if draft_cooldown:
+        reason = "gateway_circuit_open"
+        cooldown_remaining = max(
+            float(draft_snapshot.get("cooldown_remaining_seconds", 0.0) or 0.0),
+            float(report_snapshot.get("cooldown_remaining_seconds", 0.0) or 0.0),
+        )
+        message = f"检测到报告网关熔断冷却，直接回退标准报告生成（剩余约 {int(max(1.0, round(cooldown_remaining)))} 秒）"
+    elif consecutive_timeout_count >= timeout_threshold:
+        reason = "consecutive_draft_timeout"
+        message = (
+            f"检测到报告草案最近连续超时 {consecutive_timeout_count} 次，"
+            "发布保守档直接回退标准报告生成"
+        )
+
+    return {
+        "triggered": bool(reason),
+        "reason": reason,
+        "message": message,
+        "timeout_threshold": timeout_threshold,
+        "consecutive_timeout_count": consecutive_timeout_count,
+        "timeout_lane": timeout_lane,
+        "preferred_lane": preferred,
+        "draft_snapshot": draft_snapshot if isinstance(draft_snapshot, dict) else {},
+        "report_snapshot": report_snapshot if isinstance(report_snapshot, dict) else {},
+    }
+
+
 def describe_v3_failure_reason(reason: str) -> str:
     """将 V3 失败原因转换为更可读的中文标签。"""
     normalized = str(reason or "").strip().lower()
     reason_text_map = {
         "draft_generation_failed": "草案生成超时/空响应",
+        "release_conservative_short_circuit": "发布保守档命中快速短路",
         "draft_parse_failed": "草案结构化解析失败",
         "review_generation_failed": "审稿生成超时/空响应",
         "review_parse_failed": "审稿结构化解析失败",
@@ -30145,6 +31781,7 @@ def choose_v3_failure_log_icon(reason: str) -> str:
     """按失败类型选择日志级别图标，避免将可预期回退全部标成告警。"""
     normalized = str(reason or "").strip().lower()
     if normalized in {
+        "release_conservative_short_circuit",
         "draft_parse_failed",
         "review_parse_failed",
         "review_gate_failed",
@@ -30562,13 +32199,28 @@ def run_report_generation_job(
         selected_report_profile = normalize_report_profile_choice(report_profile, fallback=REPORT_V3_PROFILE)
         selected_report_runtime_cfg = get_report_v3_runtime_config(selected_report_profile)
         set_report_generation_metadata(session_id, {"report_profile": selected_report_profile})
+        update_report_generation_status(
+            session_id,
+            "building_prompt",
+            message="正在加载会话并准备报告任务...",
+            detail_key="session_load",
+            next_hint="完成后将开始构建证据包",
+            progress_override=10,
+        )
         session_load_started_at = _time.perf_counter()
         loaded = load_session_for_user(session_id, user_id, include_missing=True)
         report_runtime_durations["session_load_ms"] = round(_job_elapsed_ms(session_load_started_at), 2)
         session_file, session, state = loaded
         if state != "ok" or session_file is None or session is None:
             error_msg = "会话不存在或无权限"
-            update_report_generation_status(session_id, "failed", message=f"报告生成失败：{error_msg}", active=False)
+            update_report_generation_status(
+                session_id,
+                "failed",
+                message=f"报告生成失败：{error_msg}",
+                active=False,
+                detail_key="failed",
+                next_hint="请检查会话权限或稍后重试",
+            )
             set_report_generation_metadata(session_id, {
                 "request_id": request_id,
                 "error": error_msg,
@@ -30645,6 +32297,7 @@ def run_report_generation_job(
                     "salvage_quality_issue_count": int(result.get("salvage_quality_issue_count", 0) or 0),
                     "salvage_issue_types": list(result.get("salvage_issue_types", []) or []),
                     "salvage_issues": (result.get("salvage_issues", []) if isinstance(result.get("salvage_issues", []), list) else [])[:60],
+                    "short_circuit_meta": result.get("short_circuit_meta", {}) if isinstance(result.get("short_circuit_meta", {}), dict) else {},
                 }
             return {
                 "reason": "v3_pipeline_returned_empty",
@@ -30668,6 +32321,7 @@ def run_report_generation_job(
                 "salvage_quality_issue_count": 0,
                 "salvage_issue_types": [],
                 "salvage_issues": [],
+                "short_circuit_meta": {},
             }
 
         def persist_v3_success_result(
@@ -30705,7 +32359,13 @@ def run_report_generation_job(
                 debug_payload.update(extra_debug)
             session["last_report_v3_debug"] = debug_payload
 
-            update_report_generation_status(session_id, "saving", message=saving_message)
+            update_report_generation_status(
+                session_id,
+                "saving",
+                message=saving_message,
+                detail_key="persist_report",
+                next_hint="保存完成后即可查看报告",
+            )
             report_file, filename = persist_report(report_content, quality_meta=quality_meta)
             structured_snapshot = build_solution_sidecar_snapshot(
                 report_name=filename,
@@ -30722,7 +32382,13 @@ def run_report_generation_job(
                 build_final_solution_sidecar_snapshot(structured_snapshot, report_content),
             )
             ensure_solution_payload_ready(filename, report_content, session_id=session_id)
-            update_report_generation_status(session_id, "completed", active=False)
+            update_report_generation_status(
+                session_id,
+                "completed",
+                active=False,
+                detail_key="finished",
+                next_hint="报告已生成，可直接查看",
+            )
             set_report_generation_metadata(session_id, {
                 "request_id": request_id,
                 "report_name": filename,
@@ -30742,14 +32408,66 @@ def run_report_generation_job(
             return True
 
         # 检查是否有 Claude API
+        fast_short_circuit_meta = get_release_conservative_report_short_circuit_meta(
+            selected_report_runtime_cfg,
+            preferred_lane="report",
+        )
         if resolve_ai_client(call_type="report"):
-            update_report_generation_status(session_id, "building_prompt", message="正在执行 V3 证据包构建与结构化草案...")
-            v3_result = generate_report_v3_pipeline(
-                session,
-                session_id=session_id,
-                preferred_lane="report",
-                report_profile=selected_report_profile,
-            )
+            if fast_short_circuit_meta.get("triggered"):
+                v3_result = {
+                    "status": "failed",
+                    "reason": "release_conservative_short_circuit",
+                    "legacy_reason": "release_conservative_short_circuit",
+                    "error": str(fast_short_circuit_meta.get("message", "") or ""),
+                    "parse_stage": "draft_short_circuit",
+                    "profile": selected_report_profile,
+                    "lane": "report",
+                    "phase_lanes": {"draft": "report", "review": "report"},
+                    "raw_excerpt": "",
+                    "repair_applied": False,
+                    "parse_meta": {},
+                    "review_issues": [],
+                    "final_issue_count": 0,
+                    "final_issue_types": [],
+                    "failure_stage": "draft_short_circuit",
+                    "evidence_pack": {},
+                    "timings": {
+                        "evidence_pack_ms": 0.0,
+                        "draft_gen_ms": 0.0,
+                        "review_ms": 0.0,
+                    },
+                    "short_circuit_meta": fast_short_circuit_meta,
+                }
+                set_report_generation_metadata(session_id, {
+                    "runtime_summary": {
+                        "path": "legacy_fallback_short_circuit",
+                        "reason": str(fast_short_circuit_meta.get("reason", "") or "release_conservative_short_circuit"),
+                        "message": str(fast_short_circuit_meta.get("message", "") or ""),
+                    }
+                })
+                update_report_generation_status(
+                    session_id,
+                    "generating",
+                    message=str(fast_short_circuit_meta.get("message", "") or "检测到报告草案连续超时，直接回退标准报告生成..."),
+                    detail_key="draft_short_circuit",
+                    next_hint="已跳过 V3 草案，直接进入紧凑回退生成",
+                    progress_override=58,
+                )
+            else:
+                update_report_generation_status(
+                    session_id,
+                    "building_prompt",
+                    message="正在执行 V3 证据包构建与结构化草案...",
+                    detail_key="evidence_pack",
+                    next_hint="完成证据包后会生成结构化草案",
+                    progress_override=20,
+                )
+                v3_result = generate_report_v3_pipeline(
+                    session,
+                    session_id=session_id,
+                    preferred_lane="report",
+                    report_profile=selected_report_profile,
+                )
             _merge_pipeline_timings(v3_result)
 
             if v3_result and v3_result.get("report_content"):
@@ -30761,6 +32479,14 @@ def run_report_generation_job(
                     return
 
             if bool(selected_report_runtime_cfg.get("salvage_on_quality_gate_failure", True)):
+                update_report_generation_status(
+                    session_id,
+                    "generating",
+                    message="正在尝试挽救当前 V3 草案，避免直接回退...",
+                    detail_key="v3_salvage",
+                    next_hint="如果挽救成功将直接进入保存",
+                    progress_override=74,
+                )
                 salvage_started_at = _time.perf_counter()
                 primary_salvage = attempt_salvage_v3_review_failure(session, v3_result)
                 report_runtime_durations["salvage_ms"] = round(
@@ -30808,9 +32534,10 @@ def run_report_generation_job(
             failover_attempted = False
             failover_success = False
             failover_failure = None
+            failover_result = None
 
             if (
-                REPORT_V3_FAILOVER_ENABLED
+                bool(selected_report_runtime_cfg.get("failover_enabled", REPORT_V3_FAILOVER_ENABLED))
                 and bool(selected_report_runtime_cfg.get("failover_on_single_issue", True))
                 and can_use_v3_failover_lane()
                 and should_retry_v3_with_failover(v3_result)
@@ -30829,6 +32556,9 @@ def run_report_generation_job(
                         f"V3 {describe_v3_failure_reason(primary_failure.get('reason', ''))}，"
                         f"正在切换备用网关（{REPORT_V3_FAILOVER_LANE}）重试..."
                     ),
+                    detail_key="v3_failover",
+                    next_hint=f"正在使用 {REPORT_V3_FAILOVER_LANE} 备用网关补救",
+                    progress_override=70,
                 )
                 failover_suffix = f"_failover_{REPORT_V3_FAILOVER_LANE}"
                 failover_started_at = _time.perf_counter()
@@ -30867,6 +32597,14 @@ def run_report_generation_job(
                         return
 
                 if bool(selected_report_runtime_cfg.get("salvage_on_quality_gate_failure", True)):
+                    update_report_generation_status(
+                        session_id,
+                        "generating",
+                        message="备用网关未直接通过，正在尝试挽救当前草案...",
+                        detail_key="v3_salvage",
+                        next_hint="如果挽救成功将直接进入保存",
+                        progress_override=76,
+                    )
                     failover_salvage_started_at = _time.perf_counter()
                     failover_salvage = attempt_salvage_v3_review_failure(session, failover_result)
                     report_runtime_durations["salvage_ms"] = round(
@@ -30941,6 +32679,7 @@ def run_report_generation_job(
                 "salvage_quality_issue_count": primary_failure.get("salvage_quality_issue_count", 0),
                 "salvage_issue_types": primary_failure.get("salvage_issue_types", []),
                 "salvage_issues": primary_failure.get("salvage_issues", []),
+                "short_circuit_meta": primary_failure.get("short_circuit_meta", {}) if isinstance(primary_failure.get("short_circuit_meta", {}), dict) else {},
                 "failover_attempted": failover_attempted,
                 "failover_lane": REPORT_V3_FAILOVER_LANE if failover_attempted else "",
                 "failover_success": failover_success,
@@ -30977,26 +32716,82 @@ def run_report_generation_job(
             update_report_generation_status(
                 session_id,
                 "generating",
-                message=f"V3 {describe_v3_failure_reason(primary_failure.get('reason', ''))}，正在回退标准报告生成...",
+                message=(
+                    str(primary_failure.get("error", "") or "")
+                    if primary_failure.get("reason") == "release_conservative_short_circuit"
+                    else f"V3 {describe_v3_failure_reason(primary_failure.get('reason', ''))}，正在回退标准报告生成..."
+                ),
+                detail_key="legacy_fallback",
+                next_hint="回退成功后将直接保存报告",
+                progress_override=78,
             )
-            prompt = build_report_prompt(session)
+            fallback_evidence_pack = None
+            if isinstance(failover_result, dict) and isinstance(failover_result.get("evidence_pack"), dict) and failover_result.get("evidence_pack"):
+                fallback_evidence_pack = failover_result.get("evidence_pack")
+            elif isinstance(v3_result, dict) and isinstance(v3_result.get("evidence_pack"), dict) and v3_result.get("evidence_pack"):
+                fallback_evidence_pack = v3_result.get("evidence_pack")
+
+            compact_legacy_prompt = bool(selected_report_runtime_cfg.get("release_conservative_mode", False))
+            short_circuit_legacy_fallback = primary_failure.get("reason") == "release_conservative_short_circuit"
+            short_circuit_fallback_lane = (
+                REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_LANE
+                if short_circuit_legacy_fallback
+                else ""
+            )
+            prompt = build_report_prompt_with_options(
+                session,
+                evidence_pack=fallback_evidence_pack,
+                compact_mode=compact_legacy_prompt,
+            )
 
             if ENABLE_DEBUG_LOG:
-                ref_docs_count = len(session.get("reference_materials", session.get("reference_docs", []) + session.get("research_docs", [])))
+                ref_docs_count = len(_collect_report_reference_materials(session))
                 interview_count = len(session.get("interview_log", []))
-                print(f"📊 回退报告 Prompt 统计：总长度={len(prompt)}字符，参考资料={ref_docs_count}个，访谈记录={interview_count}条")
+                print(
+                    "📊 回退报告 Prompt 统计："
+                    f"模式={'compact' if compact_legacy_prompt else 'full'}，"
+                    f"总长度={len(prompt)}字符，参考资料={ref_docs_count}个，访谈记录={interview_count}条"
+                )
 
+            legacy_timeout_base = (
+                REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_TIMEOUT
+                if short_circuit_legacy_fallback and compact_legacy_prompt
+                else (75.0 if compact_legacy_prompt else REPORT_API_TIMEOUT)
+            )
             legacy_timeout = compute_adaptive_report_timeout(
-                REPORT_API_TIMEOUT,
+                legacy_timeout_base,
                 len(prompt),
-                timeout_cap=max(REPORT_API_TIMEOUT, REPORT_DRAFT_API_TIMEOUT + 60),
+                timeout_cap=(
+                    min(60.0, legacy_timeout_base + 8.0)
+                    if short_circuit_legacy_fallback and compact_legacy_prompt
+                    else (95.0 if compact_legacy_prompt else max(REPORT_API_TIMEOUT, REPORT_DRAFT_API_TIMEOUT + 60))
+                ),
+            )
+            legacy_max_tokens = compute_adaptive_report_tokens(
+                (
+                    REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_MAX_TOKENS
+                    if short_circuit_legacy_fallback and compact_legacy_prompt
+                    else (2800 if compact_legacy_prompt else min(MAX_TOKENS_REPORT, 7000))
+                ),
+                len(prompt),
+                floor_tokens=(
+                    1100
+                    if short_circuit_legacy_fallback and compact_legacy_prompt
+                    else (1400 if compact_legacy_prompt else 2200)
+                ),
             )
             legacy_started_at = _time.perf_counter()
             report_content = call_claude(
                 prompt,
-                max_tokens=min(MAX_TOKENS_REPORT, 7000),
-                call_type="report_legacy_fallback",
+                max_tokens=legacy_max_tokens,
+                retry_on_timeout=not short_circuit_legacy_fallback,
+                call_type=(
+                    "report_legacy_fallback_short_circuit"
+                    if short_circuit_legacy_fallback
+                    else "report_legacy_fallback"
+                ),
                 timeout=legacy_timeout,
+                preferred_lane=short_circuit_fallback_lane,
             )
             report_runtime_durations["legacy_fallback_ms"] = round(
                 float(report_runtime_durations.get("legacy_fallback_ms", 0.0) or 0.0) + _job_elapsed_ms(legacy_started_at),
@@ -31010,7 +32805,7 @@ def run_report_generation_job(
                     selected_lane=fallback_primary_lane,
                 )
                 retry_lane = ""
-                if REPORT_V3_FAILOVER_ENABLED and can_use_v3_failover_lane():
+                if bool(selected_report_runtime_cfg.get("failover_enabled", REPORT_V3_FAILOVER_ENABLED)) and can_use_v3_failover_lane():
                     retry_lane = REPORT_V3_FAILOVER_LANE
                 if ENABLE_DEBUG_LOG:
                     print(
@@ -31027,7 +32822,7 @@ def run_report_generation_job(
                     )
                     retry_content = call_claude(
                         prompt,
-                        max_tokens=min(MAX_TOKENS_REPORT, 7000),
+                        max_tokens=legacy_max_tokens,
                         call_type=retry_call_type,
                         timeout=legacy_timeout,
                         preferred_lane=retry_lane,
@@ -31049,16 +32844,32 @@ def run_report_generation_job(
 
             if report_content:
                 report_content = report_content + generate_interview_appendix(session)
-                quality_meta = build_report_quality_meta_fallback(session, mode="legacy_ai_fallback")
+                quality_meta = build_report_quality_meta_fallback(
+                    session,
+                    mode="legacy_ai_fallback",
+                    evidence_pack=fallback_evidence_pack,
+                )
                 session["last_report_quality_meta"] = quality_meta
 
-                update_report_generation_status(session_id, "saving", message="正在保存回退生成报告...")
+                update_report_generation_status(
+                    session_id,
+                    "saving",
+                    message="正在保存回退生成报告...",
+                    detail_key="persist_report",
+                    next_hint="保存完成后即可查看报告",
+                )
                 report_file, filename = persist_report(report_content, quality_meta=quality_meta)
                 rebound_snapshot = build_bound_solution_sidecar_snapshot(filename, report_content, session)
                 if rebound_snapshot:
                     write_solution_sidecar(filename, rebound_snapshot)
                 ensure_solution_payload_ready(filename, report_content, session_id=session_id)
-                update_report_generation_status(session_id, "completed", active=False)
+                update_report_generation_status(
+                    session_id,
+                    "completed",
+                    active=False,
+                    detail_key="finished",
+                    next_hint="报告已生成，可直接查看",
+                )
                 set_report_generation_metadata(session_id, {
                     "request_id": request_id,
                     "report_name": filename,
@@ -31069,27 +32880,53 @@ def run_report_generation_job(
                     "error": "",
                     "completed_at": get_utc_now(),
                 })
+                fallback_runtime_path = "legacy_ai_fallback"
+                fallback_runtime_reason = "v3_pipeline_fallback"
+                if primary_failure.get("reason") == "release_conservative_short_circuit":
+                    fallback_runtime_path = "legacy_fallback_short_circuit"
+                    fallback_runtime_reason = str(
+                        (primary_failure.get("short_circuit_meta", {}) or {}).get("reason", "")
+                        or "release_conservative_short_circuit"
+                    )
                 _record_report_runtime(
                     "completed",
                     runtime_profile=selected_report_profile,
-                    path="legacy_ai_fallback",
-                    reason="v3_pipeline_fallback",
+                    path=fallback_runtime_path,
+                    reason=fallback_runtime_reason,
                 )
                 return
 
         # 回退到简单报告生成
-        update_report_generation_status(session_id, "fallback", message="AI 回退失败，正在使用模板报告兜底...")
+        update_report_generation_status(
+            session_id,
+            "fallback",
+            message="AI 回退失败，正在使用模板报告兜底...",
+            detail_key="simple_template_fallback",
+            next_hint="模板报告生成完成后将立即保存",
+            progress_override=84,
+        )
         report_content = generate_simple_report(session)
         quality_meta = build_report_quality_meta_fallback(session, mode="simple_template_fallback")
         session["last_report_quality_meta"] = quality_meta
-        update_report_generation_status(session_id, "saving")
+        update_report_generation_status(
+            session_id,
+            "saving",
+            detail_key="persist_report",
+            next_hint="保存完成后即可查看报告",
+        )
         report_file, filename = persist_report(report_content, quality_meta=quality_meta)
         rebound_snapshot = build_bound_solution_sidecar_snapshot(filename, report_content, session)
         if rebound_snapshot:
             write_solution_sidecar(filename, rebound_snapshot)
 
         ensure_solution_payload_ready(filename, report_content, session_id=session_id)
-        update_report_generation_status(session_id, "completed", active=False)
+        update_report_generation_status(
+            session_id,
+            "completed",
+            active=False,
+            detail_key="finished",
+            next_hint="报告已生成，可直接查看",
+        )
         set_report_generation_metadata(session_id, {
             "request_id": request_id,
             "report_name": filename,
@@ -31108,7 +32945,14 @@ def run_report_generation_job(
         )
     except Exception as exc:
         error_detail = str(exc)[:200] or "未知错误"
-        update_report_generation_status(session_id, "failed", message=f"报告生成失败：{error_detail}", active=False)
+        update_report_generation_status(
+            session_id,
+            "failed",
+            message=f"报告生成失败：{error_detail}",
+            active=False,
+            detail_key="failed",
+            next_hint="可稍后重试或切换更保守策略",
+        )
         set_report_generation_metadata(session_id, {
             "request_id": request_id,
             "error": error_detail,
@@ -31138,9 +32982,14 @@ def run_report_generation_job(
 @app.route('/api/sessions/<session_id>/generate-report', methods=['POST'])
 def generate_report(session_id):
     """异步生成访谈报告。"""
-    user_id = get_current_user_id_or_none()
-    if not user_id:
+    user_row = get_current_user()
+    if not user_row:
         return jsonify({"error": "请先登录"}), 401
+    user_id = int(user_row["id"])
+
+    level_context = build_user_level_context_for_user(user_row)
+    if not user_has_level_capability(user_row, "report.generate", level_context=level_context):
+        return build_level_capability_denied_response(user_row, "report.generate", level_context=level_context)
 
     loaded = load_session_for_user(session_id, user_id)
     if len(loaded) == 3:
@@ -31152,7 +33001,28 @@ def generate_report(session_id):
     raw_report_profile = str(data.get("report_profile", "") or "").strip().lower()
     if raw_report_profile and raw_report_profile not in {"balanced", "quality"}:
         return jsonify({"error": "report_profile 仅支持 balanced 或 quality"}), 400
-    report_profile = normalize_report_profile_choice(raw_report_profile, fallback=REPORT_V3_PROFILE)
+    requested_profile = normalize_report_profile_choice(raw_report_profile, fallback="")
+    allowed_report_profiles = level_context.get("allowed_report_profiles") or ["balanced"]
+    report_profile = get_default_report_profile_for_level(
+        level_context.get("level", {}).get("key"),
+        requested_profile or REPORT_V3_PROFILE,
+    )
+    if requested_profile == "quality" and "quality" not in allowed_report_profiles:
+        return build_level_capability_denied_response(
+            user_row,
+            "report.profile.quality",
+            level_context=level_context,
+        )
+    if report_profile == "quality" and not user_has_level_capability(
+        user_row,
+        "report.profile.quality",
+        level_context=level_context,
+    ):
+        return build_level_capability_denied_response(
+            user_row,
+            "report.profile.quality",
+            level_context=level_context,
+        )
 
     current_record = get_report_generation_record(session_id) or {}
     worker_alive = is_report_generation_worker_alive(session_id)
@@ -31160,7 +33030,13 @@ def generate_report(session_id):
         if worker_alive and not bool(current_record.get("active")):
             current_state = str(current_record.get("state") or "").strip()
             if current_state not in {"completed", "failed", "cancelled"}:
-                update_report_generation_status(session_id, "queued", message="报告任务正在处理中...")
+                update_report_generation_status(
+                    session_id,
+                    "queued",
+                    message="报告任务正在处理中...",
+                    detail_key="queue_wait",
+                    next_hint="等待执行槽位释放后将自动开始",
+                )
         queue_snapshot = get_report_generation_worker_snapshot(include_positions=True)
         sync_report_generation_queue_metadata(session_id, snapshot=queue_snapshot)
         current_record = get_report_generation_record(session_id) or current_record
@@ -31213,7 +33089,12 @@ def generate_report(session_id):
         "queue_pending": 0,
         "queue_running": 0,
     })
-    update_report_generation_status(session_id, "queued")
+    update_report_generation_status(
+        session_id,
+        "queued",
+        detail_key="queue_wait",
+        next_hint="等待执行槽位释放后将自动开始",
+    )
 
     try:
         worker = report_generation_executor.submit(
@@ -31998,9 +33879,13 @@ def download_presentation_file(url: str, name: str = "") -> Optional[dict]:
 
 @app.route('/api/reports/<path:filename>/presentation', methods=['GET'])
 def get_report_presentation(filename):
-    user_id = get_current_user_id_or_none()
-    if not user_id:
+    user_row = get_current_user()
+    if not user_row:
         return jsonify({"error": "请先登录"}), 401
+    user_id = int(user_row["id"])
+    level_context = build_user_level_context_for_user(user_row)
+    if not user_has_level_capability(user_row, "presentation.generate", level_context=level_context):
+        return build_level_capability_denied_response(user_row, "presentation.generate", level_context=level_context)
 
     filename = normalize_presentation_report_filename(filename)
     if not filename:
@@ -32046,9 +33931,13 @@ def get_report_presentation(filename):
 
 @app.route('/api/reports/<path:filename>/presentation/status', methods=['GET'])
 def get_report_presentation_status(filename):
-    user_id = get_current_user_id_or_none()
-    if not user_id:
+    user_row = get_current_user()
+    if not user_row:
         return jsonify({"error": "请先登录"}), 401
+    user_id = int(user_row["id"])
+    level_context = build_user_level_context_for_user(user_row)
+    if not user_has_level_capability(user_row, "presentation.generate", level_context=level_context):
+        return build_level_capability_denied_response(user_row, "presentation.generate", level_context=level_context)
 
     filename = normalize_presentation_report_filename(filename)
     if not filename:
@@ -32116,9 +34005,13 @@ def get_report_presentation_status(filename):
 
 @app.route('/api/reports/<path:filename>/presentation/link', methods=['GET'])
 def get_report_presentation_link(filename):
-    user_id = get_current_user_id_or_none()
-    if not user_id:
+    user_row = get_current_user()
+    if not user_row:
         return jsonify({"error": "请先登录"}), 401
+    user_id = int(user_row["id"])
+    level_context = build_user_level_context_for_user(user_row)
+    if not user_has_level_capability(user_row, "presentation.generate", level_context=level_context):
+        return build_level_capability_denied_response(user_row, "presentation.generate", level_context=level_context)
 
     filename = normalize_presentation_report_filename(filename)
     if not filename:
@@ -41445,11 +43338,167 @@ def get_report(filename):
     return jsonify({"name": filename, "content": content})
 
 
+@app.route('/api/reports/<path:filename>/exports', methods=['GET'])
+def list_report_export_assets(filename):
+    user_row = get_current_user()
+    if not user_row:
+        return jsonify({"error": "请先登录"}), 401
+    user_id = int(user_row["id"])
+    level_context = build_user_level_context_for_user(user_row)
+
+    normalized = normalize_solution_report_filename(filename)
+    if not normalized:
+        return jsonify({"error": "报告文件名无效"}), 400
+
+    _report_file, owner_error = enforce_report_owner_or_404(normalized, user_id)
+    if owner_error:
+        response, status_code = owner_error
+        return response, status_code
+
+    try:
+        limit = max(1, min(int(request.args.get("limit", 50)), 100))
+    except (TypeError, ValueError):
+        limit = 50
+    items = [
+        item
+        for item in list_export_asset_records(normalized, owner_user_id=int(user_id), limit=limit)
+        if user_has_level_capability(
+            user_row,
+            get_export_capability_key(item.get("export_scope"), item.get("export_format")),
+            level_context=level_context,
+        )
+    ]
+    return jsonify({"items": items})
+
+
+@app.route('/api/reports/<path:filename>/exports', methods=['POST'])
+def create_report_export_asset(filename):
+    user_row = get_current_user()
+    if not user_row:
+        return jsonify({"error": "请先登录"}), 401
+    user_id = int(user_row["id"])
+    level_context = build_user_level_context_for_user(user_row)
+
+    normalized = normalize_solution_report_filename(filename)
+    if not normalized:
+        return jsonify({"error": "报告文件名无效"}), 400
+
+    _report_file, owner_error = enforce_report_owner_or_404(normalized, user_id)
+    if owner_error:
+        response, status_code = owner_error
+        return response, status_code
+
+    if not is_object_storage_enabled():
+        return jsonify({"error": "对象存储未配置"}), 503
+
+    uploaded_file = request.files.get("file")
+    if uploaded_file is None:
+        return jsonify({"error": "缺少导出文件"}), 400
+
+    original_name = str(uploaded_file.filename or "").strip()
+    if not original_name:
+        return jsonify({"error": "导出文件名无效"}), 400
+
+    content = uploaded_file.read()
+    if not content:
+        return jsonify({"error": "导出文件内容为空"}), 400
+
+    export_scope = _normalize_export_asset_scope(request.form.get("scope"))
+    export_format = _normalize_export_asset_format(
+        request.form.get("format") or Path(original_name).suffix
+    )
+    if not export_format:
+        return jsonify({"error": "导出格式无效"}), 400
+    capability_key = get_export_capability_key(export_scope, export_format)
+    if not capability_key:
+        return jsonify({"error": "导出格式无效"}), 400
+    if not user_has_level_capability(user_row, capability_key, level_context=level_context):
+        return build_level_capability_denied_response(user_row, capability_key, level_context=level_context)
+
+    source = _normalize_export_asset_source(request.form.get("source"))
+    content_type = str(
+        uploaded_file.mimetype
+        or request.form.get("content_type")
+        or _guess_content_type(original_name)
+    )
+
+    try:
+        asset = create_export_asset_record(
+            normalized,
+            owner_user_id=int(user_id),
+            export_scope=export_scope,
+            export_format=export_format,
+            file_name=original_name,
+            content=content,
+            content_type=content_type,
+            source=source,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            _safe_log(f"⚠️ 导出资产归档失败: report={normalized}, error={exc}")
+        return jsonify({"error": "导出资产归档失败"}), 500
+
+    return jsonify(asset), 201
+
+
+@app.route('/api/reports/<path:filename>/exports/<asset_id>', methods=['GET'])
+def download_report_export_asset(filename, asset_id):
+    user_row = get_current_user()
+    if not user_row:
+        return jsonify({"error": "请先登录"}), 401
+    user_id = int(user_row["id"])
+    level_context = build_user_level_context_for_user(user_row)
+
+    normalized = normalize_solution_report_filename(filename)
+    if not normalized:
+        return jsonify({"error": "报告文件名无效"}), 400
+
+    _report_file, owner_error = enforce_report_owner_or_404(normalized, user_id)
+    if owner_error:
+        response, status_code = owner_error
+        return response, status_code
+
+    asset = get_export_asset_record(normalized, owner_user_id=int(user_id), asset_id=asset_id)
+    if not asset:
+        return jsonify({"error": "导出资产不存在"}), 404
+    capability_key = get_export_capability_key(asset.get("export_scope"), asset.get("export_format"))
+    if not capability_key:
+        return jsonify({"error": "导出资产不存在"}), 404
+    if not user_has_level_capability(user_row, capability_key, level_context=level_context):
+        return build_level_capability_denied_response(user_row, capability_key, level_context=level_context)
+
+    object_key = str(asset.get("object_key") or "").strip()
+    if not object_key:
+        return jsonify({"error": "导出资产不存在"}), 404
+
+    try:
+        content, storage_meta = download_object_storage_bytes(object_key)
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            _safe_log(f"⚠️ 下载导出资产失败: asset_id={asset_id}, error={exc}")
+        return jsonify({"error": "导出资产下载失败"}), 502
+
+    mimetype = str(asset.get("content_type") or storage_meta.get("content_type") or "application/octet-stream")
+    download_name = str(asset.get("file_name") or Path(object_key).name or "export")
+    return send_file(
+        BytesIO(content),
+        mimetype=mimetype,
+        as_attachment=True,
+        download_name=download_name,
+    )
+
+
 @app.route('/api/reports/<path:filename>/solution', methods=['GET'])
 def get_report_solution(filename):
-    user_id = get_current_user_id_or_none()
-    if not user_id:
+    user_row = get_current_user()
+    if not user_row:
         return jsonify({"error": "请先登录"}), 401
+    user_id = int(user_row["id"])
+    level_context = build_user_level_context_for_user(user_row)
+    if not user_has_level_capability(user_row, "solution.view", level_context=level_context):
+        return build_level_capability_denied_response(user_row, "solution.view", level_context=level_context)
 
     normalized = normalize_solution_report_filename(filename)
     if not normalized:
@@ -41463,12 +43512,19 @@ def get_report_solution(filename):
     content = _load_report_content(normalized)
     generated_at = _get_report_generated_at(normalized)
     content = normalize_report_time_fields(content, generated_at=generated_at)
-    payload = build_solution_payload_from_report(
+    payload = copy.deepcopy(build_solution_payload_from_report(
         normalized,
         content,
         allow_ai_enhancement=False,
         owner_user_id=int(user_id),
-    )
+    ))
+    payload["viewer_capabilities"] = {
+        "solution_share": user_has_level_capability(
+            user_row,
+            "solution.share",
+            level_context=level_context,
+        ),
+    }
     response = jsonify(payload)
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
@@ -41477,9 +43533,13 @@ def get_report_solution(filename):
 
 @app.route('/api/reports/<path:filename>/solution/share', methods=['POST'])
 def create_report_solution_share(filename):
-    user_id = get_current_user_id_or_none()
-    if not user_id:
+    user_row = get_current_user()
+    if not user_row:
         return jsonify({"error": "请先登录"}), 401
+    user_id = int(user_row["id"])
+    level_context = build_user_level_context_for_user(user_row)
+    if not user_has_level_capability(user_row, "solution.share", level_context=level_context):
+        return build_level_capability_denied_response(user_row, "solution.share", level_context=level_context)
 
     normalized = normalize_solution_report_filename(filename)
     if not normalized:
@@ -41537,6 +43597,9 @@ def get_public_solution_by_share_token(share_token):
     ))
     payload["share_mode"] = "public"
     payload["report_name"] = ""
+    payload["viewer_capabilities"] = {
+        "solution_share": False,
+    }
 
     response = jsonify(payload)
     response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -41547,9 +43610,13 @@ def get_public_solution_by_share_token(share_token):
 
 @app.route('/api/reports/<path:filename>/appendix/pdf', methods=['GET'])
 def export_report_appendix_pdf(filename):
-    user_id = get_current_user_id_or_none()
-    if not user_id:
+    user_row = get_current_user()
+    if not user_row:
         return jsonify({"error": "请先登录"}), 401
+    user_id = int(user_row["id"])
+    level_context = build_user_level_context_for_user(user_row)
+    if not user_has_level_capability(user_row, "report.export.appendix", level_context=level_context):
+        return build_level_capability_denied_response(user_row, "report.export.appendix", level_context=level_context)
 
     report_file, owner_error = enforce_report_owner_or_404(filename, user_id)
     if owner_error:
@@ -41590,9 +43657,15 @@ def export_report_appendix_pdf(filename):
 @app.route('/api/reports/<path:filename>/refly', methods=['POST'])
 def send_report_to_refly(filename):
     """将报告发送到演示文稿服务生成演示文稿"""
-    user_id = get_current_user_id_or_none()
-    if not user_id:
+    user_row = get_current_user()
+    if not user_row:
         return jsonify({"error": "请先登录"}), 401
+    if not is_presentation_feature_enabled():
+        return build_presentation_feature_disabled_response()
+    user_id = int(user_row["id"])
+    level_context = build_user_level_context_for_user(user_row)
+    if not user_has_level_capability(user_row, "presentation.generate", level_context=level_context):
+        return build_level_capability_denied_response(user_row, "presentation.generate", level_context=level_context)
 
     filename = normalize_presentation_report_filename(filename)
     if not filename:
@@ -41774,9 +43847,15 @@ def send_report_to_refly(filename):
 
 @app.route('/api/reports/<path:filename>/refly/status', methods=['GET'])
 def check_refly_status(filename):
-    user_id = get_current_user_id_or_none()
-    if not user_id:
+    user_row = get_current_user()
+    if not user_row:
         return jsonify({"error": "请先登录"}), 401
+    if not is_presentation_feature_enabled():
+        return build_presentation_feature_disabled_response()
+    user_id = int(user_row["id"])
+    level_context = build_user_level_context_for_user(user_row)
+    if not user_has_level_capability(user_row, "presentation.generate", level_context=level_context):
+        return build_level_capability_denied_response(user_row, "presentation.generate", level_context=level_context)
 
     filename = normalize_presentation_report_filename(filename)
     if not filename:
@@ -41876,9 +43955,15 @@ def check_refly_status(filename):
 
 @app.route('/api/reports/<path:filename>/presentation/abort', methods=['POST'])
 def abort_report_presentation(filename):
-    user_id = get_current_user_id_or_none()
-    if not user_id:
+    user_row = get_current_user()
+    if not user_row:
         return jsonify({"error": "请先登录"}), 401
+    if not is_presentation_feature_enabled():
+        return build_presentation_feature_disabled_response()
+    user_id = int(user_row["id"])
+    level_context = build_user_level_context_for_user(user_row)
+    if not user_has_level_capability(user_row, "presentation.generate", level_context=level_context):
+        return build_level_capability_denied_response(user_row, "presentation.generate", level_context=level_context)
 
     filename = normalize_presentation_report_filename(filename)
     if not filename:
@@ -41986,7 +44071,10 @@ def get_status():
     wechat_enabled = bool(WECHAT_LOGIN_ENABLED and WECHAT_APP_ID and WECHAT_APP_SECRET)
     sms_enabled = bool(SMS_PROVIDER in {"mock", "jdcloud"})
     license_enforcement_state = get_license_enforcement_state()
-    if not get_current_user():
+    presentation_feature_state = get_presentation_feature_state()
+    current_user = get_current_user()
+    if not current_user:
+        level_context = build_user_level_context_for_user(None)
         return jsonify({
             "status": "running",
             "authenticated": False,
@@ -41997,11 +44085,13 @@ def get_status():
             "sms_cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
             "license_enforcement_enabled": bool(license_enforcement_state.get("enabled")),
             "license_enforcement_source": str(license_enforcement_state.get("source") or "env_default"),
-            "report_profile_default": REPORT_V3_PROFILE,
-            "report_profile_options": ["balanced", "quality"],
+            "presentation_feature_enabled": bool(presentation_feature_state.get("enabled")),
+            "presentation_feature_source": str(presentation_feature_state.get("source") or "env_default"),
+            "report_profile_default": level_context.get("report_profile_default") or "balanced",
+            "report_profile_options": level_context.get("allowed_report_profiles") or ["balanced"],
+            **level_context,
         })
 
-    current_user = get_current_user()
     question_available = resolve_ai_client(call_type="question") is not None
     report_draft_available = resolve_ai_client(call_type="report_v3_draft", preferred_lane="report") is not None
     report_review_available = resolve_ai_client(call_type="report_v3_review_round_1", preferred_lane="report") is not None
@@ -42013,9 +44103,16 @@ def get_status():
         for mode in mode_names
     }
     license_payload = build_license_status_payload_for_user(current_user)
+    level_context = {
+        "level": license_payload.get("level") or build_user_level_payload("experience"),
+        "capabilities": license_payload.get("capabilities") or build_user_capabilities_for_level("experience"),
+        "allowed_report_profiles": license_payload.get("allowed_report_profiles") or ["balanced"],
+        "report_profile_default": license_payload.get("report_profile_default") or "balanced",
+    }
     return jsonify({
         "status": "running",
         "authenticated": True,
+        "user": build_user_payload(current_user),
         "wechat_login_enabled": wechat_enabled,
         "sms_login_enabled": sms_enabled,
         "sms_provider": SMS_PROVIDER,
@@ -42023,14 +44120,17 @@ def get_status():
         "sms_cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
         "license_enforcement_enabled": bool(license_enforcement_state.get("enabled")),
         "license_enforcement_source": str(license_enforcement_state.get("source") or "env_default"),
+        "presentation_feature_enabled": bool(presentation_feature_state.get("enabled")),
+        "presentation_feature_source": str(presentation_feature_state.get("source") or "env_default"),
         "license": license_payload,
         "ai_available": ai_available,
         "question_ai_available": question_available,
         "report_ai_available": report_available,
         "report_draft_ai_available": report_draft_available,
         "report_review_ai_available": report_review_available,
-        "report_profile_default": REPORT_V3_PROFILE,
-        "report_profile_options": ["balanced", "quality"],
+        "report_profile_default": level_context.get("report_profile_default") or "balanced",
+        "report_profile_options": level_context.get("allowed_report_profiles") or ["balanced"],
+        **level_context,
         "interview_depth_v2": {
             "enabled": True,
             "modes": mode_names,
@@ -42089,7 +44189,13 @@ def get_report_generation_status(session_id):
     if status and not bool(status.get("active")) and is_report_generation_worker_alive(session_id):
         state = str(status.get("state") or "").strip()
         if state not in {"completed", "failed", "cancelled"}:
-            update_report_generation_status(session_id, "queued", message="报告任务正在处理中...")
+            update_report_generation_status(
+                session_id,
+                "queued",
+                message="报告任务正在处理中...",
+                detail_key="queue_wait",
+                next_hint="等待执行槽位释放后将自动开始",
+            )
             status = get_report_generation_record(session_id)
     if status and bool(status.get("active")):
         queue_snapshot = get_report_generation_worker_snapshot(include_positions=True)
@@ -42170,6 +44276,7 @@ def admin_generate_licenses():
     not_before_at = str(data.get("not_before_at") or "").strip()
     expires_at = str(data.get("expires_at") or "").strip()
     note = str(data.get("note") or "").strip()
+    level_key = data.get("level_key")
 
     if count <= 0:
         return jsonify({"error": "count 必须为正整数"}), 400
@@ -42183,6 +44290,7 @@ def admin_generate_licenses():
             not_before_at=not_before_at,
             expires_at=expires_at,
             note=note,
+            level_key=level_key,
             actor_user_id=int(user_row["id"]) if user_row else None,
         )
     except ValueError as exc:
@@ -42290,6 +44398,55 @@ def admin_follow_license_enforcement_default():
     })
 
 
+@app.route('/api/admin/presentation-feature', methods=['GET'])
+@require_admin
+@require_valid_license
+def admin_get_presentation_feature():
+    return jsonify(get_presentation_feature_state())
+
+
+@app.route('/api/admin/presentation-feature', methods=['POST'])
+@require_admin
+@require_valid_license
+def admin_set_presentation_feature():
+    user_row = get_current_user()
+    data = request.get_json(silent=True) or {}
+    enabled = _parse_bool_like(data.get("enabled"))
+    if enabled is None:
+        return jsonify({"error": "enabled 必须为布尔值"}), 400
+    raw_sync_default = data.get("sync_default", False)
+    sync_default = _parse_bool_like(raw_sync_default)
+    if sync_default is None:
+        return jsonify({"error": "sync_default 必须为布尔值"}), 400
+    payload = set_presentation_feature_override(
+        enabled,
+        actor_user_id=int(user_row["id"]) if user_row else None,
+        sync_default=bool(sync_default),
+    )
+    return jsonify({
+        "success": True,
+        "message": "演示文稿开关已更新，并同步写回 .env 默认值" if sync_default else "演示文稿开关已更新",
+        **payload,
+    })
+
+
+@app.route('/api/admin/presentation-feature/follow-default', methods=['POST'])
+@require_admin
+@require_valid_license
+def admin_follow_presentation_feature_default():
+    user_row = get_current_user()
+    payload = set_presentation_feature_override(
+        None,
+        actor_user_id=int(user_row["id"]) if user_row else None,
+        sync_default=False,
+    )
+    return jsonify({
+        "success": True,
+        "message": "演示文稿开关已恢复跟随默认值",
+        **payload,
+    })
+
+
 @app.route('/api/admin/licenses', methods=['GET'])
 @require_admin
 @require_valid_license
@@ -42302,6 +44459,7 @@ def admin_list_licenses():
             sort_order=request.args.get("sort_order", "desc"),
             batch_id=request.args.get("batch_id", ""),
             status=request.args.get("status", ""),
+            level_key=request.args.get("level_key", ""),
             bound_account=request.args.get("bound_account", ""),
             note=request.args.get("note", ""),
             created_from=request.args.get("created_from", ""),

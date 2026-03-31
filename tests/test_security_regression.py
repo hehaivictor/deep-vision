@@ -1,3 +1,4 @@
+import contextlib
 import io
 import hashlib
 import importlib.util
@@ -75,6 +76,8 @@ class SecurityRegressionTests(unittest.TestCase):
 
         cls.server.app.config["TESTING"] = True
         cls.server.SMS_SEND_COOLDOWN_SECONDS = 0
+        cls.server._use_postgres_shared_meta_storage = lambda: False
+        cls.server._use_pure_cloud_session_storage = lambda: False
 
     @classmethod
     def tearDownClass(cls):
@@ -125,7 +128,7 @@ class SecurityRegressionTests(unittest.TestCase):
     def setUp(self):
         self.client = self.server.app.test_client()
         self.server.LICENSE_ENFORCEMENT_ENABLED = False
-        self.server.set_license_enforcement_override(None)
+        self.server.set_license_enforcement_override(False)
         self.server.SMS_PROVIDER = "mock"
         self.server.SMS_SEND_COOLDOWN_SECONDS = 0
         self.server.SMS_TEST_CODE = ""
@@ -135,6 +138,27 @@ class SecurityRegressionTests(unittest.TestCase):
         self.server.report_scopes_cache["data"] = {}
         self.server.report_solution_shares_cache["signature"] = None
         self.server.report_solution_shares_cache["data"] = {}
+        self.server.session_list_cache.clear()
+        self.server.report_owners_cache["signature"] = None
+        self.server.report_owners_cache["data"] = {}
+        self.server.report_scopes_cache["signature"] = None
+        self.server.report_scopes_cache["data"] = {}
+        self.server.report_solution_shares_cache["signature"] = None
+        self.server.report_solution_shares_cache["data"] = {}
+        for path in self.server.SESSIONS_DIR.glob("*.json"):
+            path.unlink()
+        for path in self.server.REPORTS_DIR.glob("*.md"):
+            path.unlink()
+        for path in (
+            self.server.DELETED_DOCS_FILE,
+            self.server.DELETED_REPORTS_FILE,
+            self.server.REPORT_OWNERS_FILE,
+            self.server.REPORT_SCOPES_FILE,
+            self.server.REPORT_SOLUTION_SHARES_FILE,
+            self.server.PRESENTATION_MAP_FILE,
+        ):
+            if path.exists():
+                path.unlink()
 
     def _register_user(self, client=None):
         target_client = client or self.client
@@ -170,10 +194,12 @@ class SecurityRegressionTests(unittest.TestCase):
         starts_in_days=-1,
         expires_in_days=30,
         note="安全回归 License",
+        level_key="standard",
     ):
         kwargs = {
             "count": count,
             "note": note,
+            "level_key": level_key,
             "actor_user_id": None,
         }
         if use_absolute_window:
@@ -183,6 +209,12 @@ class SecurityRegressionTests(unittest.TestCase):
         else:
             kwargs["duration_days"] = duration_days
         return self.server.generate_license_batch(**kwargs)
+
+    def _activate_license(self, code: str, client=None):
+        target_client = client or self.client
+        response = target_client.post("/api/licenses/activate", json={"code": code})
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        return response.get_json() or {}
 
     def test_anonymous_write_endpoints_are_blocked(self):
         blocked_cases = [
@@ -339,6 +371,7 @@ class SecurityRegressionTests(unittest.TestCase):
     def test_license_gate_blocks_business_routes_but_allows_auth_and_license_endpoints(self):
         self._register_user()
         self.server.LICENSE_ENFORCEMENT_ENABLED = True
+        self.server.set_license_enforcement_override(None)
 
         blocked_resp = self.client.post("/api/sessions", json={"topic": "License 门禁"})
         self.assertEqual(blocked_resp.status_code, 403, blocked_resp.get_data(as_text=True))
@@ -770,6 +803,9 @@ class SecurityRegressionTests(unittest.TestCase):
 
     def test_report_solution_endpoint_enforces_owner(self):
         owner_user = self._register_user()
+        self._activate_license(
+            self._generate_license_batch(level_key="professional", note="方案页专业版")["licenses"][0]["code"]
+        )
         report_name = 'security-solution-report.md'
         report_content = (
             '# DeepVision 访谈报告\n\n'
@@ -807,11 +843,18 @@ class SecurityRegressionTests(unittest.TestCase):
 
         other_client = self.server.app.test_client()
         self._register_user(client=other_client)
+        self._activate_license(
+            self._generate_license_batch(level_key="professional", note="方案页他人专业版")["licenses"][0]["code"],
+            client=other_client,
+        )
         forbidden_resp = other_client.get(f'/api/reports/{report_name}/solution')
         self.assertEqual(forbidden_resp.status_code, 404)
 
     def test_report_solution_share_link_requires_owner_and_allows_public_readonly_access(self):
         owner_user = self._register_user()
+        self._activate_license(
+            self._generate_license_batch(level_key="professional", note="方案分享专业版")["licenses"][0]["code"]
+        )
         report_name = 'security-share-report.md'
         report_content = (
             '# DeepVision 访谈报告\n\n'
@@ -835,6 +878,10 @@ class SecurityRegressionTests(unittest.TestCase):
 
         other_client = self.server.app.test_client()
         self._register_user(client=other_client)
+        self._activate_license(
+            self._generate_license_batch(level_key="professional", note="方案分享他人专业版")["licenses"][0]["code"],
+            client=other_client,
+        )
         forbidden_share_resp = other_client.post(f'/api/reports/{report_name}/solution/share')
         self.assertEqual(forbidden_share_resp.status_code, 404)
 
@@ -1220,7 +1267,9 @@ class SecurityRegressionTests(unittest.TestCase):
     def test_report_v3_runtime_min_review_rounds_by_profile(self):
         env_key = "REPORT_V3_MIN_REVIEW_ROUNDS"
         old_value = os.environ.get(env_key)
+        old_release_conservative_mode = self.server.REPORT_V3_RELEASE_CONSERVATIVE_MODE
         try:
+            self.server.REPORT_V3_RELEASE_CONSERVATIVE_MODE = False
             if env_key in os.environ:
                 del os.environ[env_key]
 
@@ -1242,6 +1291,7 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertEqual(balanced_forced_cfg.get("min_required_review_rounds"), 3)
             self.assertEqual(quality_forced_cfg.get("min_required_review_rounds"), 3)
         finally:
+            self.server.REPORT_V3_RELEASE_CONSERVATIVE_MODE = old_release_conservative_mode
             if old_value is None:
                 os.environ.pop(env_key, None)
             else:
@@ -1288,8 +1338,8 @@ class SecurityRegressionTests(unittest.TestCase):
         ]
         env_backup = {key: os.environ.get(key) for key in env_keys}
         try:
-            for key in env_keys:
-                os.environ.pop(key, None)
+            os.environ["REPORT_V3_QUALITY_FORCE_SINGLE_LANE"] = "true"
+            os.environ["REPORT_V3_QUALITY_PRIMARY_LANE"] = "report"
 
             cfg = self.server.get_report_v3_runtime_config("quality")
             self.assertTrue(cfg.get("quality_force_single_lane"))
@@ -1540,6 +1590,8 @@ class SecurityRegressionTests(unittest.TestCase):
             "REPORT_V3_REVIEW_REPAIR_RETRY_ENABLED",
             "REPORT_V3_REVIEW_REPAIR_MAX_TOKENS",
             "REPORT_V3_REVIEW_REPAIR_TIMEOUT",
+            "REPORT_V3_RELEASE_CONSERVATIVE_MODE",
+            "REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE",
         ]
         env_backup = {key: os.environ.get(key) for key in env_keys}
         fn_keys = [
@@ -1556,6 +1608,11 @@ class SecurityRegressionTests(unittest.TestCase):
         lane_keys = [
             "REPORT_V3_DRAFT_PRIMARY_LANE",
             "REPORT_V3_REVIEW_PRIMARY_LANE",
+            "REPORT_V3_RELEASE_CONSERVATIVE_MODE",
+            "REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE",
+            "REPORT_V3_REVIEW_REPAIR_RETRY_ENABLED",
+            "REPORT_V3_REVIEW_REPAIR_MAX_TOKENS",
+            "REPORT_V3_REVIEW_REPAIR_TIMEOUT",
         ]
         lane_backup = {key: getattr(self.server, key) for key in lane_keys}
         call_types = []
@@ -1566,8 +1623,15 @@ class SecurityRegressionTests(unittest.TestCase):
             os.environ["REPORT_V3_REVIEW_REPAIR_RETRY_ENABLED"] = "true"
             os.environ["REPORT_V3_REVIEW_REPAIR_MAX_TOKENS"] = "1800"
             os.environ["REPORT_V3_REVIEW_REPAIR_TIMEOUT"] = "20"
+            os.environ["REPORT_V3_RELEASE_CONSERVATIVE_MODE"] = "false"
+            os.environ["REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE"] = "false"
             self.server.REPORT_V3_DRAFT_PRIMARY_LANE = "report"
             self.server.REPORT_V3_REVIEW_PRIMARY_LANE = "report"
+            self.server.REPORT_V3_RELEASE_CONSERVATIVE_MODE = False
+            self.server.REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE = False
+            self.server.REPORT_V3_REVIEW_REPAIR_RETRY_ENABLED = True
+            self.server.REPORT_V3_REVIEW_REPAIR_MAX_TOKENS = 1800
+            self.server.REPORT_V3_REVIEW_REPAIR_TIMEOUT = 20.0
 
             self.server.build_report_evidence_pack = lambda _session: {"facts": [{"q_id": "Q1"}], "overall_coverage": 1.0}
             self.server.build_report_draft_prompt_v3 = lambda *_args, **_kwargs: "draft prompt"
@@ -1619,6 +1683,102 @@ class SecurityRegressionTests(unittest.TestCase):
             for key, value in fn_backup.items():
                 setattr(self.server, key, value)
             for key, value in lane_backup.items():
+                setattr(self.server, key, value)
+            for key, value in env_backup.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_generate_report_v3_pipeline_release_conservative_skips_model_review(self):
+        env_keys = [
+            "REPORT_V3_REVIEW_BASE_ROUNDS",
+            "REPORT_V3_QUALITY_FIX_ROUNDS",
+            "REPORT_V3_MIN_REVIEW_ROUNDS",
+            "REPORT_V3_RELEASE_CONSERVATIVE_MODE",
+            "REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE",
+            "REPORT_V3_ALLOW_DRAFT_ALTERNATE_LANE_IN_RELEASE_CONSERVATIVE",
+        ]
+        env_backup = {key: os.environ.get(key) for key in env_keys}
+        fn_keys = [
+            "build_report_evidence_pack",
+            "build_report_draft_prompt_v3",
+            "parse_structured_json_response",
+            "validate_report_draft_v3",
+            "compute_report_quality_meta_v3",
+            "build_quality_gate_issues_v3",
+            "render_report_from_draft_v3",
+            "call_claude",
+        ]
+        fn_backup = {key: getattr(self.server, key) for key in fn_keys}
+        call_types = []
+        draft_call_meta = []
+        try:
+            os.environ["REPORT_V3_REVIEW_BASE_ROUNDS"] = "1"
+            os.environ["REPORT_V3_QUALITY_FIX_ROUNDS"] = "0"
+            os.environ["REPORT_V3_MIN_REVIEW_ROUNDS"] = "1"
+            os.environ["REPORT_V3_RELEASE_CONSERVATIVE_MODE"] = "true"
+            os.environ["REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE"] = "true"
+            os.environ["REPORT_V3_ALLOW_DRAFT_ALTERNATE_LANE_IN_RELEASE_CONSERVATIVE"] = "false"
+
+            self.server.build_report_evidence_pack = lambda _session: {"facts": [{"q_id": "Q1"}], "overall_coverage": 1.0}
+            self.server.build_report_draft_prompt_v3 = lambda *_args, **_kwargs: "draft prompt"
+            self.server.parse_structured_json_response = lambda *_args, **_kwargs: {
+                "overview": "ok",
+                "needs": [],
+                "analysis": {},
+            }
+            self.server.validate_report_draft_v3 = lambda draft, _evidence: (draft, [])
+            self.server.compute_report_quality_meta_v3 = lambda *_args, **_kwargs: {
+                "mode": "v3_structured_reviewed",
+                "evidence_coverage": 0.8,
+                "consistency": 1.0,
+                "actionability": 0.6,
+                "expression_structure": 0.75,
+                "table_readiness": 0.7,
+                "action_acceptance": 0.7,
+                "milestone_coverage": 0.6,
+                "weak_binding_ratio": 0.1,
+            }
+            self.server.build_quality_gate_issues_v3 = lambda *_args, **_kwargs: []
+            self.server.render_report_from_draft_v3 = lambda *_args, **_kwargs: "# release report"
+
+            def _fake_call_claude(_prompt, **kwargs):
+                call_type = str(kwargs.get("call_type", "") or "")
+                call_types.append(call_type)
+                if call_type.startswith("report_v3_draft"):
+                    draft_call_meta.append({
+                        "preferred_lane": kwargs.get("preferred_lane", ""),
+                        "strict_preferred_lane": kwargs.get("strict_preferred_lane", False),
+                        "timeout": kwargs.get("timeout", 0),
+                        "max_tokens": kwargs.get("max_tokens", 0),
+                    })
+                    return '{"overview":"ok","needs":[],"analysis":{}}'
+                if call_type.startswith("report_v3_review_round_"):
+                    raise AssertionError("发布保守档应跳过模型审稿")
+                return ""
+
+            self.server.call_claude = _fake_call_claude
+
+            result = self.server.generate_report_v3_pipeline(
+                {"topic": "测试"},
+                report_profile="balanced",
+                preferred_lane="report",
+            )
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual(result.get("status"), "success")
+            self.assertEqual(result.get("review_rounds_executed"), 0)
+            self.assertEqual(result.get("min_required_review_rounds"), 0)
+            self.assertTrue(result.get("quality_meta", {}).get("review_skipped_by_release_conservative"))
+            self.assertEqual(call_types, ["report_v3_draft"])
+            self.assertEqual(len(draft_call_meta), 1)
+            self.assertEqual(draft_call_meta[0]["preferred_lane"], "report")
+            self.assertTrue(draft_call_meta[0]["strict_preferred_lane"])
+            self.assertLessEqual(float(draft_call_meta[0]["timeout"] or 0), 68.0)
+            self.assertLessEqual(int(draft_call_meta[0]["max_tokens"] or 0), 2600)
+        finally:
+            for key, value in fn_backup.items():
                 setattr(self.server, key, value)
             for key, value in env_backup.items():
                 if value is None:
@@ -3223,6 +3383,228 @@ class SecurityRegressionTests(unittest.TestCase):
             for key, value in backup.items():
                 setattr(self.server, key, value)
 
+    def test_resolve_ai_client_with_lane_strict_report_phase_does_not_switch_to_question(self):
+        keys = [
+            "GATEWAY_CIRCUIT_BREAKER_ENABLED",
+            "GATEWAY_CIRCUIT_FAIL_THRESHOLD",
+            "GATEWAY_CIRCUIT_COOLDOWN_SECONDS",
+            "GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS",
+            "question_ai_client",
+            "report_ai_client",
+            "report_draft_ai_client",
+            "report_review_ai_client",
+            "summary_ai_client",
+            "search_decision_ai_client",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+
+        try:
+            self.server.GATEWAY_CIRCUIT_BREAKER_ENABLED = True
+            self.server.GATEWAY_CIRCUIT_FAIL_THRESHOLD = 2
+            self.server.GATEWAY_CIRCUIT_COOLDOWN_SECONDS = 120.0
+            self.server.GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = 180.0
+            self.server.reset_gateway_circuit_state()
+
+            question_client = object()
+            draft_client = object()
+            review_client = object()
+            self.server.question_ai_client = question_client
+            self.server.report_ai_client = review_client
+            self.server.report_draft_ai_client = draft_client
+            self.server.report_review_ai_client = review_client
+            self.server.summary_ai_client = None
+            self.server.search_decision_ai_client = None
+
+            self.server.record_gateway_lane_failure("report", "http_5xx")
+            self.server.record_gateway_lane_failure("report", "timeout")
+
+            selected_client, selected_lane, meta = self.server.resolve_ai_client_with_lane(
+                call_type="report_v3_draft",
+                preferred_lane="report",
+                strict_preferred_lane=True,
+            )
+            self.assertIsNone(selected_client)
+            self.assertEqual(selected_lane, "")
+            self.assertTrue(meta.get("strict_preferred_lane"))
+            self.assertIn("report", meta.get("skipped_open_lanes", []))
+        finally:
+            self.server.reset_gateway_circuit_state()
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+
+    def test_release_conservative_report_short_circuit_meta_triggers_on_consecutive_timeout(self):
+        keys = [
+            "GATEWAY_CIRCUIT_BREAKER_ENABLED",
+            "GATEWAY_CIRCUIT_FAIL_THRESHOLD",
+            "GATEWAY_CIRCUIT_COOLDOWN_SECONDS",
+            "GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS",
+            "REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED",
+            "REPORT_V3_RELEASE_SHORT_CIRCUIT_TIMEOUT_THRESHOLD",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+
+        try:
+            self.server.GATEWAY_CIRCUIT_BREAKER_ENABLED = True
+            self.server.GATEWAY_CIRCUIT_FAIL_THRESHOLD = 4
+            self.server.GATEWAY_CIRCUIT_COOLDOWN_SECONDS = 120.0
+            self.server.GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = 180.0
+            self.server.REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED = True
+            self.server.REPORT_V3_RELEASE_SHORT_CIRCUIT_TIMEOUT_THRESHOLD = 2
+            self.server.reset_gateway_circuit_state()
+
+            self.server.record_gateway_lane_failure("report_draft", "timeout")
+            self.server.record_gateway_lane_failure("report_draft", "timeout")
+
+            meta = self.server.get_release_conservative_report_short_circuit_meta(
+                {"release_conservative_mode": True},
+                preferred_lane="report",
+            )
+            self.assertTrue(meta.get("triggered"))
+            self.assertEqual(meta.get("reason"), "consecutive_draft_timeout")
+            self.assertEqual(meta.get("consecutive_timeout_count"), 2)
+            self.assertEqual(meta.get("timeout_lane"), "report_draft")
+        finally:
+            self.server.reset_gateway_circuit_state()
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+
+    def test_run_report_generation_job_short_circuits_to_legacy_fallback(self):
+        session_file = self.server.SESSIONS_DIR / "session-short-circuit.json"
+        session_file.write_text(json.dumps({
+            "id": "session-short-circuit",
+            "topic": "报告快速短路测试",
+            "status": "in_progress",
+            "interview_log": [],
+        }, ensure_ascii=False))
+        report_file = self.server.REPORTS_DIR / "short-circuit-report.md"
+
+        keys = [
+            "GATEWAY_CIRCUIT_BREAKER_ENABLED",
+            "GATEWAY_CIRCUIT_FAIL_THRESHOLD",
+            "GATEWAY_CIRCUIT_COOLDOWN_SECONDS",
+            "GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS",
+            "REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED",
+            "REPORT_V3_RELEASE_SHORT_CIRCUIT_TIMEOUT_THRESHOLD",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+        fn_names = [
+            "load_session_for_user",
+            "resolve_ai_client",
+            "generate_report_v3_pipeline",
+            "build_report_prompt_with_options",
+            "call_claude",
+            "save_report_content_and_sync",
+            "unmark_report_as_deleted",
+            "set_report_owner_id",
+            "named_file_lock",
+            "safe_load_session",
+            "ensure_session_owner",
+            "save_session_json_and_sync",
+            "write_solution_sidecar",
+            "ensure_solution_payload_ready",
+            "build_bound_solution_sidecar_snapshot",
+            "build_report_quality_meta_fallback",
+            "generate_interview_appendix",
+            "is_unusable_legacy_report_content",
+            "set_report_generation_metadata",
+            "update_report_generation_status",
+        ]
+        fn_backup = {name: getattr(self.server, name) for name in fn_names}
+        metadata_updates = []
+        status_updates = []
+        legacy_calls = []
+
+        try:
+            self.server.GATEWAY_CIRCUIT_BREAKER_ENABLED = True
+            self.server.GATEWAY_CIRCUIT_FAIL_THRESHOLD = 4
+            self.server.GATEWAY_CIRCUIT_COOLDOWN_SECONDS = 120.0
+            self.server.GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = 180.0
+            self.server.REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED = True
+            self.server.REPORT_V3_RELEASE_SHORT_CIRCUIT_TIMEOUT_THRESHOLD = 2
+            self.server.reset_gateway_circuit_state()
+            self.server.record_gateway_lane_failure("report_draft", "timeout")
+            self.server.record_gateway_lane_failure("report_draft", "timeout")
+
+            session_payload = {
+                "id": "session-short-circuit",
+                "topic": "报告快速短路测试",
+                "status": "in_progress",
+                "interview_log": [],
+            }
+
+            self.server.load_session_for_user = lambda *_args, **_kwargs: (session_file, dict(session_payload), "ok")
+            self.server.resolve_ai_client = lambda *args, **kwargs: object()
+
+            def _unexpected_v3(*_args, **_kwargs):
+                raise AssertionError("命中快速短路后不应再调用 V3 pipeline")
+
+            self.server.generate_report_v3_pipeline = _unexpected_v3
+            self.server.build_report_prompt_with_options = lambda *_args, **_kwargs: "compact fallback prompt"
+
+            def _fake_call_claude(prompt, **kwargs):
+                legacy_calls.append({
+                    "prompt": prompt,
+                    "call_type": kwargs.get("call_type"),
+                    "timeout": kwargs.get("timeout"),
+                    "preferred_lane": kwargs.get("preferred_lane"),
+                    "max_tokens": kwargs.get("max_tokens"),
+                    "retry_on_timeout": kwargs.get("retry_on_timeout"),
+                })
+                return "# 回退报告\n\n## 访谈概述\n\n- 已命中快速短路\n- 直接使用紧凑回退生成"
+
+            self.server.call_claude = _fake_call_claude
+            self.server.save_report_content_and_sync = lambda filename, content: report_file
+            self.server.unmark_report_as_deleted = lambda *_args, **_kwargs: None
+            self.server.set_report_owner_id = lambda *_args, **_kwargs: None
+            self.server.named_file_lock = lambda *_args, **_kwargs: contextlib.nullcontext()
+            self.server.safe_load_session = lambda _path: dict(session_payload)
+            self.server.ensure_session_owner = lambda *_args, **_kwargs: True
+            self.server.save_session_json_and_sync = lambda *_args, **_kwargs: None
+            self.server.write_solution_sidecar = lambda *_args, **_kwargs: None
+            self.server.ensure_solution_payload_ready = lambda *_args, **_kwargs: None
+            self.server.build_bound_solution_sidecar_snapshot = lambda *_args, **_kwargs: {}
+            self.server.build_report_quality_meta_fallback = lambda *_args, **_kwargs: {"mode": "legacy_ai_fallback"}
+            self.server.generate_interview_appendix = lambda _session: ""
+            self.server.is_unusable_legacy_report_content = lambda _content: False
+            self.server.set_report_generation_metadata = lambda _sid, updates=None: metadata_updates.append(dict(updates or {}))
+            self.server.update_report_generation_status = lambda _sid, stage, message=None, active=True, **_kwargs: status_updates.append({
+                "stage": stage,
+                "message": message,
+                "active": active,
+                "detail_key": _kwargs.get("detail_key", ""),
+                "next_hint": _kwargs.get("next_hint", ""),
+            })
+
+            self.server.run_report_generation_job("session-short-circuit", 1, "req-short-circuit", "balanced", "generate")
+
+            self.assertEqual(len(legacy_calls), 1)
+            self.assertEqual(legacy_calls[0]["call_type"], "report_legacy_fallback_short_circuit")
+            self.assertEqual(
+                legacy_calls[0]["preferred_lane"],
+                self.server.REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_LANE,
+            )
+            self.assertLessEqual(
+                float(legacy_calls[0]["timeout"] or 0.0),
+                float(self.server.REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_TIMEOUT) + 8.1,
+            )
+            self.assertLessEqual(
+                int(legacy_calls[0]["max_tokens"] or 0),
+                int(self.server.REPORT_V3_RELEASE_SHORT_CIRCUIT_FALLBACK_MAX_TOKENS),
+            )
+            self.assertFalse(bool(legacy_calls[0]["retry_on_timeout"]))
+            self.assertTrue(any("直接回退标准报告生成" in str(item.get("message", "")) for item in status_updates))
+            runtime_summary_update = next(
+                (item for item in reversed(metadata_updates) if isinstance(item.get("runtime_summary"), dict)),
+                {},
+            )
+            self.assertEqual(runtime_summary_update.get("runtime_summary", {}).get("path"), "legacy_fallback_short_circuit")
+        finally:
+            self.server.reset_gateway_circuit_state()
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+            for name, value in fn_backup.items():
+                setattr(self.server, name, value)
+
     def test_resolve_ai_client_with_lane_prefers_report_phase_clients(self):
         keys = [
             "question_ai_client",
@@ -3371,10 +3753,38 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertEqual(meta.get("failure_reason"), "empty_text")
             self.assertFalse(meta.get("success"))
             self.assertEqual(meta.get("timeout_seconds"), 12.0)
-            self.assertEqual(meta.get("max_tokens"), 64)
         finally:
             for key, value in backup.items():
                 setattr(self.server, key, value)
+
+    def test_create_anthropic_client_disables_sdk_retries(self):
+        original_constructor = self.server.anthropic.Anthropic
+        captured = {}
+
+        class _DummyClient:
+            pass
+
+        def _fake_constructor(**kwargs):
+            captured.update(kwargs)
+            return _DummyClient()
+
+        try:
+            self.server.anthropic.Anthropic = _fake_constructor
+            client = self.server._create_anthropic_client(
+                api_key="test-key",
+                base_url="https://example.com/anthropic",
+                use_bearer_auth=True,
+            )
+            self.assertIsInstance(client, _DummyClient)
+            self.assertEqual(captured.get("api_key"), "test-key")
+            self.assertEqual(captured.get("base_url"), "https://example.com/anthropic")
+            self.assertEqual(captured.get("max_retries"), 0)
+            self.assertEqual(
+                captured.get("default_headers"),
+                {"Authorization": "Bearer test-key"},
+            )
+        finally:
+            self.server.anthropic.Anthropic = original_constructor
 
     def test_format_question_tier_attempts_for_log_uses_detailed_reason_labels(self):
         detail = self.server._format_question_tier_attempts_for_log({

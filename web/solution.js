@@ -481,6 +481,7 @@ async function solutionApiCall(endpoint, options = {}) {
     if (!response.ok) {
         const err = new Error(payload?.error || payload?.detail || `HTTP ${response.status}`);
         err.status = response.status;
+        err.payload = payload || {};
         throw err;
     }
     return payload || {};
@@ -3612,7 +3613,7 @@ function solutionRender(payload) {
     shell.hidden = false;
     const actionBar = document.getElementById('solution-action-bar');
     if (actionBar) {
-        actionBar.hidden = solutionIsPublicShareMode();
+        actionBar.hidden = solutionIsPublicShareMode() || !Boolean(payload?.viewer_capabilities?.solution_share);
     }
     solutionRenderTOC();
     solutionUpdateTocLinkLayout();
@@ -3624,7 +3625,7 @@ function solutionRender(payload) {
     solutionRegisterCountUp();
     solutionRegisterSpotlight();
     solutionRegisterReveals();
-    solutionBindActionBar();
+    solutionBindActionBar(payload?.viewer_capabilities || {});
     window.addEventListener('resize', solutionUpdateTocLinkLayout, { passive: true });
     if (document.fonts?.ready) {
         document.fonts.ready.then(() => {
@@ -3720,9 +3721,9 @@ function solutionBindSharePanel() {
     }
 }
 
-function solutionBindActionBar() {
+function solutionBindActionBar(viewerCapabilities = {}) {
     const shareBtn = document.getElementById('btn-share');
-    if (!shareBtn || solutionIsPublicShareMode()) return;
+    if (!shareBtn || solutionIsPublicShareMode() || !Boolean(viewerCapabilities?.solution_share)) return;
     if (shareBtn.dataset.bound === '1') return;
     shareBtn.dataset.bound = '1';
     solutionBindSharePanel();
@@ -3750,6 +3751,7 @@ function solutionBindActionBar() {
             solutionShowSharePanel(shareUrl, { copied });
         } catch (error) {
             console.error('分享方案失败:', error);
+            window.alert(error?.payload?.error || error?.message || '分享方案失败');
         } finally {
             shareBtn.dataset.busy = '0';
             solutionResetShareButton(shareBtn, originalHTML, false);
@@ -3774,6 +3776,10 @@ async function initSolutionPage() {
     } catch (error) {
         if (error.status === 401 && !shareToken) {
             solutionSetState('登录已失效', '请先返回主站登录，再重新打开方案页。', '需要登录');
+            return;
+        }
+        if (error.status === 403 && !shareToken && error?.payload?.error_code === 'level_capability_denied') {
+            solutionSetState('当前等级未开放方案页', error?.payload?.error || '升级后可查看方案页。', '权限受限');
             return;
         }
         if (error.status === 404) {

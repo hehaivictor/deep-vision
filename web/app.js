@@ -50,6 +50,10 @@ function deepVision() {
         authAccountSuggestionsOpen: false,
         authAccountSuggestionsCloseTimer: null,
         currentUser: null,
+        currentLevelInfo: null,
+        userCapabilities: {},
+        allowedReportProfiles: ['balanced'],
+        presentationFeatureEnabled: true,
         licenseChecking: false,
         licenseEnforcementEnabled: false,
         hasValidLicense: false,
@@ -75,11 +79,13 @@ function deepVision() {
         adminLicenseSummaryLoading: false,
         adminLicenseSummaryError: '',
         adminLicenseEnforcementMutating: false,
+        adminPresentationFeatureMutating: false,
         adminLicenseList: [],
         adminLicenseListLoading: false,
         adminLicenseListError: '',
         adminLicenseFilters: {
             status: '',
+            level_key: '',
             batch_id: '',
             bound_account: '',
             note: '',
@@ -118,6 +124,7 @@ function deepVision() {
         adminLicenseGenerateForm: {
             count: 10,
             duration_days: 30,
+            level_key: 'standard',
             note: '',
         },
         adminLicenseGeneratedBatch: null,
@@ -684,13 +691,16 @@ function deepVision() {
                 return;
             }
 
-            await this.refreshLicenseStatus({ showToast: false });
+            const hasStatusLicensePayload = this.serverStatus?.authenticated === true && Boolean(this.serverStatus?.license);
+            if (!hasStatusLicensePayload) {
+                await this.refreshLicenseStatus({ showToast: false });
+            }
             this.authChecking = false;
             await this.consumeAuthRedirectToast();
             if (!this.authReady || this.licenseChecking || this.licenseGateActive) {
                 return;
             }
-            this.bootstrapAuthenticatedApp().catch((error) => {
+            this.bootstrapAuthenticatedApp({ skipLicenseRefresh: hasStatusLicensePayload }).catch((error) => {
                 console.error('登录后初始化失败:', error);
             });
 
@@ -710,9 +720,192 @@ function deepVision() {
             return 'balanced';
         },
 
+        buildDefaultLevelInfo() {
+            return {
+                key: 'experience',
+                name: '体验版',
+                description: '适合体验核心报告生成能力',
+                sort_order: 10,
+            };
+        },
+
+        buildDefaultUserCapabilities() {
+            return {
+                'report.generate': true,
+                'report.profile.quality': false,
+                'report.export.basic': false,
+                'report.export.docx': false,
+                'report.export.appendix': false,
+                'solution.view': false,
+                'solution.share': false,
+                'presentation.generate': false,
+            };
+        },
+
+        normalizeAllowedReportProfiles(profiles) {
+            const normalized = [];
+            if (Array.isArray(profiles)) {
+                profiles.forEach((item) => {
+                    const profile = this.normalizeReportProfile(item, '');
+                    if (profile && !normalized.includes(profile)) {
+                        normalized.push(profile);
+                    }
+                });
+            }
+            return normalized.length > 0 ? normalized : ['balanced'];
+        },
+
+        resetUserLevelState() {
+            this.currentLevelInfo = this.buildDefaultLevelInfo();
+            this.userCapabilities = this.buildDefaultUserCapabilities();
+            this.allowedReportProfiles = ['balanced'];
+            this.reportProfileDefault = 'balanced';
+            if (!this.canUseReportProfile(this.reportProfile)) {
+                this.reportProfile = 'balanced';
+            }
+            if (!this.canGeneratePresentation()) {
+                this.presentationPdfUrl = '';
+                this.presentationLocalUrl = '';
+                this.presentationExecutionId = '';
+            }
+        },
+
+        applyPresentationFeaturePayload(payload = {}) {
+            const enabled = payload?.presentation_feature_enabled !== false;
+            this.presentationFeatureEnabled = enabled;
+            if (this.serverStatus && typeof this.serverStatus === 'object') {
+                this.serverStatus = {
+                    ...this.serverStatus,
+                    presentation_feature_enabled: enabled,
+                    presentation_feature_source: String(payload?.presentation_feature_source || this.serverStatus.presentation_feature_source || 'env_default'),
+                };
+            }
+            if (!enabled) {
+                this.presentationPdfUrl = '';
+                this.presentationLocalUrl = '';
+                this.presentationExecutionId = '';
+                this.stopPresentationPolling();
+                this.resetPresentationProgressFeedback();
+            }
+        },
+
+        applyUserLevelPayload(payload = {}) {
+            const incomingLevel = payload?.level && typeof payload.level === 'object' ? payload.level : {};
+            const levelKey = String(incomingLevel?.key || '').trim().toLowerCase() || 'experience';
+            const defaultLevelInfo = this.buildDefaultLevelInfo();
+            this.currentLevelInfo = {
+                ...defaultLevelInfo,
+                ...incomingLevel,
+                key: ['experience', 'standard', 'professional'].includes(levelKey) ? levelKey : defaultLevelInfo.key,
+            };
+
+            const defaultCapabilities = this.buildDefaultUserCapabilities();
+            const capabilityPayload = payload?.capabilities && typeof payload.capabilities === 'object' ? payload.capabilities : {};
+            this.userCapabilities = Object.fromEntries(
+                Object.entries(defaultCapabilities).map(([key, fallback]) => [key, Boolean(capabilityPayload?.[key] ?? fallback)])
+            );
+
+            this.allowedReportProfiles = this.normalizeAllowedReportProfiles(payload?.allowed_report_profiles);
+            const preferredProfile = this.normalizeReportProfile(
+                payload?.report_profile_default,
+                this.serverStatus?.report_profile_default || this.reportProfileDefault || 'balanced'
+            ) || 'balanced';
+            this.reportProfileDefault = this.allowedReportProfiles.includes(preferredProfile)
+                ? preferredProfile
+                : (this.allowedReportProfiles[0] || 'balanced');
+            if (!this.canUseReportProfile(this.reportProfile)) {
+                this.reportProfile = this.reportProfileDefault;
+            }
+
+            if (!this.canGeneratePresentation()) {
+                this.presentationPdfUrl = '';
+                this.presentationLocalUrl = '';
+                this.presentationExecutionId = '';
+                this.stopPresentationPolling();
+                this.resetPresentationProgressFeedback();
+            }
+
+            if (this.selectedReport && this.reportContent && !this.reportDetailEnhancing) {
+                this.$nextTick(() => this.scheduleReportDetailEnhancement());
+            }
+        },
+
+        hasLevelCapability(capabilityKey = '') {
+            const normalized = String(capabilityKey || '').trim();
+            if (!normalized) return false;
+            return Boolean(this.userCapabilities?.[normalized]);
+        },
+
+        canUseReportProfile(profile) {
+            const normalized = this.normalizeReportProfile(profile, '');
+            return !!normalized && Array.isArray(this.allowedReportProfiles) && this.allowedReportProfiles.includes(normalized);
+        },
+
+        canGenerateQualityReport() {
+            return this.hasLevelCapability('report.profile.quality');
+        },
+
+        canExportFormat(scope = 'report', format = 'md') {
+            const normalizedScope = scope === 'appendix' ? 'appendix' : 'report';
+            const normalizedFormat = String(format || '').trim().toLowerCase();
+            if (normalizedScope === 'appendix') {
+                return this.hasLevelCapability('report.export.appendix');
+            }
+            if (normalizedFormat === 'docx') {
+                return this.hasLevelCapability('report.export.docx');
+            }
+            if (normalizedFormat === 'md' || normalizedFormat === 'pdf') {
+                return this.hasLevelCapability('report.export.basic');
+            }
+            return false;
+        },
+
+        canExportReportBasic() {
+            return this.hasLevelCapability('report.export.basic');
+        },
+
+        canExportReportDocx() {
+            return this.hasLevelCapability('report.export.docx');
+        },
+
+        canExportAppendix() {
+            return this.hasLevelCapability('report.export.appendix');
+        },
+
+        hasAnyReportDownloadOption() {
+            return this.canExportReportBasic() || this.canExportReportDocx();
+        },
+
+        canViewSolutionPage() {
+            return this.hasLevelCapability('solution.view');
+        },
+
+        canShareSolutionPage() {
+            return this.hasLevelCapability('solution.share');
+        },
+
+        canGeneratePresentation() {
+            return this.hasLevelCapability('presentation.generate');
+        },
+
+        getLevelCapabilityDeniedMessage(payload = {}) {
+            const requiredLevelName = String(payload?.required_level?.name || '').trim();
+            if (requiredLevelName) {
+                return `当前功能需升级到${requiredLevelName}后使用`;
+            }
+            return String(payload?.upgrade_hint || payload?.error || '当前用户级别暂未开放该功能').trim() || '当前用户级别暂未开放该功能';
+        },
+
         async checkAuthStatus() {
             if (this.serverStatus && this.serverStatus.authenticated === false) {
                 this.enterLoginState({ showToast: false });
+                return;
+            }
+            if (this.serverStatus?.authenticated === true && this.serverStatus?.user) {
+                this.currentUser = this.serverStatus.user || null;
+                this.applyUserLevelPayload(this.serverStatus || {});
+                this.applyPresentationFeaturePayload(this.serverStatus || {});
+                this.authReady = Boolean(this.currentUser);
                 return;
             }
             try {
@@ -721,6 +914,8 @@ function deepVision() {
                     expectedStatuses: [401]
                 });
                 this.currentUser = result?.user || null;
+                this.applyUserLevelPayload(result || {});
+                this.applyPresentationFeaturePayload(result || {});
                 this.authReady = Boolean(this.currentUser);
             } catch (error) {
                 this.enterLoginState({ showToast: false });
@@ -728,6 +923,7 @@ function deepVision() {
         },
 
         resetLicenseState() {
+            this.resetUserLevelState();
             this.licenseChecking = false;
             this.licenseEnforcementEnabled = Boolean(this.serverStatus?.license_enforcement_enabled);
             this.hasValidLicense = false;
@@ -756,6 +952,7 @@ function deepVision() {
             this.licenseInfo = payload?.license || null;
             this.licenseGateActive = enforcementEnabled && !hasValidLicense;
             this.licenseGateMessage = String(message || '').trim();
+            this.applyUserLevelPayload(payload || {});
             if (!preserveInput && hasValidLicense) {
                 this.licenseActivationForm.code = '';
                 this.licenseActivationError = '';
@@ -1525,6 +1722,7 @@ function deepVision() {
             return {
                 count: 10,
                 duration_days: 30,
+                level_key: 'standard',
                 note: '',
             };
         },
@@ -1563,6 +1761,7 @@ function deepVision() {
             this.adminLicenseListError = '';
             this.adminLicenseFilters = {
                 status: '',
+                level_key: '',
                 batch_id: '',
                 bound_account: '',
                 note: '',
@@ -1869,6 +2068,9 @@ function deepVision() {
                 if (this.adminLicenseSummary?.enforcement) {
                     this.applyAdminLicenseEnforcementPayload(this.adminLicenseSummary.enforcement);
                 }
+                if (this.adminLicenseSummary?.presentation_feature) {
+                    this.applyAdminPresentationFeaturePayload(this.adminLicenseSummary.presentation_feature);
+                }
                 return this.adminLicenseSummary;
             } catch (error) {
                 const message = error?.message || 'License 概览加载失败';
@@ -1988,6 +2190,7 @@ function deepVision() {
                 revoked: '已撤销',
                 replaced: '已替换',
                 enforcement_changed: '开关变更',
+                presentation_feature_changed: '演示开关变更',
             };
             return labels[normalized] || (normalized || '未知事件');
         },
@@ -2030,6 +2233,43 @@ function deepVision() {
                 this.adminLicenseSummary = {
                     ...this.adminLicenseSummary,
                     enforcement: payload,
+                };
+            }
+        },
+
+        getAdminPresentationFeatureState() {
+            const feature = this.adminLicenseSummary?.presentation_feature;
+            return feature && typeof feature === 'object' ? feature : null;
+        },
+
+        getAdminPresentationFeatureOverrideLabel() {
+            const feature = this.getAdminPresentationFeatureState();
+            if (!feature || feature.override_enabled === null || feature.override_enabled === undefined) {
+                return '跟随默认值';
+            }
+            return feature.override_enabled ? '强制开启' : '强制关闭';
+        },
+
+        getAdminPresentationFeatureSourceLabel() {
+            const feature = this.getAdminPresentationFeatureState();
+            if (!feature) {
+                return '-';
+            }
+            if (feature.source === 'runtime_override') {
+                return '运行时覆盖生效';
+            }
+            return '默认值生效';
+        },
+
+        applyAdminPresentationFeaturePayload(payload = {}) {
+            this.applyPresentationFeaturePayload({
+                presentation_feature_enabled: !!payload?.enabled,
+                presentation_feature_source: String(payload?.source || 'env_default'),
+            });
+            if (this.adminLicenseSummary && typeof this.adminLicenseSummary === 'object') {
+                this.adminLicenseSummary = {
+                    ...this.adminLicenseSummary,
+                    presentation_feature: payload,
                 };
             }
         },
@@ -2085,6 +2325,7 @@ function deepVision() {
         async resetAdminLicenseFilters() {
             this.adminLicenseFilters = {
                 status: '',
+                level_key: '',
                 batch_id: '',
                 bound_account: '',
                 note: '',
@@ -2206,6 +2447,48 @@ function deepVision() {
             }
         },
 
+        async toggleAdminPresentationFeature(enabled) {
+            if (!this.canManageAdminLicenses()) {
+                this.showToast('当前账号需先绑定有效 License，才能切换演示文稿开关', 'warning');
+                return;
+            }
+            this.adminPresentationFeatureMutating = true;
+            try {
+                const payload = await this.apiCall('/admin/presentation-feature', {
+                    method: 'POST',
+                    body: JSON.stringify({ enabled: !!enabled, sync_default: true }),
+                    skipAuthRedirect: true,
+                });
+                this.applyAdminPresentationFeaturePayload(payload);
+                this.showToast(payload?.message || '演示文稿开关已更新', 'success');
+            } catch (error) {
+                this.showToast(error?.message || '演示文稿开关更新失败', 'error');
+            } finally {
+                this.adminPresentationFeatureMutating = false;
+            }
+        },
+
+        async followAdminPresentationFeatureDefault() {
+            if (!this.canManageAdminLicenses()) {
+                this.showToast('当前账号需先绑定有效 License，才能调整演示文稿开关', 'warning');
+                return;
+            }
+            this.adminPresentationFeatureMutating = true;
+            try {
+                const payload = await this.apiCall('/admin/presentation-feature/follow-default', {
+                    method: 'POST',
+                    body: JSON.stringify({}),
+                    skipAuthRedirect: true,
+                });
+                this.applyAdminPresentationFeaturePayload(payload);
+                this.showToast(payload?.message || '已恢复跟随默认值', 'success');
+            } catch (error) {
+                this.showToast(error?.message || '恢复默认跟随失败', 'error');
+            } finally {
+                this.adminPresentationFeatureMutating = false;
+            }
+        },
+
         async generateAdminLicenseBatch() {
             if (!this.canManageAdminLicenses()) {
                 this.showToast('当前账号需先绑定有效 License，才能生成 License', 'warning');
@@ -2228,6 +2511,7 @@ function deepVision() {
                     body: JSON.stringify({
                         count,
                         duration_days: durationDays,
+                        level_key: String(this.adminLicenseGenerateForm?.level_key || 'standard').trim() || 'standard',
                         note: String(this.adminLicenseGenerateForm?.note || '').trim(),
                     }),
                     skipAuthRedirect: true,
@@ -2290,11 +2574,13 @@ function deepVision() {
             let filename = '';
             if (format === 'csv') {
                 const rows = [
-                    ['id', 'code', 'masked_code', 'duration_days', 'not_before_at', 'expires_at'],
+                    ['id', 'code', 'masked_code', 'level_key', 'level_name', 'duration_days', 'not_before_at', 'expires_at'],
                     ...licenses.map(item => [
                         item?.id ?? '',
                         item?.code ?? '',
                         item?.masked_code ?? '',
+                        item?.level_key ?? payload?.level_key ?? '',
+                        item?.level_name ?? payload?.level_name ?? '',
                         item?.duration_days ?? '',
                         item?.not_before_at ?? '',
                         item?.expires_at ?? '',
@@ -4137,6 +4423,8 @@ function deepVision() {
                 if (response.ok) {
                     this.serverStatus = await response.json();
                     this.licenseEnforcementEnabled = Boolean(this.serverStatus?.license_enforcement_enabled);
+                    this.applyUserLevelPayload(this.serverStatus || {});
+                    this.applyPresentationFeaturePayload(this.serverStatus || {});
                     if (this.serverStatus?.license) {
                         this.applyLicenseStatusPayload(this.serverStatus.license);
                     }
@@ -4159,8 +4447,12 @@ function deepVision() {
                         this.serverStatus?.report_profile_default,
                         this.reportProfileDefault || 'balanced'
                     ) || 'balanced';
-                    this.reportProfileDefault = reportProfileDefault;
-                    this.reportProfile = reportProfileDefault;
+                    this.reportProfileDefault = this.canUseReportProfile(reportProfileDefault)
+                        ? reportProfileDefault
+                        : (this.allowedReportProfiles[0] || 'balanced');
+                    if (!this.canUseReportProfile(this.reportProfile)) {
+                        this.reportProfile = this.reportProfileDefault;
+                    }
                     const depthConfig = this.serverStatus?.interview_depth_v2 || {};
                     this.interviewDepthV2 = {
                         enabled: true,
@@ -4614,6 +4906,9 @@ function deepVision() {
                     try {
                         errorPayload = await response.json();
                         errorMsg = errorPayload.error || errorPayload.detail || errorMsg;
+                        if (String(errorPayload?.error_code || '').trim() === 'level_capability_denied') {
+                            errorMsg = this.getLevelCapabilityDeniedMessage(errorPayload);
+                        }
                     } catch (parseError) {
                         // 响应非 JSON 格式，使用 HTTP 状态信息
                     }
@@ -4889,6 +5184,9 @@ function deepVision() {
 
             try {
                 await this.apiCall(`/reports/${encodeURIComponent(this.reportToDelete)}`, { method: 'DELETE' });
+                if (this.selectedReportMeta?.name === this.reportToDelete) {
+                    this.resetSelectedReportDetail();
+                }
                 this.reports = this.reports.filter(r => r.name !== this.reportToDelete);
                 this.filterReports();
                 this.showDeleteReportModal = false;
@@ -5203,6 +5501,18 @@ function deepVision() {
         },
 
         closeSelectedReportDetail() {
+            this.reportDetailEnhancing = false;
+            this.selectedReport = null;
+            this.presentationPdfUrl = '';
+            this.presentationLocalUrl = '';
+            this.stopPresentationPolling();
+            this.resetPresentationProgressFeedback();
+            if (this.reportDetailModel) {
+                this.reportDetailModel.mobileNavOpen = false;
+            }
+        },
+
+        resetSelectedReportDetail() {
             this.cleanupReportDetailEnhancements();
             this.reportDetailEnhancing = false;
             this.selectedReport = null;
@@ -5370,10 +5680,10 @@ function deepVision() {
                 const skippedReports = result.skipped_reports?.length || 0;
                 const missingReports = result.missing_reports?.length || 0;
 
-                const selectedReportName = this.selectedReport;
+                const selectedReportName = this.selectedReport || this.selectedReportMeta?.name || '';
                 await this.loadReports();
                 if (selectedReportName && !this.reports.find(report => report.name === selectedReportName)) {
-                    this.closeSelectedReportDetail();
+                    this.resetSelectedReportDetail();
                 }
 
                 this.closeBatchDeleteModal();
@@ -6988,7 +7298,7 @@ function deepVision() {
                     data.report_profile,
                     this.reportProfileDefault || 'balanced'
                 );
-                if (profileFromServer) {
+                if (profileFromServer && this.canUseReportProfile(profileFromServer)) {
                     this.reportProfile = profileFromServer;
                 }
             }
@@ -7326,12 +7636,16 @@ function deepVision() {
 
         async requestGenerateReportWithRetry(sessionId, action = 'generate', maxRetries = 1) {
             let lastError = null;
+            const reportProfile = this.canUseReportProfile(this.reportProfile)
+                ? this.reportProfile
+                : this.reportProfileDefault;
             for (let attempt = 0; attempt <= maxRetries; attempt++) {
                 try {
                     return await this.apiCall(`/sessions/${sessionId}/generate-report`, {
                         method: 'POST',
                         body: JSON.stringify({
-                            action: action === 'regenerate' ? 'regenerate' : 'generate'
+                            action: action === 'regenerate' ? 'regenerate' : 'generate',
+                            report_profile: reportProfile,
                         })
                     });
                 } catch (error) {
@@ -7351,6 +7665,9 @@ function deepVision() {
             if (!this.currentSession || this.isGeneratingCurrentReport()) return;
             const sessionId = this.currentSession?.session_id || '';
             if (!sessionId) return;
+            if (!this.canUseReportProfile(this.reportProfile)) {
+                this.reportProfile = this.reportProfileDefault;
+            }
 
             this.generatingReport = true;
             this.generatingReportSessionId = sessionId;
@@ -7432,18 +7749,38 @@ function deepVision() {
         },
 
         async viewReport(filename) {
+            const targetFilename = String(filename || '').trim();
+            if (!targetFilename) return;
+
+            const nextMeta = this.buildSelectedReportMeta(targetFilename);
+            const canReuseCurrentDetail = (
+                !this.selectedReport
+                && this.selectedReportMeta?.name === targetFilename
+                && !!this.reportContent
+                && !this.reportDetailEnhancing
+            );
+            if (canReuseCurrentDetail) {
+                this.selectedReport = targetFilename;
+                this.selectedReportMeta = nextMeta;
+                await this.fetchPresentationStatus();
+                return;
+            }
             try {
                 this.cleanupReportDetailEnhancements();
                 this.stopPresentationPolling();
+                this.selectedReport = targetFilename;
+                this.selectedReportMeta = nextMeta;
+                this.reportContent = '';
+                this.presentationPdfUrl = '';
+                this.presentationLocalUrl = '';
+                this.resetPresentationProgressFeedback();
                 this.reportDetailEnhancing = true;
-                const data = await this.apiCall(`/reports/${encodeURIComponent(filename)}`);
+                const data = await this.apiCall(`/reports/${encodeURIComponent(targetFilename)}`);
                 this.reportContent = data.content;
-                this.selectedReport = filename;
-                this.selectedReportMeta = this.buildSelectedReportMeta(filename);
                 this.$nextTick(() => this.scheduleReportDetailEnhancement());
                 await this.fetchPresentationStatus();
             } catch (error) {
-                this.reportDetailEnhancing = false;
+                this.resetSelectedReportDetail();
                 this.showToast('加载报告失败', 'error');
             }
         },
@@ -7458,6 +7795,12 @@ function deepVision() {
         },
 
         openSolutionPage(reportName = '') {
+            if (!this.canViewSolutionPage()) {
+                this.showToast(this.getLevelCapabilityDeniedMessage({
+                    required_level: { name: '专业版' }
+                }), 'warning');
+                return;
+            }
             const url = this.buildSolutionPageUrl(reportName);
             if (!url) return;
             const opened = this.openUrl(url);
@@ -7467,6 +7810,12 @@ function deepVision() {
         },
 
         async fetchPresentationStatus() {
+            if (!this.canGeneratePresentation()) {
+                this.presentationPdfUrl = '';
+                this.presentationLocalUrl = '';
+                this.resetPresentationProgressFeedback();
+                return;
+            }
             if (!this.selectedReport) {
                 this.presentationPdfUrl = '';
                 this.presentationLocalUrl = '';
@@ -7867,6 +8216,12 @@ function deepVision() {
         },
 
         openPresentationPdf() {
+            if (!this.canGeneratePresentation()) {
+                this.showToast(this.getLevelCapabilityDeniedMessage({
+                    required_level: { name: '专业版' }
+                }), 'warning');
+                return;
+            }
             if (!this.presentationPdfUrl) {
                 this.showToast('未找到可用的演示文稿链接', 'warning');
                 return;
@@ -8145,6 +8500,12 @@ function deepVision() {
         async generatePresentation() {
             const targetReportName = String(this.selectedReport || '').trim();
             if (!targetReportName) return;
+            if (!this.canGeneratePresentation()) {
+                this.showToast(this.getLevelCapabilityDeniedMessage({
+                    required_level: { name: '专业版' }
+                }), 'warning');
+                return;
+            }
             if (this.isPresentationGeneratingCurrentReport()) return;
             if (this.generatingSlides) {
                 this.showToast('正在提交演示文稿生成任务，请稍候', 'warning');
@@ -9058,6 +9419,9 @@ function deepVision() {
             if (existingWrap) {
                 existingWrap.remove();
             }
+            if (!this.canExportAppendix()) {
+                return;
+            }
 
             const menuWrap = document.createElement('div');
             menuWrap.className = 'dv-appendix-export-wrap';
@@ -9123,7 +9487,11 @@ function deepVision() {
                     iconClass: 'is-docx',
                     iconPath: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z'
                 },
-            ];
+            ].filter((item) => this.canExportFormat('appendix', item.format));
+
+            if (options.length === 0) {
+                return;
+            }
 
             options.forEach((item, index) => {
                 const btn = document.createElement('button');
@@ -9188,6 +9556,10 @@ function deepVision() {
 
         async downloadReport(format = 'md') {
             if (!this.reportContent || !this.selectedReport) return;
+            if (!this.canExportFormat('report', format)) {
+                this.showToast('当前用户级别暂未开放该导出格式', 'warning');
+                return;
+            }
 
             const baseFilename = this.selectedReport.replace(/\.md$/, '');
 
@@ -9209,6 +9581,10 @@ function deepVision() {
         async downloadAppendix(format = 'md') {
             if (!this.reportContent || !this.selectedReport) {
                 this.showToast('暂无可导出的附录内容', 'error');
+                return;
+            }
+            if (!this.canExportFormat('appendix', format)) {
+                this.showToast('当前用户级别暂未开放附录导出', 'warning');
                 return;
             }
 
@@ -9900,6 +10276,70 @@ function deepVision() {
             return true;
         },
 
+        buildExportSuccessMessage(label, scope = 'report', archived = false) {
+            const prefix = scope === 'appendix' ? `附录 ${label}` : label;
+            return archived ? `${prefix}已下载，并已同步云端归档` : `${prefix}已下载`;
+        },
+
+        async archiveExportBlob(blob, filenameWithExt, options = {}) {
+            const reportName = String(options.reportName || this.selectedReport || '').trim();
+            if (!(blob instanceof Blob) || blob.size <= 0 || !reportName) {
+                return { ok: false, skipped: true };
+            }
+
+            const scope = options.scope === 'appendix' ? 'appendix' : 'report';
+            const format = String(options.format || '').trim().toLowerCase();
+            if (!format) {
+                return { ok: false, skipped: true };
+            }
+
+            const formData = new FormData();
+            formData.append('file', blob, filenameWithExt);
+            formData.append('scope', scope);
+            formData.append('format', format);
+            formData.append('source', 'web_export');
+
+            try {
+                const response = await fetch(
+                    `${API_BASE}/reports/${encodeURIComponent(reportName)}/exports`,
+                    {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        body: formData,
+                    }
+                );
+                if (!response.ok) {
+                    let errorMessage = '';
+                    try {
+                        const payload = await response.json();
+                        errorMessage = payload?.error || '';
+                    } catch (_error) {
+                        errorMessage = '';
+                    }
+                    if (response.status === 401) {
+                        this.enterLoginState({
+                            showToast: true,
+                            toastMessage: '登录状态已失效，请重新登录',
+                            toastType: 'warning'
+                        });
+                    }
+                    console.warn('导出资产归档失败', {
+                        status: response.status,
+                        reportName,
+                        scope,
+                        format,
+                        error: errorMessage
+                    });
+                    return { ok: false, status: response.status, error: errorMessage };
+                }
+                const payload = await response.json();
+                return { ok: true, payload };
+            } catch (error) {
+                console.warn('导出资产归档请求失败', error);
+                return { ok: false, error: error?.message || '请求失败' };
+            }
+        },
+
         async fetchAppendixPdfBlobFromServer() {
             if (!this.selectedReport) {
                 return { ok: false, error: '未选中报告' };
@@ -9973,7 +10413,11 @@ function deepVision() {
             const blob = new Blob([exportContent], { type: 'text/markdown;charset=utf-8' });
             const saved = await this.commitExportBlob(target, blob, `${filename}.md`);
             if (saved) {
-                this.showToast(scope === 'appendix' ? '附录 Markdown 文件已下载' : 'Markdown 文件已下载', 'success');
+                const archiveResult = await this.archiveExportBlob(blob, `${filename}.md`, {
+                    scope,
+                    format: 'md',
+                });
+                this.showToast(this.buildExportSuccessMessage('Markdown 文件', scope, archiveResult.ok), 'success');
             }
         },
 
@@ -9994,7 +10438,11 @@ function deepVision() {
                     if (exportResult?.ok && exportResult.blob) {
                         const saved = await this.commitExportBlob(target, exportResult.blob, `${filename}.pdf`);
                         if (saved) {
-                            this.showToast('附录 PDF 文件已下载', 'success');
+                            const archiveResult = await this.archiveExportBlob(exportResult.blob, `${filename}.pdf`, {
+                                scope,
+                                format: 'pdf',
+                            });
+                            this.showToast(this.buildExportSuccessMessage('PDF 文件', scope, archiveResult.ok), 'success');
                         }
                         return;
                     }
@@ -10090,7 +10538,11 @@ function deepVision() {
                     const blob = pdf.output('blob');
                     const saved = await this.commitExportBlob(target, blob, `${filename}.pdf`);
                     if (saved) {
-                        this.showToast('PDF 文件已下载', 'success');
+                        const archiveResult = await this.archiveExportBlob(blob, `${filename}.pdf`, {
+                            scope,
+                            format: 'pdf',
+                        });
+                        this.showToast(this.buildExportSuccessMessage('PDF 文件', scope, archiveResult.ok), 'success');
                     }
                 } finally {
                     if (tempContainer.parentNode) {
@@ -10296,7 +10748,11 @@ function deepVision() {
                 const blob = await Packer.toBlob(doc);
                 const saved = await this.commitExportBlob(target, blob, `${filename}.docx`);
                 if (saved) {
-                    this.showToast(scope === 'appendix' ? '附录 Word 文档已下载' : 'Word 文档已下载', 'success');
+                    const archiveResult = await this.archiveExportBlob(blob, `${filename}.docx`, {
+                        scope,
+                        format: 'docx',
+                    });
+                    this.showToast(this.buildExportSuccessMessage('Word 文档', scope, archiveResult.ok), 'success');
                 }
             } catch (error) {
                 console.error('Word 导出失败:', error);
@@ -10819,14 +11275,7 @@ function deepVision() {
                 this.stopSessionsAutoRefresh();
             }
             this.currentView = view;
-            this.cleanupReportDetailEnhancements();
-            this.selectedReport = null;
-            this.reportContent = '';
-            this.selectedReportMeta = this.createEmptySelectedReportMeta();
-            this.presentationPdfUrl = '';
-            this.presentationLocalUrl = '';
-            this.stopPresentationPolling();
-            this.resetPresentationProgressFeedback();
+            this.resetSelectedReportDetail();
             this.exitSessionBatchMode();
             this.exitReportBatchMode();
             if (view === 'sessions') {
@@ -11718,13 +12167,7 @@ function deepVision() {
         },
 
         isPresentationEnabled() {
-            if (typeof SITE_CONFIG === 'undefined') return false;
-            return SITE_CONFIG?.presentation?.enabled === true;
-        },
-
-        isSolutionEnabled() {
-            if (typeof SITE_CONFIG === 'undefined') return true;
-            return SITE_CONFIG?.solution?.enabled !== false;
+            return this.presentationFeatureEnabled !== false;
         },
 
         // 获取维度评分（评估场景）
