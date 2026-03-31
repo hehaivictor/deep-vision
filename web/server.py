@@ -253,6 +253,7 @@ ENV_MANAGED_CONFIG_EXACT_KEYS = {
     "ENABLE_WEB_SEARCH",
     "FOCUS_GENERATION_ACCESS_LOG",
     "INSTANCE_SCOPE_KEY",
+    "INSTANCE_SCOPE_ENFORCEMENT_ENABLED",
     "LICENSE_CODE_SIGNING_SECRET",
     "LICENSE_DB_PATH",
     "LICENSE_ENFORCEMENT_ENABLED",
@@ -548,6 +549,7 @@ REFLY_POLL_INTERVAL = _cfg_float("REFLY_POLL_INTERVAL", 2.0)
 if REFLY_POLL_INTERVAL <= 0:
     REFLY_POLL_INTERVAL = 2.0
 PRESENTATION_GLOBAL_ENABLED = _cfg_bool("PRESENTATION_GLOBAL_ENABLED", True)
+INSTANCE_SCOPE_ENFORCEMENT_ENABLED = _cfg_bool("INSTANCE_SCOPE_ENFORCEMENT_ENABLED", False)
 OBJECT_STORAGE_ENDPOINT = _cfg_text("OBJECT_STORAGE_ENDPOINT", "")
 OBJECT_STORAGE_REGION = _cfg_text("OBJECT_STORAGE_REGION", "us-east-1") or "us-east-1"
 OBJECT_STORAGE_BUCKET = _cfg_text("OBJECT_STORAGE_BUCKET", "")
@@ -2443,13 +2445,14 @@ def _collect_runtime_security_validation_issues() -> tuple[list[str], list[str]]
         message = "SECRET_KEY 仍是模板占位值，请替换为高强度随机密钥"
         (errors if strict_mode else warnings).append(message)
 
-    if not scope_key:
-        message = "INSTANCE_SCOPE_KEY 为空，共享 data 目录时可能发生跨实例串看"
-        if strict_mode or has_explicit_env:
+    if INSTANCE_SCOPE_ENFORCEMENT_ENABLED:
+        if not scope_key:
+            message = "INSTANCE_SCOPE_KEY 为空，共享 data 目录时可能发生跨实例串看"
+            if strict_mode or has_explicit_env:
+                (errors if strict_mode else warnings).append(message)
+        elif placeholder_scope_configured:
+            message = "INSTANCE_SCOPE_KEY 仍是模板占位值，请替换为稳定唯一的实例标识"
             (errors if strict_mode else warnings).append(message)
-    elif placeholder_scope_configured:
-        message = "INSTANCE_SCOPE_KEY 仍是模板占位值，请替换为稳定唯一的实例标识"
-        (errors if strict_mode else warnings).append(message)
 
     if SMS_PROVIDER == "mock":
         message = "SMS_PROVIDER=mock 仅适用于本地调试，非调试环境禁止使用"
@@ -6886,18 +6889,32 @@ def list_export_asset_records(
         return []
     page_limit = max(1, min(int(limit or 50), 100))
     with get_meta_index_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT asset_id, report_name, export_scope, export_format, file_name,
-                   object_key, storage_backend, bucket, content_type, size,
-                   source, created_at, updated_at
-            FROM export_asset_store
-            WHERE report_name = ? AND owner_user_id = ? AND instance_scope_key = ?
-            ORDER BY created_at DESC
-            LIMIT ?
-            """,
-            (normalized_report_name, owner_id, get_active_instance_scope_key(), page_limit),
-        ).fetchall()
+        if is_instance_scope_enforced():
+            rows = conn.execute(
+                """
+                SELECT asset_id, report_name, export_scope, export_format, file_name,
+                       object_key, storage_backend, bucket, content_type, size,
+                       source, created_at, updated_at
+                FROM export_asset_store
+                WHERE report_name = ? AND owner_user_id = ? AND instance_scope_key = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (normalized_report_name, owner_id, get_active_instance_scope_key(), page_limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT asset_id, report_name, export_scope, export_format, file_name,
+                       object_key, storage_backend, bucket, content_type, size,
+                       source, created_at, updated_at
+                FROM export_asset_store
+                WHERE report_name = ? AND owner_user_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (normalized_report_name, owner_id, page_limit),
+            ).fetchall()
     return [_build_export_asset_payload(dict(row)) for row in rows]
 
 
@@ -6913,17 +6930,30 @@ def get_export_asset_record(
     if not normalized_report_name or not normalized_asset_id or owner_id <= 0:
         return None
     with get_meta_index_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT asset_id, report_name, export_scope, export_format, file_name,
-                   object_key, storage_backend, bucket, content_type, size,
-                   source, created_at, updated_at
-            FROM export_asset_store
-            WHERE asset_id = ? AND report_name = ? AND owner_user_id = ? AND instance_scope_key = ?
-            LIMIT 1
-            """,
-            (normalized_asset_id, normalized_report_name, owner_id, get_active_instance_scope_key()),
-        ).fetchone()
+        if is_instance_scope_enforced():
+            row = conn.execute(
+                """
+                SELECT asset_id, report_name, export_scope, export_format, file_name,
+                       object_key, storage_backend, bucket, content_type, size,
+                       source, created_at, updated_at
+                FROM export_asset_store
+                WHERE asset_id = ? AND report_name = ? AND owner_user_id = ? AND instance_scope_key = ?
+                LIMIT 1
+                """,
+                (normalized_asset_id, normalized_report_name, owner_id, get_active_instance_scope_key()),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT asset_id, report_name, export_scope, export_format, file_name,
+                       object_key, storage_backend, bucket, content_type, size,
+                       source, created_at, updated_at
+                FROM export_asset_store
+                WHERE asset_id = ? AND report_name = ? AND owner_user_id = ?
+                LIMIT 1
+                """,
+                (normalized_asset_id, normalized_report_name, owner_id),
+            ).fetchone()
     if not row:
         return None
     return _build_export_asset_payload(dict(row))
@@ -7786,6 +7816,7 @@ def ensure_session_index_bootstrapped() -> None:
         if is_pg_target:
             with get_meta_index_connection() as conn:
                 if _meta_index_table_row_count(conn, "session_index") > 0:
+                    rebuild_session_index_from_disk(full_reset=False)
                     return
         rebuild_session_index_from_disk(full_reset=not is_pg_target)
     except Exception as exc:
@@ -7796,26 +7827,46 @@ def ensure_session_index_bootstrapped() -> None:
 
 def query_session_index_for_user(owner_user_id: int, page: int, page_size: int) -> tuple[list[dict], int]:
     offset = (page - 1) * page_size
-    scope_key = get_active_instance_scope_key()
     with get_meta_index_connection() as conn:
-        total_row = conn.execute(
-            "SELECT COUNT(1) AS total FROM session_index WHERE owner_user_id = ? AND instance_scope_key = ?",
-            (int(owner_user_id), scope_key),
-        ).fetchone()
-        total = int((total_row["total"] if total_row else 0) or 0)
+        if is_instance_scope_enforced():
+            scope_key = get_active_instance_scope_key()
+            total_row = conn.execute(
+                "SELECT COUNT(1) AS total FROM session_index WHERE owner_user_id = ? AND instance_scope_key = ?",
+                (int(owner_user_id), scope_key),
+            ).fetchone()
+            total = int((total_row["total"] if total_row else 0) or 0)
 
-        rows = conn.execute(
-            """
-            SELECT
-                session_id, topic, status, created_at, updated_at,
-                interview_count, scenario_id, scenario_config_json, dimensions_json
-            FROM session_index
-            WHERE owner_user_id = ? AND instance_scope_key = ?
-            ORDER BY updated_at DESC
-            LIMIT ? OFFSET ?
-            """,
-            (int(owner_user_id), scope_key, int(page_size), int(offset)),
-        ).fetchall()
+            rows = conn.execute(
+                """
+                SELECT
+                    session_id, topic, status, created_at, updated_at,
+                    interview_count, scenario_id, scenario_config_json, dimensions_json
+                FROM session_index
+                WHERE owner_user_id = ? AND instance_scope_key = ?
+                ORDER BY updated_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (int(owner_user_id), scope_key, int(page_size), int(offset)),
+            ).fetchall()
+        else:
+            total_row = conn.execute(
+                "SELECT COUNT(1) AS total FROM session_index WHERE owner_user_id = ?",
+                (int(owner_user_id),),
+            ).fetchone()
+            total = int((total_row["total"] if total_row else 0) or 0)
+
+            rows = conn.execute(
+                """
+                SELECT
+                    session_id, topic, status, created_at, updated_at,
+                    interview_count, scenario_id, scenario_config_json, dimensions_json
+                FROM session_index
+                WHERE owner_user_id = ?
+                ORDER BY updated_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (int(owner_user_id), int(page_size), int(offset)),
+            ).fetchall()
 
     result = []
     for row in rows:
@@ -8118,6 +8169,7 @@ def ensure_report_index_bootstrapped() -> None:
         if is_pg_target:
             with get_meta_index_connection() as conn:
                 if _meta_index_table_row_count(conn, "report_index") > 0:
+                    rebuild_report_index_from_sources(full_reset=False)
                     return
         rebuild_report_index_from_sources(full_reset=not is_pg_target)
     except Exception as exc:
@@ -8128,19 +8180,32 @@ def ensure_report_index_bootstrapped() -> None:
 
 def query_report_index_for_user(owner_user_id: int, page: int, page_size: int) -> tuple[list[dict], int]:
     offset = (page - 1) * page_size
-    scope_key = get_active_instance_scope_key()
     with get_meta_index_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT
-                file_name, size, created_at,
-                session_id, topic, scenario_name, report_template, report_type
-            FROM report_index
-            WHERE owner_user_id = ? AND instance_scope_key = ? AND deleted = 0
-            ORDER BY created_at DESC
-            """,
-            (int(owner_user_id), scope_key),
-        ).fetchall()
+        if is_instance_scope_enforced():
+            scope_key = get_active_instance_scope_key()
+            rows = conn.execute(
+                """
+                SELECT
+                    file_name, size, created_at,
+                    session_id, topic, scenario_name, report_template, report_type
+                FROM report_index
+                WHERE owner_user_id = ? AND instance_scope_key = ? AND deleted = 0
+                ORDER BY created_at DESC
+                """,
+                (int(owner_user_id), scope_key),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT
+                    file_name, size, created_at,
+                    session_id, topic, scenario_name, report_template, report_type
+                FROM report_index
+                WHERE owner_user_id = ? AND deleted = 0
+                ORDER BY created_at DESC
+                """,
+                (int(owner_user_id),),
+            ).fetchall()
 
     visible_rows = []
     stale_report_names = []
@@ -15766,7 +15831,13 @@ def get_record_instance_scope_key(raw_scope: object) -> str:
     return normalize_instance_scope_key(raw_scope)
 
 
+def is_instance_scope_enforced() -> bool:
+    return bool(INSTANCE_SCOPE_ENFORCEMENT_ENABLED)
+
+
 def is_instance_scope_visible(record_scope: object, expected_scope: Optional[str] = None) -> bool:
+    if not is_instance_scope_enforced():
+        return True
     current_scope = normalize_instance_scope_key(
         get_active_instance_scope_key() if expected_scope is None else expected_scope
     )
@@ -15774,6 +15845,12 @@ def is_instance_scope_visible(record_scope: object, expected_scope: Optional[str
     if current_scope:
         return normalized_record_scope == current_scope
     return normalized_record_scope == ""
+
+
+def is_same_instance_scope(record_scope: object, expected_scope: object) -> bool:
+    if not is_instance_scope_enforced():
+        return True
+    return get_record_instance_scope_key(record_scope) == get_record_instance_scope_key(expected_scope)
 
 
 def get_session_instance_scope_key(session: dict) -> str:
@@ -16554,7 +16631,7 @@ def get_effective_session_status(session: dict) -> str:
 
 
 def find_reports_by_session_topic(session: dict) -> list:
-    """根据会话主题匹配同归属、同实例的关联报告文件。"""
+    """根据会话主题匹配同归属的关联报告文件。"""
     if not isinstance(session, dict):
         return []
 
@@ -16569,7 +16646,6 @@ def find_reports_by_session_topic(session: dict) -> list:
     if owner_user_id <= 0:
         return []
 
-    session_scope_key = get_session_instance_scope_key(session)
     suffix = f"-{topic_slug}.md"
     matched = []
     for report_name, report_owner_id in load_report_owners().items():
@@ -16577,7 +16653,7 @@ def find_reports_by_session_topic(session: dict) -> list:
             continue
         if not report_name.endswith(suffix):
             continue
-        if get_report_scope_key(report_name) != session_scope_key:
+        if not is_same_instance_scope(get_report_scope_key(report_name), get_session_instance_scope_key(session)):
             continue
         if not _report_exists(report_name):
             continue
@@ -16603,7 +16679,7 @@ def is_report_bound_to_session(filename: str, session: dict, user_id: int) -> bo
         return False
     if get_report_owner_id(name) != owner_user_id:
         return False
-    if get_report_scope_key(name) != get_session_instance_scope_key(session):
+    if not is_same_instance_scope(get_report_scope_key(name), get_session_instance_scope_key(session)):
         return False
     return True
 
@@ -16640,7 +16716,6 @@ def get_bound_reports_for_session(session: dict) -> list[str]:
     except (TypeError, ValueError):
         owner_user_id = 0
 
-    session_scope_key = get_session_instance_scope_key(session)
     bound_reports: list[str] = []
     seen: set[str] = set()
     direct_candidates: list[str] = []
@@ -16663,7 +16738,7 @@ def get_bound_reports_for_session(session: dict) -> list[str]:
         if not _report_exists(report_name):
             continue
         owner_ok = owner_user_id <= 0 or get_report_owner_id(report_name) == owner_user_id
-        scope_ok = not session_scope_key or get_report_scope_key(report_name) == session_scope_key
+        scope_ok = is_same_instance_scope(get_report_scope_key(report_name), get_session_instance_scope_key(session))
         if not owner_ok or not scope_ok or report_name in seen:
             continue
         bound_reports.append(report_name)
