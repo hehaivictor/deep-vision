@@ -94,6 +94,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         cls.server.AUTH_DIR = data_dir / "auth"
         cls.server.AUTH_DB_PATH = cls.server.AUTH_DIR / "users.db"
         cls.server.LICENSE_DB_PATH = cls.server.AUTH_DIR / "licenses.db"
+        cls.server.META_INDEX_DB_TARGET_RAW = str((data_dir / "meta_index.db").resolve())
         cls.server.PRESENTATION_MAP_FILE = cls.server.PRESENTATIONS_DIR / ".presentation_map.json"
         cls.server.DELETED_REPORTS_FILE = cls.server.REPORTS_DIR / ".deleted_reports.json"
         cls.server.DELETED_DOCS_FILE = cls.server.DATA_DIR / ".deleted_docs.json"
@@ -114,6 +115,11 @@ class ComprehensiveApiTests(unittest.TestCase):
             path.mkdir(parents=True, exist_ok=True)
 
         cls.server.metrics_collector.metrics_file = cls.server.METRICS_DIR / "api_metrics.json"
+        with cls.server.meta_index_state_lock:
+            cls.server.meta_index_state["db_path"] = ""
+            cls.server.meta_index_state["schema_ready"] = False
+            cls.server.meta_index_state["sessions_bootstrapped"] = False
+            cls.server.meta_index_state["reports_bootstrapped"] = False
         cls.server.metrics_collector.metrics_file.write_text(
             json.dumps(
                 {
@@ -1366,14 +1372,16 @@ class ComprehensiveApiTests(unittest.TestCase):
                 },
             )
             self.assertEqual(save_site_resp.status_code, 200, save_site_resp.get_data(as_text=True))
-            saved_site_values = self.server._read_admin_site_config_values(site_config_path)
+            site_save_payload = save_site_resp.get_json() or {}
+            self.assertEqual("site", site_save_payload.get("source"))
+            self.assertIn("site_config_store", site_save_payload.get("message", ""))
+            saved_site_values = self.server.load_runtime_site_config_values()
             self.assertFalse(saved_site_values["quotes"]["enabled"])
             self.assertEqual(3000, saved_site_values["quotes"]["interval"])
             self.assertEqual("新的诗句", saved_site_values["quotes"]["items"][0]["text"])
             self.assertEqual(["第一条提示", "第二条提示"], saved_site_values["researchTips"])
-            site_text = site_config_path.read_text(encoding="utf-8")
-            self.assertIn("const SITE_CONFIG = {", site_text)
-            self.assertIn("\"新的诗句\"", site_text)
+            refreshed_site_payload = site_save_payload.get("config_center", {}).get("site", {})
+            self.assertEqual("site_config_store", (refreshed_site_payload.get("file") or {}).get("storage"))
         finally:
             self.server.ADMIN_USER_IDS = old_admin_ids
             self.server.ADMIN_PHONE_NUMBERS = old_admin_phones

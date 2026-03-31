@@ -757,9 +757,9 @@ USER_LEVEL_DEFINITIONS = {
 
 ### 17.1 当前阶段
 
-- 状态：`进行中`
-- 更新时间：`2026-03-31`
-- 当前阶段目标：完成用户级别能力快照、核心功能门禁、前端入口收口、迁移测试补齐，并识别全量回归阻塞项
+- 状态：`已完成`
+- 更新时间：`2026-03-31 12:52 +0800`
+- 当前阶段目标：已完成用户级别能力快照、核心功能门禁、前端入口收口、迁移测试补齐，并完成全量回归清理
 
 ### 17.2 里程碑
 
@@ -770,17 +770,13 @@ USER_LEVEL_DEFINITIONS = {
 | M3 功能门禁落地 | 已完成 | 已覆盖报告生成、方案页、分享、附录、演示、导出归档接口 |
 | M4 前端入口收口 | 已完成 | 已按等级隐藏报告导出、方案、演示与附录入口 |
 | M5 管理后台发码支持 | 已完成 | 管理后台已支持发码选级、列表筛级、详情展示与导出等级字段 |
-| M6 测试与回归 | 进行中 | 已补齐迁移测试并通过 11 条用户级别 / License 相关回归；完整全量回归仍受既有失败阻塞 |
+| M6 测试与回归 | 已完成 | 已补齐迁移测试并完成全量回归清理，`pytest -q tests -x --disable-warnings` 通过，结果为 `314 passed` |
 
 
 ## 18. 当前阻塞项
 
-- 系统 Python 受 PEP 668 限制，复测仍需先创建临时虚拟环境并安装依赖
-- `pytest -q tests -ra --disable-warnings` 当前无法全绿，已确认的既有阻塞包括：
-- `tests/test_security_regression.py` 第 `3550` 行存在语法错误，导致整套 `pytest` 收集被中断
-- `tests/test_scripts_comprehensive.py` 在 `pytest` 收集阶段存在 `scripts` 模块导入路径问题，需统一测试启动方式或补 `PYTHONPATH`
-- `tests/test_api_comprehensive.py::ComprehensiveApiTests::test_admin_ownership_migration_endpoints_cover_search_preview_apply_and_rollback` 当前断言失败，属于非用户级别链路的既有回归项
-- 其他非用户级别测试在当前 Python 3.14 环境下仍有历史失败，需单独清理后才能宣告“全量回归通过”
+- 无功能阻塞。
+- 环境备注：系统 Python 仍受 PEP 668 限制；在当前机器上复测整套 `pytest` 仍建议先创建临时虚拟环境并安装依赖。
 
 
 ## 19. 变更记录
@@ -801,3 +797,7 @@ USER_LEVEL_DEFINITIONS = {
 - 补齐 `licenses.level_key` 迁移专项测试，覆盖“旧库无 `level_key` 默认标准版”和“旧库已有等级时保留原值”两类场景
 - 修复后台 License 批量延期/撤销仍误连 `users.db` 的残留问题，统一改为访问 `licenses.db`
 - 使用临时虚拟环境执行回归：用户级别与 License 直接相关的 11 条用例已全部通过，并记录了当前整套全量回归的既有阻塞项
+- 清理全量回归阻塞：补 `tests/conftest.py` 导入路径、统一综合/安全测试走本地元存储与本地 session 存储，并修复多条旧式测试夹具假设
+- 修复真实缺陷：`ensure_meta_index_schema()` 新增 `site_config_store` 建表，后台配置中心保存站点配置不再因缺表失败
+- 对齐测试基线：`RuntimeTokenConfigTests` 的 `load_server_module()` 同时注入 `config` 与 `web.config`，避免仓库默认配置污染覆盖类测试
+- 完成全量回归清理：`PYTHONPATH=/Users/hehai/Documents/开目软件/Agents/project/DeepVision /tmp/dv-user-level-regression/bin/pytest -q tests -x --disable-warnings` 结果为 `314 passed, 12 warnings`

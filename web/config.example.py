@@ -37,6 +37,8 @@ ASSESSMENT_MODEL_NAME = SEARCH_DECISION_MODEL_NAME
 AI_CLIENT_EAGER_INIT = False
 # 作用：控制预热 AI 客户端时是否额外发送探测请求验证连通性。
 AI_CLIENT_INIT_CONNECTION_TEST = False
+# 作用：设置 AI 客户端单次请求在 SDK 层允许的最大重试次数。
+AI_CLIENT_MAX_RETRIES = 0
 
 # ============ AI 通用运行默认值 ===========
 # 通用运行限制放在 config，必要时可由 env 临时覆盖。
@@ -81,6 +83,8 @@ QUESTION_GENERATION_MAX_INFLIGHT = 2
 QUESTION_GENERATION_RETRY_AFTER_SECONDS = 2
 # 作用：控制问题生成是否先尝试快档。
 QUESTION_FAST_PATH_ENABLED = True
+# 作用：控制发布模式下的问题链路是否启用保守策略。
+QUESTION_RELEASE_CONSERVATIVE_MODE = True
 # 作用：设置问题快档调用的超时时间（秒）。
 QUESTION_FAST_TIMEOUT = 12.0
 # 作用：设置问题快档在轻量参考资料模式下的请求超时时间（秒）。
@@ -167,6 +171,8 @@ QUESTION_HEDGE_DELAY_BY_LANE = {"question": 1.5, "summary": 1.0, "report": 1.8, 
 # 留空为 `None` 的高级参数，会由 `server.py` 按 `balanced/quality` 档位自动补默认值。
 # 作用：设置报告 V3 默认使用的生成模式，前台不再单独让用户选择。
 REPORT_V3_PROFILE = "balanced"  # 报告生成模式：balanced / quality
+# 作用：控制发布模式下 balanced 档是否启用保守发布策略。
+REPORT_V3_RELEASE_CONSERVATIVE_MODE = True
 # 作用：设置报告链路默认调用超时时间（秒）。
 REPORT_API_TIMEOUT = 180.0
 # 作用：设置报告草案阶段的调用超时时间（秒）。
@@ -215,6 +221,12 @@ REPORT_V3_RENDER_MERMAID_FROM_DATA = True
 REPORT_V3_WEAK_BINDING_ENABLED = True
 # 作用：设置报告 V3 触发弱绑定补全时要求的最低匹配分数。
 REPORT_V3_WEAK_BINDING_MIN_SCORE = 0.46
+# 作用：控制发布保守模式下是否允许草案阶段切换到备用 lane。
+REPORT_V3_ALLOW_DRAFT_ALTERNATE_LANE_IN_RELEASE_CONSERVATIVE = False
+# 作用：控制发布保守模式下是否直接跳过模型审稿，优先走模板/规则化兜底。
+REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE = True
+# 作用：控制发布保守模式下是否启用短路 fallback。
+REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED = True
 # 作用：控制报告 V3 在质量门未通过时是否尝试挽救输出。
 REPORT_V3_SALVAGE_ON_QUALITY_GATE_FAILURE = True
 # 作用：控制报告 V3 主 lane 失败后是否尝试备用 lane。
@@ -290,6 +302,10 @@ QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS = 25.0
 QUESTION_RESULT_CACHE_TTL_SECONDS = 180
 # 作用：设置问题结果幂等缓存允许保存的最大条目数。
 QUESTION_RESULT_CACHE_MAX_ENTRIES = 512
+# 作用：设置会话 payload 热缓存的保留时长（秒）。
+SESSION_PAYLOAD_CACHE_TTL_SECONDS = 4.0
+# 作用：设置会话 payload 热缓存允许保存的最大条目数。
+SESSION_PAYLOAD_CACHE_MAX_ENTRIES = 96
 # 作用：设置并发命中同一预生成问题时等待首个结果的最长时间（秒）。
 QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = 1.8
 # 作用：设置摘要异步更新的最小触发间隔（秒）。
@@ -339,10 +355,33 @@ REPORT_GENERATION_MAX_WORKERS = 2
 REPORT_GENERATION_MAX_PENDING = 16
 # 作用：设置报告生成队列繁忙时建议的重试时间（秒）。
 REPORT_GENERATION_QUEUE_RETRY_AFTER_SECONDS = 3
+# 作用：设置前端估算报告队列等待时采用的单槽位平均耗时（秒）。
+REPORT_GENERATION_ESTIMATED_SLOT_SECONDS = 55.0
 # 作用：控制是否在后台预热报告方案 payload。
 SOLUTION_PAYLOAD_PREWARM_ENABLED = True
 # 作用：设置报告方案 payload 预热线程池的最大工作线程数。
 SOLUTION_PAYLOAD_PREWARM_MAX_WORKERS = 2
+# 作用：控制是否全局开放演示文稿生成能力。
+PRESENTATION_GLOBAL_ENABLED = True
+
+# ============ 对象存储默认值 ===========
+# 演示文稿、导出资产等对象存储接入的默认值放在这里，便于研发统一切换实现。
+# 作用：设置对象存储访问的 Endpoint 地址。
+OBJECT_STORAGE_ENDPOINT = ""
+# 作用：设置对象存储访问的 Region。
+OBJECT_STORAGE_REGION = "us-east-1"
+# 作用：设置对象存储使用的 Bucket。
+OBJECT_STORAGE_BUCKET = ""
+# 作用：设置对象存储使用的 Access Key ID。
+OBJECT_STORAGE_ACCESS_KEY_ID = ""
+# 作用：设置对象存储使用的 Secret Access Key。
+OBJECT_STORAGE_SECRET_ACCESS_KEY = ""
+# 作用：控制对象存储是否强制使用 path-style 访问。
+OBJECT_STORAGE_FORCE_PATH_STYLE = False
+# 作用：设置对象存储签名版本。
+OBJECT_STORAGE_SIGNATURE_VERSION = "v4"
+# 作用：设置对象存储内的统一前缀目录。
+OBJECT_STORAGE_PREFIX = "deepvision"
 
 # ============ 场景目录兼容默认值 ===========
 # 兼容旧版“单一场景根目录”配置；留空时按内置/自定义目录各自解析。

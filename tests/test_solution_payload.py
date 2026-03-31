@@ -69,8 +69,16 @@ class SolutionPayloadTests(unittest.TestCase):
         cls.server.DATA_DIR = cls.sandbox_root / "data"
         cls.server.REPORTS_DIR = cls.server.DATA_DIR / "reports"
         cls.server.SESSIONS_DIR = cls.server.DATA_DIR / "sessions"
+        cls.server.META_INDEX_DB_TARGET_RAW = str((cls.server.DATA_DIR / "meta_index.db").resolve())
         cls.server.REPORTS_DIR.mkdir(parents=True, exist_ok=True)
         cls.server.SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        cls.server._use_postgres_shared_meta_storage = lambda: False
+        cls.server._use_pure_cloud_session_storage = lambda: False
+        with cls.server.meta_index_state_lock:
+            cls.server.meta_index_state["db_path"] = ""
+            cls.server.meta_index_state["schema_ready"] = False
+            cls.server.meta_index_state["sessions_bootstrapped"] = False
+            cls.server.meta_index_state["reports_bootstrapped"] = False
         cls.server.ENABLE_AI = False
         cls.server.question_ai_client = None
         cls.server.report_ai_client = None

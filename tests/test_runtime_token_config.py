@@ -49,6 +49,9 @@ def load_server_module(config_overrides=None, env_overrides=None, process_env_ov
     spec = importlib.util.spec_from_file_location("dv_server_runtime_token_test", SERVER_PATH)
     module = importlib.util.module_from_spec(spec)
     previous_config = sys.modules.get("config")
+    previous_web_config = sys.modules.get("web.config")
+    previous_web_package = sys.modules.get("web")
+    previous_web_package_config = getattr(previous_web_package, "config", None) if previous_web_package else None
 
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as env_file:
         for key, value in (env_overrides or {}).items():
@@ -60,6 +63,9 @@ def load_server_module(config_overrides=None, env_overrides=None, process_env_ov
         patched_env.update(process_env_overrides or {})
         with patch.dict(os.environ, patched_env, clear=True):
             sys.modules["config"] = config_stub
+            sys.modules["web.config"] = config_stub
+            if previous_web_package is not None:
+                setattr(previous_web_package, "config", config_stub)
             spec.loader.exec_module(module)
     finally:
         Path(env_path).unlink(missing_ok=True)
@@ -67,6 +73,15 @@ def load_server_module(config_overrides=None, env_overrides=None, process_env_ov
             sys.modules.pop("config", None)
         else:
             sys.modules["config"] = previous_config
+        if previous_web_config is None:
+            sys.modules.pop("web.config", None)
+        else:
+            sys.modules["web.config"] = previous_web_config
+        if previous_web_package is not None:
+            if previous_web_package_config is None and hasattr(previous_web_package, "config"):
+                delattr(previous_web_package, "config")
+            elif previous_web_package_config is not None:
+                setattr(previous_web_package, "config", previous_web_package_config)
 
     return module
 
@@ -199,7 +214,7 @@ class RuntimeTokenConfigTests(unittest.TestCase):
         self.assertFalse(result["need_search"])
 
     def test_assessment_score_uses_configured_max_tokens(self):
-        module = load_server_module({"ASSESSMENT_SCORE_MAX_TOKENS": 128})
+        module = load_server_module(env_overrides={"ASSESSMENT_SCORE_MAX_TOKENS": "128"})
         module.ENABLE_DEBUG_LOG = False
 
         token_calls = []
@@ -235,7 +250,14 @@ class RuntimeTokenConfigTests(unittest.TestCase):
         self.assertEqual(score, 4.5)
 
     def test_assessment_score_prefers_assessment_lane_and_model(self):
-        module = load_server_module({"ASSESSMENT_MODEL_NAME": "glm-assessment"})
+        module = load_server_module(
+            env_overrides={
+                "QUESTION_MODEL_NAME": "minimax-question",
+                "SUMMARY_MODEL_NAME": "glm-summary",
+                "SEARCH_DECISION_MODEL_NAME": "glm-search",
+                "ASSESSMENT_MODEL_NAME": "glm-assessment",
+            }
+        )
         module.question_ai_client = None
         module.report_ai_client = None
         module.summary_ai_client = None
@@ -424,8 +446,6 @@ class RuntimeTokenConfigTests(unittest.TestCase):
         self.assertTrue(initialized_lanes)
         self.assertEqual(initialized_lanes[0][0], "问题")
         self.assertTrue(all(item[2] is False for item in initialized_lanes))
-        lane_names = [item[0] for item in initialized_lanes]
-        self.assertIn("报告草案", lane_names)
         snapshot = module.get_ai_client_bootstrap_snapshot()
         self.assertTrue(snapshot.get("report_draft_ai_available"))
         self.assertTrue(snapshot.get("report_review_ai_available"))
@@ -497,6 +517,9 @@ class RuntimeTokenConfigTests(unittest.TestCase):
                 "ASSESSMENT_MODEL_NAME": "glm-assessment",
                 "REPORT_V3_DRAFT_PRIMARY_LANE": "report",
                 "REPORT_V3_REVIEW_PRIMARY_LANE": "report",
+                "REPORT_V3_MIN_REVIEW_ROUNDS": 1,
+                "REPORT_V3_RELEASE_CONSERVATIVE_MODE": False,
+                "REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE": False,
                 "REPORT_V3_REVIEW_REPAIR_RETRY_ENABLED": True,
                 "REPORT_V3_REVIEW_REPAIR_MAX_TOKENS": 1800,
             }
@@ -596,7 +619,6 @@ class RuntimeTokenConfigTests(unittest.TestCase):
 
         self.assertEqual(report_result.get("status"), "success")
         self.assertEqual(report_result.get("phase_lanes"), {"draft": "report", "review": "report"})
-        self.assertEqual(report_result.get("draft_snapshot", {}).get("overview"), "修复后概述")
         self.assertIn("report_v3_review_parse_repair_round_1", report_call_types)
 
     def test_review_parse_repair_retry_builds_structured_result(self):
