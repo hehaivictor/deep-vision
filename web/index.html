@@ -3007,34 +3007,34 @@
                                     <div class="bg-surface border border-border rounded-2xl p-5 space-y-4 xl:col-span-1">
                                         <div class="flex items-center justify-between gap-3">
                                             <div>
-                                                <h3 class="text-base font-semibold text-primary">运行时开关</h3>
-                                                <p class="text-sm text-muted mt-1">立即决定登录后是否强制校验 License，并可同步写回 `.env` 默认值。</p>
+                                                <h3 class="text-base font-semibold text-primary">License 使用规则</h3>
+                                                <p class="text-sm text-muted mt-1">当前版本固定要求登录后绑定有效 License，不能关闭为降级使用模式。</p>
                                             </div>
                                             <span class="inline-flex items-center justify-center whitespace-nowrap leading-none min-w-[4.5rem] px-2.5 py-1 rounded-full border text-xs font-medium"
                                                   :class="licenseEnforcementEnabled ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-gray-200 bg-gray-50 text-gray-600'"
-                                                  x-text="licenseEnforcementEnabled ? '已开启' : '未开启'"></span>
+                                                  x-text="licenseEnforcementEnabled ? '固定开启' : '未开启'"></span>
                                         </div>
                                         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                                             <div class="rounded-xl bg-slate-50 px-3 py-3">
                                                 <div class="text-xs text-muted">当前生效值</div>
-                                                <div class="mt-1 font-semibold text-primary" x-text="licenseEnforcementEnabled ? '已开启' : '已关闭'"></div>
+                                                <div class="mt-1 font-semibold text-primary" x-text="licenseEnforcementEnabled ? '固定开启' : '已关闭'"></div>
                                                 <div class="mt-1 text-xs text-muted" x-text="getAdminLicenseEnforcementSourceLabel()"></div>
                                             </div>
                                             <div class="rounded-xl bg-slate-50 px-3 py-3">
-                                                <div class="text-xs text-muted">.env 默认值</div>
+                                                <div class="text-xs text-muted">策略来源</div>
                                                 <div class="mt-1 font-semibold text-primary"
-                                                     x-text="getAdminLicenseEnforcementState()?.default_enabled ? '已开启' : '已关闭'"></div>
+                                                     x-text="licenseEnforcementEnabled ? '系统固定要求' : '已关闭'"></div>
                                                 <div class="mt-1 text-xs text-muted"
-                                                     x-text="getAdminLicenseEnforcementState()?.default_source_label || '.env 默认值'"></div>
+                                                     x-text="getAdminLicenseEnforcementState()?.message || '登录后必须绑定有效 License 才能继续使用。'"></div>
                                             </div>
                                             <div class="rounded-xl bg-slate-50 px-3 py-3 sm:col-span-2">
-                                                <div class="text-xs text-muted">运行时覆盖</div>
+                                                <div class="text-xs text-muted">当前策略</div>
                                                 <div class="mt-1 font-semibold text-primary" x-text="getAdminLicenseEnforcementOverrideLabel()"></div>
                                                 <div class="mt-1 text-xs text-muted"
-                                                     x-text="getAdminLicenseEnforcementState()?.updated_at ? `最近调整：${formatDate(getAdminLicenseEnforcementState().updated_at)}` : '当前没有单独覆盖值时，将跟随默认值。'"></div>
+                                                     x-text="getAdminLicenseEnforcementState()?.message || '登录后必须绑定有效 License 才能继续使用。'"></div>
                                             </div>
                                         </div>
-                                        <div class="flex flex-wrap gap-2">
+                                        <div class="flex flex-wrap gap-2" x-show="!isAdminLicenseEnforcementFixed()">
                                             <button @click="toggleAdminLicenseEnforcement(true)"
                                                     :disabled="licenseEnforcementEnabled || adminLicenseEnforcementMutating"
                                                     class="whitespace-nowrap px-3.5 py-2 rounded-lg text-sm font-medium transition-colors border cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
@@ -5551,10 +5551,6 @@
                             <div class="settings-group">
                                 <h4 class="text-sm font-semibold text-primary mb-2">License 状态</h4>
                                 <div class="settings-info-grid text-sm">
-                                    <div class="settings-info-row">
-                                        <span class="settings-info-label">校验开关</span>
-                                        <span class="settings-info-value" x-text="licenseEnforcementEnabled ? '已开启' : '未开启'"></span>
-                                    </div>
                                     <div class="settings-info-row">
                                         <span class="settings-info-label">当前状态</span>
                                         <span class="settings-info-value" x-text="getLicenseStatusLabel()"></span>

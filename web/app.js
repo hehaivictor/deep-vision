@@ -415,6 +415,7 @@ function deepVision() {
 
         // 会话相关
         sessions: [],
+        sessionsLoaded: false,
         currentSession: null,
         newSessionTopic: '',
         newSessionDescription: '',
@@ -950,7 +951,7 @@ function deepVision() {
             this.hasValidLicense = hasValidLicense;
             this.licenseStatus = status;
             this.licenseInfo = payload?.license || null;
-            this.licenseGateActive = enforcementEnabled && !hasValidLicense;
+            this.licenseGateActive = !hasValidLicense;
             this.licenseGateMessage = String(message || '').trim();
             this.applyUserLevelPayload(payload || {});
             if (!preserveInput && hasValidLicense) {
@@ -1068,12 +1069,26 @@ function deepVision() {
             if (this.licenseStatus === 'not_yet_active') return '当前账号的 License 尚未到生效时间，请等待生效后再继续。';
             if (this.licenseStatus === 'revoked') return '当前账号绑定的 License 已被撤销，请联系管理员获取新的 License。';
             if (this.licenseStatus === 'replaced') return '当前账号之前绑定的 License 已被替换，请输入新的 License 完成换绑。';
-            return '系统已开启 License 校验。登录后仍需绑定有效 License 才能继续使用访谈与报告功能。';
+            return '登录后必须绑定有效 License，才能继续使用访谈与报告功能。';
         },
 
         getLicenseRemainingText() {
+            const status = String(this.licenseStatus || '').trim();
+            if (status === 'revoked') return '已撤销';
+            if (status === 'replaced') return '已替换';
+            if (status === 'expired') return '已过期';
+            if (status === 'not_yet_active') {
+                const notBeforeAt = this.licenseInfo?.not_before_at;
+                if (!notBeforeAt) return '未到生效时间';
+                const notBeforeDate = new Date(notBeforeAt);
+                if (!Number.isFinite(notBeforeDate.getTime())) return '未到生效时间';
+                const diffMs = notBeforeDate.getTime() - Date.now();
+                if (diffMs <= 0) return '未到生效时间';
+                const diffDays = Math.ceil(diffMs / (24 * 60 * 60 * 1000));
+                return diffDays <= 1 ? '不足 1 天后生效' : `约 ${diffDays} 天后生效`;
+            }
             const expiresAt = this.licenseInfo?.expires_at;
-            if (!expiresAt) return '未设置';
+            if (!expiresAt) return status === 'missing' ? '未绑定' : '未设置';
             const expiresDate = new Date(expiresAt);
             if (!Number.isFinite(expiresDate.getTime())) return '未设置';
             const diffMs = expiresDate.getTime() - Date.now();
@@ -1213,6 +1228,7 @@ function deepVision() {
             this.currentView = 'sessions';
             this.currentSession = null;
             this.sessions = [];
+            this.sessionsLoaded = false;
             this.reports = [];
             this.filteredReports = [];
             this.filteredSessions = [];
@@ -2202,6 +2218,9 @@ function deepVision() {
 
         getAdminLicenseEnforcementOverrideLabel() {
             const enforcement = this.getAdminLicenseEnforcementState();
+            if (this.isAdminLicenseEnforcementFixed()) {
+                return '固定开启';
+            }
             if (!enforcement || enforcement.override_enabled === null || enforcement.override_enabled === undefined) {
                 return '跟随默认值';
             }
@@ -2213,14 +2232,21 @@ function deepVision() {
             if (!enforcement) {
                 return '-';
             }
+            if (this.isAdminLicenseEnforcementFixed()) {
+                return '系统固定要求';
+            }
             if (enforcement.source === 'runtime_override') {
                 return '运行时覆盖生效';
             }
             return '默认值生效';
         },
 
+        isAdminLicenseEnforcementFixed() {
+            return String(this.getAdminLicenseEnforcementState()?.source || '').trim() === 'mandatory_policy';
+        },
+
         applyAdminLicenseEnforcementPayload(payload = {}) {
-            const enabled = !!payload?.enabled;
+            const enabled = payload?.enabled !== false;
             this.licenseEnforcementEnabled = enabled;
             if (this.serverStatus && typeof this.serverStatus === 'object') {
                 this.serverStatus = {
@@ -2410,6 +2436,10 @@ function deepVision() {
                 this.showToast('当前账号需先绑定有效 License，才能切换 License 开关', 'warning');
                 return;
             }
+            if (this.isAdminLicenseEnforcementFixed()) {
+                this.showToast('当前版本固定要求登录后绑定有效 License，不支持关闭该规则', 'warning');
+                return;
+            }
             this.adminLicenseEnforcementMutating = true;
             try {
                 const payload = await this.apiCall('/admin/license-enforcement', {
@@ -2429,6 +2459,10 @@ function deepVision() {
         async followAdminLicenseEnforcementDefault() {
             if (!this.canManageAdminLicenses()) {
                 this.showToast('当前账号需先绑定有效 License，才能调整 License 开关', 'warning');
+                return;
+            }
+            if (this.isAdminLicenseEnforcementFixed()) {
+                this.showToast('当前版本固定要求登录后绑定有效 License，无需额外恢复默认值', 'warning');
                 return;
             }
             this.adminLicenseEnforcementMutating = true;
@@ -4957,6 +4991,7 @@ function deepVision() {
             }
             try {
                 this.sessions = await this.apiCall('/sessions?page=1&page_size=100');
+                this.sessionsLoaded = true;
                 this.filterSessions({
                     preservePage: preserveListState
                 });  // 加载完成后执行筛选
@@ -5036,6 +5071,16 @@ function deepVision() {
                 this.sessionsAutoRefreshInterval = null;
             }
             this.sessionsAutoRefreshInFlight = false;
+        },
+
+        refreshSessionsView(options = {}) {
+            const hasCachedSessions = this.sessionsLoaded;
+            return this.loadSessions({
+                silent: hasCachedSessions,
+                preserveListState: hasCachedSessions,
+                suppressErrorToast: hasCachedSessions,
+                ...options,
+            });
         },
 
         async createNewSession() {
@@ -5646,7 +5691,7 @@ function deepVision() {
                     const skippedSessions = result.skipped_sessions?.length || 0;
                     const missingSessions = result.missing_sessions?.length || 0;
 
-                    await this.loadSessions();
+                    await this.refreshSessionsView();
                     if (this.batchDeleteAlsoReports || deletedReports > 0) {
                         await this.loadReports();
                     }
@@ -11280,7 +11325,7 @@ function deepVision() {
             this.exitReportBatchMode();
             if (view === 'sessions') {
                 this.resetReportGenerationFeedback();
-                this.loadSessions();
+                this.refreshSessionsView();
             } else if (view === 'reports') {
                 this.loadReports();
             } else if (view === 'admin') {
@@ -11302,7 +11347,7 @@ function deepVision() {
 
             this.currentView = 'sessions';
             this.currentSession = null;
-            this.loadSessions();
+            this.refreshSessionsView();
         },
 
         getTotalProgress() {

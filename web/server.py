@@ -8760,48 +8760,20 @@ def get_license_enforcement_default_state() -> dict[str, Any]:
 
 def get_license_enforcement_state() -> dict:
     default_state = get_license_enforcement_default_state()
-    default_enabled = bool(default_state.get("enabled"))
-    with get_license_db_connection() as conn:
-        ensure_auth_meta_table(conn)
-        rows = conn.execute(
-            """
-            SELECT meta_key, meta_value
-            FROM auth_meta
-            WHERE meta_key IN (?, ?, ?)
-            """,
-            (
-                AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY,
-                AUTH_META_LICENSE_ENFORCEMENT_UPDATED_BY_KEY,
-                AUTH_META_LICENSE_ENFORCEMENT_UPDATED_AT_KEY,
-            ),
-        ).fetchall()
-
-    meta_map = {
-        str(row["meta_key"] or ""): str(row["meta_value"] or "")
-        for row in rows
-    }
-    override_enabled = _parse_bool_like(meta_map.get(AUTH_META_LICENSE_ENFORCEMENT_ENABLED_KEY))
-    updated_by_user_id = None
-    raw_updated_by = str(meta_map.get(AUTH_META_LICENSE_ENFORCEMENT_UPDATED_BY_KEY) or "").strip()
-    if raw_updated_by:
-        try:
-            updated_by_user_id = int(raw_updated_by)
-        except (TypeError, ValueError):
-            updated_by_user_id = None
-
-    enabled = default_enabled if override_enabled is None else bool(override_enabled)
     return {
-        "enabled": bool(enabled),
-        "default_enabled": default_enabled,
-        "default_source": str(default_state.get("source") or "startup_default"),
-        "default_source_label": str(default_state.get("source_label") or "启动默认值"),
+        "enabled": True,
+        "default_enabled": True,
+        "default_source": "mandatory_policy",
+        "default_source_label": "系统固定要求",
         "default_path": str(default_state.get("path") or ""),
         "default_value_in_file": bool(default_state.get("value_in_file")),
-        "override_enabled": override_enabled,
-        "override_present": override_enabled is not None,
-        "source": "runtime_override" if override_enabled is not None else "env_default",
-        "updated_at": str(meta_map.get(AUTH_META_LICENSE_ENFORCEMENT_UPDATED_AT_KEY) or "").strip() or None,
-        "updated_by_user_id": updated_by_user_id,
+        "override_enabled": None,
+        "override_present": False,
+        "source": "mandatory_policy",
+        "updated_at": None,
+        "updated_by_user_id": None,
+        "fixed": True,
+        "message": "登录后必须绑定有效 License 才能继续使用。",
     }
 
 
@@ -12216,7 +12188,7 @@ def enforce_auth_for_protected_routes():
     if not current_user:
         return jsonify({"error": "请先登录"}), 401
 
-    if is_license_enforcement_enabled() and is_license_protected_route(path):
+    if is_license_protected_route(path):
         license_payload = build_license_status_payload_for_user(current_user)
         if not license_payload.get("has_valid_license"):
             license_status = str(license_payload.get("status") or "missing")
@@ -45067,23 +45039,10 @@ def admin_get_license_enforcement():
 @require_admin
 @require_valid_license
 def admin_set_license_enforcement():
-    user_row = get_current_user()
-    data = request.get_json(silent=True) or {}
-    enabled = _parse_bool_like(data.get("enabled"))
-    if enabled is None:
-        return jsonify({"error": "enabled 必须为布尔值"}), 400
-    raw_sync_default = data.get("sync_default", False)
-    sync_default = _parse_bool_like(raw_sync_default)
-    if sync_default is None:
-        return jsonify({"error": "sync_default 必须为布尔值"}), 400
-    payload = set_license_enforcement_override(
-        enabled,
-        actor_user_id=int(user_row["id"]) if user_row else None,
-        sync_default=bool(sync_default),
-    )
+    payload = get_license_enforcement_state()
     return jsonify({
         "success": True,
-        "message": "License 校验开关已更新，并同步写回 .env 默认值" if sync_default else "License 校验开关已更新",
+        "message": "当前版本固定要求登录后绑定有效 License，不支持关闭该规则",
         **payload,
     })
 
@@ -45092,15 +45051,10 @@ def admin_set_license_enforcement():
 @require_admin
 @require_valid_license
 def admin_follow_license_enforcement_default():
-    user_row = get_current_user()
-    payload = set_license_enforcement_override(
-        None,
-        actor_user_id=int(user_row["id"]) if user_row else None,
-        sync_default=False,
-    )
+    payload = get_license_enforcement_state()
     return jsonify({
         "success": True,
-        "message": "License 校验开关已恢复跟随默认值",
+        "message": "当前版本固定要求登录后绑定有效 License，无需额外恢复默认值",
         **payload,
     })
 
