@@ -193,6 +193,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.server.SESSIONS_LIST_SEMAPHORE = threading.BoundedSemaphore(self.server.SESSIONS_LIST_MAX_INFLIGHT)
         self.server.REPORTS_LIST_SEMAPHORE = threading.BoundedSemaphore(self.server.REPORTS_LIST_MAX_INFLIGHT)
         self.server.QUESTION_GENERATION_SEMAPHORE = threading.BoundedSemaphore(self.server.QUESTION_GENERATION_MAX_INFLIGHT)
+        self.server.QUESTION_GENERATION_PENDING_SEMAPHORE = threading.BoundedSemaphore(self.server.QUESTION_GENERATION_MAX_PENDING)
         self.server.reset_question_generation_stats()
         self.server.reset_question_generation_runtime_stats()
         self.server.reset_report_generation_runtime_stats()
@@ -2293,7 +2294,9 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.assertTrue(acquired)
             acquired_tokens.append(True)
         old_resolve_ai_client = self.server.resolve_ai_client
+        old_queue_wait_seconds = self.server.QUESTION_GENERATION_QUEUE_WAIT_SECONDS
         try:
+            self.server.QUESTION_GENERATION_QUEUE_WAIT_SECONDS = 0.01
             self.server.resolve_ai_client = lambda call_type="question": object()
             next_q = self.client.post(
                 f"/api/sessions/{session_id}/next-question",
@@ -2307,9 +2310,117 @@ class ComprehensiveApiTests(unittest.TestCase):
             stats = self.server.get_question_generation_stats_snapshot()
             self.assertEqual(stats.get("overloaded"), 1)
         finally:
+            self.server.QUESTION_GENERATION_QUEUE_WAIT_SECONDS = old_queue_wait_seconds
             self.server.resolve_ai_client = old_resolve_ai_client
             for _ in acquired_tokens:
                 self.server.QUESTION_GENERATION_SEMAPHORE.release()
+
+    def test_next_question_returns_429_when_generation_queue_is_full(self):
+        self._register()
+        created = self._create_session(topic="问题短队列满载")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        acquired_tokens = []
+        for _ in range(self.server.QUESTION_GENERATION_MAX_PENDING):
+            acquired = self.server.QUESTION_GENERATION_PENDING_SEMAPHORE.acquire(blocking=False)
+            self.assertTrue(acquired)
+            acquired_tokens.append(True)
+
+        old_resolve_ai_client = self.server.resolve_ai_client
+        try:
+            self.server.resolve_ai_client = lambda call_type="question": object()
+            next_q = self.client.post(
+                f"/api/sessions/{session_id}/next-question",
+                json={"dimension": dimension},
+            )
+            self.assertEqual(next_q.status_code, 429, next_q.get_data(as_text=True))
+            payload = next_q.get_json() or {}
+            self.assertEqual(payload.get("code"), "overloaded")
+            self.assertEqual(payload.get("endpoint"), "question_generation")
+            stats = self.server.get_question_generation_stats_snapshot()
+            self.assertEqual(stats.get("overloaded"), 1)
+        finally:
+            self.server.resolve_ai_client = old_resolve_ai_client
+            for _ in acquired_tokens:
+                self.server.QUESTION_GENERATION_PENDING_SEMAPHORE.release()
+
+    def test_next_question_waits_in_short_queue_until_generation_slot_available(self):
+        self._register()
+        created = self._create_session(topic="问题短队列等待成功")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        acquired_tokens = []
+        for _ in range(self.server.QUESTION_GENERATION_MAX_INFLIGHT):
+            acquired = self.server.QUESTION_GENERATION_SEMAPHORE.acquire(blocking=False)
+            self.assertTrue(acquired)
+            acquired_tokens.append(True)
+
+        old_resolve_ai_client = self.server.resolve_ai_client
+        old_prepare_runtime = self.server._prepare_question_generation_runtime
+        old_generate_question = self.server.generate_question_with_tiered_strategy
+        old_trigger_prefetch = self.server.trigger_prefetch_if_needed
+        old_queue_wait_seconds = self.server.QUESTION_GENERATION_QUEUE_WAIT_SECONDS
+        releaser = None
+        try:
+            self.server.QUESTION_GENERATION_QUEUE_WAIT_SECONDS = 0.2
+            self.server.resolve_ai_client = lambda call_type="question": object()
+            self.server._prepare_question_generation_runtime = lambda *args, **kwargs: {
+                "full_prompt": "full prompt",
+                "truncated_docs": [],
+                "fast_truncated_docs": [],
+                "decision_meta": {},
+                "runtime_profile": {
+                    "profile_name": "question_probe_light",
+                    "selection_reason": "queued_test",
+                    "allow_fast_path": True,
+                },
+                "fast_prompt": "fast prompt",
+            }
+            self.server.generate_question_with_tiered_strategy = lambda *args, **kwargs: (
+                "{\"question\":\"排队后的下一题\"}",
+                {
+                    "question": "排队后的下一题",
+                    "options": ["选项一", "选项二"],
+                    "multi_select": False,
+                    "is_follow_up": False,
+                },
+                "fast:question",
+            )
+            self.server.trigger_prefetch_if_needed = lambda *args, **kwargs: None
+
+            def _release_one_slot():
+                time.sleep(0.03)
+                self.server.QUESTION_GENERATION_SEMAPHORE.release()
+
+            releaser = threading.Thread(target=_release_one_slot, daemon=True)
+            releaser.start()
+            started_at = time.perf_counter()
+            next_q = self.client.post(
+                f"/api/sessions/{session_id}/next-question",
+                json={"dimension": dimension},
+            )
+            elapsed_ms = (time.perf_counter() - started_at) * 1000.0
+            self.assertEqual(next_q.status_code, 200, next_q.get_data(as_text=True))
+            payload = next_q.get_json() or {}
+            self.assertEqual(payload.get("question"), "排队后的下一题")
+            self.assertEqual(payload.get("question_generation_tier"), "fast:question")
+            self.assertGreater(elapsed_ms, 20.0)
+        finally:
+            if releaser and releaser.is_alive():
+                releaser.join(timeout=0.3)
+            self.server.QUESTION_GENERATION_QUEUE_WAIT_SECONDS = old_queue_wait_seconds
+            self.server.resolve_ai_client = old_resolve_ai_client
+            self.server._prepare_question_generation_runtime = old_prepare_runtime
+            self.server.generate_question_with_tiered_strategy = old_generate_question
+            self.server.trigger_prefetch_if_needed = old_trigger_prefetch
+            while acquired_tokens:
+                acquired_tokens.pop()
+                try:
+                    self.server.QUESTION_GENERATION_SEMAPHORE.release()
+                except ValueError:
+                    break
 
     def test_next_question_repairs_truncated_ai_response(self):
         self._register()
@@ -3736,6 +3847,39 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertNotIn("\n  ", str(row["payload_json"] or ""))
         self.assertEqual(int(row["payload_size"] or 0), len(compact_payload.encode("utf-8")))
         self.assertEqual(signature[1], len(compact_payload.encode("utf-8")))
+
+    def test_safe_load_session_applies_report_runtime_meta_from_session_index(self):
+        self.server.set_license_enforcement_override(False)
+        self._register()
+        created = self._create_session(topic="索引覆盖报告绑定")
+        session_id = created["session_id"]
+        session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+        baseline = self.server.safe_load_session(session_file)
+        owner_user_id = int(baseline.get("owner_user_id") or 0)
+
+        report_name = f"{session_id}-index-report.md"
+        self.server.save_report_content_and_sync(report_name, "# 测试报告\n")
+        self.server.set_report_owner_id(report_name, owner_user_id)
+
+        indexed_session = json.loads(json.dumps(baseline, ensure_ascii=False))
+        indexed_session["status"] = "completed"
+        indexed_session["updated_at"] = "2026-03-31T10:00:00+08:00"
+        indexed_session["current_report_name"] = report_name
+        indexed_session["current_report_updated_at"] = "2026-03-31T10:00:00+08:00"
+        indexed_session["last_report_name"] = report_name
+        indexed_session["last_report_quality_meta"] = {"score": 0.92, "path": "v3_pipeline"}
+
+        self.server.sync_session_index_and_bound_reports(session_file, indexed_session)
+        self.server._invalidate_session_payload_cache(session_id=session_id, file_name=session_file.name)
+
+        loaded = self.server.safe_load_session(session_file)
+
+        self.assertEqual(loaded.get("status"), "completed")
+        self.assertEqual(loaded.get("current_report_name"), report_name)
+        self.assertEqual(loaded.get("last_report_name"), report_name)
+        self.assertEqual(loaded.get("current_report_updated_at"), "2026-03-31T10:00:00+08:00")
+        self.assertEqual(loaded.get("last_report_quality_meta", {}).get("score"), 0.92)
+        self.assertEqual(Path(loaded.get("current_report_path", "")).name, report_name)
 
     def test_report_generation_and_report_endpoints(self):
         user = self._register()
