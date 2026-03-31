@@ -3158,6 +3158,65 @@ def _upsert_site_config_store_values(conn: Any, values: dict[str, Any]) -> None:
     )
 
 
+def _normalize_runtime_metrics_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    calls_raw = payload.get("calls", [])
+    calls = [item for item in calls_raw if isinstance(item, dict)] if isinstance(calls_raw, list) else []
+    summary_raw = payload.get("summary", {})
+    summary = summary_raw if isinstance(summary_raw, dict) else {}
+    return {
+        "calls": calls,
+        "summary": {
+            "total_calls": int(summary.get("total_calls", 0) or 0),
+            "total_timeouts": int(summary.get("total_timeouts", 0) or 0),
+            "total_truncations": int(summary.get("total_truncations", 0) or 0),
+            "total_cache_hits": int(summary.get("total_cache_hits", 0) or 0),
+            "total_hedge_triggered": int(summary.get("total_hedge_triggered", 0) or 0),
+            "avg_response_time": float(summary.get("avg_response_time", 0) or 0),
+            "avg_prompt_length": float(summary.get("avg_prompt_length", 0) or 0),
+            "avg_queue_wait_ms": float(summary.get("avg_queue_wait_ms", 0) or 0),
+        },
+    }
+
+
+def _load_runtime_metrics_store_payload(conn: Any, metric_key: str) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT payload_json
+        FROM runtime_metrics_store
+        WHERE metric_key = ?
+        LIMIT 1
+        """,
+        (str(metric_key or "").strip(),),
+    ).fetchone()
+    if not row:
+        return {}
+    try:
+        payload = json.loads(str(row["payload_json"] or "{}"))
+    except Exception:
+        return {}
+    return _normalize_runtime_metrics_payload(payload)
+
+
+def _upsert_runtime_metrics_store_payload(conn: Any, metric_key: str, payload: dict[str, Any]) -> None:
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO runtime_metrics_store(metric_key, payload_json, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(metric_key) DO UPDATE SET
+            payload_json = excluded.payload_json,
+            updated_at = excluded.updated_at
+        """,
+        (
+            str(metric_key or "").strip(),
+            json.dumps(_normalize_runtime_metrics_payload(payload), ensure_ascii=False),
+            now_iso,
+        ),
+    )
+
+
 def load_runtime_site_config_values() -> dict[str, Any]:
     try:
         with get_meta_index_connection() as conn:
@@ -4929,25 +4988,25 @@ def safe_load_session(session_file: Path) -> dict:
     if _use_pure_cloud_session_storage():
         cached_payload = _get_session_payload_cache(session_id=session_id, file_name=target.name)
         if isinstance(cached_payload, dict):
-            return cached_payload
+            return apply_session_index_runtime_meta(cached_payload)
     if session_id:
         store_payload, store_signature = _load_session_store_entry(session_id=session_id)
         if isinstance(store_payload, dict):
             if _use_pure_cloud_session_storage():
                 _set_session_payload_cache(session_id, target.name, store_payload, signature=store_signature)
-            return store_payload
+            return apply_session_index_runtime_meta(store_payload)
     else:
         store_payload, store_signature = _load_session_store_entry(file_name=target.name)
         if isinstance(store_payload, dict):
             if _use_pure_cloud_session_storage():
                 _set_session_payload_cache(session_id, target.name, store_payload, signature=store_signature)
-            return store_payload
+            return apply_session_index_runtime_meta(store_payload)
 
     if _use_pure_cloud_session_storage():
         return None
 
     try:
-        return json.loads(target.read_text(encoding="utf-8"))
+        return apply_session_index_runtime_meta(json.loads(target.read_text(encoding="utf-8")))
     except FileNotFoundError:
         return None
     except json.JSONDecodeError as e:
@@ -6347,6 +6406,25 @@ def _migrate_legacy_site_config_if_needed(conn: Any) -> None:
         _safe_log("✅ 已迁移 site-config.js 到 site_config_store")
 
 
+def _migrate_legacy_runtime_metrics_if_needed(conn: Any) -> None:
+    existing = _load_runtime_metrics_store_payload(conn, "api_metrics")
+    if existing:
+        return
+    legacy_path = (METRICS_DIR / "api_metrics.json").resolve()
+    if not legacy_path.exists() or not legacy_path.is_file():
+        return
+    try:
+        payload = json.loads(legacy_path.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    normalized = _normalize_runtime_metrics_payload(payload)
+    if not normalized:
+        return
+    _upsert_runtime_metrics_store_payload(conn, "api_metrics", normalized)
+    if ENABLE_DEBUG_LOG:
+        _safe_log("✅ 已迁移 api_metrics.json 到 runtime_metrics_store")
+
+
 def _load_report_artifact_payload(table_name: str, report_name: str, legacy_path: Path) -> dict:
     normalized_name = normalize_solution_report_filename(report_name)
     if not normalized_name:
@@ -7040,6 +7118,10 @@ def ensure_meta_index_schema() -> None:
                     scenario_id TEXT NOT NULL DEFAULT '',
                     scenario_config_json TEXT NOT NULL DEFAULT '{}',
                     dimensions_json TEXT NOT NULL DEFAULT '{}',
+                    current_report_name TEXT NOT NULL DEFAULT '',
+                    current_report_updated_at TEXT NOT NULL DEFAULT '',
+                    last_report_name TEXT NOT NULL DEFAULT '',
+                    last_report_quality_meta_json TEXT NOT NULL DEFAULT '{}',
                     file_mtime_ns BIGINT NOT NULL DEFAULT 0,
                     file_size BIGINT NOT NULL DEFAULT 0,
                     indexed_at TEXT NOT NULL
@@ -7052,6 +7134,14 @@ def ensure_meta_index_schema() -> None:
             }
             if "instance_scope_key" not in session_columns:
                 conn.execute("ALTER TABLE session_index ADD COLUMN instance_scope_key TEXT NOT NULL DEFAULT ''")
+            if "current_report_name" not in session_columns:
+                conn.execute("ALTER TABLE session_index ADD COLUMN current_report_name TEXT NOT NULL DEFAULT ''")
+            if "current_report_updated_at" not in session_columns:
+                conn.execute("ALTER TABLE session_index ADD COLUMN current_report_updated_at TEXT NOT NULL DEFAULT ''")
+            if "last_report_name" not in session_columns:
+                conn.execute("ALTER TABLE session_index ADD COLUMN last_report_name TEXT NOT NULL DEFAULT ''")
+            if "last_report_quality_meta_json" not in session_columns:
+                conn.execute("ALTER TABLE session_index ADD COLUMN last_report_quality_meta_json TEXT NOT NULL DEFAULT '{}'")
 
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_session_index_owner_scope_updated ON session_index(owner_user_id, instance_scope_key, updated_at DESC)"
@@ -7242,6 +7332,15 @@ def ensure_meta_index_schema() -> None:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS runtime_metrics_store (
+                    metric_key TEXT PRIMARY KEY,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS summary_cache_store (
                     doc_hash TEXT PRIMARY KEY,
                     summary_text TEXT NOT NULL DEFAULT '',
@@ -7314,6 +7413,7 @@ def ensure_meta_index_schema() -> None:
             _migrate_legacy_report_meta_if_needed(conn)
             _migrate_legacy_report_artifacts_if_needed(conn)
             _migrate_legacy_site_config_if_needed(conn)
+            _migrate_legacy_runtime_metrics_if_needed(conn)
 
         meta_index_state["schema_ready"] = True
 
@@ -7363,6 +7463,14 @@ def _build_session_index_record(session_file: Path, session_data: dict) -> Optio
         build_compact_dimensions(session_data.get("dimensions", {})),
         ensure_ascii=False,
     )
+    current_report_name = normalize_solution_report_filename(session_data.get("current_report_name", ""))
+    current_report_updated_at = str(session_data.get("current_report_updated_at") or "").strip()
+    last_report_name = normalize_solution_report_filename(session_data.get("last_report_name", ""))
+    last_report_quality_meta = session_data.get("last_report_quality_meta", {})
+    if isinstance(last_report_quality_meta, dict):
+        last_report_quality_meta_json = json.dumps(last_report_quality_meta, ensure_ascii=False)
+    else:
+        last_report_quality_meta_json = "{}"
 
     return {
         "session_id": session_id,
@@ -7377,6 +7485,10 @@ def _build_session_index_record(session_file: Path, session_data: dict) -> Optio
         "scenario_id": str(session_data.get("scenario_id") or ""),
         "scenario_config_json": scenario_config_json,
         "dimensions_json": dimensions_json,
+        "current_report_name": current_report_name,
+        "current_report_updated_at": current_report_updated_at,
+        "last_report_name": last_report_name,
+        "last_report_quality_meta_json": last_report_quality_meta_json,
         "file_mtime_ns": int(signature[0]),
         "file_size": int(signature[1]),
         "indexed_at": get_utc_now(),
@@ -7397,9 +7509,10 @@ def _upsert_session_index_record(record: dict) -> None:
             INSERT INTO session_index (
                 session_id, file_name, owner_user_id, instance_scope_key, topic, status,
                 created_at, updated_at, interview_count, scenario_id,
-                scenario_config_json, dimensions_json, file_mtime_ns,
+                scenario_config_json, dimensions_json, current_report_name, current_report_updated_at,
+                last_report_name, last_report_quality_meta_json, file_mtime_ns,
                 file_size, indexed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id) DO UPDATE SET
                 file_name=excluded.file_name,
                 owner_user_id=excluded.owner_user_id,
@@ -7412,6 +7525,10 @@ def _upsert_session_index_record(record: dict) -> None:
                 scenario_id=excluded.scenario_id,
                 scenario_config_json=excluded.scenario_config_json,
                 dimensions_json=excluded.dimensions_json,
+                current_report_name=excluded.current_report_name,
+                current_report_updated_at=excluded.current_report_updated_at,
+                last_report_name=excluded.last_report_name,
+                last_report_quality_meta_json=excluded.last_report_quality_meta_json,
                 file_mtime_ns=excluded.file_mtime_ns,
                 file_size=excluded.file_size,
                 indexed_at=excluded.indexed_at
@@ -7429,6 +7546,10 @@ def _upsert_session_index_record(record: dict) -> None:
                 record["scenario_id"],
                 record["scenario_config_json"],
                 record["dimensions_json"],
+                record["current_report_name"],
+                record["current_report_updated_at"],
+                record["last_report_name"],
+                record["last_report_quality_meta_json"],
                 record["file_mtime_ns"],
                 record["file_size"],
                 record["indexed_at"],
@@ -7454,6 +7575,27 @@ def _write_json_atomic(file_path: Path, payload: object) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def sync_session_index_and_bound_reports(session_file: Path, session_data: dict) -> None:
+    record = _build_session_index_record(session_file, session_data)
+    if record:
+        _upsert_session_index_record(record)
+
+    try:
+        owner_user_id = int(session_data.get("owner_user_id") or 0)
+    except (TypeError, ValueError):
+        owner_user_id = 0
+    if owner_user_id > 0:
+        scope_key = get_session_instance_scope_key(session_data)
+        binding_metadata = build_report_binding_metadata_from_session(session_data)
+        for report_name in _collect_direct_bound_report_names(session_data):
+            sync_report_index_for_filename(
+                report_name,
+                owner_user_id=owner_user_id,
+                instance_scope_key=scope_key,
+                binding_metadata=binding_metadata,
+            )
 
 
 def save_session_json_and_sync(session_file: Path, session_data: dict) -> tuple[int, int]:
@@ -7491,9 +7633,7 @@ def save_session_json_and_sync(session_file: Path, session_data: dict) -> tuple[
             _safe_log(f"⚠️ 同步 session_store 失败: {session_file.name}, 错误: {exc}")
 
     try:
-        record = _build_session_index_record(session_file, session_data)
-        if record:
-            _upsert_session_index_record(record)
+        sync_session_index_and_bound_reports(session_file, session_data)
     except Exception as exc:
         if use_cloud_primary:
             raise
@@ -7502,21 +7642,6 @@ def save_session_json_and_sync(session_file: Path, session_data: dict) -> tuple[
 
     if session_id:
         _set_session_payload_cache(session_id, file_name, session_data, signature=signature)
-
-    try:
-        owner_user_id = int(session_data.get("owner_user_id") or 0)
-    except (TypeError, ValueError):
-        owner_user_id = 0
-    if owner_user_id > 0:
-        scope_key = get_session_instance_scope_key(session_data)
-        binding_metadata = build_report_binding_metadata_from_session(session_data)
-        for report_name in _collect_direct_bound_report_names(session_data):
-            sync_report_index_for_filename(
-                report_name,
-                owner_user_id=owner_user_id,
-                instance_scope_key=scope_key,
-                binding_metadata=binding_metadata,
-            )
 
     if use_cloud_primary and session_file.exists():
         session_file.unlink(missing_ok=True)
@@ -7540,6 +7665,62 @@ def remove_session_index_record(session_id: str = "", file_name: str = "") -> No
         else:
             conn.execute("DELETE FROM session_index WHERE file_name = ?", (fname,))
     _delete_session_store_record(session_id=sid, file_name=fname)
+
+
+def get_session_index_runtime_meta(session_id: str) -> dict:
+    sid = str(session_id or "").strip()
+    if not sid:
+        return {}
+    with get_meta_index_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT status, updated_at, current_report_name, current_report_updated_at,
+                   last_report_name, last_report_quality_meta_json
+            FROM session_index
+            WHERE session_id = ?
+            """,
+            (sid,),
+        ).fetchone()
+    if not row:
+        return {}
+    return {
+        "status": str(row["status"] or "").strip(),
+        "updated_at": str(row["updated_at"] or "").strip(),
+        "current_report_name": str(row["current_report_name"] or "").strip(),
+        "current_report_updated_at": str(row["current_report_updated_at"] or "").strip(),
+        "last_report_name": str(row["last_report_name"] or "").strip(),
+        "last_report_quality_meta": _decode_index_json(row["last_report_quality_meta_json"], {}),
+    }
+
+
+def apply_session_index_runtime_meta(session_data: Optional[dict]) -> Optional[dict]:
+    if not isinstance(session_data, dict):
+        return session_data
+    session_id = str(session_data.get("session_id") or "").strip()
+    runtime_meta = get_session_index_runtime_meta(session_id)
+    if not isinstance(runtime_meta, dict) or not runtime_meta:
+        return session_data
+
+    status = str(runtime_meta.get("status") or "").strip()
+    if status:
+        session_data["status"] = status
+    updated_at = str(runtime_meta.get("updated_at") or "").strip()
+    if updated_at:
+        session_data["updated_at"] = updated_at
+    current_report_name = normalize_solution_report_filename(runtime_meta.get("current_report_name", ""))
+    if current_report_name:
+        session_data["current_report_name"] = current_report_name
+        session_data["current_report_path"] = str((REPORTS_DIR / current_report_name).resolve())
+    current_report_updated_at = str(runtime_meta.get("current_report_updated_at") or "").strip()
+    if current_report_updated_at:
+        session_data["current_report_updated_at"] = current_report_updated_at
+    last_report_name = normalize_solution_report_filename(runtime_meta.get("last_report_name", ""))
+    if last_report_name:
+        session_data["last_report_name"] = last_report_name
+    quality_meta = runtime_meta.get("last_report_quality_meta")
+    if isinstance(quality_meta, dict) and quality_meta:
+        session_data["last_report_quality_meta"] = copy.deepcopy(quality_meta)
+    return session_data
 
 
 def rebuild_session_index_from_disk(*, full_reset: Optional[bool] = None) -> None:
@@ -13811,18 +13992,18 @@ def prefetch_first_question(session_id: str):
 class MetricsCollector:
     """API 性能指标收集器"""
 
-    def __init__(self, metrics_file: Path):
-        self.metrics_file = metrics_file
+    def __init__(self, metrics_key: str):
+        self.metrics_key = str(metrics_key or "api_metrics").strip() or "api_metrics"
         self._pending_records = deque()
         self._pending_lock = threading.Lock()
-        self._file_lock = threading.Lock()
+        self._storage_lock = threading.Lock()
+        self._store_ready = False
         self._flush_event = threading.Event()
         self._stop_event = threading.Event()
         self._closed = False
         self._flush_interval = float(METRICS_ASYNC_FLUSH_INTERVAL_SECONDS)
         self._flush_batch_size = int(METRICS_ASYNC_BATCH_SIZE)
         self._max_pending = int(METRICS_ASYNC_MAX_PENDING)
-        self._ensure_metrics_file()
         self._flush_worker = threading.Thread(
             target=self._flush_loop,
             daemon=True,
@@ -13834,16 +14015,19 @@ class MetricsCollector:
         except Exception:
             pass
 
-    def _ensure_metrics_file(self):
-        """确保指标文件存在"""
+    def _ensure_metrics_store(self):
+        """确保共享指标存储存在。"""
+        if self._store_ready:
+            return
         payload = self._empty_payload()
-        with self._file_lock:
-            self.metrics_file.parent.mkdir(parents=True, exist_ok=True)
-            if not self.metrics_file.exists():
-                self.metrics_file.write_text(
-                    json.dumps(payload, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
+        with self._storage_lock:
+            if self._store_ready:
+                return
+            with get_meta_index_connection() as conn:
+                existing = _load_runtime_metrics_store_payload(conn, self.metrics_key)
+                if not existing:
+                    _upsert_runtime_metrics_store_payload(conn, self.metrics_key, payload)
+            self._store_ready = True
 
     def _empty_payload(self) -> dict:
         return {
@@ -13863,36 +14047,17 @@ class MetricsCollector:
     def _load_metrics_data(self) -> dict:
         payload = self._empty_payload()
         try:
-            if not self.metrics_file.exists():
-                return payload
-            data = json.loads(self.metrics_file.read_text(encoding="utf-8"))
-            if not isinstance(data, dict):
-                return payload
-
-            calls_raw = data.get("calls", [])
-            calls = [item for item in calls_raw if isinstance(item, dict)] if isinstance(calls_raw, list) else []
-            summary_raw = data.get("summary", {})
-            summary = summary_raw if isinstance(summary_raw, dict) else {}
-            merged_summary = {
-                "total_calls": int(summary.get("total_calls", 0) or 0),
-                "total_timeouts": int(summary.get("total_timeouts", 0) or 0),
-                "total_truncations": int(summary.get("total_truncations", 0) or 0),
-                "total_cache_hits": int(summary.get("total_cache_hits", 0) or 0),
-                "total_hedge_triggered": int(summary.get("total_hedge_triggered", 0) or 0),
-                "avg_response_time": float(summary.get("avg_response_time", 0) or 0),
-                "avg_prompt_length": float(summary.get("avg_prompt_length", 0) or 0),
-                "avg_queue_wait_ms": float(summary.get("avg_queue_wait_ms", 0) or 0),
-            }
-            return {"calls": calls, "summary": merged_summary}
+            self._ensure_metrics_store()
+            with get_meta_index_connection() as conn:
+                data = _load_runtime_metrics_store_payload(conn, self.metrics_key)
+            return data or payload
         except Exception:
             return payload
 
     def _write_metrics_data(self, data: dict) -> None:
-        self.metrics_file.parent.mkdir(parents=True, exist_ok=True)
-        self.metrics_file.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        self._ensure_metrics_store()
+        with get_meta_index_connection() as conn:
+            _upsert_runtime_metrics_store_payload(conn, self.metrics_key, data)
 
     def _apply_records_to_data(self, data: dict, records: list[dict]) -> dict:
         if not isinstance(data, dict):
@@ -13988,7 +14153,7 @@ class MetricsCollector:
             if not records:
                 break
             try:
-                with self._file_lock:
+                with self._storage_lock:
                     data = self._load_metrics_data()
                     data = self._apply_records_to_data(data, records)
                     self._write_metrics_data(data)
@@ -14037,7 +14202,7 @@ class MetricsCollector:
     def reset(self) -> None:
         with self._pending_lock:
             self._pending_records.clear()
-        with self._file_lock:
+        with self._storage_lock:
             self._write_metrics_data(self._empty_payload())
 
     def record_api_call(self, call_type: str, prompt_length: int, response_time: float,
@@ -14101,7 +14266,7 @@ class MetricsCollector:
         }
         try:
             self._flush_pending_records(force=True)
-            with self._file_lock:
+            with self._storage_lock:
                 data = self._load_metrics_data()
             summary_data = data.get("summary", empty_summary)
             if not isinstance(summary_data, dict):
@@ -14250,7 +14415,7 @@ class MetricsCollector:
                 "max_queue_wait_ms": 0,
                 "recommendations": [{
                     "level": "warning",
-                    "message": "指标文件异常，已返回空统计"
+                    "message": "指标存储异常，已返回空统计"
                 }],
                 "summary": empty_summary,
                 "calls": [],
@@ -14311,7 +14476,7 @@ class MetricsCollector:
 
 
 # 初始化指标收集器
-metrics_collector = MetricsCollector(METRICS_DIR / "api_metrics.json")
+metrics_collector = MetricsCollector("api_metrics")
 
 
 def _record_cache_hit_metric(call_type: str) -> None:
@@ -32791,12 +32956,23 @@ def run_report_generation_job(
                         latest_session["last_report_quality_meta"] = quality_meta
                     if isinstance(session.get("last_report_v3_debug"), dict):
                         latest_session["last_report_v3_debug"] = session["last_report_v3_debug"]
-                    save_session_json_and_sync(session_file, latest_session)
+                    sync_session_index_and_bound_reports(session_file, latest_session)
+                    latest_signature = get_file_signature(session_file)
+                    latest_session_id = str(latest_session.get("session_id") or session_id).strip()
+                    if latest_session_id:
+                        _set_session_payload_cache(
+                            latest_session_id,
+                            session_file.name,
+                            latest_session,
+                            signature=latest_signature,
+                        )
 
                     session["current_report_name"] = filename
                     session["current_report_path"] = str(report_file)
                     session["current_report_updated_at"] = latest_session["current_report_updated_at"]
                     session["last_report_name"] = filename
+                    if isinstance(quality_meta, dict):
+                        session["last_report_quality_meta"] = quality_meta
 
             report_runtime_durations["persist_ms"] = round(
                 float(report_runtime_durations.get("persist_ms", 0.0) or 0.0) + _job_elapsed_ms(persist_started_at),
