@@ -1,7 +1,18 @@
 {
-  "version": "6.1.0",
-  "releaseDate": "2026-03-30",
+  "version": "6.2.0",
+  "releaseDate": "2026-03-31",
   "changelog": [
+    {
+      "version": "6.2.0",
+      "date": "2026-03-31",
+      "type": "minor",
+      "title": "迁移前端展示配置到共享存储",
+      "changes": [
+        "后端: 新增 site_config_store 与动态 /site-config.js 输出",
+        "后台: 配置中心改为读写共享前端配置",
+        "文档: 更新多实例迁移状态与剩余项"
+      ]
+    },
     {
       "version": "6.1.0",
       "date": "2026-03-30",
