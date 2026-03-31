@@ -515,6 +515,7 @@ function deepVision() {
             actionItems: [],
             mobileNavOpen: false
         },
+        reportDetailCache: {},
         reportDetailEnhancing: false,
         reportDetailEnhanceTimer: null,
         reportDetailObserver: null,
@@ -1236,6 +1237,7 @@ function deepVision() {
             this.cleanupReportDetailEnhancements();
             this.selectedReport = null;
             this.reportContent = '';
+            this.reportDetailCache = {};
             this.selectedReportMeta = this.createEmptySelectedReportMeta();
             this.showNewSessionModal = false;
             this.showDeleteModal = false;
@@ -5232,6 +5234,7 @@ function deepVision() {
                 if (this.selectedReportMeta?.name === this.reportToDelete) {
                     this.resetSelectedReportDetail();
                 }
+                this.invalidateReportDetailCache(this.reportToDelete);
                 this.reports = this.reports.filter(r => r.name !== this.reportToDelete);
                 this.filterReports();
                 this.showDeleteReportModal = false;
@@ -5469,6 +5472,119 @@ function deepVision() {
             };
         },
 
+        cloneSelectedReportMeta(meta = {}) {
+            return {
+                ...this.createEmptySelectedReportMeta(),
+                ...(meta && typeof meta === 'object' ? meta : {})
+            };
+        },
+
+        cloneReportDetailModel(model = {}) {
+            const source = model && typeof model === 'object' ? model : {};
+            return {
+                ...this.createEmptyReportDetailModel(),
+                ...source,
+                sections: Array.isArray(source.sections)
+                    ? source.sections.map(item => ({ ...item }))
+                    : [],
+                primarySections: Array.isArray(source.primarySections)
+                    ? source.primarySections.map(item => ({ ...item }))
+                    : [],
+                overviewItems: Array.isArray(source.overviewItems)
+                    ? source.overviewItems.map(item => ({ ...item }))
+                    : [],
+                actionItems: Array.isArray(source.actionItems)
+                    ? source.actionItems.map(item => ({ ...item }))
+                    : []
+            };
+        },
+
+        getCachedReportDetail(filename = '') {
+            const targetFilename = String(filename || '').trim();
+            if (!targetFilename || !this.reportDetailCache || typeof this.reportDetailCache !== 'object') {
+                return null;
+            }
+            const entry = this.reportDetailCache[targetFilename];
+            if (!entry || typeof entry !== 'object') return null;
+            if (!String(entry.content || '').trim()) return null;
+            return {
+                content: String(entry.content || ''),
+                meta: this.cloneSelectedReportMeta(entry.meta),
+                detailModel: this.cloneReportDetailModel(entry.detailModel)
+            };
+        },
+
+        cacheCurrentReportDetailSnapshot() {
+            const targetFilename = String(this.selectedReport || this.selectedReportMeta?.name || '').trim();
+            if (!targetFilename || !String(this.reportContent || '').trim()) return;
+
+            this.reportDetailCache = {
+                ...(this.reportDetailCache && typeof this.reportDetailCache === 'object' ? this.reportDetailCache : {}),
+                [targetFilename]: {
+                    content: String(this.reportContent || ''),
+                    meta: this.cloneSelectedReportMeta(this.selectedReportMeta),
+                    detailModel: this.cloneReportDetailModel(this.reportDetailModel)
+                }
+            };
+        },
+
+        invalidateReportDetailCache(filename = '') {
+            const targetFilename = String(filename || '').trim();
+            if (!targetFilename) {
+                this.reportDetailCache = {};
+                return;
+            }
+            if (!this.reportDetailCache || typeof this.reportDetailCache !== 'object' || !this.reportDetailCache[targetFilename]) {
+                return;
+            }
+            const nextCache = { ...this.reportDetailCache };
+            delete nextCache[targetFilename];
+            this.reportDetailCache = nextCache;
+        },
+
+        normalizeComparableId(value) {
+            return String(value ?? '').trim();
+        },
+
+        findReportBySessionId(sessionId = '') {
+            const targetSessionId = this.normalizeComparableId(sessionId);
+            if (!targetSessionId || !Array.isArray(this.reports)) return null;
+            return this.reports.find(report => this.normalizeComparableId(report?.session_id) === targetSessionId) || null;
+        },
+
+        async openGeneratedReportForSession(sessionId = '', preferredReportName = '', options = {}) {
+            const normalizedSessionId = this.normalizeComparableId(sessionId);
+            const preferredName = String(preferredReportName || '').trim();
+            const { forceReload = false, showMissingToast = true } = options;
+
+            if (!normalizedSessionId && !preferredName) return false;
+
+            const hasPreferredInList = preferredName
+                && Array.isArray(this.reports)
+                && this.reports.some(report => report?.name === preferredName);
+            if (!this.findReportBySessionId(normalizedSessionId) && !hasPreferredInList) {
+                await this.loadReports();
+            }
+
+            const matchedReport = this.findReportBySessionId(normalizedSessionId);
+            const targetReportName = String(
+                preferredName
+                || matchedReport?.name
+                || ''
+            ).trim();
+
+            if (!targetReportName) {
+                if (showMissingToast) {
+                    this.showToast('报告已生成，但暂未在列表中找到，请稍后到报告页查看', 'warning');
+                }
+                return false;
+            }
+
+            this.currentView = 'reports';
+            await this.viewReport(targetReportName, { forceReload });
+            return true;
+        },
+
         resolveReportTemplateLabel(report, matchedSession = null) {
             const explicitTemplate = String(
                 report?.report_template ||
@@ -5569,13 +5685,14 @@ function deepVision() {
             this.resetPresentationProgressFeedback();
         },
 
-        scheduleReportDetailEnhancement() {
+        scheduleReportDetailEnhancement(options = {}) {
+            const { silent = false } = options;
             if (!this.selectedReport || !this.reportContent) {
                 this.reportDetailEnhancing = false;
                 return;
             }
 
-            this.reportDetailEnhancing = true;
+            this.reportDetailEnhancing = !silent;
             this.cleanupReportDetailEnhancements({ resetModel: false });
             this.reportDetailEnhanceTimer = window.setTimeout(() => {
                 this.reportDetailEnhanceTimer = null;
@@ -5726,6 +5843,10 @@ function deepVision() {
                 const missingReports = result.missing_reports?.length || 0;
 
                 const selectedReportName = this.selectedReport || this.selectedReportMeta?.name || '';
+                [
+                    ...(Array.isArray(result.deleted_reports) ? result.deleted_reports : []),
+                    ...(Array.isArray(result.missing_reports) ? result.missing_reports : [])
+                ].forEach(name => this.invalidateReportDetailCache(name));
                 await this.loadReports();
                 if (selectedReportName && !this.reports.find(report => report.name === selectedReportName)) {
                     this.resetSelectedReportDetail();
@@ -7382,8 +7503,10 @@ function deepVision() {
                 return;
             }
 
+            const normalizedSessionId = this.normalizeComparableId(sessionId);
+
             const terminalKey = [
-                sessionId,
+                normalizedSessionId,
                 state,
                 data?.updated_at || '',
                 data?.report_name || '',
@@ -7394,12 +7517,16 @@ function deepVision() {
             }
             this.reportGenerationTerminalHandledKey = terminalKey;
 
-            const isCurrentSession = this.currentSession?.session_id === sessionId;
-            const wasTracking = this.generatingReportSessionId === sessionId
-                || this.reportGenerationSessionId === sessionId;
+            const isCurrentSession = normalizedSessionId
+                && this.normalizeComparableId(this.currentSession?.session_id) === normalizedSessionId;
+            const wasTracking = normalizedSessionId
+                && (
+                    this.normalizeComparableId(this.generatingReportSessionId) === normalizedSessionId
+                    || this.normalizeComparableId(this.reportGenerationSessionId) === normalizedSessionId
+                );
 
             this.generatingReport = false;
-            if (this.generatingReportSessionId === sessionId) {
+            if (this.normalizeComparableId(this.generatingReportSessionId) === normalizedSessionId) {
                 this.generatingReportSessionId = '';
             }
             this.stopWebSearchPolling();
@@ -7418,9 +7545,8 @@ function deepVision() {
                     this.showToast(`访谈报告生成成功 ${aiLabel}`.trim(), 'success');
                 }
 
-                if (isCurrentSession && reportName) {
-                    this.currentView = 'reports';
-                    await this.viewReport(reportName);
+                if (isCurrentSession) {
+                    await this.openGeneratedReportForSession(normalizedSessionId, reportName, { forceReload: true });
                 }
                 return;
             }
@@ -7729,9 +7855,7 @@ function deepVision() {
                     this.showToast(`访谈报告生成成功 ${aiMsg}`, 'success');
                     this.finishReportGenerationFeedback('success');
                     this.currentSession.status = 'completed';
-                    await this.loadReports();
-                    this.currentView = 'reports';
-                    await this.viewReport(result.report_name);
+                    await this.openGeneratedReportForSession(sessionId, result.report_name, { forceReload: true });
                     this.generatingReport = false;
                     this.generatingReportSessionId = '';
                     this.stopReportGenerationPolling();
@@ -7779,23 +7903,13 @@ function deepVision() {
 
         async viewLatestReportForSession() {
             if (!this.currentSession) return;
-            if (!this.reports || this.reports.length === 0) {
-                await this.loadReports();
-            }
-            const currentSessionId = String(this.currentSession?.session_id || '').trim();
-            const candidates = (this.reports || []).filter(r => String(r?.session_id || '').trim() === currentSessionId);
-            const target = candidates.length > 0 ? candidates[0] : null;
-            this.currentView = 'reports';
-            if (target) {
-                await this.viewReport(target.name);
-            } else {
-                this.showToast('未找到对应访谈报告，请在报告列表中查看', 'warning');
-            }
+            await this.openGeneratedReportForSession(this.currentSession?.session_id || '', '', { forceReload: false });
         },
 
-        async viewReport(filename) {
+        async viewReport(filename, options = {}) {
             const targetFilename = String(filename || '').trim();
             if (!targetFilename) return;
+            const { forceReload = false } = options;
 
             const nextMeta = this.buildSelectedReportMeta(targetFilename);
             const canReuseCurrentDetail = (
@@ -7810,15 +7924,28 @@ function deepVision() {
                 await this.fetchPresentationStatus();
                 return;
             }
+            const cachedReport = forceReload ? null : this.getCachedReportDetail(targetFilename);
             try {
                 this.cleanupReportDetailEnhancements();
                 this.stopPresentationPolling();
                 this.selectedReport = targetFilename;
-                this.selectedReportMeta = nextMeta;
-                this.reportContent = '';
                 this.presentationPdfUrl = '';
                 this.presentationLocalUrl = '';
                 this.resetPresentationProgressFeedback();
+                if (cachedReport) {
+                    this.selectedReportMeta = this.cloneSelectedReportMeta(
+                        cachedReport.meta?.name ? cachedReport.meta : nextMeta
+                    );
+                    this.reportDetailModel = this.cloneReportDetailModel(cachedReport.detailModel);
+                    this.reportContent = cachedReport.content;
+                    this.reportDetailEnhancing = false;
+                    this.$nextTick(() => this.scheduleReportDetailEnhancement({ silent: true }));
+                    await this.fetchPresentationStatus();
+                    return;
+                }
+                this.selectedReportMeta = nextMeta;
+                this.reportContent = '';
+                this.reportDetailModel = this.createEmptyReportDetailModel();
                 this.reportDetailEnhancing = true;
                 const data = await this.apiCall(`/reports/${encodeURIComponent(targetFilename)}`);
                 this.reportContent = data.content;
@@ -8687,6 +8814,8 @@ function deepVision() {
             } finally {
                 this.reportDetailEnhancing = false;
             }
+
+            this.cacheCurrentReportDetailSnapshot();
         },
 
         enhanceReportTables(reportElement) {
