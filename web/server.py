@@ -582,9 +582,17 @@ QUESTION_GENERATION_MAX_INFLIGHT = _cfg_int("QUESTION_GENERATION_MAX_INFLIGHT", 
 if QUESTION_GENERATION_MAX_INFLIGHT < 1:
     QUESTION_GENERATION_MAX_INFLIGHT = 2
 
+QUESTION_GENERATION_MAX_PENDING = _cfg_int("QUESTION_GENERATION_MAX_PENDING", 10)
+if QUESTION_GENERATION_MAX_PENDING < QUESTION_GENERATION_MAX_INFLIGHT:
+    QUESTION_GENERATION_MAX_PENDING = QUESTION_GENERATION_MAX_INFLIGHT
+
 QUESTION_GENERATION_RETRY_AFTER_SECONDS = _cfg_int("QUESTION_GENERATION_RETRY_AFTER_SECONDS", 2)
 if QUESTION_GENERATION_RETRY_AFTER_SECONDS < 1:
     QUESTION_GENERATION_RETRY_AFTER_SECONDS = 2
+
+QUESTION_GENERATION_QUEUE_WAIT_SECONDS = _cfg_float("QUESTION_GENERATION_QUEUE_WAIT_SECONDS", 8.0)
+if QUESTION_GENERATION_QUEUE_WAIT_SECONDS < 0:
+    QUESTION_GENERATION_QUEUE_WAIT_SECONDS = 0.0
 
 # 报告生成任务池与排队上限（并发优化）
 REPORT_GENERATION_MAX_WORKERS = _cfg_int("REPORT_GENERATION_MAX_WORKERS", 2)
@@ -2233,6 +2241,8 @@ OBJECT_STORAGE_CLIENT_LOCK = threading.Lock()
 OBJECT_STORAGE_CLIENT = None
 OBJECT_STORAGE_PRESENTATION_MIGRATION_LOCK = threading.Lock()
 OBJECT_STORAGE_PRESENTATION_MIGRATED = False
+OBJECT_STORAGE_OPS_ARCHIVE_LOCK = threading.Lock()
+OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED = False
 DELETED_REPORTS_FILE = REPORTS_DIR / ".deleted_reports.json"
 DELETED_DOCS_FILE = DATA_DIR / ".deleted_docs.json"  # 软删除记录文件
 REPORT_OWNERS_FILE = REPORTS_DIR / ".owners.json"
@@ -2244,6 +2254,7 @@ REPORT_SOLUTION_SHARES_LOCK = threading.RLock()
 SESSIONS_LIST_SEMAPHORE = threading.BoundedSemaphore(SESSIONS_LIST_MAX_INFLIGHT)
 REPORTS_LIST_SEMAPHORE = threading.BoundedSemaphore(REPORTS_LIST_MAX_INFLIGHT)
 QUESTION_GENERATION_SEMAPHORE = threading.BoundedSemaphore(QUESTION_GENERATION_MAX_INFLIGHT)
+QUESTION_GENERATION_PENDING_SEMAPHORE = threading.BoundedSemaphore(QUESTION_GENERATION_MAX_PENDING)
 SEARCH_DECISION_SEMAPHORE = threading.BoundedSemaphore(SEARCH_DECISION_MAX_INFLIGHT)
 ALLOWED_STATIC_EXTENSIONS = {
     ".html", ".css", ".js", ".map", ".json",
@@ -2254,6 +2265,14 @@ ALLOWED_STATIC_EXTENSIONS = {
 
 def get_admin_ownership_backup_root() -> Path:
     return DATA_DIR / "operations" / "ownership-migrations"
+
+
+def get_restore_backups_root() -> Path:
+    return DATA_DIR / "restore_backups"
+
+
+def get_session_backups_root() -> Path:
+    return DATA_DIR / "session_backups"
 
 named_lock_registry = {}
 named_lock_registry_guard = threading.Lock()
@@ -2757,7 +2776,9 @@ ADMIN_CONFIG_SETTINGS_GROUPS: list[dict[str, Any]] = [
         "source": "config",
         "items": [
             _admin_int("QUESTION_GENERATION_MAX_INFLIGHT", "问题生成最大并发"),
+            _admin_int("QUESTION_GENERATION_MAX_PENDING", "问题生成队列上限"),
             _admin_int("QUESTION_GENERATION_RETRY_AFTER_SECONDS", "问题过载重试秒数"),
+            _admin_float("QUESTION_GENERATION_QUEUE_WAIT_SECONDS", "问题短队列等待秒数"),
             _admin_bool("QUESTION_FAST_PATH_ENABLED", "启用问题快档"),
             _admin_float("QUESTION_FAST_TIMEOUT", "问题快档超时"),
             _admin_int("QUESTION_FAST_MAX_TOKENS", "问题快档最大 Token"),
@@ -4025,6 +4046,7 @@ question_generation_runtime_stats = _build_runtime_metric_store(
     [
         "session_load_ms",
         "prefetch_wait_ms",
+        "queue_wait_ms",
         "prompt_build_ms",
         "ai_call_ms",
         "parse_repair_ms",
@@ -5276,6 +5298,57 @@ def try_acquire_question_generation_semaphore(record_overload: bool = True) -> b
     if ENABLE_DEBUG_LOG and (overloaded_count == 1 or overloaded_count % 20 == 0):
         _safe_log(f"⚠️ question_generation 触发过载保护，累计拒绝 {overloaded_count} 次")
     return False
+
+
+def try_enter_question_generation_queue(record_overload: bool = True) -> bool:
+    acquired = QUESTION_GENERATION_PENDING_SEMAPHORE.acquire(blocking=False)
+    if acquired:
+        return True
+
+    if not record_overload:
+        return False
+
+    record_question_generation_event("overloaded")
+    overloaded_count = 0
+    with question_generation_stats_lock:
+        overloaded_count = int(question_generation_stats.get("overloaded", 0) or 0)
+    if ENABLE_DEBUG_LOG and (overloaded_count == 1 or overloaded_count % 20 == 0):
+        _safe_log(f"⚠️ question_generation 短队列已满，累计拒绝 {overloaded_count} 次")
+    return False
+
+
+def release_question_generation_queue_slot() -> None:
+    try:
+        QUESTION_GENERATION_PENDING_SEMAPHORE.release()
+    except ValueError:
+        pass
+
+
+def try_acquire_question_generation_slot_from_queue(
+    wait_seconds: Optional[float],
+    *,
+    record_overload: bool = True,
+) -> tuple[bool, float]:
+    normalized_wait = max(0.0, float(wait_seconds or 0.0))
+    started_at = _time.perf_counter()
+    if normalized_wait <= 0:
+        acquired = QUESTION_GENERATION_SEMAPHORE.acquire(blocking=False)
+    else:
+        acquired = QUESTION_GENERATION_SEMAPHORE.acquire(timeout=normalized_wait)
+    waited_ms = max(0.0, (_time.perf_counter() - started_at) * 1000.0)
+    if acquired:
+        return True, waited_ms
+
+    if not record_overload:
+        return False, waited_ms
+
+    record_question_generation_event("overloaded")
+    overloaded_count = 0
+    with question_generation_stats_lock:
+        overloaded_count = int(question_generation_stats.get("overloaded", 0) or 0)
+    if ENABLE_DEBUG_LOG and (overloaded_count == 1 or overloaded_count % 20 == 0):
+        _safe_log(f"⚠️ question_generation 短队列等待超时，累计拒绝 {overloaded_count} 次")
+    return False, waited_ms
 
 
 def try_acquire_search_decision_semaphore(record_overload: bool = True) -> bool:
@@ -7213,6 +7286,25 @@ def ensure_meta_index_schema() -> None:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_export_asset_owner_scope_report_created ON export_asset_store(owner_user_id, instance_scope_key, report_name, created_at DESC)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ops_archive_store (
+                    archive_id TEXT PRIMARY KEY,
+                    archive_group TEXT NOT NULL DEFAULT '',
+                    backup_id TEXT NOT NULL DEFAULT '',
+                    relative_path TEXT NOT NULL UNIQUE,
+                    object_key TEXT NOT NULL UNIQUE,
+                    content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+                    file_sha256 TEXT NOT NULL DEFAULT '',
+                    size BIGINT NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_ops_archive_group_backup_relative ON ops_archive_store(archive_group, backup_id, relative_path)"
             )
 
             _ensure_postgres_meta_index_bigint_columns(conn, db_target_text)
@@ -12433,6 +12525,347 @@ def object_storage_key_exists(object_key: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _normalize_ops_archive_relative_path(file_path: Path) -> str:
+    target = Path(file_path).expanduser().resolve()
+    relative = target.relative_to(DATA_DIR.resolve())
+    return str(relative).replace("\\", "/")
+
+
+def _classify_ops_archive_relative_path(relative_path: str) -> tuple[str, str]:
+    normalized = str(relative_path or "").strip().replace("\\", "/")
+    path_obj = Path(normalized)
+    parts = path_obj.parts
+    if len(parts) >= 3 and parts[0] == "operations" and parts[1] == "ownership-migrations":
+        return "ownership_migration", str(parts[2]).strip()
+    if len(parts) >= 2 and parts[0] == "restore_backups":
+        return "restore_backup", str(parts[1]).strip()
+    if len(parts) >= 2 and parts[0] == "session_backups":
+        return "session_backup", str(parts[1]).strip()
+    if parts and parts[0] == "operations":
+        return "operations", ""
+    return "", ""
+
+
+def build_ops_archive_object_key(relative_path: str) -> str:
+    normalized = str(relative_path or "").strip().replace("\\", "/")
+    path_obj = Path(normalized)
+    scope_key = _normalize_object_storage_segment(get_active_instance_scope_key(), fallback="default")
+    prefix = _normalize_object_storage_segment(OBJECT_STORAGE_PREFIX, fallback="deepvision")
+    parts = [prefix, scope_key, "ops-archives"]
+    for segment in path_obj.parts:
+        normalized_segment = _normalize_object_storage_segment(segment, fallback="")
+        if normalized_segment:
+            parts.append(normalized_segment)
+    return "/".join(parts)
+
+
+def _build_ops_archive_record_payload(row: Any) -> Optional[dict]:
+    if not row:
+        return None
+    return {
+        "archive_id": str(row["archive_id"] or "").strip(),
+        "archive_group": str(row["archive_group"] or "").strip(),
+        "backup_id": str(row["backup_id"] or "").strip(),
+        "relative_path": str(row["relative_path"] or "").strip(),
+        "object_key": str(row["object_key"] or "").strip(),
+        "content_type": str(row["content_type"] or "application/octet-stream"),
+        "file_sha256": str(row["file_sha256"] or "").strip(),
+        "size": _safe_int(row["size"] if "size" in row.keys() else 0, 0),
+        "created_at": str(row["created_at"] or "").strip(),
+        "updated_at": str(row["updated_at"] or "").strip(),
+    }
+
+
+def _load_ops_archive_record_by_relative_path(conn: Any, relative_path: str) -> Optional[dict]:
+    row = conn.execute(
+        """
+        SELECT archive_id, archive_group, backup_id, relative_path, object_key,
+               content_type, file_sha256, size, created_at, updated_at
+        FROM ops_archive_store
+        WHERE relative_path = ?
+        LIMIT 1
+        """,
+        (str(relative_path or "").strip(),),
+    ).fetchone()
+    return _build_ops_archive_record_payload(row)
+
+
+def _upsert_ops_archive_record(
+    conn: Any,
+    *,
+    archive_group: str,
+    backup_id: str,
+    relative_path: str,
+    object_key: str,
+    content_type: str,
+    file_sha256: str,
+    size: int,
+    created_at: str,
+    updated_at: str,
+) -> dict:
+    normalized_relative_path = str(relative_path or "").strip().replace("\\", "/")
+    archive_id = hashlib.sha1(normalized_relative_path.encode("utf-8")).hexdigest()
+    conn.execute(
+        """
+        INSERT INTO ops_archive_store(
+            archive_id, archive_group, backup_id, relative_path, object_key,
+            content_type, file_sha256, size, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(relative_path) DO UPDATE SET
+            archive_group = excluded.archive_group,
+            backup_id = excluded.backup_id,
+            object_key = excluded.object_key,
+            content_type = excluded.content_type,
+            file_sha256 = excluded.file_sha256,
+            size = excluded.size,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at
+        """,
+        (
+            archive_id,
+            str(archive_group or "").strip(),
+            str(backup_id or "").strip(),
+            normalized_relative_path,
+            str(object_key or "").strip(),
+            str(content_type or "application/octet-stream"),
+            str(file_sha256 or "").strip(),
+            int(size or 0),
+            str(created_at or "").strip(),
+            str(updated_at or "").strip(),
+        ),
+    )
+    return {
+        "archive_id": archive_id,
+        "archive_group": str(archive_group or "").strip(),
+        "backup_id": str(backup_id or "").strip(),
+        "relative_path": normalized_relative_path,
+        "object_key": str(object_key or "").strip(),
+        "content_type": str(content_type or "application/octet-stream"),
+        "file_sha256": str(file_sha256 or "").strip(),
+        "size": int(size or 0),
+        "created_at": str(created_at or "").strip(),
+        "updated_at": str(updated_at or "").strip(),
+    }
+
+
+def list_ops_archive_records(*, archive_group: str = "", backup_id: str = "") -> list[dict]:
+    with get_meta_index_connection() as conn:
+        clauses = []
+        params: list[Any] = []
+        if archive_group:
+            clauses.append("archive_group = ?")
+            params.append(str(archive_group).strip())
+        if backup_id:
+            clauses.append("backup_id = ?")
+            params.append(str(backup_id).strip())
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = conn.execute(
+            f"""
+            SELECT archive_id, archive_group, backup_id, relative_path, object_key,
+                   content_type, file_sha256, size, created_at, updated_at
+            FROM ops_archive_store
+            {where_sql}
+            ORDER BY relative_path ASC
+            """,
+            tuple(params),
+        ).fetchall()
+    return [_build_ops_archive_record_payload(row) for row in rows if row]
+
+
+def sync_ops_archive_file_to_object_storage(file_path: Path, *, relative_path: Optional[str] = None) -> Optional[dict]:
+    if not is_object_storage_enabled():
+        return None
+    target = Path(file_path).expanduser().resolve()
+    if not target.exists() or not target.is_file():
+        return None
+    normalized_relative_path = str(relative_path or _normalize_ops_archive_relative_path(target)).strip().replace("\\", "/")
+    archive_group, backup_id = _classify_ops_archive_relative_path(normalized_relative_path)
+    if not archive_group:
+        return None
+    sha256 = _compute_file_sha256(target)
+    object_key = build_ops_archive_object_key(normalized_relative_path)
+    content_type = _guess_content_type(target.name)
+    stat = target.stat()
+    created_at = datetime.fromtimestamp(stat.st_ctime, timezone.utc).isoformat()
+    updated_at = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+    with get_meta_index_connection() as conn:
+        existing = _load_ops_archive_record_by_relative_path(conn, normalized_relative_path)
+        if existing and existing.get("file_sha256") == sha256 and object_storage_key_exists(existing.get("object_key") or ""):
+            return existing
+        upload_file_to_object_storage(
+            target,
+            object_key=object_key,
+            content_type=content_type,
+            metadata={
+                "archive-group": archive_group,
+                "backup-id": backup_id,
+                "relative-path": normalized_relative_path,
+                "sha256": sha256,
+            },
+        )
+        return _upsert_ops_archive_record(
+            conn,
+            archive_group=archive_group,
+            backup_id=backup_id,
+            relative_path=normalized_relative_path,
+            object_key=object_key,
+            content_type=content_type,
+            file_sha256=sha256,
+            size=int(stat.st_size),
+            created_at=created_at,
+            updated_at=updated_at,
+        )
+
+
+def _iter_files_recursively(root_dir: Path) -> list[Path]:
+    target_root = Path(root_dir)
+    if not target_root.exists() or not target_root.is_dir():
+        return []
+    files: list[Path] = []
+    for current_root, _dirs, filenames in os.walk(target_root):
+        for filename in filenames:
+            files.append((Path(current_root) / filename).resolve())
+    return files
+
+
+def sync_ops_archive_directory_to_object_storage(root_dir: Path) -> int:
+    synced_count = 0
+    for file_path in _iter_files_recursively(root_dir):
+        try:
+            if sync_ops_archive_file_to_object_storage(file_path):
+                synced_count += 1
+        except Exception as exc:
+            if ENABLE_DEBUG_LOG:
+                _safe_log(f"⚠️ 运维归档上传失败: file={file_path}, error={exc}")
+    return synced_count
+
+
+def sync_materialized_ownership_backup_to_object_storage(backup_dir: Path, backup_id: str) -> int:
+    target = Path(backup_dir).expanduser().resolve()
+    if not target.exists() or not target.is_dir():
+        return 0
+    synced_count = 0
+    canonical_prefix = Path("operations") / "ownership-migrations" / str(backup_id or "").strip()
+    for file_path in _iter_files_recursively(target):
+        relative_inside = file_path.relative_to(target)
+        canonical_relative = str((canonical_prefix / relative_inside).as_posix())
+        try:
+            if sync_ops_archive_file_to_object_storage(file_path, relative_path=canonical_relative):
+                synced_count += 1
+        except Exception as exc:
+            if ENABLE_DEBUG_LOG:
+                _safe_log(f"⚠️ 回滚归档上传失败: file={file_path}, error={exc}")
+    return synced_count
+
+
+def materialize_ownership_backup_from_object_storage(backup_id: str) -> Path:
+    normalized_backup_id = str(backup_id or "").strip()
+    if not normalized_backup_id:
+        raise RuntimeError("backup_id 不能为空")
+    records = list_ops_archive_records(archive_group="ownership_migration", backup_id=normalized_backup_id)
+    if not records:
+        raise RuntimeError(f"对象存储中不存在备份: {normalized_backup_id}")
+    temp_backup_dir = (TEMP_DIR / "ownership-migration-archives" / normalized_backup_id).resolve()
+    if temp_backup_dir.exists():
+        shutil.rmtree(temp_backup_dir, ignore_errors=True)
+    temp_backup_dir.mkdir(parents=True, exist_ok=True)
+    canonical_prefix = Path("operations") / "ownership-migrations" / normalized_backup_id
+    for record in records:
+        relative_path = Path(str(record.get("relative_path") or "").strip())
+        try:
+            relative_inside = relative_path.relative_to(canonical_prefix)
+        except Exception:
+            continue
+        content, _meta = download_object_storage_bytes(str(record.get("object_key") or "").strip())
+        target_path = temp_backup_dir / relative_inside
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(content)
+    return temp_backup_dir
+
+
+def list_archived_ownership_migrations(limit: int = 50) -> list[dict]:
+    records = list_ops_archive_records(archive_group="ownership_migration")
+    metadata_records = [
+        record for record in records
+        if str(record.get("relative_path") or "").strip().endswith("/metadata.json")
+    ]
+    items: list[dict] = []
+    for record in metadata_records:
+        backup_id = str(record.get("backup_id") or "").strip()
+        if not backup_id:
+            continue
+        try:
+            metadata_bytes, _ = download_object_storage_bytes(str(record.get("object_key") or "").strip())
+            metadata = json.loads(metadata_bytes.decode("utf-8"))
+        except Exception:
+            continue
+        rollback_payload = None
+        rollback_record = next(
+            (
+                candidate for candidate in records
+                if str(candidate.get("backup_id") or "").strip() == backup_id
+                and str(candidate.get("relative_path") or "").strip().endswith("/rollback.json")
+            ),
+            None,
+        )
+        if rollback_record:
+            try:
+                rollback_bytes, _ = download_object_storage_bytes(str(rollback_record.get("object_key") or "").strip())
+                rollback_payload = json.loads(rollback_bytes.decode("utf-8"))
+            except Exception:
+                rollback_payload = None
+        items.append(
+            {
+                "backup_id": backup_id,
+                "backup_dir": "",
+                "generated_at": str(metadata.get("generated_at") or "").strip(),
+                "scope": str(metadata.get("scope") or "").strip(),
+                "mode": str(metadata.get("mode") or "").strip(),
+                "operation_type": str(metadata.get("operation_type") or "ownership_migration").strip(),
+                "kinds": metadata.get("kinds") or [],
+                "target_user": metadata.get("target_user") or {},
+                "source_user": metadata.get("source_user") or {},
+                "identity_type": str(metadata.get("identity_type") or "").strip(),
+                "sessions": metadata.get("sessions") or {},
+                "reports": metadata.get("reports") or {},
+                "custom_scenarios": metadata.get("custom_scenarios") or {},
+                "solution_shares": metadata.get("solution_shares") or {},
+                "licenses": metadata.get("licenses") or {},
+                "db_snapshot": metadata.get("db_snapshot") or {},
+                "rolled_back": bool(rollback_payload),
+                "rolled_back_at": str((rollback_payload or {}).get("rolled_back_at") or "").strip(),
+                "archive_backend": "object_storage",
+            }
+        )
+    items.sort(
+        key=lambda item: (
+            str(item.get("generated_at") or ""),
+            str(item.get("backup_id") or ""),
+        ),
+        reverse=True,
+    )
+    return items[: max(1, int(limit or 50))]
+
+
+def migrate_ops_archives_to_object_storage_if_needed() -> None:
+    global OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED
+    if OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED or not is_object_storage_enabled():
+        return
+    with OBJECT_STORAGE_OPS_ARCHIVE_LOCK:
+        if OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED:
+            return
+        total_synced = 0
+        for root_dir in (
+            DATA_DIR / "operations",
+            get_restore_backups_root(),
+            get_session_backups_root(),
+        ):
+            total_synced += sync_ops_archive_directory_to_object_storage(root_dir)
+        OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED = True
+        if ENABLE_DEBUG_LOG and total_synced > 0:
+            _safe_log(f"✅ 已归档运维备份与回滚产物到对象存储: {total_synced} 个文件")
 
 
 def update_thinking_status(session_id: str, stage: str, has_search: bool = True):
@@ -30113,9 +30546,12 @@ def get_next_question(session_id):
     if not user_id:
         return jsonify({"error": "请先登录"}), 401
     request_started_at = _time.perf_counter()
+    question_generation_queue_slot_acquired = False
+    question_generation_slot_acquired = False
     question_runtime_durations = {
         "session_load_ms": 0.0,
         "prefetch_wait_ms": 0.0,
+        "queue_wait_ms": 0.0,
         "prompt_build_ms": 0.0,
         "ai_call_ms": 0.0,
         "parse_repair_ms": 0.0,
@@ -30350,13 +30786,23 @@ def get_next_question(session_id):
             }
         })
 
-    if not try_acquire_question_generation_semaphore():
+    if not try_enter_question_generation_queue():
         return build_overload_response(
             "question_generation",
             message="问题生成链路繁忙，请稍后重试",
             retry_after_seconds=QUESTION_GENERATION_RETRY_AFTER_SECONDS,
         )
-
+    question_generation_queue_slot_acquired = True
+    acquired_generation_slot, queue_wait_ms = try_acquire_question_generation_slot_from_queue(
+        QUESTION_GENERATION_QUEUE_WAIT_SECONDS,
+    )
+    question_runtime_durations["queue_wait_ms"] = round(queue_wait_ms, 2)
+    if not acquired_generation_slot:
+        return build_overload_response(
+            "question_generation",
+            message="问题生成队列繁忙，请稍后重试",
+            retry_after_seconds=QUESTION_GENERATION_RETRY_AFTER_SECONDS,
+        )
     question_generation_slot_acquired = True
 
     try:
@@ -30658,6 +31104,8 @@ def get_next_question(session_id):
                 QUESTION_GENERATION_SEMAPHORE.release()
             except ValueError:
                 pass
+        if question_generation_queue_slot_acquired:
+            release_question_generation_queue_slot()
 
 
 def get_fallback_question(session: dict, dimension: str) -> dict:
@@ -44763,6 +45211,14 @@ def admin_apply_ownership_migration():
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
 
+    backup_dir = str((summary or {}).get("backup_dir") or "").strip()
+    if backup_dir and is_object_storage_enabled():
+        try:
+            sync_ops_archive_directory_to_object_storage(Path(backup_dir))
+        except Exception as exc:
+            if ENABLE_DEBUG_LOG:
+                _safe_log(f"⚠️ ownership migration 备份归档失败: backup_dir={backup_dir}, error={exc}")
+
     _pop_admin_ownership_preview()
     _refresh_account_merge_runtime_state()
     return jsonify({"success": True, "summary": summary})
@@ -44771,10 +45227,35 @@ def admin_apply_ownership_migration():
 @app.route('/api/admin/ownership-migrations', methods=['GET'])
 @require_admin
 def admin_list_ownership_migrations():
-    items = ownership_admin_service.list_ownership_migrations(
+    local_items = ownership_admin_service.list_ownership_migrations(
         get_admin_ownership_backup_root(),
         limit=request.args.get("limit", 50, type=int),
     )
+    items_by_backup_id = {
+        str(item.get("backup_id") or "").strip(): item
+        for item in local_items
+        if str(item.get("backup_id") or "").strip()
+    }
+    if is_object_storage_enabled():
+        try:
+            archived_items = list_archived_ownership_migrations(limit=request.args.get("limit", 50, type=int))
+            for item in archived_items:
+                backup_id = str(item.get("backup_id") or "").strip()
+                if backup_id and backup_id not in items_by_backup_id:
+                    items_by_backup_id[backup_id] = item
+        except Exception as exc:
+            if ENABLE_DEBUG_LOG:
+                _safe_log(f"⚠️ 读取对象存储 ownership migration 历史失败: {exc}")
+    items = list(items_by_backup_id.values())
+    items.sort(
+        key=lambda item: (
+            str(item.get("generated_at") or ""),
+            str(item.get("backup_id") or ""),
+        ),
+        reverse=True,
+    )
+    limit = max(1, int(request.args.get("limit", 50, type=int) or 50))
+    items = items[:limit]
     return jsonify({"items": items, "count": len(items)})
 
 
@@ -44785,6 +45266,15 @@ def admin_rollback_ownership_migration():
     backup_id = str(data.get("backup_id") or "").strip()
     if not backup_id:
         return jsonify({"error": "backup_id 不能为空"}), 400
+    rollback_backup_dir = None
+    local_backup_dir = (get_admin_ownership_backup_root() / backup_id).resolve()
+    if local_backup_dir.exists() and local_backup_dir.is_dir():
+        rollback_backup_dir = local_backup_dir
+    elif is_object_storage_enabled():
+        try:
+            rollback_backup_dir = materialize_ownership_backup_from_object_storage(backup_id)
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
     try:
         payload = ownership_admin_service.rollback_ownership_migration(
             backup_root=get_admin_ownership_backup_root(),
@@ -44796,10 +45286,20 @@ def admin_rollback_ownership_migration():
             meta_index_db_path=_get_admin_meta_index_db_target(),
             custom_scenarios_dir=Path(getattr(scenario_loader, "custom_dir", DATA_DIR / "scenarios" / "custom")),
             report_solution_shares_file=REPORT_SOLUTION_SHARES_FILE,
-            backup_id=backup_id,
+            backup_id=None if rollback_backup_dir is not None else backup_id,
+            backup_dir=rollback_backup_dir,
         )
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
+    if rollback_backup_dir is not None and is_object_storage_enabled():
+        try:
+            if rollback_backup_dir == local_backup_dir:
+                sync_ops_archive_directory_to_object_storage(rollback_backup_dir)
+            else:
+                sync_materialized_ownership_backup_to_object_storage(rollback_backup_dir, backup_id)
+        except Exception as exc:
+            if ENABLE_DEBUG_LOG:
+                _safe_log(f"⚠️ ownership migration 回滚结果归档失败: backup_id={backup_id}, error={exc}")
     _refresh_account_merge_runtime_state()
     return jsonify({"success": True, **payload})
 
@@ -44990,6 +45490,7 @@ class SelectiveAccessLogRequestHandler(WSGIRequestHandler):
 
 
 migrate_presentation_assets_to_object_storage_if_needed()
+migrate_ops_archives_to_object_storage_if_needed()
 
 
 if __name__ == '__main__':

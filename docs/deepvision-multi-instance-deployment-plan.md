@@ -54,7 +54,7 @@
 | 本地临时文件 | `data/temp/` | 本地临时目录 | 保留本地 | P3 | 仅用于短时中转，不得承载业务真相 |
 | 本地锁文件 | `data/.locks/` | 本地锁或 Redis 锁 | 保留本地 | P3 | 仅实例内有效，不能作为多实例全局一致性机制 |
 | 指标文件 | `data/metrics/api_metrics.json` | 日志平台 / Prometheus / 外部监控 | 未迁移 | P3 | 不建议用本地文件做多实例聚合 |
-| 运维备份与回滚产物 | `data/operations/` / `restore_backups/` | 对象存储归档 | 部分本地 | P3 | 适合做冷备份或归档，不应继续依赖实例本地 |
+| 运维备份与回滚产物 | `data/operations/` / `restore_backups/` / `session_backups/` | 对象存储归档 + PostgreSQL `ops_archive_store` 索引 | 已迁移 | P3 | 启动时自动回填历史归档，后台回滚缺少本地备份时可从对象存储物化恢复 |
 
 ## Recommended Targets
 
@@ -126,10 +126,10 @@
 
 建议按下面顺序推进：
 
-1. 为对象存储补充持久导出资产的生命周期清理与历史列表展示。
-2. 如有更高并发或更低延迟需求，再把转换缓存从 PostgreSQL 缓存表切到 Redis。
-3. 清理 `data/` 中仍被当作主数据源的目录，保留 `temp/` 与必要 scratch 目录。
-4. 为对象存储补充批量回填、监控告警与回滚策略。
+1. 为指标数据接入日志平台 / Prometheus，去掉本地 `data/metrics/api_metrics.json` 对多实例观测的影响。
+2. 为对象存储补充持久导出资产与运维归档的生命周期清理策略。
+3. 如有更高并发或更低延迟需求，再把转换缓存从 PostgreSQL 缓存表切到 Redis。
+4. 清理 `data/` 中仍被当作主数据源的目录，保留 `temp/` 与必要 scratch 目录。
 
 ## Object Storage Config
 
@@ -151,10 +151,7 @@
 - 新上传的原始参考文档会归档到对象存储，并把对象键写入会话主数据。
 - 报告与附录的 `md/pdf/docx` 新导出会在下载完成后自动归档到对象存储，并写入 PostgreSQL 导出资产索引。
 - 文档转换结果已进入 PostgreSQL `converted_cache_store`，命中缓存时不再依赖本地 `data/converted/`。
-
-当前仍未接入对象存储的文件型数据：
-
-- 运维备份归档
+- `data/operations/`、`data/restore_backups/`、`data/session_backups/` 会在启动时自动回填到对象存储，并写入 PostgreSQL `ops_archive_store`；账号归属迁移回滚在本地备份缺失时可从对象存储物化恢复。
 
 ## Decision Rules
 
