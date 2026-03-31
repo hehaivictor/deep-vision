@@ -328,18 +328,23 @@ class ComprehensiveApiTests(unittest.TestCase):
             "license_status": payload,
         }
 
-    def _create_session(self, topic="综合测试会话", description="测试描述"):
-        response = self.client.post(
+    def _create_session(self, topic="综合测试会话", description="测试描述", interview_mode=None, client=None):
+        payload = {"topic": topic, "description": description}
+        if interview_mode:
+            payload["interview_mode"] = interview_mode
+        target = client or self.client
+        response = target.post(
             "/api/sessions",
-            json={"topic": topic, "description": description},
+            json=payload,
         )
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         payload = response.get_json()
         self.assertIn("session_id", payload)
         return payload
 
-    def _submit_answer(self, session_id, dimension, question="测试问题", answer="测试回答"):
-        response = self.client.post(
+    def _submit_answer(self, session_id, dimension, question="测试问题", answer="测试回答", client=None):
+        target = client or self.client
+        response = target.post(
             f"/api/sessions/{session_id}/submit-answer",
             json={
                 "question": question,
@@ -395,7 +400,14 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(status_payload.get("state"), expected_state, status_payload)
         return status_payload
 
-    def _generate_report_with_fixed_now(self, session_id, fixed_now: datetime, action="generate", report_profile="quality"):
+    def _generate_report_with_fixed_now(
+        self,
+        session_id,
+        fixed_now: datetime,
+        action="generate",
+        report_profile="quality",
+        source_report_name="",
+    ):
         real_datetime = self.server.datetime
 
         class FixedDateTime(real_datetime):
@@ -412,6 +424,7 @@ class ComprehensiveApiTests(unittest.TestCase):
                 json={
                     "action": action,
                     "report_profile": report_profile,
+                    "source_report_name": source_report_name,
                 },
             )
             self.assertEqual(response.status_code, 202, response.get_data(as_text=True))
@@ -458,6 +471,10 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual("experience", (me_payload.get("level") or {}).get("key"))
         self.assertEqual(["balanced"], me_payload.get("allowed_report_profiles"))
         self.assertEqual("balanced", me_payload.get("report_profile_default"))
+        self.assertEqual(["quick"], me_payload.get("allowed_interview_modes"))
+        self.assertEqual("quick", me_payload.get("interview_mode_default"))
+        self.assertEqual("standard", ((me_payload.get("interview_mode_requirements") or {}).get("standard") or {}).get("key"))
+        self.assertEqual("professional", ((me_payload.get("interview_mode_requirements") or {}).get("deep") or {}).get("key"))
         self.assertFalse((me_payload.get("capabilities") or {}).get("report.export.basic"))
 
         status_resp = self.client.get("/api/status")
@@ -466,6 +483,58 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual("experience", (status_payload.get("level") or {}).get("key"))
         self.assertEqual(["balanced"], status_payload.get("allowed_report_profiles"))
         self.assertEqual(["balanced"], status_payload.get("report_profile_options"))
+        self.assertEqual(["quick"], status_payload.get("allowed_interview_modes"))
+        self.assertEqual("quick", status_payload.get("interview_mode_default"))
+
+    def test_experience_user_cannot_create_standard_or_deep_session(self):
+        self._register()
+        original_is_license_protected_route = self.server.is_license_protected_route
+        try:
+            self.server.is_license_protected_route = lambda _path: False
+
+            standard_resp = self.client.post(
+                "/api/sessions",
+                json={"topic": "体验版标准模式", "description": "测试", "interview_mode": "standard"},
+            )
+            self.assertEqual(standard_resp.status_code, 403, standard_resp.get_data(as_text=True))
+            standard_payload = standard_resp.get_json() or {}
+            self.assertEqual("level_capability_denied", standard_payload.get("error_code"))
+            self.assertEqual("interview.mode.standard", standard_payload.get("capability_key"))
+            self.assertEqual("experience", (standard_payload.get("current_level") or {}).get("key"))
+            self.assertEqual("standard", (standard_payload.get("required_level") or {}).get("key"))
+
+            deep_resp = self.client.post(
+                "/api/sessions",
+                json={"topic": "体验版深度模式", "description": "测试", "interview_mode": "deep"},
+            )
+            self.assertEqual(deep_resp.status_code, 403, deep_resp.get_data(as_text=True))
+            deep_payload = deep_resp.get_json() or {}
+            self.assertEqual("level_capability_denied", deep_payload.get("error_code"))
+            self.assertEqual("interview.mode.deep", deep_payload.get("capability_key"))
+            self.assertEqual("professional", (deep_payload.get("required_level") or {}).get("key"))
+        finally:
+            self.server.is_license_protected_route = original_is_license_protected_route
+
+    def test_standard_user_cannot_create_deep_session(self):
+        self._register()
+        standard_code = self._generate_license_batch(level_key="standard", note="标准版访谈模式")["licenses"][0]["code"]
+        activate_payload = self._activate_license(standard_code)
+        self.assertEqual("standard", (activate_payload.get("level") or {}).get("key"))
+
+        me_payload = self.client.get("/api/auth/me").get_json() or {}
+        self.assertEqual(["quick", "standard"], me_payload.get("allowed_interview_modes"))
+        self.assertEqual("standard", me_payload.get("interview_mode_default"))
+
+        deep_resp = self.client.post(
+            "/api/sessions",
+            json={"topic": "标准版深度模式", "description": "测试", "interview_mode": "deep"},
+        )
+        self.assertEqual(deep_resp.status_code, 403, deep_resp.get_data(as_text=True))
+        payload = deep_resp.get_json() or {}
+        self.assertEqual("level_capability_denied", payload.get("error_code"))
+        self.assertEqual("interview.mode.deep", payload.get("capability_key"))
+        self.assertEqual("standard", (payload.get("current_level") or {}).get("key"))
+        self.assertEqual("professional", (payload.get("required_level") or {}).get("key"))
 
     def test_license_activation_and_status_summary(self):
         self._register()
@@ -4036,24 +4105,182 @@ class ComprehensiveApiTests(unittest.TestCase):
         names_after_delete = [item["name"] for item in list_after_delete.get_json()]
         self.assertNotIn(report_name, names_after_delete)
 
-    def test_experience_user_cannot_request_quality_report(self):
-        self.server.set_license_enforcement_override(False)
+    def test_professional_user_can_generate_quality_variant_without_overwriting_balanced_report(self):
         self._register()
-        created = self._create_session(topic="体验版质量报告限制")
+        professional_code = self._generate_license_batch(level_key="professional", note="精审版双轨专业版")["licenses"][0]["code"]
+        activate_payload = self._activate_license(professional_code)
+        self.assertEqual("professional", (activate_payload.get("level") or {}).get("key"))
+
+        created = self._create_session(topic="精审版双轨测试", interview_mode="deep")
         session_id = created["session_id"]
         dimension = list(created["dimensions"].keys())[0]
-        self._submit_answer(session_id, dimension, question="需求是什么？", answer="需要基础结论")
+        self._submit_answer(session_id, dimension, question="目标是什么？", answer="先出普通版，再出精审版")
 
-        response = self.client.post(
-            f"/api/sessions/{session_id}/generate-report",
-            json={"report_profile": "quality"},
-        )
-        self.assertEqual(response.status_code, 403, response.get_data(as_text=True))
-        payload = response.get_json() or {}
-        self.assertEqual("level_capability_denied", payload.get("error_code"))
-        self.assertEqual("report.profile.quality", payload.get("capability_key"))
-        self.assertEqual("experience", (payload.get("current_level") or {}).get("key"))
-        self.assertEqual("professional", (payload.get("required_level") or {}).get("key"))
+        original_submit = self.server.report_generation_executor.submit
+        fixed_now = datetime(2099, 1, 3, 10, 0, 0)
+
+        class _ImmediateFuture:
+            def result(self, timeout=None):
+                return None
+
+        def _fake_run_report_generation_job(session_id, user_id, request_id, report_profile="", action="generate", source_report_name=""):
+            try:
+                session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+                session = self.server.safe_load_session(session_file)
+                self.assertIsInstance(session, dict)
+                report_profile = self.server.normalize_report_profile_choice(report_profile, fallback="balanced")
+                if report_profile == "quality" and source_report_name:
+                    report_name = self.server.build_report_variant_filename(source_report_name, report_profile)
+                else:
+                    report_name = self.server.build_session_report_filename(session, now=fixed_now)
+                report_content = f"# {session['topic']}访谈报告\n\n模式：{report_profile}\n"
+                report_path = self.server.save_report_content_and_sync(report_name, report_content)
+                self.server.unmark_report_as_deleted(report_name)
+                self.server.set_report_owner_id(report_name, int(user_id))
+
+                session["status"] = "completed"
+                session["updated_at"] = self.server.get_utc_now()
+                if report_profile != "quality":
+                    session["current_report_name"] = report_name
+                    session["current_report_path"] = str(report_path)
+                    session["current_report_updated_at"] = session["updated_at"]
+                session["last_report_name"] = report_name
+                session["last_report_quality_meta"] = {"path": "quality" if report_profile == "quality" else "balanced"}
+                self.server.save_session_json_and_sync(session_file, session)
+
+                snapshot = {
+                    "version": self.server.SOLUTION_SNAPSHOT_VERSION,
+                    "report_name": report_name,
+                    "topic": session.get("topic", ""),
+                    "session_id": session_id,
+                    "scenario_id": session.get("scenario_id", ""),
+                    "scenario_name": ((session.get("scenario_config") or {}).get("name") or ""),
+                    "report_template": "default",
+                    "report_type": "standard",
+                    "report_profile": report_profile,
+                    "source_report_name": source_report_name,
+                    "report_variant_label": "精审版" if report_profile == "quality" else "普通版",
+                    "snapshot_origin": "structured_sidecar",
+                    "snapshot_stage": "final_report",
+                    "has_structured_evidence": False,
+                    "quality_meta": {},
+                    "quality_snapshot": {},
+                    "overall_coverage": 0.0,
+                    "report_schema": {},
+                    "solution_schema": {},
+                    "draft": {
+                        "overview": "测试概述",
+                        "needs": [],
+                        "analysis": {
+                            "customer_needs": "",
+                            "business_flow": "",
+                            "tech_constraints": "",
+                            "project_constraints": "",
+                        },
+                        "visualizations": {},
+                        "solutions": [],
+                        "risks": [],
+                        "actions": [],
+                        "open_questions": [],
+                        "evidence_index": [],
+                    },
+                }
+                self.server.write_solution_sidecar(report_name, snapshot)
+                self.server.sync_report_index_for_filename(report_name)
+                self.server.set_report_generation_metadata(session_id, {
+                    "request_id": request_id,
+                    "action": action,
+                    "report_name": report_name,
+                    "report_path": str(report_path),
+                    "completed_at": self.server.get_utc_now(),
+                    "report_profile": report_profile,
+                    "source_report_name": source_report_name,
+                    "report_variant_label": "精审版" if report_profile == "quality" else "普通版",
+                    "ai_generated": True,
+                })
+                self.server.update_report_generation_status(
+                    session_id,
+                    "completed",
+                    message="报告生成完成",
+                    active=False,
+                    detail_key="report_ready",
+                    progress_override=100,
+                )
+            finally:
+                self.server.release_report_generation_slot()
+
+        try:
+            self.server.report_generation_executor.submit = lambda fn, *args, **kwargs: (_fake_run_report_generation_job(*args, **kwargs), _ImmediateFuture())[1]
+
+            balanced_resp = self.client.post(f"/api/sessions/{session_id}/generate-report", json={})
+            self.assertEqual(balanced_resp.status_code, 202, balanced_resp.get_data(as_text=True))
+            self.assertEqual("balanced", (balanced_resp.get_json() or {}).get("report_profile"))
+            balanced_status = self._wait_report_generation(session_id)
+            balanced_report = balanced_status.get("report_name")
+            self.assertTrue(balanced_report)
+
+            quality_resp = self.client.post(
+                f"/api/sessions/{session_id}/generate-report",
+                json={"report_profile": "quality", "source_report_name": balanced_report},
+            )
+            self.assertEqual(quality_resp.status_code, 202, quality_resp.get_data(as_text=True))
+            self.assertEqual("quality", (quality_resp.get_json() or {}).get("report_profile"))
+            quality_status = self._wait_report_generation(session_id)
+            quality_report = quality_status.get("report_name")
+            self.assertTrue(quality_report)
+            self.assertNotEqual(balanced_report, quality_report)
+            self.assertTrue(quality_report.endswith("-quality.md"))
+
+            session_detail = self.client.get(f"/api/sessions/{session_id}")
+            self.assertEqual(session_detail.status_code, 200, session_detail.get_data(as_text=True))
+            session_payload = session_detail.get_json() or {}
+            self.assertEqual(balanced_report, session_payload.get("current_report_name"))
+            self.assertEqual(quality_report, session_payload.get("last_report_name"))
+
+            reports_resp = self.client.get("/api/reports")
+            self.assertEqual(reports_resp.status_code, 200, reports_resp.get_data(as_text=True))
+            reports = {item.get("name"): item for item in (reports_resp.get_json() or [])}
+            self.assertEqual("balanced", reports[balanced_report].get("report_profile"))
+            self.assertEqual("普通版", reports[balanced_report].get("report_variant_label"))
+            self.assertEqual("quality", reports[quality_report].get("report_profile"))
+            self.assertEqual(balanced_report, reports[quality_report].get("source_report_name"))
+            self.assertEqual("精审版", reports[quality_report].get("report_variant_label"))
+
+            balanced_detail = self.client.get(f"/api/reports/{balanced_report}")
+            self.assertEqual(balanced_detail.status_code, 200, balanced_detail.get_data(as_text=True))
+            self.assertEqual("balanced", (balanced_detail.get_json() or {}).get("report_profile"))
+            self.assertEqual("普通版", (balanced_detail.get_json() or {}).get("report_variant_label"))
+
+            quality_detail = self.client.get(f"/api/reports/{quality_report}")
+            self.assertEqual(quality_detail.status_code, 200, quality_detail.get_data(as_text=True))
+            self.assertEqual("quality", (quality_detail.get_json() or {}).get("report_profile"))
+            self.assertEqual(balanced_report, (quality_detail.get_json() or {}).get("source_report_name"))
+            self.assertEqual("精审版", (quality_detail.get_json() or {}).get("report_variant_label"))
+        finally:
+            self.server.report_generation_executor.submit = original_submit
+
+    def test_experience_user_cannot_request_quality_report(self):
+        self._register()
+        original_is_license_protected_route = self.server.is_license_protected_route
+        try:
+            self.server.is_license_protected_route = lambda path: False if str(path or "").startswith("/api/") else original_is_license_protected_route(path)
+            created = self._create_session(topic="体验版质量报告限制", interview_mode="quick")
+            session_id = created["session_id"]
+            dimension = list(created["dimensions"].keys())[0]
+            self._submit_answer(session_id, dimension, question="需求是什么？", answer="需要基础结论")
+
+            response = self.client.post(
+                f"/api/sessions/{session_id}/generate-report",
+                json={"report_profile": "quality"},
+            )
+            self.assertEqual(response.status_code, 403, response.get_data(as_text=True))
+            payload = response.get_json() or {}
+            self.assertEqual("level_capability_denied", payload.get("error_code"))
+            self.assertEqual("report.profile.quality", payload.get("capability_key"))
+            self.assertEqual("experience", (payload.get("current_level") or {}).get("key"))
+            self.assertEqual("professional", (payload.get("required_level") or {}).get("key"))
+        finally:
+            self.server.is_license_protected_route = original_is_license_protected_route
 
     def test_new_license_replaces_old_license_and_switches_level(self):
         self._register()

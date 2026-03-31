@@ -2222,6 +2222,44 @@
                                     </template>
                                 </div>
 
+                                <template x-if="shouldShowReportProfileSelector()">
+                                    <div class="mt-8 border border-gray-200 rounded-2xl p-5 sm:p-6">
+                                        <div class="flex items-start gap-3">
+                                            <div class="w-10 h-10 rounded-full border border-gray-200 flex items-center justify-center shrink-0">
+                                                <svg class="w-5 h-5 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                                </svg>
+                                            </div>
+                                            <div class="min-w-0 flex-1">
+                                                <h4 class="text-xl font-semibold text-primary">报告生成模式</h4>
+                                                <p class="text-muted mt-2" x-text="getReportProfileSummaryText()"></p>
+                                            </div>
+                                        </div>
+
+                                        <div class="mt-5 space-y-4">
+                                            <template x-for="profile in allowedReportProfiles" :key="profile">
+                                                <button type="button"
+                                                        @click="!isGeneratingCurrentReport() && (reportProfile = profile)"
+                                                        :disabled="isGeneratingCurrentReport()"
+                                                        :class="reportProfile === profile ? 'border-primary ring-2 ring-primary/15 bg-white' : 'border-gray-200 hover:border-primary/40 bg-white'"
+                                                        class="w-full text-left rounded-2xl border p-5 transition-all duration-200 disabled:opacity-60 disabled:cursor-not-allowed">
+                                                    <div class="flex items-start gap-4">
+                                                        <div class="w-8 h-8 rounded-full border-2 flex items-center justify-center shrink-0 mt-0.5"
+                                                             :class="reportProfile === profile ? 'border-primary' : 'border-gray-400'">
+                                                            <div class="w-4 h-4 rounded-full"
+                                                                 :class="reportProfile === profile ? 'bg-primary' : 'bg-transparent'"></div>
+                                                        </div>
+                                                        <div class="min-w-0 flex-1">
+                                                            <div class="text-2xl font-semibold text-primary" x-text="getReportProfileLabel(profile)"></div>
+                                                            <p class="text-muted mt-2 text-lg" x-text="getReportProfileDescription(profile)"></p>
+                                                        </div>
+                                                    </div>
+                                                </button>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+
                                 <div class="flex flex-col-reverse sm:flex-row justify-between items-stretch sm:items-center gap-3 mt-8 pt-4 border-t border-gray-100">
                                     <template x-if="currentSession.status === 'completed'">
                                         <button @click="switchView('sessions')"
@@ -2560,6 +2598,20 @@
                                                 </svg>
                                                 查看方案
                                             </button>
+                                            <button type="button"
+                                                    x-show="canGenerateQualityVariantForSelectedReport()"
+                                                    @click="generateQualityReportVariant()"
+                                                    :disabled="generatingReport"
+                                                    class="report-action-secondary dv-report-toolbar-btn px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">
+                                                <svg x-show="!generatingReport" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v12m6-6H6"/>
+                                                </svg>
+                                                <svg x-show="generatingReport" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                                                </svg>
+                                                <span>生成精审版</span>
+                                            </button>
                                             <div class="flex flex-col gap-1" x-show="isPresentationEnabled() && canGeneratePresentation()">
                                                 <button @click="isPresentationGeneratingCurrentReport() ? stopPresentationGeneration() : generatePresentation()"
                                                         x-show="!presentationPdfUrl"
@@ -2670,6 +2722,7 @@
                                             <span class="dv-report-meta-pill" x-show="selectedReportMeta.scenarioName" x-text="selectedReportMeta.scenarioName"></span>
                                             <span class="dv-report-meta-pill" x-show="selectedReportMeta.createdAt" x-text="`生成于 ${formatDate(selectedReportMeta.createdAt)}`"></span>
                                             <span class="dv-report-meta-pill" x-show="selectedReportMeta.templateLabel" x-text="selectedReportMeta.templateLabel"></span>
+                                            <span class="dv-report-meta-pill" x-show="selectedReportMeta.variantLabel" x-text="selectedReportMeta.variantLabel"></span>
                                         </div>
                                     </div>
 
@@ -4700,10 +4753,12 @@
                             <div class="flex bg-gray-100 rounded-lg p-1 gap-1">
                                 <!-- 快速模式 -->
                                 <button type="button"
-                                        @click="selectedInterviewMode = 'quick'"
+                                        @click="handleInterviewModeSelect('quick')"
                                         @mouseenter="hoveredDepthMode = 'quick'"
                                         @mouseleave="hoveredDepthMode = null"
-                                        :class="selectedInterviewMode === 'quick' ? 'bg-white shadow-sm text-[#357BE2]' : 'text-gray-600 hover:text-gray-900'"
+                                        :class="selectedInterviewMode === 'quick'
+                                            ? 'bg-white shadow-sm text-[#357BE2]'
+                                            : (canUseInterviewMode('quick') ? 'text-gray-600 hover:text-gray-900' : 'text-gray-400 hover:text-gray-500 bg-gray-50/80')"
                                         class="flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer flex items-center justify-center gap-1.5">
                                     <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
@@ -4713,30 +4768,40 @@
                                 </button>
                                 <!-- 标准模式 -->
                                 <button type="button"
-                                        @click="selectedInterviewMode = 'standard'"
+                                        @click="handleInterviewModeSelect('standard')"
                                         @mouseenter="hoveredDepthMode = 'standard'"
                                         @mouseleave="hoveredDepthMode = null"
-                                        :class="selectedInterviewMode === 'standard' ? 'bg-white shadow-sm text-[#357BE2]' : 'text-gray-600 hover:text-gray-900'"
+                                        :class="selectedInterviewMode === 'standard'
+                                            ? 'bg-white shadow-sm text-[#357BE2]'
+                                            : (canUseInterviewMode('standard') ? 'text-gray-600 hover:text-gray-900' : 'text-gray-400 hover:text-gray-500 bg-gray-50/80')"
                                         class="flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer flex items-center justify-center gap-1.5">
                                     <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/>
                                     </svg>
                                     <span>标准</span>
                                     <span class="text-[10px] text-muted hidden sm:inline">24-34题</span>
+                                    <span x-show="!canUseInterviewMode('standard')"
+                                          class="text-[9px] bg-gray-200 text-gray-500 px-1 py-0.5 rounded hidden sm:inline"
+                                          x-text="getInterviewModeRequirementLabel('standard') || '需升级'"></span>
                                 </button>
                                 <!-- 深度模式 -->
                                 <button type="button"
-                                        @click="selectedInterviewMode = 'deep'"
+                                        @click="handleInterviewModeSelect('deep')"
                                         @mouseenter="hoveredDepthMode = 'deep'"
                                         @mouseleave="hoveredDepthMode = null"
-                                        :class="selectedInterviewMode === 'deep' ? 'bg-white shadow-sm text-[#357BE2]' : 'text-gray-600 hover:text-gray-900'"
+                                        :class="selectedInterviewMode === 'deep'
+                                            ? 'bg-white shadow-sm text-[#357BE2]'
+                                            : (canUseInterviewMode('deep') ? 'text-gray-600 hover:text-gray-900' : 'text-gray-400 hover:text-gray-500 bg-gray-50/80')"
                                         class="flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all duration-200 cursor-pointer flex items-center justify-center gap-1.5">
                                     <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7"/>
                                     </svg>
                                     <span>深度</span>
                                     <span class="text-[10px] text-muted hidden sm:inline">34-52题</span>
-                                    <span class="text-[8px] bg-[#357BE2]/15 text-[#357BE2] px-1 py-0.5 rounded ml-0.5 hidden sm:inline">荐</span>
+                                    <span x-show="canUseInterviewMode('deep')" class="text-[8px] bg-[#357BE2]/15 text-[#357BE2] px-1 py-0.5 rounded ml-0.5 hidden sm:inline">荐</span>
+                                    <span x-show="!canUseInterviewMode('deep')"
+                                          class="text-[9px] bg-gray-200 text-gray-500 px-1 py-0.5 rounded hidden sm:inline"
+                                          x-text="getInterviewModeRequirementLabel('deep') || '需升级'"></span>
                                 </button>
                             </div>
                             <!-- 悬停提示 -->

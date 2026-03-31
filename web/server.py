@@ -616,6 +616,7 @@ if REPORT_GENERATION_ESTIMATED_SLOT_SECONDS <= 0:
 # 模型路由配置：支持问题/报告分离，未配置时向后兼容 MODEL_NAME
 _base_model_name = _cfg_text("MODEL_NAME", str(MODEL_NAME or "").strip())
 QUESTION_MODEL_NAME = _cfg_text("QUESTION_MODEL_NAME", _base_model_name) or _base_model_name
+QUESTION_MODEL_NAME_DEEP = _cfg_text("QUESTION_MODEL_NAME_DEEP", QUESTION_MODEL_NAME) or QUESTION_MODEL_NAME
 REPORT_MODEL_NAME = _cfg_text("REPORT_MODEL_NAME", QUESTION_MODEL_NAME) or QUESTION_MODEL_NAME
 REPORT_DRAFT_MODEL_NAME = _cfg_text("REPORT_DRAFT_MODEL_NAME", REPORT_MODEL_NAME) or REPORT_MODEL_NAME
 REPORT_REVIEW_MODEL_NAME = _cfg_text("REPORT_REVIEW_MODEL_NAME", REPORT_MODEL_NAME) or REPORT_MODEL_NAME
@@ -7217,6 +7218,12 @@ def ensure_meta_index_schema() -> None:
                 conn.execute("ALTER TABLE report_index ADD COLUMN report_template TEXT NOT NULL DEFAULT ''")
             if "report_type" not in report_columns:
                 conn.execute("ALTER TABLE report_index ADD COLUMN report_type TEXT NOT NULL DEFAULT ''")
+            if "report_profile" not in report_columns:
+                conn.execute("ALTER TABLE report_index ADD COLUMN report_profile TEXT NOT NULL DEFAULT ''")
+            if "source_report_name" not in report_columns:
+                conn.execute("ALTER TABLE report_index ADD COLUMN source_report_name TEXT NOT NULL DEFAULT ''")
+            if "report_variant_label" not in report_columns:
+                conn.execute("ALTER TABLE report_index ADD COLUMN report_variant_label TEXT NOT NULL DEFAULT ''")
 
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_report_index_owner_scope_deleted_created ON report_index(owner_user_id, instance_scope_key, deleted, created_at DESC)"
@@ -7891,6 +7898,9 @@ def empty_report_binding_metadata() -> dict:
         "scenario_name": "",
         "report_template": "",
         "report_type": "",
+        "report_profile": "",
+        "source_report_name": "",
+        "report_variant_label": "",
     }
 
 
@@ -7906,6 +7916,12 @@ def normalize_report_binding_metadata(metadata: Optional[dict] = None) -> dict:
     if raw_report_type not in {"standard", "assessment"}:
         raw_report_type = ""
     base["report_type"] = raw_report_type
+    base["report_profile"] = normalize_report_profile_choice(metadata.get("report_profile", ""), fallback="")
+    base["source_report_name"] = normalize_solution_report_filename(metadata.get("source_report_name", ""))
+    variant_label = clean_solution_text(metadata.get("report_variant_label", ""), max_len=32)
+    if not variant_label and base["report_profile"]:
+        variant_label = "精审版" if base["report_profile"] == "quality" else "普通版"
+    base["report_variant_label"] = variant_label
     base["report_template"] = normalize_report_template_name(
         metadata.get("report_template", ""),
         report_type=raw_report_type or "standard",
@@ -7930,6 +7946,16 @@ def build_report_binding_metadata_from_session(session_data: dict, report_name: 
     if report_type not in {"standard", "assessment"}:
         report_type = "standard"
 
+    current_report_name = normalize_solution_report_filename(session_data.get("current_report_name", ""))
+    inferred_report_profile = "balanced"
+    inferred_source_report_name = ""
+    inferred_variant_label = "普通版"
+    if normalized_report_name and normalized_report_name.endswith("-quality.md"):
+        inferred_report_profile = "quality"
+        inferred_variant_label = "精审版"
+        if current_report_name and current_report_name != normalized_report_name:
+            inferred_source_report_name = current_report_name
+
     metadata.update({
         "session_id": str(session_data.get("session_id") or "").strip(),
         "topic": str(session_data.get("topic") or "").strip(),
@@ -7939,6 +7965,9 @@ def build_report_binding_metadata_from_session(session_data: dict, report_name: 
             report_cfg.get("template", ""),
             report_type=report_type,
         ),
+        "report_profile": inferred_report_profile,
+        "source_report_name": inferred_source_report_name,
+        "report_variant_label": inferred_variant_label,
     })
     return normalize_report_binding_metadata(metadata)
 
@@ -7990,6 +8019,9 @@ def _build_report_index_record(
             "scenario_name": normalized_snapshot.get("scenario_name", ""),
             "report_template": normalized_snapshot.get("report_template", ""),
             "report_type": normalized_snapshot.get("report_type", ""),
+            "report_profile": normalized_snapshot.get("report_profile", ""),
+            "source_report_name": normalized_snapshot.get("source_report_name", ""),
+            "report_variant_label": normalized_snapshot.get("report_variant_label", ""),
         })
 
     merged_binding = dict(normalized_binding)
@@ -8011,6 +8043,9 @@ def _build_report_index_record(
         "scenario_name": merged_binding.get("scenario_name", ""),
         "report_template": merged_binding.get("report_template", ""),
         "report_type": merged_binding.get("report_type", ""),
+        "report_profile": merged_binding.get("report_profile", ""),
+        "source_report_name": merged_binding.get("source_report_name", ""),
+        "report_variant_label": merged_binding.get("report_variant_label", ""),
         "file_mtime_ns": int(signature[0]),
         "file_size": int(signature[1]),
         "indexed_at": get_utc_now(),
@@ -8027,8 +8062,9 @@ def _upsert_report_index_record(record: dict) -> None:
             INSERT INTO report_index (
                 file_name, owner_user_id, instance_scope_key, deleted, size, created_at,
                 session_id, topic, scenario_name, report_template, report_type,
+                report_profile, source_report_name, report_variant_label,
                 file_mtime_ns, file_size, indexed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(file_name) DO UPDATE SET
                 owner_user_id=excluded.owner_user_id,
                 instance_scope_key=excluded.instance_scope_key,
@@ -8040,6 +8076,9 @@ def _upsert_report_index_record(record: dict) -> None:
                 scenario_name=excluded.scenario_name,
                 report_template=excluded.report_template,
                 report_type=excluded.report_type,
+                report_profile=excluded.report_profile,
+                source_report_name=excluded.source_report_name,
+                report_variant_label=excluded.report_variant_label,
                 file_mtime_ns=excluded.file_mtime_ns,
                 file_size=excluded.file_size,
                 indexed_at=excluded.indexed_at
@@ -8056,6 +8095,9 @@ def _upsert_report_index_record(record: dict) -> None:
                 record["scenario_name"],
                 record["report_template"],
                 record["report_type"],
+                record["report_profile"],
+                record["source_report_name"],
+                record["report_variant_label"],
                 record["file_mtime_ns"],
                 record["file_size"],
                 record["indexed_at"],
@@ -8131,8 +8173,9 @@ def rebuild_report_index_from_sources(*, full_reset: Optional[bool] = None) -> N
                 INSERT INTO report_index (
                     file_name, owner_user_id, instance_scope_key, deleted, size, created_at,
                     session_id, topic, scenario_name, report_template, report_type,
+                    report_profile, source_report_name, report_variant_label,
                     file_mtime_ns, file_size, indexed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -8147,6 +8190,9 @@ def rebuild_report_index_from_sources(*, full_reset: Optional[bool] = None) -> N
                         record["scenario_name"],
                         record["report_template"],
                         record["report_type"],
+                        record["report_profile"],
+                        record["source_report_name"],
+                        record["report_variant_label"],
                         record["file_mtime_ns"],
                         record["file_size"],
                         record["indexed_at"],
@@ -8187,7 +8233,8 @@ def query_report_index_for_user(owner_user_id: int, page: int, page_size: int) -
                 """
                 SELECT
                     file_name, size, created_at,
-                    session_id, topic, scenario_name, report_template, report_type
+                    session_id, topic, scenario_name, report_template, report_type,
+                    report_profile, source_report_name, report_variant_label
                 FROM report_index
                 WHERE owner_user_id = ? AND instance_scope_key = ? AND deleted = 0
                 ORDER BY created_at DESC
@@ -8199,7 +8246,8 @@ def query_report_index_for_user(owner_user_id: int, page: int, page_size: int) -
                 """
                 SELECT
                     file_name, size, created_at,
-                    session_id, topic, scenario_name, report_template, report_type
+                    session_id, topic, scenario_name, report_template, report_type,
+                    report_profile, source_report_name, report_variant_label
                 FROM report_index
                 WHERE owner_user_id = ? AND deleted = 0
                 ORDER BY created_at DESC
@@ -8237,6 +8285,9 @@ def query_report_index_for_user(owner_user_id: int, page: int, page_size: int) -
                 "scenario_name": row["scenario_name"],
                 "report_template": row["report_template"],
                 "report_type": row["report_type"],
+                "report_profile": row["report_profile"],
+                "source_report_name": row["source_report_name"],
+                "report_variant_label": row["report_variant_label"],
             },
         )
         for row in page_rows
@@ -8307,6 +8358,9 @@ USER_LEVEL_DEFINITIONS = {
 }
 USER_LEVEL_CAPABILITY_MAP = {
     "experience": {
+        "interview.mode.quick": True,
+        "interview.mode.standard": False,
+        "interview.mode.deep": False,
         "report.generate": True,
         "report.profile.quality": False,
         "report.export.basic": False,
@@ -8317,6 +8371,9 @@ USER_LEVEL_CAPABILITY_MAP = {
         "presentation.generate": False,
     },
     "standard": {
+        "interview.mode.quick": True,
+        "interview.mode.standard": True,
+        "interview.mode.deep": False,
         "report.generate": True,
         "report.profile.quality": False,
         "report.export.basic": True,
@@ -8327,6 +8384,9 @@ USER_LEVEL_CAPABILITY_MAP = {
         "presentation.generate": False,
     },
     "professional": {
+        "interview.mode.quick": True,
+        "interview.mode.standard": True,
+        "interview.mode.deep": True,
         "report.generate": True,
         "report.profile.quality": True,
         "report.export.basic": True,
@@ -8341,6 +8401,16 @@ USER_LEVEL_ALLOWED_REPORT_PROFILES = {
     "experience": ["balanced"],
     "standard": ["balanced"],
     "professional": ["balanced", "quality"],
+}
+USER_LEVEL_ALLOWED_INTERVIEW_MODES = {
+    "experience": ["quick"],
+    "standard": ["quick", "standard"],
+    "professional": ["quick", "standard", "deep"],
+}
+USER_LEVEL_DEFAULT_INTERVIEW_MODE = {
+    "experience": "quick",
+    "standard": "standard",
+    "professional": "deep",
 }
 
 
@@ -8413,6 +8483,46 @@ def get_allowed_report_profiles_for_level(level_key: object) -> list[str]:
     return allowed or ["balanced"]
 
 
+def get_allowed_interview_modes_for_level(level_key: object) -> list[str]:
+    normalized_level_key = normalize_user_level_key(level_key)
+    modes = USER_LEVEL_ALLOWED_INTERVIEW_MODES.get(normalized_level_key) or USER_LEVEL_ALLOWED_INTERVIEW_MODES["experience"]
+    allowed: list[str] = []
+    for item in modes:
+        normalized = str(item or "").strip().lower()
+        if normalized in {"quick", "standard", "deep"} and normalized not in allowed:
+            allowed.append(normalized)
+    return allowed or ["quick"]
+
+
+def get_default_interview_mode_for_level(level_key: object, preferred_mode: object = None) -> str:
+    allowed_modes = get_allowed_interview_modes_for_level(level_key)
+    preferred = str(preferred_mode or "").strip().lower()
+    if preferred in allowed_modes:
+        return preferred
+    configured_default = str(USER_LEVEL_DEFAULT_INTERVIEW_MODE.get(normalize_user_level_key(level_key)) or DEFAULT_INTERVIEW_MODE).strip().lower()
+    if configured_default in allowed_modes:
+        return configured_default
+    return allowed_modes[0]
+
+
+def get_required_user_level_for_interview_mode(mode: object) -> str:
+    normalized_mode = str(mode or "").strip().lower()
+    if normalized_mode not in {"quick", "standard", "deep"}:
+        return "professional"
+    for level_key in list_user_level_keys():
+        if normalized_mode in get_allowed_interview_modes_for_level(level_key):
+            return level_key
+    return "professional"
+
+
+def build_interview_mode_requirements() -> dict:
+    requirements = {}
+    for mode in ("quick", "standard", "deep"):
+        required_level_key = get_required_user_level_for_interview_mode(mode)
+        requirements[mode] = build_user_level_payload(required_level_key)
+    return requirements
+
+
 def get_default_report_profile_for_level(level_key: object, preferred_profile: object = None) -> str:
     allowed_profiles = get_allowed_report_profiles_for_level(level_key)
     preferred = normalize_report_profile_choice(preferred_profile or REPORT_V3_PROFILE, fallback="balanced")
@@ -8446,11 +8556,17 @@ def build_user_level_context_for_user(
         "capabilities": build_user_capabilities_for_level(level_key),
         "allowed_report_profiles": get_allowed_report_profiles_for_level(level_key),
         "report_profile_default": get_default_report_profile_for_level(level_key),
+        "allowed_interview_modes": get_allowed_interview_modes_for_level(level_key),
+        "interview_mode_default": get_default_interview_mode_for_level(level_key),
+        "interview_mode_requirements": build_interview_mode_requirements(),
     }
 
 
 def get_required_user_level_for_capability(capability_key: object) -> str:
     normalized_key = str(capability_key or "").strip()
+    if normalized_key.startswith("interview.mode."):
+        mode_key = normalized_key.split(".", 2)[-1]
+        return get_required_user_level_for_interview_mode(mode_key)
     for level_key in list_user_level_keys():
         if bool(build_user_capabilities_for_level(level_key).get(normalized_key)):
             return level_key
@@ -13241,6 +13357,8 @@ def build_report_generation_payload(record: Optional[dict]) -> dict:
         "ai_generated": record.get("ai_generated"),
         "v3_enabled": record.get("v3_enabled"),
         "report_profile": normalize_report_profile_choice(record.get("report_profile", ""), fallback=REPORT_V3_PROFILE),
+        "source_report_name": normalize_solution_report_filename(record.get("source_report_name", "")),
+        "report_variant_label": clean_solution_text(record.get("report_variant_label", ""), max_len=32),
         "error": record.get("error", ""),
         "queue_position": _safe_int(record.get("queue_position", 0), 0),
         "queue_pending": _safe_int(record.get("queue_pending", 0), 0),
@@ -13260,6 +13378,8 @@ def build_report_generation_payload(record: Optional[dict]) -> dict:
     phase_history = record.get("phase_history")
     if isinstance(phase_history, list):
         payload["phase_history"] = [dict(item) for item in phase_history if isinstance(item, dict)]
+    if not payload["report_variant_label"] and payload["report_profile"]:
+        payload["report_variant_label"] = "精审版" if payload["report_profile"] == "quality" else "普通版"
 
     return payload
 
@@ -16599,6 +16719,18 @@ def build_session_report_filename(session: dict, now: Optional[datetime] = None)
     return "-".join(parts) + ".md"
 
 
+def build_report_variant_filename(source_report_name: str, report_profile: str) -> str:
+    normalized_source = normalize_solution_report_filename(source_report_name)
+    normalized_profile = normalize_report_profile_choice(report_profile, fallback="")
+    if not normalized_source or normalized_profile != "quality":
+        return normalized_source
+    source_path = Path(normalized_source)
+    stem = source_path.stem
+    if not stem.endswith("-quality"):
+        stem = f"{stem}-quality"
+    return f"{stem}{source_path.suffix or '.md'}"
+
+
 def get_session_total_progress(session: dict) -> int:
     """计算会话总进度（各维度覆盖率平均值）。"""
     dimensions = session.get("dimensions")
@@ -18232,6 +18364,64 @@ INTERVIEW_MODES_V2 = {
 # 默认模式
 DEFAULT_INTERVIEW_MODE = "standard"
 
+INTERVIEW_MODE_RUNTIME_STRATEGIES = {
+    "quick": {
+        "search_mode": "rule_only",
+        "allow_high_evidence": False,
+        "promote_high_evidence": False,
+        "blindspot_budget": "tight",
+        "fast_timeout_scale": 0.9,
+        "fast_tokens_scale": 0.85,
+        "full_timeout_scale": 0.92,
+        "full_tokens_scale": 0.9,
+        "lane_model_overrides": {},
+    },
+    "standard": {
+        "search_mode": "default",
+        "allow_high_evidence": True,
+        "promote_high_evidence": False,
+        "blindspot_budget": "balanced",
+        "fast_timeout_scale": 1.0,
+        "fast_tokens_scale": 1.0,
+        "full_timeout_scale": 1.0,
+        "full_tokens_scale": 1.0,
+        "lane_model_overrides": {},
+    },
+    "deep": {
+        "search_mode": "default",
+        "allow_high_evidence": True,
+        "promote_high_evidence": True,
+        "blindspot_budget": "aggressive",
+        "fast_timeout_scale": 1.15,
+        "fast_tokens_scale": 1.2,
+        "full_timeout_scale": 1.2,
+        "full_tokens_scale": 1.2,
+        "lane_model_overrides": {},
+    },
+}
+
+
+def normalize_interview_mode_key(value: object, fallback: str = DEFAULT_INTERVIEW_MODE) -> str:
+    normalized_fallback = str(fallback or DEFAULT_INTERVIEW_MODE).strip().lower() or DEFAULT_INTERVIEW_MODE
+    if normalized_fallback not in INTERVIEW_MODES_V2:
+        normalized_fallback = DEFAULT_INTERVIEW_MODE
+    normalized_value = str(value or "").strip().lower()
+    if normalized_value not in INTERVIEW_MODES_V2:
+        return normalized_fallback
+    return normalized_value
+
+
+def get_interview_mode_runtime_strategy(mode_or_session) -> dict:
+    if isinstance(mode_or_session, dict):
+        normalized_mode = normalize_interview_mode_key(mode_or_session.get("interview_mode", DEFAULT_INTERVIEW_MODE))
+    else:
+        normalized_mode = normalize_interview_mode_key(mode_or_session, fallback=DEFAULT_INTERVIEW_MODE)
+    strategy = copy.deepcopy(INTERVIEW_MODE_RUNTIME_STRATEGIES.get(normalized_mode, INTERVIEW_MODE_RUNTIME_STRATEGIES[DEFAULT_INTERVIEW_MODE]))
+    strategy["mode"] = normalized_mode
+    if normalized_mode == "deep" and str(QUESTION_MODEL_NAME_DEEP or "").strip():
+        strategy["lane_model_overrides"] = {"question": str(QUESTION_MODEL_NAME_DEEP or "").strip()}
+    return strategy
+
 # 追问硬触发信号（V2）
 HARD_FOLLOW_UP_SIGNALS = {
     "vague_expression",
@@ -18275,10 +18465,7 @@ def get_mode_identifier(session: dict) -> str:
     """获取会话模式ID（做容错）。"""
     if not isinstance(session, dict):
         return DEFAULT_INTERVIEW_MODE
-    mode = session.get("interview_mode", DEFAULT_INTERVIEW_MODE)
-    if mode not in INTERVIEW_MODES:
-        return DEFAULT_INTERVIEW_MODE
-    return mode
+    return normalize_interview_mode_key(session.get("interview_mode", DEFAULT_INTERVIEW_MODE))
 
 
 def get_mode_saturation_thresholds(session: dict) -> dict:
@@ -28648,9 +28835,11 @@ def list_sessions():
 @app.route('/api/sessions', methods=['POST'])
 def create_session():
     """创建新会话"""
-    user_id = get_current_user_id_or_none()
-    if not user_id:
+    user_row = get_current_user()
+    if not user_row:
         return jsonify({"error": "请先登录"}), 401
+    user_id = int(user_row["id"])
+    level_context = build_user_level_context_for_user(user_row)
 
     data = request.get_json()
     if not data:
@@ -28658,7 +28847,10 @@ def create_session():
 
     topic = data.get("topic", "未命名访谈")
     description = data.get("description")  # 获取可选的主题描述
-    interview_mode = data.get("interview_mode", DEFAULT_INTERVIEW_MODE)  # 获取访谈模式
+    interview_mode = normalize_interview_mode_key(
+        data.get("interview_mode", DEFAULT_INTERVIEW_MODE),
+        fallback=DEFAULT_INTERVIEW_MODE,
+    )
     requested_scenario_id = str(data.get("scenario_id") or "").strip()  # 获取场景ID
 
     # 验证 topic
@@ -28671,9 +28863,15 @@ def create_session():
     if description and (not isinstance(description, str) or len(description) > 2000):
         return jsonify({"error": "描述长度不能超过2000字符"}), 400
 
-    # 验证访谈模式
-    if interview_mode not in INTERVIEW_MODES:
-        interview_mode = DEFAULT_INTERVIEW_MODE
+    allowed_interview_modes = level_context.get("allowed_interview_modes") or get_allowed_interview_modes_for_level(
+        (level_context.get("level") or {}).get("key")
+    )
+    if interview_mode not in allowed_interview_modes:
+        return build_level_capability_denied_response(
+            user_row,
+            f"interview.mode.{interview_mode}",
+            level_context=level_context,
+        )
 
     # 加载场景配置（如果未指定，使用默认场景）
     scenario_id = requested_scenario_id or "product-requirement"
@@ -29845,8 +30043,10 @@ def _select_question_generation_runtime_profile(
     decision_meta: Optional[dict] = None,
     base_call_type: str = "question",
     allow_fast_path: bool = True,
+    mode_strategy: Optional[dict] = None,
 ) -> dict:
     normalized_meta = dict(decision_meta or {})
+    normalized_mode_strategy = dict(mode_strategy or {})
     lowered_call_type = str(base_call_type or "").strip().lower()
     is_prefetch_first = lowered_call_type.startswith("prefetch_first")
     is_prefetch = lowered_call_type.startswith("prefetch")
@@ -29867,6 +30067,25 @@ def _select_question_generation_runtime_profile(
         normalized_meta.get("evidence_intent", ""),
         fallback="high" if explicit_requires_rationale else ("medium" if answer_mode == "pick_with_reason" else "low"),
     )
+    allow_high_evidence = bool(normalized_mode_strategy.get("allow_high_evidence", True))
+    promote_high_evidence = bool(normalized_mode_strategy.get("promote_high_evidence", False))
+    if promote_high_evidence and evidence_intent == "medium":
+        deep_signal_count = sum(
+            1
+            for flag in (
+                explicit_requires_rationale,
+                has_reference_docs,
+                should_follow_up,
+                hard_triggered,
+                bool(missing_aspects),
+                formal_questions_count >= 2,
+            )
+            if bool(flag)
+        )
+        if deep_signal_count >= 2:
+            evidence_intent = "high"
+    if not allow_high_evidence and evidence_intent == "high":
+        evidence_intent = "medium" if requires_rationale else "low"
     high_evidence_intent = evidence_intent == "high" and not is_prefetch
     can_use_light_prompt = not has_search and (
         not has_truncated_docs or (has_reference_docs and QUESTION_FAST_LIGHT_REFERENCE_DOCS_ENABLED)
@@ -30175,6 +30394,18 @@ def _select_question_generation_runtime_profile(
         "evidence_intent": evidence_intent,
     }
 
+
+def _scale_question_lane_numeric_map(raw_map: Optional[dict], scale: float, *, minimum: float, clamp_fn) -> dict:
+    source = raw_map if isinstance(raw_map, dict) else {}
+    scaled = {}
+    for lane, value in source.items():
+        try:
+            numeric_value = float(value)
+        except Exception:
+            continue
+        scaled[lane] = clamp_fn(max(minimum, numeric_value * scale))
+    return scaled
+
 def _prepare_question_generation_runtime(
     session: dict,
     dimension: str,
@@ -30185,7 +30416,9 @@ def _prepare_question_generation_runtime(
     allow_fast_path: bool = True,
 ) -> dict:
     evidence_ledger = refresh_session_evidence_ledger(session)
-    search_mode = _resolve_prompt_search_mode(base_call_type)
+    interview_mode = normalize_interview_mode_key(session.get("interview_mode", DEFAULT_INTERVIEW_MODE))
+    mode_strategy = get_interview_mode_runtime_strategy(interview_mode)
+    search_mode = str(mode_strategy.get("search_mode") or _resolve_prompt_search_mode(base_call_type))
     probe_full_prompt, probe_truncated_docs, probe_decision_meta = build_interview_prompt(
         session,
         dimension,
@@ -30202,6 +30435,56 @@ def _prepare_question_generation_runtime(
         decision_meta=probe_decision_meta,
         base_call_type=base_call_type,
         allow_fast_path=allow_fast_path,
+        mode_strategy=mode_strategy,
+    )
+    fast_timeout_scale = max(0.5, _safe_float(mode_strategy.get("fast_timeout_scale"), 1.0))
+    fast_tokens_scale = max(0.5, _safe_float(mode_strategy.get("fast_tokens_scale"), 1.0))
+    full_timeout_scale = max(0.5, _safe_float(mode_strategy.get("full_timeout_scale"), 1.0))
+    full_tokens_scale = max(0.5, _safe_float(mode_strategy.get("full_tokens_scale"), 1.0))
+
+    runtime_profile["interview_mode"] = interview_mode
+    runtime_profile["blindspot_budget"] = str(mode_strategy.get("blindspot_budget") or "balanced")
+    runtime_profile["lane_model_overrides"] = copy.deepcopy(mode_strategy.get("lane_model_overrides", {}) or {})
+    runtime_profile["fast_timeout"] = _clamp_question_generation_timeout(
+        max(5.0, _safe_float(runtime_profile.get("fast_timeout"), QUESTION_FAST_TIMEOUT) * fast_timeout_scale),
+        minimum=5.0,
+    )
+    runtime_profile["fast_max_tokens"] = _clamp_question_generation_tokens(
+        max(400, int(_safe_float(runtime_profile.get("fast_max_tokens"), QUESTION_FAST_MAX_TOKENS) * fast_tokens_scale)),
+        minimum=400,
+    )
+    if runtime_profile.get("full_timeout") is not None:
+        runtime_profile["full_timeout"] = _clamp_question_generation_timeout(
+            max(12.0, _safe_float(runtime_profile.get("full_timeout"), QUESTION_FAST_TIMEOUT) * full_timeout_scale),
+            minimum=12.0,
+        )
+    runtime_profile["full_max_tokens"] = _clamp_question_generation_tokens(
+        max(600, int(_safe_float(runtime_profile.get("full_max_tokens"), MAX_TOKENS_QUESTION) * full_tokens_scale)),
+        minimum=600,
+    )
+    runtime_profile["fast_timeout_by_lane"] = _scale_question_lane_numeric_map(
+        runtime_profile.get("fast_timeout_by_lane"),
+        fast_timeout_scale,
+        minimum=5.0,
+        clamp_fn=lambda value: _clamp_question_generation_timeout(value, minimum=5.0),
+    )
+    runtime_profile["fast_max_tokens_by_lane"] = _scale_question_lane_numeric_map(
+        runtime_profile.get("fast_max_tokens_by_lane"),
+        fast_tokens_scale,
+        minimum=400,
+        clamp_fn=lambda value: _clamp_question_generation_tokens(int(value), minimum=400),
+    )
+    runtime_profile["full_timeout_by_lane"] = _scale_question_lane_numeric_map(
+        runtime_profile.get("full_timeout_by_lane"),
+        full_timeout_scale,
+        minimum=12.0,
+        clamp_fn=lambda value: _clamp_question_generation_timeout(value, minimum=12.0),
+    )
+    runtime_profile["full_max_tokens_by_lane"] = _scale_question_lane_numeric_map(
+        runtime_profile.get("full_max_tokens_by_lane"),
+        full_tokens_scale,
+        minimum=600,
+        clamp_fn=lambda value: _clamp_question_generation_tokens(int(value), minimum=600),
     )
 
     full_prompt = probe_full_prompt
@@ -30318,6 +30601,9 @@ def _prepare_question_generation_runtime(
         "fast_max_tokens_by_lane": copy.deepcopy(runtime_profile.get("fast_max_tokens_by_lane", {}) or {}),
         "primary_lane": runtime_profile.get("primary_lane", "question"),
         "secondary_lane": runtime_profile.get("secondary_lane", QUESTION_HEDGED_SECONDARY_LANE),
+        "interview_mode": interview_mode,
+        "blindspot_budget": runtime_profile.get("blindspot_budget", "balanced"),
+        "lane_model_overrides": copy.deepcopy(runtime_profile.get("lane_model_overrides", {}) or {}),
         "fast_prompt_length": len(fast_prompt or ""),
         "full_prompt_length": len(full_prompt or ""),
         "dynamic_lane_order_enabled": bool(runtime_profile.get("dynamic_lane_order_enabled", True)),
@@ -30361,6 +30647,7 @@ def _call_question_with_optional_hedge(
     hedge_delay_seconds: Optional[float] = None,
     lane_profile_name: str = "",
     lane_runtime_overrides: Optional[dict] = None,
+    lane_model_overrides: Optional[dict] = None,
 ) -> tuple[Optional[str], str, dict]:
     """问题生成可选竞速：主通道先发，延迟触发备用通道，谁先返回可用结果用谁。"""
     valid_lanes = {"question", "report", "summary", "search_decision"}
@@ -30393,6 +30680,9 @@ def _call_question_with_optional_hedge(
             timeout,
             max_tokens,
         )
+        override_model = ""
+        if isinstance(lane_model_overrides, dict):
+            override_model = str(lane_model_overrides.get(lane, "") or "").strip()
         raw_result = call_claude(
             prompt,
             max_tokens=lane_max_tokens,
@@ -30401,6 +30691,7 @@ def _call_question_with_optional_hedge(
             truncated_docs=truncated_docs,
             timeout=lane_timeout,
             preferred_lane=lane,
+            model_name=override_model,
             hedge_triggered=hedge_flag,
             return_meta=True,
         )
@@ -30659,6 +30950,7 @@ def generate_question_with_tiered_strategy(
             hedge_delay_seconds=fast_hedge_delay_seconds,
             lane_profile_name=str(fast_lane_meta.get("strategy_key", "") or ""),
             lane_runtime_overrides=fast_lane_runtime_overrides,
+            lane_model_overrides=runtime_profile.get("lane_model_overrides", {}) or {},
         )
         if fast_response:
             fast_result = normalize_generated_question_result(
@@ -30694,6 +30986,7 @@ def generate_question_with_tiered_strategy(
         hedge_delay_seconds=full_hedge_delay_seconds,
         lane_profile_name=str(full_lane_meta.get("strategy_key", "") or ""),
         lane_runtime_overrides=full_lane_runtime_overrides,
+        lane_model_overrides=runtime_profile.get("lane_model_overrides", {}) or {},
     )
     full_result = normalize_generated_question_result(
         parse_question_response(full_response, debug=debug),
@@ -30725,6 +31018,7 @@ def generate_question_with_tiered_strategy(
             hedge_delay_seconds=full_hedge_delay_seconds,
             lane_profile_name=str(full_lane_meta.get("strategy_key", "") or ""),
             lane_runtime_overrides=full_lane_runtime_overrides,
+            lane_model_overrides=runtime_profile.get("lane_model_overrides", {}) or {},
         )
         fallback_result = normalize_generated_question_result(
             parse_question_response(fallback_response, debug=debug),
@@ -32876,6 +33170,7 @@ def run_report_generation_job(
     request_id: str,
     report_profile: str = "",
     action: str = "generate",
+    source_report_name: str = "",
 ) -> None:
     """后台生成报告任务。"""
     job_started_at = _time.perf_counter()
@@ -32940,8 +33235,14 @@ def run_report_generation_job(
     try:
         requested_action = "regenerate" if str(action or "").strip() == "regenerate" else "generate"
         selected_report_profile = normalize_report_profile_choice(report_profile, fallback=REPORT_V3_PROFILE)
+        normalized_source_report_name = normalize_solution_report_filename(source_report_name)
+        selected_report_variant_label = "精审版" if selected_report_profile == "quality" else "普通版"
         selected_report_runtime_cfg = get_report_v3_runtime_config(selected_report_profile)
-        set_report_generation_metadata(session_id, {"report_profile": selected_report_profile})
+        set_report_generation_metadata(session_id, {
+            "report_profile": selected_report_profile,
+            "source_report_name": normalized_source_report_name,
+            "report_variant_label": selected_report_variant_label,
+        })
         update_report_generation_status(
             session_id,
             "building_prompt",
@@ -32979,8 +33280,11 @@ def run_report_generation_job(
             """保存报告并更新会话状态。"""
             persist_started_at = _time.perf_counter()
             filename = ""
+            is_quality_variant = selected_report_profile == "quality" and bool(normalized_source_report_name)
             if requested_action == "regenerate":
                 filename = resolve_session_bound_report_name(session, user_id)
+            elif is_quality_variant:
+                filename = build_report_variant_filename(normalized_source_report_name, selected_report_profile)
 
             if not filename:
                 filename = build_session_report_filename(session, now=datetime.now())
@@ -32995,9 +33299,10 @@ def run_report_generation_job(
                     latest_session["status"] = "completed"
                     latest_session["updated_at"] = get_utc_now()
                     report_updated_at = get_utc_now()
-                    latest_session["current_report_name"] = filename
-                    latest_session["current_report_path"] = str(report_file)
-                    latest_session["current_report_updated_at"] = report_updated_at
+                    if not is_quality_variant:
+                        latest_session["current_report_name"] = filename
+                        latest_session["current_report_path"] = str(report_file)
+                        latest_session["current_report_updated_at"] = report_updated_at
                     latest_session["last_report_name"] = filename
                     if isinstance(quality_meta, dict):
                         latest_session["last_report_quality_meta"] = quality_meta
@@ -33014,9 +33319,10 @@ def run_report_generation_job(
                             signature=latest_signature,
                         )
 
-                    session["current_report_name"] = filename
-                    session["current_report_path"] = str(report_file)
-                    session["current_report_updated_at"] = latest_session["current_report_updated_at"]
+                    if not is_quality_variant:
+                        session["current_report_name"] = filename
+                        session["current_report_path"] = str(report_file)
+                        session["current_report_updated_at"] = latest_session["current_report_updated_at"]
                     session["last_report_name"] = filename
                     if isinstance(quality_meta, dict):
                         session["last_report_quality_meta"] = quality_meta
@@ -33130,6 +33436,9 @@ def run_report_generation_job(
                 evidence_pack=result.get("evidence_pack", {}),
                 report_template=result.get("report_template", ""),
                 report_type=result.get("report_type", ""),
+                report_profile=selected_report_profile,
+                source_report_name=normalized_source_report_name,
+                report_variant_label=selected_report_variant_label,
             )
             write_solution_sidecar(
                 filename,
@@ -33150,6 +33459,8 @@ def run_report_generation_job(
                 "ai_generated": True,
                 "v3_enabled": True,
                 "report_quality_meta": quality_meta,
+                "source_report_name": normalized_source_report_name,
+                "report_variant_label": selected_report_variant_label,
                 "error": "",
                 "completed_at": get_utc_now(),
             })
@@ -33613,7 +33924,14 @@ def run_report_generation_job(
                     next_hint="保存完成后即可查看报告",
                 )
                 report_file, filename = persist_report(report_content, quality_meta=quality_meta)
-                rebound_snapshot = build_bound_solution_sidecar_snapshot(filename, report_content, session)
+                rebound_snapshot = build_bound_solution_sidecar_snapshot(
+                    filename,
+                    report_content,
+                    session,
+                    report_profile=selected_report_profile,
+                    source_report_name=normalized_source_report_name,
+                    report_variant_label=selected_report_variant_label,
+                )
                 if rebound_snapshot:
                     write_solution_sidecar(filename, rebound_snapshot)
                 ensure_solution_payload_ready(filename, report_content, session_id=session_id)
@@ -33631,6 +33949,8 @@ def run_report_generation_job(
                     "ai_generated": True,
                     "v3_enabled": False,
                     "report_quality_meta": quality_meta if isinstance(quality_meta, dict) else {},
+                    "source_report_name": normalized_source_report_name,
+                    "report_variant_label": selected_report_variant_label,
                     "error": "",
                     "completed_at": get_utc_now(),
                 })
@@ -33669,7 +33989,14 @@ def run_report_generation_job(
             next_hint="保存完成后即可查看报告",
         )
         report_file, filename = persist_report(report_content, quality_meta=quality_meta)
-        rebound_snapshot = build_bound_solution_sidecar_snapshot(filename, report_content, session)
+        rebound_snapshot = build_bound_solution_sidecar_snapshot(
+            filename,
+            report_content,
+            session,
+            report_profile=selected_report_profile,
+            source_report_name=normalized_source_report_name,
+            report_variant_label=selected_report_variant_label,
+        )
         if rebound_snapshot:
             write_solution_sidecar(filename, rebound_snapshot)
 
@@ -33688,6 +34015,8 @@ def run_report_generation_job(
             "ai_generated": False,
             "v3_enabled": False,
             "report_quality_meta": quality_meta if isinstance(quality_meta, dict) else {},
+            "source_report_name": normalized_source_report_name,
+            "report_variant_label": selected_report_variant_label,
             "error": "",
             "completed_at": get_utc_now(),
         })
@@ -33752,6 +34081,7 @@ def generate_report(session_id):
 
     data = request.get_json(silent=True) or {}
     action = "regenerate" if data.get("action") == "regenerate" else "generate"
+    source_report_name = normalize_solution_report_filename(data.get("source_report_name", ""))
     raw_report_profile = str(data.get("report_profile", "") or "").strip().lower()
     if raw_report_profile and raw_report_profile not in {"balanced", "quality"}:
         return jsonify({"error": "report_profile 仅支持 balanced 或 quality"}), 400
@@ -33759,7 +34089,7 @@ def generate_report(session_id):
     allowed_report_profiles = level_context.get("allowed_report_profiles") or ["balanced"]
     report_profile = get_default_report_profile_for_level(
         level_context.get("level", {}).get("key"),
-        requested_profile or REPORT_V3_PROFILE,
+        requested_profile or "balanced",
     )
     if requested_profile == "quality" and "quality" not in allowed_report_profiles:
         return build_level_capability_denied_response(
@@ -33837,6 +34167,8 @@ def generate_report(session_id):
         "ai_generated": None,
         "v3_enabled": None,
         "report_profile": report_profile,
+        "source_report_name": source_report_name,
+        "report_variant_label": "精审版" if report_profile == "quality" else "普通版",
         "report_quality_meta": {},
         "error": "",
         "queue_position": 0,
@@ -33858,6 +34190,7 @@ def generate_report(session_id):
             request_id,
             report_profile,
             action,
+            source_report_name,
         )
     except Exception as exc:
         release_report_generation_slot()
@@ -36111,6 +36444,9 @@ def build_report_binding_metadata(report_name: str, binding_metadata: Optional[d
             "scenario_name": normalized_snapshot.get("scenario_name", ""),
             "report_template": normalized_snapshot.get("report_template", ""),
             "report_type": normalized_snapshot.get("report_type", ""),
+            "report_profile": normalized_snapshot.get("report_profile", ""),
+            "source_report_name": normalized_snapshot.get("source_report_name", ""),
+            "report_variant_label": normalized_snapshot.get("report_variant_label", ""),
         }))
 
     fallback_metadata = normalize_report_binding_metadata(binding_metadata)
@@ -36145,6 +36481,11 @@ def write_solution_sidecar(report_name: str, snapshot: dict) -> None:
         get_solution_sidecar_path(report_name),
     )
     delete_solution_payload_cache(report_name)
+    try:
+        sync_report_index_for_filename(report_name)
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            _safe_log(f"⚠️ 写入 solution sidecar 后同步报告索引失败: report={report_name}, error={exc}")
 
 
 def _solution_payload_cache_source_hash(
@@ -36458,6 +36799,9 @@ def _normalize_solution_snapshot(snapshot: dict) -> dict:
             report_type=str(snapshot.get("report_type", "standard") or "standard").strip().lower(),
         ),
         "report_type": str(snapshot.get("report_type", "standard") or "standard").strip().lower() or "standard",
+        "report_profile": normalize_report_profile_choice(snapshot.get("report_profile", ""), fallback=""),
+        "source_report_name": normalize_solution_report_filename(snapshot.get("source_report_name", "")),
+        "report_variant_label": clean_solution_text(snapshot.get("report_variant_label", ""), max_len=32),
         "report_schema": copy.deepcopy(report_schema),
         "solution_schema": copy.deepcopy(normalized_solution_schema),
         "solution_snapshot": copy.deepcopy(solution_snapshot_raw),
@@ -36491,6 +36835,8 @@ def _normalize_solution_snapshot(snapshot: dict) -> dict:
             for field in ["needs", "solutions", "risks", "actions", "open_questions", "evidence_index"]
             for item in normalized["draft"][field]
         )
+    if not normalized["report_variant_label"] and normalized["report_profile"]:
+        normalized["report_variant_label"] = "精审版" if normalized["report_profile"] == "quality" else "普通版"
     return normalized
 
 
@@ -36503,6 +36849,9 @@ def build_solution_sidecar_snapshot(
     evidence_pack: dict,
     report_template: str = "",
     report_type: str = "",
+    report_profile: str = "",
+    source_report_name: str = "",
+    report_variant_label: str = "",
 ) -> dict:
     scenario_config = session.get("scenario_config", {}) if isinstance(session.get("scenario_config", {}), dict) else {}
     report_cfg = scenario_config.get("report", {}) if isinstance(scenario_config.get("report", {}), dict) else {}
@@ -36524,6 +36873,9 @@ def build_solution_sidecar_snapshot(
         "scenario_name": scenario_config.get("name", ""),
         "report_template": report_template or evidence_pack.get("report_template", ""),
         "report_type": report_type or evidence_pack.get("report_type", "standard"),
+        "report_profile": report_profile,
+        "source_report_name": source_report_name,
+        "report_variant_label": report_variant_label,
         "report_schema": report_schema,
         "solution_schema": solution_schema,
         "quality_meta": quality_meta if isinstance(quality_meta, dict) else {},
@@ -36623,6 +36975,9 @@ def build_bound_solution_sidecar_snapshot(
     report_name: str,
     report_content: str,
     session: dict,
+    report_profile: str = "",
+    source_report_name: str = "",
+    report_variant_label: str = "",
 ) -> dict:
     session = session if isinstance(session, dict) else {}
     if not session:
@@ -36702,6 +37057,9 @@ def build_bound_solution_sidecar_snapshot(
         "scenario_name": str(scenario_config.get("name") or "").strip(),
         "report_template": report_template,
         "report_type": report_type,
+        "report_profile": report_profile,
+        "source_report_name": source_report_name,
+        "report_variant_label": report_variant_label,
         "report_schema": report_schema,
         "solution_schema": get_scenario_solution_compiled_schema(scenario_config),
         "quality_meta": copy.deepcopy(quality_meta),
@@ -36802,6 +37160,9 @@ def build_solution_snapshot_from_markdown_report(report_name: str, report_conten
         "scenario_name": "",
         "report_template": REPORT_TEMPLATE_STANDARD_V1,
         "report_type": "assessment" if "候选人概览" in main_report_text else "standard",
+        "report_profile": "balanced",
+        "source_report_name": "",
+        "report_variant_label": "普通版",
         "report_schema": {},
         "solution_schema": _build_default_solution_schema(),
         "quality_meta": {},
@@ -44089,7 +44450,15 @@ def get_report(filename):
     content = _load_report_content(filename)
     generated_at = _get_report_generated_at(filename)
     content = normalize_report_time_fields(content, generated_at=generated_at)
-    return jsonify({"name": filename, "content": content})
+    binding_metadata = build_report_binding_metadata(filename)
+    return jsonify({
+        "name": filename,
+        "content": content,
+        "session_id": binding_metadata.get("session_id", ""),
+        "report_profile": binding_metadata.get("report_profile", ""),
+        "source_report_name": binding_metadata.get("source_report_name", ""),
+        "report_variant_label": binding_metadata.get("report_variant_label", ""),
+    })
 
 
 @app.route('/api/reports/<path:filename>/exports', methods=['GET'])
@@ -44862,6 +45231,9 @@ def get_status():
         "capabilities": license_payload.get("capabilities") or build_user_capabilities_for_level("experience"),
         "allowed_report_profiles": license_payload.get("allowed_report_profiles") or ["balanced"],
         "report_profile_default": license_payload.get("report_profile_default") or "balanced",
+        "allowed_interview_modes": license_payload.get("allowed_interview_modes") or ["quick"],
+        "interview_mode_default": license_payload.get("interview_mode_default") or "quick",
+        "interview_mode_requirements": license_payload.get("interview_mode_requirements") or build_interview_mode_requirements(),
     }
     return jsonify({
         "status": "running",

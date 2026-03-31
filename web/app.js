@@ -53,6 +53,9 @@ function deepVision() {
         currentLevelInfo: null,
         userCapabilities: {},
         allowedReportProfiles: ['balanced'],
+        allowedInterviewModes: ['quick'],
+        interviewModeDefault: 'quick',
+        interviewModeRequirements: {},
         presentationFeatureEnabled: true,
         licenseChecking: false,
         licenseEnforcementEnabled: false,
@@ -502,7 +505,11 @@ function deepVision() {
             title: '',
             scenarioName: '',
             createdAt: '',
-            templateLabel: ''
+            templateLabel: '',
+            sessionId: '',
+            reportProfile: '',
+            sourceReportName: '',
+            variantLabel: '',
         },
         reportDetailModel: {
             sections: [],
@@ -741,6 +748,9 @@ function deepVision() {
                 'solution.view': false,
                 'solution.share': false,
                 'presentation.generate': false,
+                'interview.mode.quick': true,
+                'interview.mode.standard': false,
+                'interview.mode.deep': false,
             };
         },
 
@@ -757,13 +767,42 @@ function deepVision() {
             return normalized.length > 0 ? normalized : ['balanced'];
         },
 
+        normalizeInterviewMode(mode, fallback = 'quick') {
+            const raw = String(mode || '').trim().toLowerCase();
+            if (raw === 'quick' || raw === 'standard' || raw === 'deep') return raw;
+            const fallbackValue = String(fallback || '').trim().toLowerCase();
+            if (fallbackValue === 'quick' || fallbackValue === 'standard' || fallbackValue === 'deep') {
+                return fallbackValue;
+            }
+            return 'quick';
+        },
+
+        normalizeAllowedInterviewModes(modes) {
+            const normalized = [];
+            if (Array.isArray(modes)) {
+                modes.forEach((item) => {
+                    const mode = this.normalizeInterviewMode(item, '');
+                    if (mode && !normalized.includes(mode)) {
+                        normalized.push(mode);
+                    }
+                });
+            }
+            return normalized.length > 0 ? normalized : ['quick'];
+        },
+
         resetUserLevelState() {
             this.currentLevelInfo = this.buildDefaultLevelInfo();
             this.userCapabilities = this.buildDefaultUserCapabilities();
             this.allowedReportProfiles = ['balanced'];
             this.reportProfileDefault = 'balanced';
+            this.allowedInterviewModes = ['quick'];
+            this.interviewModeDefault = 'quick';
+            this.interviewModeRequirements = {};
             if (!this.canUseReportProfile(this.reportProfile)) {
                 this.reportProfile = 'balanced';
+            }
+            if (!this.canUseInterviewMode(this.selectedInterviewMode)) {
+                this.selectedInterviewMode = this.interviewModeDefault;
             }
             if (!this.canGeneratePresentation()) {
                 this.presentationPdfUrl = '';
@@ -819,6 +858,21 @@ function deepVision() {
                 this.reportProfile = this.reportProfileDefault;
             }
 
+            this.allowedInterviewModes = this.normalizeAllowedInterviewModes(payload?.allowed_interview_modes);
+            this.interviewModeDefault = this.normalizeInterviewMode(
+                payload?.interview_mode_default,
+                this.allowedInterviewModes[0] || 'quick'
+            );
+            if (!this.allowedInterviewModes.includes(this.interviewModeDefault)) {
+                this.interviewModeDefault = this.allowedInterviewModes[0] || 'quick';
+            }
+            this.interviewModeRequirements = payload?.interview_mode_requirements && typeof payload.interview_mode_requirements === 'object'
+                ? payload.interview_mode_requirements
+                : {};
+            if (!this.canUseInterviewMode(this.selectedInterviewMode)) {
+                this.selectedInterviewMode = this.interviewModeDefault;
+            }
+
             if (!this.canGeneratePresentation()) {
                 this.presentationPdfUrl = '';
                 this.presentationLocalUrl = '';
@@ -845,6 +899,55 @@ function deepVision() {
 
         canGenerateQualityReport() {
             return this.hasLevelCapability('report.profile.quality');
+        },
+
+        shouldShowReportProfileSelector() {
+            return false;
+        },
+
+        canUseInterviewMode(mode) {
+            const normalized = this.normalizeInterviewMode(mode, '');
+            return !!normalized
+                && Array.isArray(this.allowedInterviewModes)
+                && this.allowedInterviewModes.includes(normalized)
+                && this.hasLevelCapability(`interview.mode.${normalized}`);
+        },
+
+        getInterviewModeRequirementLabel(mode) {
+            const normalized = this.normalizeInterviewMode(mode, '');
+            const requirement = this.interviewModeRequirements?.[normalized] || {};
+            return String(requirement?.name || requirement?.label || '').trim();
+        },
+
+        handleInterviewModeSelect(mode) {
+            const normalized = this.normalizeInterviewMode(mode, this.interviewModeDefault || 'quick');
+            if (!this.canUseInterviewMode(normalized)) {
+                const requirement = this.interviewModeRequirements?.[normalized];
+                this.showToast(this.getLevelCapabilityDeniedMessage({
+                    required_level: requirement,
+                    upgrade_hint: requirement?.description || '',
+                }), 'warning');
+                return;
+            }
+            this.selectedInterviewMode = normalized;
+        },
+
+        getReportProfileLabel(profile = '') {
+            const normalized = this.normalizeReportProfile(profile, '');
+            if (normalized === 'quality') return '精审模式（质量优先）';
+            return '平衡模式（推荐）';
+        },
+
+        getReportProfileDescription(profile = '') {
+            const normalized = this.normalizeReportProfile(profile, '');
+            if (normalized === 'quality') {
+                return '内容更严谨，但等待时间更长。';
+            }
+            return '速度更快，适合日常快速生成。';
+        },
+
+        getReportProfileSummaryText() {
+            return '平衡模式出结果更快；精审模式会增加审稿与校验，质量更高但耗时更长。';
         },
 
         canExportFormat(scope = 'report', format = 'md') {
@@ -5128,7 +5231,7 @@ function deepVision() {
                 this.showNewSessionModal = false;
                 this.newSessionTopic = '';
                 this.newSessionDescription = '';
-                this.selectedInterviewMode = 'deep';  // 重置为默认值
+                this.selectedInterviewMode = this.interviewModeDefault || 'standard';
                 this.selectedScenario = null;  // 重置场景选择
                 this.showScenarioSelector = false;  // 重置场景选择器
                 this.scenarioSearchQuery = '';  // 重置搜索关键词
@@ -5452,7 +5555,11 @@ function deepVision() {
                 title: '',
                 scenarioName: '',
                 createdAt: '',
-                templateLabel: ''
+                templateLabel: '',
+                sessionId: '',
+                reportProfile: '',
+                sourceReportName: '',
+                variantLabel: ''
             };
         },
 
@@ -5618,7 +5725,14 @@ function deepVision() {
                 title: this.resolveReportDisplayTitle(fallbackReport, matchedSession),
                 scenarioName: this.resolveReportScenarioName(fallbackReport, matchedSession),
                 createdAt: fallbackReport?.created_at || matchedSession?.updated_at || matchedSession?.created_at || '',
-                templateLabel: this.resolveReportTemplateLabel(fallbackReport, matchedSession)
+                templateLabel: this.resolveReportTemplateLabel(fallbackReport, matchedSession),
+                sessionId: String(fallbackReport?.session_id || matchedSession?.session_id || '').trim(),
+                reportProfile: this.normalizeReportProfile(fallbackReport?.report_profile, 'balanced'),
+                sourceReportName: String(fallbackReport?.source_report_name || '').trim(),
+                variantLabel: String(
+                    fallbackReport?.report_variant_label
+                    || (this.normalizeReportProfile(fallbackReport?.report_profile, 'balanced') === 'quality' ? '精审版' : '普通版')
+                ).trim(),
             };
         },
 
@@ -7805,11 +7919,16 @@ function deepVision() {
             return raw;
         },
 
-        async requestGenerateReportWithRetry(sessionId, action = 'generate', maxRetries = 1) {
+        async requestGenerateReportWithRetry(sessionId, action = 'generate', maxRetries = 1, options = {}) {
             let lastError = null;
-            const reportProfile = this.canUseReportProfile(this.reportProfile)
-                ? this.reportProfile
-                : this.reportProfileDefault;
+            const hasExplicitProfile = String(options?.reportProfile || '').trim().length > 0;
+            const requestedProfile = hasExplicitProfile
+                ? this.normalizeReportProfile(options?.reportProfile, this.reportProfileDefault || 'balanced')
+                : 'balanced';
+            const reportProfile = this.canUseReportProfile(requestedProfile)
+                ? requestedProfile
+                : 'balanced';
+            const sourceReportName = String(options?.sourceReportName || '').trim();
             for (let attempt = 0; attempt <= maxRetries; attempt++) {
                 try {
                     return await this.apiCall(`/sessions/${sessionId}/generate-report`, {
@@ -7817,6 +7936,7 @@ function deepVision() {
                         body: JSON.stringify({
                             action: action === 'regenerate' ? 'regenerate' : 'generate',
                             report_profile: reportProfile,
+                            source_report_name: sourceReportName,
                         })
                     });
                 } catch (error) {
@@ -7832,13 +7952,10 @@ function deepVision() {
             throw lastError || new Error('访谈报告生成失败');
         },
 
-        async generateReport(action = 'generate') {
-            if (!this.currentSession || this.isGeneratingCurrentReport()) return;
-            const sessionId = this.currentSession?.session_id || '';
+        async generateReport(action = 'generate', options = {}) {
+            const sessionId = String(options?.sessionId || this.currentSession?.session_id || '').trim();
+            if (!sessionId || this.generatingReport) return;
             if (!sessionId) return;
-            if (!this.canUseReportProfile(this.reportProfile)) {
-                this.reportProfile = this.reportProfileDefault;
-            }
 
             this.generatingReport = true;
             this.generatingReportSessionId = sessionId;
@@ -7847,7 +7964,7 @@ function deepVision() {
             this.startWebSearchPolling();  // 开始轮询 Web Search 状态
 
             try {
-                const result = await this.requestGenerateReportWithRetry(sessionId, action, 1);
+                const result = await this.requestGenerateReportWithRetry(sessionId, action, 1, options);
 
                 // 兼容旧同步返回：如果后端直接返回最终报告，则沿用旧逻辑。
                 if (result?.success && !result?.processing && result?.report_name) {
@@ -7948,6 +8065,17 @@ function deepVision() {
                 this.reportDetailModel = this.createEmptyReportDetailModel();
                 this.reportDetailEnhancing = true;
                 const data = await this.apiCall(`/reports/${encodeURIComponent(targetFilename)}`);
+                this.selectedReportMeta = this.cloneSelectedReportMeta({
+                    ...nextMeta,
+                    sessionId: String(data.session_id || nextMeta.sessionId || '').trim(),
+                    reportProfile: this.normalizeReportProfile(data.report_profile, nextMeta.reportProfile || 'balanced'),
+                    sourceReportName: String(data.source_report_name || nextMeta.sourceReportName || '').trim(),
+                    variantLabel: String(
+                        data.report_variant_label
+                        || nextMeta.variantLabel
+                        || (this.normalizeReportProfile(data.report_profile, 'balanced') === 'quality' ? '精审版' : '普通版')
+                    ).trim(),
+                });
                 this.reportContent = data.content;
                 this.$nextTick(() => this.scheduleReportDetailEnhancement());
                 await this.fetchPresentationStatus();
@@ -7979,6 +8107,38 @@ function deepVision() {
             if (!opened) {
                 this.showToast('浏览器拦截了新标签页，请允许后重试', 'warning');
             }
+        },
+
+        isSelectedReportQualityVariant() {
+            return this.normalizeReportProfile(this.selectedReportMeta?.reportProfile, 'balanced') === 'quality';
+        },
+
+        canGenerateQualityVariantForSelectedReport() {
+            if (!this.canGenerateQualityReport()) return false;
+            const selectedReportName = String(this.selectedReport || this.selectedReportMeta?.name || '').trim();
+            if (!selectedReportName) return false;
+            if (this.isSelectedReportQualityVariant()) return false;
+            const matchedReport = Array.isArray(this.reports)
+                ? this.reports.find((item) => String(item?.name || '').trim() === selectedReportName)
+                : null;
+            const sessionId = String(
+                this.selectedReportMeta?.sessionId
+                || matchedReport?.session_id
+                || ''
+            ).trim();
+            return !!sessionId;
+        },
+
+        async generateQualityReportVariant() {
+            if (!this.canGenerateQualityVariantForSelectedReport()) return;
+            const sessionId = String(this.selectedReportMeta?.sessionId || '').trim();
+            const sourceReportName = String(this.selectedReport || this.selectedReportMeta?.name || '').trim();
+            if (!sessionId || !sourceReportName) return;
+            await this.generateReport('generate', {
+                sessionId,
+                reportProfile: 'quality',
+                sourceReportName,
+            });
         },
 
         async fetchPresentationStatus() {
