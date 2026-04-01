@@ -66,6 +66,8 @@ class QuestionFastStrategyTests(unittest.TestCase):
         cls.server = load_server_module()
 
     def setUp(self):
+        self.server.QUESTION_MODEL_NAME = "minimax-m2.7"
+        self.server.QUESTION_MODEL_NAME_DEEP = "glm-5.1"
         self.server.QUESTION_FAST_PATH_ENABLED = True
         self.server.ENABLE_WEB_SEARCH = False
         self.server.QUESTION_FAST_TIMEOUT = 12.0
@@ -121,6 +123,35 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.server.SEARCH_DECISION_PREFETCH_RULE_ONLY = True
         self.server.SEARCH_DECISION_SEMAPHORE = self.server.threading.BoundedSemaphore(self.server.SEARCH_DECISION_MAX_INFLIGHT)
         self.server.MAX_TOKENS_QUESTION = 1600
+        self.server.INTERVIEW_MODE_MAX_BLINDSPOTS_QUICK = 1
+        self.server.INTERVIEW_MODE_MAX_BLINDSPOTS_STANDARD = 2
+        self.server.INTERVIEW_MODE_MAX_BLINDSPOTS_DEEP = 4
+        self.server.INTERVIEW_MODE_BLINDSPOT_CAPS = {
+            "quick": self.server.INTERVIEW_MODE_MAX_BLINDSPOTS_QUICK,
+            "standard": self.server.INTERVIEW_MODE_MAX_BLINDSPOTS_STANDARD,
+            "deep": self.server.INTERVIEW_MODE_MAX_BLINDSPOTS_DEEP,
+        }
+        self.server.INTERVIEW_MODE_CRITICAL_DIMENSION_IDS = {
+            "tech_constraints",
+            "project_constraints",
+            "target_architecture",
+            "risks",
+        }
+        self.server.INTERVIEW_MODE_CRITICAL_DIMENSION_KEYWORDS = [
+            "技术",
+            "约束",
+            "风险",
+            "验收",
+            "目标",
+            "架构",
+            "集成",
+        ]
+        self.server.QUESTION_HIGH_EVIDENCE_PROMOTION_MIN_SIGNALS_STANDARD = 3
+        self.server.QUESTION_HIGH_EVIDENCE_PROMOTION_MIN_SIGNALS_DEEP = 2
+        self.server.AI_RECOMMENDATION_MIN_CONFIDENCE_QUICK = "high"
+        self.server.AI_RECOMMENDATION_MIN_CONFIDENCE_STANDARD = "medium"
+        self.server.AI_RECOMMENDATION_MIN_CONFIDENCE_DEEP = "medium"
+        self.server.AI_RECOMMENDATION_REQUIRE_EVIDENCE_DEEP = True
         self.server.API_TIMEOUT = 90.0
         self.server.reset_question_fast_strategy_state()
         self.server.reset_question_lane_strategy_state()
@@ -222,6 +253,25 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertEqual(profile["fast_output_mode"], "light")
         self.assertLess(profile["fast_max_tokens"], self.server.MAX_TOKENS_QUESTION)
 
+    def test_get_interview_mode_runtime_strategy_deep_uses_dedicated_question_model(self):
+        with mock.patch.object(self.server, "_is_question_lane_available_for_model", return_value=True):
+            strategy = self.server.get_interview_mode_runtime_strategy("deep")
+
+        self.assertEqual(strategy["mode"], "deep")
+        self.assertEqual(strategy["lane_model_overrides"], {"question": "glm-5.1"})
+        self.assertFalse(strategy["deep_model_fallback"])
+        self.assertEqual(strategy["blindspot_cap"], 4)
+        self.assertEqual(strategy["high_evidence_policy"], "deep_promoted")
+
+    def test_get_interview_mode_runtime_strategy_deep_falls_back_when_model_unavailable(self):
+        with mock.patch.object(self.server, "_is_question_lane_available_for_model", return_value=False):
+            strategy = self.server.get_interview_mode_runtime_strategy("deep")
+
+        self.assertEqual(strategy["mode"], "deep")
+        self.assertEqual(strategy["lane_model_overrides"], {})
+        self.assertTrue(strategy["deep_model_fallback"])
+        self.assertEqual(strategy["blindspot_cap"], 4)
+
     def test_runtime_profile_keeps_fast_path_for_high_intent_follow_up_question(self):
         profile = self.server._select_question_generation_runtime_profile(
             prompt="x" * 1600,
@@ -277,6 +327,84 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertFalse(profile["fallback_enabled"])
         self.assertTrue(profile["dynamic_lane_order_enabled"])
         self.assertEqual(profile["disallowed_lanes"], [])
+
+    def test_runtime_profile_standard_promotes_high_evidence_only_after_three_signals(self):
+        mode_strategy = self.server.get_interview_mode_runtime_strategy("standard")
+
+        two_signal_profile = self.server._select_question_generation_runtime_profile(
+            prompt="x" * 1400,
+            truncated_docs=[],
+            decision_meta={
+                "should_follow_up": False,
+                "hard_triggered": False,
+                "has_search": False,
+                "has_reference_docs": True,
+                "has_truncated_docs": False,
+                "missing_aspects": ["预算口径"],
+                "formal_questions_count": 1,
+                "follow_up_round": 0,
+                "answer_mode": "pick_only",
+                "requires_rationale": False,
+                "evidence_intent": "medium",
+            },
+            base_call_type="question",
+            allow_fast_path=True,
+            mode_strategy=mode_strategy,
+        )
+        self.assertEqual(two_signal_profile["evidence_intent"], "medium")
+        self.assertEqual(two_signal_profile["high_evidence_policy"], "standard_guarded")
+
+        three_signal_profile = self.server._select_question_generation_runtime_profile(
+            prompt="x" * 1400,
+            truncated_docs=[],
+            decision_meta={
+                "should_follow_up": False,
+                "hard_triggered": True,
+                "has_search": False,
+                "has_reference_docs": True,
+                "has_truncated_docs": False,
+                "missing_aspects": ["预算口径"],
+                "formal_questions_count": 1,
+                "follow_up_round": 0,
+                "answer_mode": "pick_only",
+                "requires_rationale": False,
+                "evidence_intent": "medium",
+            },
+            base_call_type="question",
+            allow_fast_path=True,
+            mode_strategy=mode_strategy,
+        )
+        self.assertEqual(three_signal_profile["evidence_intent"], "high")
+        self.assertEqual(three_signal_profile["high_evidence_policy"], "standard_guarded")
+
+    def test_runtime_profile_deep_promotes_high_evidence_on_critical_dimension(self):
+        mode_strategy = self.server.get_interview_mode_runtime_strategy("deep")
+
+        profile = self.server._select_question_generation_runtime_profile(
+            prompt="x" * 1400,
+            truncated_docs=[],
+            decision_meta={
+                "should_follow_up": False,
+                "hard_triggered": False,
+                "has_search": False,
+                "has_reference_docs": True,
+                "has_truncated_docs": False,
+                "missing_aspects": [],
+                "formal_questions_count": 0,
+                "follow_up_round": 0,
+                "answer_mode": "pick_only",
+                "requires_rationale": False,
+                "evidence_intent": "medium",
+                "critical_dimension_hit": True,
+            },
+            base_call_type="question",
+            allow_fast_path=True,
+            mode_strategy=mode_strategy,
+        )
+
+        self.assertEqual(profile["evidence_intent"], "high")
+        self.assertTrue(profile["critical_dimension_hit"])
+        self.assertEqual(profile["high_evidence_policy"], "deep_promoted")
 
     def test_runtime_profile_uses_reference_light_when_docs_present(self):
         profile = self.server._select_question_generation_runtime_profile(
@@ -622,6 +750,73 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertTrue(len(prompt) > 0)
         self.assertIsInstance(truncated_docs, list)
 
+    def test_build_prompt_limits_missing_aspects_by_interview_mode(self):
+        original_missing_aspects = self.server.get_dimension_missing_aspects
+        self.addCleanup(setattr, self.server, "get_dimension_missing_aspects", original_missing_aspects)
+        self.server.get_dimension_missing_aspects = lambda *_args, **_kwargs: [
+            "缺口1",
+            "缺口2",
+            "缺口3",
+            "缺口4",
+            "缺口5",
+        ]
+
+        base_session = {
+            "topic": "复杂方案访谈",
+            "session_id": "sid",
+            "interview_log": [
+                {
+                    "dimension": "target_architecture",
+                    "question": "当前架构边界是否明确？",
+                    "answer": "目前只确认了一部分。",
+                    "is_follow_up": False,
+                    "multi_select": False,
+                    "answer_mode": "pick_only",
+                }
+            ],
+            "scenario_config": {
+                "dimensions": [
+                    {
+                        "id": "target_architecture",
+                        "name": "目标架构",
+                        "description": "确认边界、约束与依赖",
+                        "key_aspects": ["边界", "约束", "依赖", "验收", "风险"],
+                    }
+                ]
+            },
+        }
+
+        session_quick = dict(base_session, interview_mode="quick")
+        all_dim_logs = [
+            log for log in session_quick["interview_log"]
+            if log.get("dimension") == "target_architecture"
+        ]
+        _prompt, _docs, quick_meta = self.server.build_interview_prompt(
+            session_quick,
+            "target_architecture",
+            all_dim_logs,
+            output_mode="full",
+        )
+        self.assertEqual(quick_meta["prompt_missing_aspects"], ["缺口1"])
+
+        session_standard = dict(base_session, interview_mode="standard")
+        _prompt, _docs, standard_meta = self.server.build_interview_prompt(
+            session_standard,
+            "target_architecture",
+            all_dim_logs,
+            output_mode="full",
+        )
+        self.assertEqual(standard_meta["prompt_missing_aspects"], ["缺口1", "缺口2"])
+
+        session_deep = dict(base_session, interview_mode="deep")
+        _prompt, _docs, deep_meta = self.server.build_interview_prompt(
+            session_deep,
+            "target_architecture",
+            all_dim_logs,
+            output_mode="full",
+        )
+        self.assertEqual(deep_meta["prompt_missing_aspects"], ["缺口1", "缺口2", "缺口3", "缺口4"])
+
     def test_generate_question_allows_fast_with_compacted_reference_docs(self):
         calls = []
         original_call = self.server._call_question_with_optional_hedge
@@ -681,6 +876,91 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertEqual(calls[0]["truncated_docs"], ["参考资料已压缩"])
         self.assertEqual(tier_used, "fast:question")
         self.assertEqual(result["question"], "请确认扩展规模")
+
+    def test_normalize_ai_recommendation_payload_applies_mode_thresholds(self):
+        quick_payload = self.server.normalize_ai_recommendation_payload(
+            {
+                "recommended_options": ["方案A"],
+                "summary": "建议从方案A开始",
+                "confidence": "medium",
+            },
+            interview_mode="quick",
+        )
+        self.assertIsNone(quick_payload)
+
+        standard_payload = self.server.normalize_ai_recommendation_payload(
+            {
+                "recommended_options": ["方案A"],
+                "summary": "建议从方案A开始",
+                "confidence": "medium",
+            },
+            interview_mode="standard",
+        )
+        self.assertIsNotNone(standard_payload)
+        self.assertEqual(standard_payload["recommended_options"], ["方案A"])
+
+        deep_without_evidence = self.server.normalize_ai_recommendation_payload(
+            {
+                "recommended_options": ["方案A"],
+                "summary": "建议从方案A开始",
+                "confidence": "high",
+                "reasons": [{"text": "原因一", "evidence": ["证据1"]}],
+            },
+            interview_mode="deep",
+        )
+        self.assertIsNone(deep_without_evidence)
+
+        deep_with_evidence = self.server.normalize_ai_recommendation_payload(
+            {
+                "recommended_options": ["方案A"],
+                "summary": "建议从方案A开始",
+                "confidence": "high",
+                "reasons": [
+                    {"text": "原因一", "evidence": ["证据1"]},
+                    {"text": "原因二", "evidence": ["证据2"]},
+                ],
+            },
+            interview_mode="deep",
+        )
+        self.assertIsNotNone(deep_with_evidence)
+        self.assertEqual(len(deep_with_evidence["reasons"]), 2)
+
+    def test_question_generation_runtime_stats_snapshot_groups_by_mode(self):
+        self.server.reset_question_generation_runtime_stats()
+
+        self.server.record_question_generation_runtime_sample(
+            durations={
+                "total_ms": 120.0,
+                "ai_call_ms": 90.0,
+            },
+            outcome="completed",
+            runtime_profile="question_probe_light",
+            tier_used="fast:question",
+            selection_reason="unit_test",
+            mode_metrics={
+                "interview_mode": "deep",
+                "ai_call_ms": 90.0,
+                "high_evidence": True,
+                "search_triggered": True,
+                "follow_up_per_formal": 0.75,
+                "ai_recommendation": True,
+                "formal_questions_per_dimension": 4.0,
+            },
+        )
+
+        snapshot = self.server.get_question_generation_runtime_stats_snapshot()
+        deep_metrics = snapshot["by_mode"]["deep"]
+
+        self.assertEqual(deep_metrics["count"], 1)
+        self.assertEqual(deep_metrics["completed"], 1)
+        self.assertEqual(deep_metrics["failed"], 0)
+        self.assertEqual(deep_metrics["avg_total_ms"], 120.0)
+        self.assertEqual(deep_metrics["avg_ai_call_ms"], 90.0)
+        self.assertEqual(deep_metrics["high_evidence_rate"], 100.0)
+        self.assertEqual(deep_metrics["search_trigger_rate"], 100.0)
+        self.assertEqual(deep_metrics["ai_recommendation_rate"], 100.0)
+        self.assertEqual(deep_metrics["avg_follow_up_per_formal"], 0.75)
+        self.assertEqual(deep_metrics["avg_formal_questions_per_dimension"], 4.0)
 
     def test_smart_search_decision_uses_rule_only_mode_for_prefetch(self):
         self.server.ENABLE_WEB_SEARCH = True

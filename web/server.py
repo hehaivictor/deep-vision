@@ -615,8 +615,11 @@ if REPORT_GENERATION_ESTIMATED_SLOT_SECONDS <= 0:
 
 # 模型路由配置：支持问题/报告分离，未配置时向后兼容 MODEL_NAME
 _base_model_name = _cfg_text("MODEL_NAME", str(MODEL_NAME or "").strip())
+_question_model_name_deep_default = str(
+    getattr(runtime_config, "QUESTION_MODEL_NAME_DEEP", "") if runtime_config else ""
+).strip()
 QUESTION_MODEL_NAME = _cfg_text("QUESTION_MODEL_NAME", _base_model_name) or _base_model_name
-QUESTION_MODEL_NAME_DEEP = _cfg_text("QUESTION_MODEL_NAME_DEEP", QUESTION_MODEL_NAME) or QUESTION_MODEL_NAME
+QUESTION_MODEL_NAME_DEEP = _cfg_text("QUESTION_MODEL_NAME_DEEP", _question_model_name_deep_default) or QUESTION_MODEL_NAME
 REPORT_MODEL_NAME = _cfg_text("REPORT_MODEL_NAME", QUESTION_MODEL_NAME) or QUESTION_MODEL_NAME
 REPORT_DRAFT_MODEL_NAME = _cfg_text("REPORT_DRAFT_MODEL_NAME", REPORT_MODEL_NAME) or REPORT_MODEL_NAME
 REPORT_REVIEW_MODEL_NAME = _cfg_text("REPORT_REVIEW_MODEL_NAME", REPORT_MODEL_NAME) or REPORT_MODEL_NAME
@@ -885,6 +888,43 @@ QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS = _cfg_int(
 )
 if QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS < QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS:
     QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS = QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS
+INTERVIEW_MODE_MAX_BLINDSPOTS_QUICK = max(1, _cfg_int("INTERVIEW_MODE_MAX_BLINDSPOTS_QUICK", 1))
+INTERVIEW_MODE_MAX_BLINDSPOTS_STANDARD = max(1, _cfg_int("INTERVIEW_MODE_MAX_BLINDSPOTS_STANDARD", 2))
+INTERVIEW_MODE_MAX_BLINDSPOTS_DEEP = max(1, _cfg_int("INTERVIEW_MODE_MAX_BLINDSPOTS_DEEP", 4))
+INTERVIEW_MODE_CRITICAL_DIMENSION_IDS = {
+    item.strip().lower()
+    for item in _cfg_text_list(
+        "INTERVIEW_MODE_CRITICAL_DIMENSION_IDS",
+        ["tech_constraints", "project_constraints", "target_architecture", "risks"],
+    )
+    if item.strip()
+}
+INTERVIEW_MODE_CRITICAL_DIMENSION_KEYWORDS = [
+    item.strip()
+    for item in _cfg_text_list(
+        "INTERVIEW_MODE_CRITICAL_DIMENSION_KEYWORDS",
+        ["技术", "约束", "风险", "验收", "目标", "架构", "集成"],
+    )
+    if item.strip()
+]
+QUESTION_HIGH_EVIDENCE_PROMOTION_MIN_SIGNALS_STANDARD = max(
+    1,
+    _cfg_int("QUESTION_HIGH_EVIDENCE_PROMOTION_MIN_SIGNALS_STANDARD", 3),
+)
+QUESTION_HIGH_EVIDENCE_PROMOTION_MIN_SIGNALS_DEEP = max(
+    1,
+    _cfg_int("QUESTION_HIGH_EVIDENCE_PROMOTION_MIN_SIGNALS_DEEP", 2),
+)
+AI_RECOMMENDATION_MIN_CONFIDENCE_QUICK = str(
+    _cfg_text("AI_RECOMMENDATION_MIN_CONFIDENCE_QUICK", "high") or "high"
+).strip().lower()
+AI_RECOMMENDATION_MIN_CONFIDENCE_STANDARD = str(
+    _cfg_text("AI_RECOMMENDATION_MIN_CONFIDENCE_STANDARD", "medium") or "medium"
+).strip().lower()
+AI_RECOMMENDATION_MIN_CONFIDENCE_DEEP = str(
+    _cfg_text("AI_RECOMMENDATION_MIN_CONFIDENCE_DEEP", "medium") or "medium"
+).strip().lower()
+AI_RECOMMENDATION_REQUIRE_EVIDENCE_DEEP = _cfg_bool("AI_RECOMMENDATION_REQUIRE_EVIDENCE_DEEP", True)
 QUESTION_RELEASE_CONSERVATIVE_MODE = _cfg_bool("QUESTION_RELEASE_CONSERVATIVE_MODE", True)
 API_TIMEOUT = _cfg_float("API_TIMEOUT", 90.0)             # 通用 API 超时时间（秒）
 REPORT_API_TIMEOUT = _cfg_float("REPORT_API_TIMEOUT", 210.0)  # 报告生成专用超时（秒）
@@ -4103,6 +4143,25 @@ def _build_runtime_metric_store(sample_max: int, stage_names: list[str]) -> dict
     }
 
 
+def _build_question_generation_mode_metric_store() -> dict:
+    mode_keys = tuple((globals().get("INTERVIEW_MODES_V2") or {"quick": {}, "standard": {}, "deep": {}}).keys())
+    return {
+        mode: {
+            "count": 0,
+            "completed": 0,
+            "failed": 0,
+            "total_ms": 0.0,
+            "ai_call_ms_total": 0.0,
+            "high_evidence_count": 0,
+            "search_trigger_count": 0,
+            "follow_up_per_formal_total": 0.0,
+            "ai_recommendation_count": 0,
+            "formal_questions_per_dimension_total": 0.0,
+        }
+        for mode in mode_keys
+    }
+
+
 question_generation_runtime_stats_lock = threading.Lock()
 question_generation_runtime_stats = _build_runtime_metric_store(
     QUESTION_RUNTIME_SAMPLE_MAX,
@@ -4116,6 +4175,7 @@ question_generation_runtime_stats = _build_runtime_metric_store(
         "postprocess_ms",
     ],
 )
+question_generation_runtime_stats["by_mode"] = _build_question_generation_mode_metric_store()
 report_generation_runtime_stats_lock = threading.Lock()
 report_generation_runtime_stats = _build_runtime_metric_store(
     REPORT_RUNTIME_SAMPLE_MAX,
@@ -5183,12 +5243,19 @@ def record_question_generation_runtime_sample(
     runtime_profile: str = "",
     tier_used: str = "",
     selection_reason: str = "",
+    mode_metrics: Optional[dict] = None,
 ) -> None:
     safe_durations = dict(durations or {})
+    safe_mode_metrics = dict(mode_metrics or {})
     total_ms = max(0.0, _safe_float(safe_durations.get("total_ms"), 0.0))
+    interview_mode = normalize_interview_mode_key(
+        safe_mode_metrics.get("interview_mode", DEFAULT_INTERVIEW_MODE),
+        fallback=DEFAULT_INTERVIEW_MODE,
+    )
     with question_generation_runtime_stats_lock:
         question_generation_runtime_stats["calls"] = int(question_generation_runtime_stats.get("calls", 0) or 0) + 1
-        if str(outcome or "").strip().lower() == "completed":
+        normalized_outcome = str(outcome or "").strip().lower()
+        if normalized_outcome == "completed":
             question_generation_runtime_stats["completed"] = int(question_generation_runtime_stats.get("completed", 0) or 0) + 1
         else:
             question_generation_runtime_stats["failed"] = int(question_generation_runtime_stats.get("failed", 0) or 0) + 1
@@ -5219,11 +5286,71 @@ def record_question_generation_runtime_sample(
         question_generation_runtime_stats["last_reason"] = str(selection_reason or "")
         question_generation_runtime_stats["last_outcome"] = str(outcome or "")
         question_generation_runtime_stats["last_updated_at"] = get_utc_now()
+        by_mode = question_generation_runtime_stats.setdefault("by_mode", _build_question_generation_mode_metric_store())
+        mode_bucket = by_mode.setdefault(interview_mode, {
+            "count": 0,
+            "completed": 0,
+            "failed": 0,
+            "total_ms": 0.0,
+            "ai_call_ms_total": 0.0,
+            "high_evidence_count": 0,
+            "search_trigger_count": 0,
+            "follow_up_per_formal_total": 0.0,
+            "ai_recommendation_count": 0,
+            "formal_questions_per_dimension_total": 0.0,
+        })
+        mode_bucket["count"] = int(mode_bucket.get("count", 0) or 0) + 1
+        if normalized_outcome == "completed":
+            mode_bucket["completed"] = int(mode_bucket.get("completed", 0) or 0) + 1
+        else:
+            mode_bucket["failed"] = int(mode_bucket.get("failed", 0) or 0) + 1
+        mode_bucket["total_ms"] = float(mode_bucket.get("total_ms", 0.0) or 0.0) + total_ms
+        mode_bucket["ai_call_ms_total"] = float(mode_bucket.get("ai_call_ms_total", 0.0) or 0.0) + max(
+            0.0,
+            _safe_float(safe_mode_metrics.get("ai_call_ms", safe_durations.get("ai_call_ms", 0.0)), 0.0),
+        )
+        if bool(safe_mode_metrics.get("high_evidence", False)):
+            mode_bucket["high_evidence_count"] = int(mode_bucket.get("high_evidence_count", 0) or 0) + 1
+        if bool(safe_mode_metrics.get("search_triggered", False)):
+            mode_bucket["search_trigger_count"] = int(mode_bucket.get("search_trigger_count", 0) or 0) + 1
+        if bool(safe_mode_metrics.get("ai_recommendation", False)):
+            mode_bucket["ai_recommendation_count"] = int(mode_bucket.get("ai_recommendation_count", 0) or 0) + 1
+        mode_bucket["follow_up_per_formal_total"] = float(mode_bucket.get("follow_up_per_formal_total", 0.0) or 0.0) + max(
+            0.0,
+            _safe_float(safe_mode_metrics.get("follow_up_per_formal", 0.0), 0.0),
+        )
+        mode_bucket["formal_questions_per_dimension_total"] = float(mode_bucket.get("formal_questions_per_dimension_total", 0.0) or 0.0) + max(
+            0.0,
+            _safe_float(safe_mode_metrics.get("formal_questions_per_dimension", 0.0), 0.0),
+        )
+
+
+def _build_question_generation_by_mode_snapshot(raw_store: Optional[dict]) -> dict:
+    mode_store = raw_store if isinstance(raw_store, dict) else {}
+    snapshot = {}
+    for mode in INTERVIEW_MODES_V2.keys():
+        bucket = dict(mode_store.get(mode) or {})
+        count = int(bucket.get("count", 0) or 0)
+        snapshot[mode] = {
+            "count": count,
+            "completed": int(bucket.get("completed", 0) or 0),
+            "failed": int(bucket.get("failed", 0) or 0),
+            "avg_total_ms": round(float(bucket.get("total_ms", 0.0) or 0.0) / count, 2) if count > 0 else 0.0,
+            "avg_ai_call_ms": round(float(bucket.get("ai_call_ms_total", 0.0) or 0.0) / count, 2) if count > 0 else 0.0,
+            "high_evidence_rate": round(int(bucket.get("high_evidence_count", 0) or 0) / count * 100, 2) if count > 0 else 0.0,
+            "search_trigger_rate": round(int(bucket.get("search_trigger_count", 0) or 0) / count * 100, 2) if count > 0 else 0.0,
+            "avg_follow_up_per_formal": round(float(bucket.get("follow_up_per_formal_total", 0.0) or 0.0) / count, 3) if count > 0 else 0.0,
+            "ai_recommendation_rate": round(int(bucket.get("ai_recommendation_count", 0) or 0) / count * 100, 2) if count > 0 else 0.0,
+            "avg_formal_questions_per_dimension": round(float(bucket.get("formal_questions_per_dimension_total", 0.0) or 0.0) / count, 3) if count > 0 else 0.0,
+        }
+    return snapshot
 
 
 def get_question_generation_runtime_stats_snapshot() -> dict:
     with question_generation_runtime_stats_lock:
-        return _build_runtime_stage_snapshot(question_generation_runtime_stats)
+        snapshot = _build_runtime_stage_snapshot(question_generation_runtime_stats)
+        snapshot["by_mode"] = _build_question_generation_by_mode_snapshot(question_generation_runtime_stats.get("by_mode"))
+        return snapshot
 
 
 def get_search_decision_stats_snapshot() -> dict:
@@ -5262,6 +5389,7 @@ def reset_question_generation_runtime_stats() -> None:
                 ],
             )
         )
+        question_generation_runtime_stats["by_mode"] = _build_question_generation_mode_metric_store()
 
 
 def record_report_generation_runtime_sample(
@@ -14153,7 +14281,7 @@ class MetricsCollector:
         self.metrics_key = str(metrics_key or "api_metrics").strip() or "api_metrics"
         self._pending_records = deque()
         self._pending_lock = threading.Lock()
-        self._storage_lock = threading.Lock()
+        self._storage_lock = threading.RLock()
         self._store_ready = False
         self._flush_event = threading.Event()
         self._stop_event = threading.Event()
@@ -18370,9 +18498,9 @@ INTERVIEW_MODE_RUNTIME_STRATEGIES = {
         "allow_high_evidence": False,
         "promote_high_evidence": False,
         "blindspot_budget": "tight",
-        "fast_timeout_scale": 0.9,
+        "fast_timeout_scale": 0.85,
         "fast_tokens_scale": 0.85,
-        "full_timeout_scale": 0.92,
+        "full_timeout_scale": 0.9,
         "full_tokens_scale": 0.9,
         "lane_model_overrides": {},
     },
@@ -18401,6 +18529,19 @@ INTERVIEW_MODE_RUNTIME_STRATEGIES = {
 }
 
 
+INTERVIEW_MODE_BLINDSPOT_CAPS = {
+    "quick": INTERVIEW_MODE_MAX_BLINDSPOTS_QUICK,
+    "standard": INTERVIEW_MODE_MAX_BLINDSPOTS_STANDARD,
+    "deep": INTERVIEW_MODE_MAX_BLINDSPOTS_DEEP,
+}
+
+INTERVIEW_MODE_HIGH_EVIDENCE_POLICIES = {
+    "quick": "quick_blocked",
+    "standard": "standard_guarded",
+    "deep": "deep_promoted",
+}
+
+
 def normalize_interview_mode_key(value: object, fallback: str = DEFAULT_INTERVIEW_MODE) -> str:
     normalized_fallback = str(fallback or DEFAULT_INTERVIEW_MODE).strip().lower() or DEFAULT_INTERVIEW_MODE
     if normalized_fallback not in INTERVIEW_MODES_V2:
@@ -18411,6 +18552,72 @@ def normalize_interview_mode_key(value: object, fallback: str = DEFAULT_INTERVIE
     return normalized_value
 
 
+def get_interview_mode_blindspot_cap(mode_or_session) -> int:
+    if isinstance(mode_or_session, dict):
+        normalized_mode = normalize_interview_mode_key(mode_or_session.get("interview_mode", DEFAULT_INTERVIEW_MODE))
+    else:
+        normalized_mode = normalize_interview_mode_key(mode_or_session, fallback=DEFAULT_INTERVIEW_MODE)
+    return max(1, int(INTERVIEW_MODE_BLINDSPOT_CAPS.get(normalized_mode, INTERVIEW_MODE_MAX_BLINDSPOTS_STANDARD) or 1))
+
+
+def _build_dimension_critical_tokens(dimension: str, dim_info: Optional[dict] = None) -> str:
+    parts = [str(dimension or "").strip()]
+    if isinstance(dim_info, dict):
+        parts.extend(
+            [
+                str(dim_info.get("name") or "").strip(),
+                str(dim_info.get("description") or "").strip(),
+                " ".join(str(item or "").strip() for item in (dim_info.get("key_aspects") or []) if str(item or "").strip()),
+            ]
+        )
+    return " ".join(part for part in parts if part).lower()
+
+
+def is_interview_mode_critical_dimension(mode_or_session, dimension: str, dim_info: Optional[dict] = None) -> bool:
+    if isinstance(mode_or_session, dict):
+        normalized_mode = normalize_interview_mode_key(mode_or_session.get("interview_mode", DEFAULT_INTERVIEW_MODE))
+    else:
+        normalized_mode = normalize_interview_mode_key(mode_or_session, fallback=DEFAULT_INTERVIEW_MODE)
+    if normalized_mode != "deep":
+        return False
+    normalized_dimension = str(dimension or "").strip().lower()
+    if normalized_dimension and normalized_dimension in INTERVIEW_MODE_CRITICAL_DIMENSION_IDS:
+        return True
+    haystack = _build_dimension_critical_tokens(dimension, dim_info)
+    return any(keyword.lower() in haystack for keyword in INTERVIEW_MODE_CRITICAL_DIMENSION_KEYWORDS)
+
+
+def _is_question_lane_available_for_model(model_name: str) -> bool:
+    normalized_model = str(model_name or "").strip()
+    if not ENABLE_AI or not normalized_model:
+        return False
+    return resolve_ai_client(
+        call_type="question",
+        model_name=normalized_model,
+        preferred_lane="question",
+        strict_preferred_lane=True,
+    ) is not None
+
+
+def resolve_interview_mode_lane_model_overrides(mode_or_session) -> tuple[dict, bool]:
+    if isinstance(mode_or_session, dict):
+        normalized_mode = normalize_interview_mode_key(mode_or_session.get("interview_mode", DEFAULT_INTERVIEW_MODE))
+    else:
+        normalized_mode = normalize_interview_mode_key(mode_or_session, fallback=DEFAULT_INTERVIEW_MODE)
+    if normalized_mode != "deep":
+        return {}, False
+
+    deep_model = str(QUESTION_MODEL_NAME_DEEP or "").strip()
+    fallback_model = str(QUESTION_MODEL_NAME or "").strip()
+    if not deep_model:
+        return {}, bool(fallback_model)
+    if deep_model == fallback_model:
+        return {}, False
+    if not _is_question_lane_available_for_model(deep_model):
+        return {}, True
+    return {"question": deep_model}, False
+
+
 def get_interview_mode_runtime_strategy(mode_or_session) -> dict:
     if isinstance(mode_or_session, dict):
         normalized_mode = normalize_interview_mode_key(mode_or_session.get("interview_mode", DEFAULT_INTERVIEW_MODE))
@@ -18418,8 +18625,11 @@ def get_interview_mode_runtime_strategy(mode_or_session) -> dict:
         normalized_mode = normalize_interview_mode_key(mode_or_session, fallback=DEFAULT_INTERVIEW_MODE)
     strategy = copy.deepcopy(INTERVIEW_MODE_RUNTIME_STRATEGIES.get(normalized_mode, INTERVIEW_MODE_RUNTIME_STRATEGIES[DEFAULT_INTERVIEW_MODE]))
     strategy["mode"] = normalized_mode
-    if normalized_mode == "deep" and str(QUESTION_MODEL_NAME_DEEP or "").strip():
-        strategy["lane_model_overrides"] = {"question": str(QUESTION_MODEL_NAME_DEEP or "").strip()}
+    lane_model_overrides, deep_model_fallback = resolve_interview_mode_lane_model_overrides(normalized_mode)
+    strategy["lane_model_overrides"] = lane_model_overrides
+    strategy["deep_model_fallback"] = bool(deep_model_fallback)
+    strategy["blindspot_cap"] = get_interview_mode_blindspot_cap(normalized_mode)
+    strategy["high_evidence_policy"] = INTERVIEW_MODE_HIGH_EVIDENCE_POLICIES.get(normalized_mode, INTERVIEW_MODE_HIGH_EVIDENCE_POLICIES["standard"])
     return strategy
 
 # 追问硬触发信号（V2）
@@ -18800,6 +19010,7 @@ def has_pending_forced_follow_up(session: dict, dimension: str) -> bool:
 
 QUESTION_ANSWER_MODES = {"pick_only", "pick_with_reason"}
 QUESTION_EVIDENCE_INTENTS = {"low", "medium", "high"}
+AI_RECOMMENDATION_CONFIDENCE_LEVELS = {"low": 1, "medium": 2, "high": 3}
 
 
 def normalize_question_answer_mode(answer_mode: str, fallback: str = "pick_only") -> str:
@@ -18820,6 +19031,26 @@ def normalize_question_evidence_intent(evidence_intent: str, fallback: str = "lo
     if fallback_intent in QUESTION_EVIDENCE_INTENTS:
         return fallback_intent
     return "low"
+
+
+def normalize_ai_recommendation_confidence(value: str, fallback: str = "") -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in AI_RECOMMENDATION_CONFIDENCE_LEVELS:
+        return normalized
+    fallback_value = str(fallback or "").strip().lower()
+    if fallback_value in AI_RECOMMENDATION_CONFIDENCE_LEVELS:
+        return fallback_value
+    return ""
+
+
+def ai_recommendation_confidence_meets_threshold(confidence: str, threshold: str) -> bool:
+    normalized_confidence = normalize_ai_recommendation_confidence(confidence)
+    normalized_threshold = normalize_ai_recommendation_confidence(threshold)
+    if not normalized_threshold:
+        return True
+    if not normalized_confidence:
+        return False
+    return AI_RECOMMENDATION_CONFIDENCE_LEVELS[normalized_confidence] >= AI_RECOMMENDATION_CONFIDENCE_LEVELS[normalized_threshold]
 
 
 def build_question_capture_contract(
@@ -20294,6 +20525,9 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     interview_log = session.get("interview_log", [])
     session_dim_info = get_dimension_info_for_session(session)
     dim_info = session_dim_info.get(dimension, {})
+    interview_mode = get_mode_identifier(session)
+    blindspot_cap = get_interview_mode_blindspot_cap(interview_mode)
+    critical_dimension_hit = is_interview_mode_critical_dimension(interview_mode, dimension, dim_info)
     cache_session_id = str(session.get("session_id", "") or "").strip()
     normalized_output_mode = _normalize_question_prompt_output_mode(output_mode)
     normalized_search_mode = _normalize_search_decision_mode(search_mode)
@@ -20478,6 +20712,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 
     # 计算正式问题数量（排除追问）
     formal_questions_count = len([log for log in all_dim_logs if not log.get("is_follow_up", False)])
+    dimension_follow_up_count = len([log for log in all_dim_logs if log.get("is_follow_up", False)])
     mode_config = get_interview_mode_config(session)
 
     # ========== 智能追问判断（综合预算+饱和度+疲劳度+规则评估） ==========
@@ -20564,6 +20799,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     answer_mode = capture_contract.get("answer_mode", "pick_only")
     requires_rationale = bool(capture_contract.get("requires_rationale", False))
     evidence_intent = capture_contract.get("evidence_intent", "low")
+    prompt_missing_aspects = list(missing_aspects[:blindspot_cap]) if blindspot_cap > 0 else []
 
     # 构建 AI 评估提示（当规则未明确触发但建议AI判断时）
     ai_eval_guidance = ""
@@ -20596,12 +20832,12 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
     blindspot_guidance = ""
     if not should_follow_up:
         min_formal = mode_config.get("formal_questions_per_dim", 3)
-        if formal_questions_count >= min_formal and missing_aspects:
+        if formal_questions_count >= min_formal and prompt_missing_aspects:
             if is_lightweight_output:
                 blindspot_guidance = f"""
 ## 盲区补问
 
-仍缺：{', '.join(missing_aspects[:2])}
+仍缺：{', '.join(prompt_missing_aspects)}
 
 本题只补 1 个最关键缺口，不要重复已覆盖信息。
 """
@@ -20609,7 +20845,7 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
                 blindspot_guidance = f"""
 ## 盲区补问优先（必须执行）
 
-当前维度仍有未覆盖关键方面：{', '.join(missing_aspects)}
+当前维度仍有未覆盖关键方面：{', '.join(prompt_missing_aspects)}
 
 生成新问题时请满足：
 1. 问题必须直接点名至少 1 个未覆盖方面
@@ -20819,11 +21055,15 @@ def build_interview_prompt(session: dict, dimension: str, all_dim_logs: list,
 - **重要**：is_follow_up 的值已由系统根据预算和饱和度预先决定，请严格按照上述模板设置"""
 
     decision_meta = {
-        "mode": get_mode_identifier(session),
+        "mode": interview_mode,
         "follow_up_round": follow_up_round,
+        "dimension_follow_up_count": dimension_follow_up_count,
         "remaining_question_follow_up_budget": remaining_question_follow_up_budget,
         "hard_triggered": hard_triggered,
         "missing_aspects": missing_aspects,
+        "prompt_missing_aspects": prompt_missing_aspects,
+        "blindspot_cap": blindspot_cap,
+        "critical_dimension_hit": bool(critical_dimension_hit),
         "should_follow_up": should_follow_up,
         "answer_mode": answer_mode,
         "requires_rationale": requires_rationale,
@@ -29402,6 +29642,7 @@ def normalize_generated_question_result(result: Optional[dict], fallback_contrac
         return result
 
     fallback_contract = dict(fallback_contract or {})
+    interview_mode = normalize_interview_mode_key(fallback_contract.get("interview_mode", DEFAULT_INTERVIEW_MODE))
     if "multi_select" not in result:
         result["multi_select"] = False
     if "is_follow_up" not in result:
@@ -29440,6 +29681,14 @@ def normalize_generated_question_result(result: Optional[dict], fallback_contrac
         result["multi_select"] = True
     else:
         result["multi_select"] = original_multi_select
+
+    try:
+        result["ai_recommendation"] = normalize_ai_recommendation_payload(
+            result.get("ai_recommendation"),
+            interview_mode=interview_mode,
+        )
+    except ValueError:
+        result["ai_recommendation"] = None
 
     return result
 
@@ -30047,6 +30296,7 @@ def _select_question_generation_runtime_profile(
 ) -> dict:
     normalized_meta = dict(decision_meta or {})
     normalized_mode_strategy = dict(mode_strategy or {})
+    normalized_mode = normalize_interview_mode_key(normalized_mode_strategy.get("mode", DEFAULT_INTERVIEW_MODE))
     lowered_call_type = str(base_call_type or "").strip().lower()
     is_prefetch_first = lowered_call_type.startswith("prefetch_first")
     is_prefetch = lowered_call_type.startswith("prefetch")
@@ -30058,8 +30308,11 @@ def _select_question_generation_runtime_profile(
     should_follow_up = bool(normalized_meta.get("should_follow_up", False))
     hard_triggered = bool(normalized_meta.get("hard_triggered", False))
     missing_aspects = list(normalized_meta.get("missing_aspects", []) or [])
+    blindspot_cap = max(1, int(normalized_meta.get("blindspot_cap", normalized_mode_strategy.get("blindspot_cap", INTERVIEW_MODE_MAX_BLINDSPOTS_STANDARD)) or INTERVIEW_MODE_MAX_BLINDSPOTS_STANDARD))
     follow_up_round = max(0, int(normalized_meta.get("follow_up_round", 0) or 0))
+    dimension_follow_up_count = max(0, int(normalized_meta.get("dimension_follow_up_count", follow_up_round) or 0))
     formal_questions_count = max(0, int(normalized_meta.get("formal_questions_count", 0) or 0))
+    critical_dimension_hit = bool(normalized_meta.get("critical_dimension_hit", False))
     answer_mode = normalize_question_answer_mode(normalized_meta.get("answer_mode", ""), fallback="pick_only")
     explicit_requires_rationale = bool(normalized_meta.get("requires_rationale", False))
     requires_rationale = bool(explicit_requires_rationale or answer_mode == "pick_with_reason")
@@ -30069,23 +30322,43 @@ def _select_question_generation_runtime_profile(
     )
     allow_high_evidence = bool(normalized_mode_strategy.get("allow_high_evidence", True))
     promote_high_evidence = bool(normalized_mode_strategy.get("promote_high_evidence", False))
-    if promote_high_evidence and evidence_intent == "medium":
-        deep_signal_count = sum(
-            1
-            for flag in (
-                explicit_requires_rationale,
-                has_reference_docs,
-                should_follow_up,
-                hard_triggered,
-                bool(missing_aspects),
-                formal_questions_count >= 2,
-            )
-            if bool(flag)
+    standard_high_evidence_signal_count = sum(
+        1
+        for flag in (
+            explicit_requires_rationale,
+            has_reference_docs,
+            bool(missing_aspects),
+            hard_triggered,
+            should_follow_up,
         )
-        if deep_signal_count >= 2:
-            evidence_intent = "high"
+        if bool(flag)
+    )
+    deep_high_evidence_signal_count = sum(
+        1
+        for flag in (
+            explicit_requires_rationale,
+            has_reference_docs,
+            should_follow_up,
+            hard_triggered,
+            bool(missing_aspects),
+            formal_questions_count >= 2,
+            critical_dimension_hit,
+        )
+        if bool(flag)
+    )
+    if evidence_intent == "medium":
+        if normalized_mode == "deep" and promote_high_evidence:
+            if critical_dimension_hit and deep_high_evidence_signal_count >= QUESTION_HIGH_EVIDENCE_PROMOTION_MIN_SIGNALS_DEEP:
+                evidence_intent = "high"
+        elif normalized_mode == "standard" and allow_high_evidence:
+            if standard_high_evidence_signal_count >= QUESTION_HIGH_EVIDENCE_PROMOTION_MIN_SIGNALS_STANDARD:
+                evidence_intent = "high"
     if not allow_high_evidence and evidence_intent == "high":
         evidence_intent = "medium" if requires_rationale else "low"
+    high_evidence_policy = str(
+        normalized_mode_strategy.get("high_evidence_policy")
+        or INTERVIEW_MODE_HIGH_EVIDENCE_POLICIES.get(normalized_mode, INTERVIEW_MODE_HIGH_EVIDENCE_POLICIES["standard"])
+    )
     high_evidence_intent = evidence_intent == "high" and not is_prefetch
     can_use_light_prompt = not has_search and (
         not has_truncated_docs or (has_reference_docs and QUESTION_FAST_LIGHT_REFERENCE_DOCS_ENABLED)
@@ -30350,6 +30623,8 @@ def _select_question_generation_runtime_profile(
 
     if has_reference_docs:
         reasons.append("has_reference_docs")
+    if critical_dimension_hit:
+        reasons.append("critical_dimension")
     if release_conservative_mode:
         if full_timeout is not None:
             conservative_full_timeout = 15.0 if high_evidence_intent else 14.0
@@ -30392,6 +30667,10 @@ def _select_question_generation_runtime_profile(
         "answer_mode": answer_mode,
         "requires_rationale": requires_rationale,
         "evidence_intent": evidence_intent,
+        "critical_dimension_hit": critical_dimension_hit,
+        "high_evidence_policy": high_evidence_policy,
+        "blindspot_cap": blindspot_cap,
+        "dimension_follow_up_count": dimension_follow_up_count,
     }
 
 
@@ -30444,6 +30723,9 @@ def _prepare_question_generation_runtime(
 
     runtime_profile["interview_mode"] = interview_mode
     runtime_profile["blindspot_budget"] = str(mode_strategy.get("blindspot_budget") or "balanced")
+    runtime_profile["blindspot_cap"] = max(1, int(mode_strategy.get("blindspot_cap", INTERVIEW_MODE_MAX_BLINDSPOTS_STANDARD) or INTERVIEW_MODE_MAX_BLINDSPOTS_STANDARD))
+    runtime_profile["high_evidence_policy"] = str(mode_strategy.get("high_evidence_policy") or INTERVIEW_MODE_HIGH_EVIDENCE_POLICIES["standard"])
+    runtime_profile["deep_model_fallback"] = bool(mode_strategy.get("deep_model_fallback", False))
     runtime_profile["lane_model_overrides"] = copy.deepcopy(mode_strategy.get("lane_model_overrides", {}) or {})
     runtime_profile["fast_timeout"] = _clamp_question_generation_timeout(
         max(5.0, _safe_float(runtime_profile.get("fast_timeout"), QUESTION_FAST_TIMEOUT) * fast_timeout_scale),
@@ -30603,7 +30885,11 @@ def _prepare_question_generation_runtime(
         "secondary_lane": runtime_profile.get("secondary_lane", QUESTION_HEDGED_SECONDARY_LANE),
         "interview_mode": interview_mode,
         "blindspot_budget": runtime_profile.get("blindspot_budget", "balanced"),
+        "blindspot_cap": runtime_profile.get("blindspot_cap", INTERVIEW_MODE_MAX_BLINDSPOTS_STANDARD),
         "lane_model_overrides": copy.deepcopy(runtime_profile.get("lane_model_overrides", {}) or {}),
+        "high_evidence_policy": runtime_profile.get("high_evidence_policy", INTERVIEW_MODE_HIGH_EVIDENCE_POLICIES["standard"]),
+        "deep_model_fallback": bool(runtime_profile.get("deep_model_fallback", False)),
+        "critical_dimension_hit": bool(runtime_profile.get("critical_dimension_hit", False)),
         "fast_prompt_length": len(fast_prompt or ""),
         "full_prompt_length": len(full_prompt or ""),
         "dynamic_lane_order_enabled": bool(runtime_profile.get("dynamic_lane_order_enabled", True)),
@@ -30621,6 +30907,7 @@ def _prepare_question_generation_runtime(
     runtime_profile["answer_mode"] = enriched_decision_meta.get("answer_mode", "pick_only")
     runtime_profile["requires_rationale"] = bool(enriched_decision_meta.get("requires_rationale", False))
     runtime_profile["evidence_intent"] = enriched_decision_meta.get("evidence_intent", "low")
+    runtime_profile["critical_dimension_hit"] = bool(enriched_decision_meta.get("critical_dimension_hit", False))
 
     return {
         "fast_prompt": fast_prompt,
@@ -31063,6 +31350,7 @@ def get_next_question(session_id):
         "parse_repair_ms": 0.0,
         "postprocess_ms": 0.0,
     }
+    question_mode_metrics = {}
 
     def _elapsed_ms(started_at: float) -> float:
         return max(0.0, (_time.perf_counter() - float(started_at or _time.perf_counter())) * 1000.0)
@@ -31076,6 +31364,7 @@ def get_next_question(session_id):
             runtime_profile=runtime_profile,
             tier_used=tier_used,
             selection_reason=selection_reason,
+            mode_metrics=question_mode_metrics,
         )
 
     session_load_started_at = _time.perf_counter()
@@ -31335,6 +31624,20 @@ def get_next_question(session_id):
         decision_meta = prepared_runtime["decision_meta"]
         runtime_profile = prepared_runtime["runtime_profile"]
         fast_prompt = prepared_runtime["fast_prompt"]
+        formal_questions_for_metrics = max(0, int((decision_meta or {}).get("formal_questions_count", 0) or 0))
+        dimension_follow_up_for_metrics = max(0, int((decision_meta or {}).get("dimension_follow_up_count", 0) or 0))
+        question_mode_metrics = {
+            "interview_mode": runtime_profile.get("interview_mode", get_mode_identifier(session)),
+            "high_evidence": runtime_profile.get("evidence_intent") == "high",
+            "search_triggered": bool((decision_meta or {}).get("has_search", False)),
+            "follow_up_per_formal": (
+                round(dimension_follow_up_for_metrics / formal_questions_for_metrics, 4)
+                if formal_questions_for_metrics > 0 else 0.0
+            ),
+            "formal_questions_per_dimension": formal_questions_for_metrics,
+            "ai_call_ms": 0.0,
+            "ai_recommendation": False,
+        }
         question_runtime_durations["prompt_build_ms"] = round(_elapsed_ms(prompt_build_started_at), 2)
 
         # 日志：记录 prompt 长度（便于监控和调优）
@@ -31362,6 +31665,7 @@ def get_next_question(session_id):
             runtime_profile=runtime_profile,
         )
         question_runtime_durations["ai_call_ms"] = round(_elapsed_ms(ai_call_started_at), 2)
+        question_mode_metrics["ai_call_ms"] = question_runtime_durations["ai_call_ms"]
         parse_repair_started_at = _time.perf_counter()
         if ENABLE_DEBUG_LOG:
             print(f"⚙️ 问题生成通道: {tier_used}")
@@ -31391,6 +31695,7 @@ def get_next_question(session_id):
             result["question_generation_tier"] = tier_used
             result["question_selected_lane"] = selected_lane
             result["question_runtime_profile"] = runtime_profile.get("profile_name", "")
+            question_mode_metrics["ai_recommendation"] = bool(result.get("ai_recommendation"))
             # 兜底：避免连续重复问题（最多自动重试一次）
             last_log = all_dim_logs[-1] if all_dim_logs else None
             if last_log and last_log.get("question") == result.get("question"):
@@ -31423,6 +31728,7 @@ def get_next_question(session_id):
                     retry_result["question_selected_lane"] = selected_lane
                     retry_result["question_runtime_profile"] = runtime_profile.get("profile_name", "")
                     result = retry_result
+                    question_mode_metrics["ai_recommendation"] = bool(result.get("ai_recommendation"))
                 else:
                     clear_thinking_status(session_id)
                     fallback = get_fallback_question(session, dimension)
@@ -31505,6 +31811,7 @@ def get_next_question(session_id):
             repaired_result["question_generation_tier"] = tier_used
             repaired_result["question_selected_lane"] = selected_lane
             repaired_result["question_runtime_profile"] = runtime_profile.get("profile_name", "")
+            question_mode_metrics["ai_recommendation"] = bool(repaired_result.get("ai_recommendation"))
             postprocess_started_at = _time.perf_counter()
             trigger_prefetch_if_needed(session, dimension, session_signature=session_signature)
             _set_question_result_cache(question_cache_key, repaired_result)
@@ -31699,12 +32006,14 @@ def get_fallback_question(session: dict, dimension: str) -> dict:
 OTHER_RESOLUTION_MODES = {"reference", "mixed", "custom"}
 
 
-def normalize_ai_recommendation_payload(payload) -> Optional[dict]:
+def normalize_ai_recommendation_payload(payload, interview_mode: str = DEFAULT_INTERVIEW_MODE) -> Optional[dict]:
     """规范化当前题 AI 推荐，便于写入 interview_log 并在撤销时恢复。"""
     if payload is None:
         return None
     if not isinstance(payload, dict):
         raise ValueError("ai_recommendation必须是对象")
+
+    normalized_mode = normalize_interview_mode_key(interview_mode, fallback=DEFAULT_INTERVIEW_MODE)
 
     recommended_options = []
     seen_options = set()
@@ -31722,9 +32031,7 @@ def normalize_ai_recommendation_payload(payload) -> Optional[dict]:
             recommended_options = [normalized_item[:200]]
 
     summary = str(payload.get("summary", "") or "").strip()
-    confidence = str(payload.get("confidence", "") or "").strip().lower()
-    if confidence not in {"high", "medium", "low"}:
-        confidence = ""
+    confidence = normalize_ai_recommendation_confidence(payload.get("confidence", ""))
 
     reasons = []
     raw_reasons = payload.get("reasons")
@@ -31749,6 +32056,28 @@ def normalize_ai_recommendation_payload(payload) -> Optional[dict]:
 
     if not recommended_options and not summary and not reasons:
         return None
+
+    min_confidence_by_mode = {
+        "quick": AI_RECOMMENDATION_MIN_CONFIDENCE_QUICK,
+        "standard": AI_RECOMMENDATION_MIN_CONFIDENCE_STANDARD,
+        "deep": AI_RECOMMENDATION_MIN_CONFIDENCE_DEEP,
+    }
+    if not recommended_options:
+        return None
+    if not ai_recommendation_confidence_meets_threshold(
+        confidence,
+        min_confidence_by_mode.get(normalized_mode, AI_RECOMMENDATION_MIN_CONFIDENCE_STANDARD),
+    ):
+        return None
+    if normalized_mode == "deep" and AI_RECOMMENDATION_REQUIRE_EVIDENCE_DEEP:
+        evidence_backed_reasons = [
+            reason for reason in reasons
+            if isinstance(reason, dict)
+            and len(list(reason.get("evidence") or [])) > 0
+        ]
+        if len(evidence_backed_reasons) < 2:
+            return None
+        reasons = evidence_backed_reasons[:3]
 
     normalized = {
         "recommended_options": recommended_options,
@@ -32006,7 +32335,10 @@ def submit_answer(session_id):
         return jsonify({"error": str(exc)}), 400
 
     try:
-        ai_recommendation = normalize_ai_recommendation_payload(ai_recommendation_payload)
+        ai_recommendation = normalize_ai_recommendation_payload(
+            ai_recommendation_payload,
+            interview_mode=get_mode_identifier(session),
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -45913,6 +46245,9 @@ def get_metrics():
     stats["list_endpoints"] = get_list_metrics_snapshot()
     stats["question_generation"] = get_question_generation_stats_snapshot()
     stats["question_generation_runtime"] = get_question_generation_runtime_stats_snapshot()
+    stats["question_generation"]["by_mode"] = copy.deepcopy(
+        stats["question_generation_runtime"].get("by_mode", {})
+    )
     stats["search_decision"] = get_search_decision_stats_snapshot()
     stats["report_generation_queue"] = get_report_generation_worker_snapshot(include_positions=False)
     stats["report_generation_runtime"] = get_report_generation_runtime_stats_snapshot()

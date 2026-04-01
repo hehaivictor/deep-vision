@@ -3457,6 +3457,15 @@ class ComprehensiveApiTests(unittest.TestCase):
             tier_used="fast:question",
             selection_reason="unit_test",
             outcome="completed",
+            mode_metrics={
+                "interview_mode": "standard",
+                "ai_call_ms": 120.0,
+                "high_evidence": True,
+                "search_triggered": True,
+                "follow_up_per_formal": 0.5,
+                "ai_recommendation": True,
+                "formal_questions_per_dimension": 3.0,
+            },
         )
         self.server.record_report_generation_runtime_sample(
             durations={
@@ -3500,6 +3509,20 @@ class ComprehensiveApiTests(unittest.TestCase):
             "question_probe_light",
         )
         self.assertIn("ai_call_ms", metrics_payload["question_generation_runtime"]["stages"])
+        self.assertIn("by_mode", metrics_payload["question_generation_runtime"])
+        self.assertIn("standard", metrics_payload["question_generation_runtime"]["by_mode"])
+        standard_metrics = metrics_payload["question_generation_runtime"]["by_mode"]["standard"]
+        self.assertEqual(standard_metrics["count"], 1)
+        self.assertEqual(standard_metrics["avg_total_ms"], 150.5)
+        self.assertEqual(standard_metrics["avg_ai_call_ms"], 120.0)
+        self.assertEqual(standard_metrics["high_evidence_rate"], 100.0)
+        self.assertEqual(standard_metrics["search_trigger_rate"], 100.0)
+        self.assertEqual(standard_metrics["ai_recommendation_rate"], 100.0)
+        self.assertEqual(standard_metrics["avg_follow_up_per_formal"], 0.5)
+        self.assertEqual(standard_metrics["avg_formal_questions_per_dimension"], 3.0)
+        self.assertIn("question_generation", metrics_payload)
+        self.assertIn("by_mode", metrics_payload["question_generation"])
+        self.assertEqual(metrics_payload["question_generation"]["by_mode"]["standard"]["count"], 1)
         self.assertIn("report_generation_runtime", metrics_payload)
         self.assertEqual(metrics_payload["report_generation_runtime"]["calls"], 1)
         self.assertEqual(metrics_payload["report_generation_runtime"]["completed"], 1)
@@ -3516,6 +3539,8 @@ class ComprehensiveApiTests(unittest.TestCase):
         metrics_after_reset_payload = metrics_after_reset.get_json()
         self.assertEqual(metrics_after_reset_payload["question_generation_runtime"]["calls"], 0)
         self.assertEqual(metrics_after_reset_payload["report_generation_runtime"]["calls"], 0)
+        self.assertEqual(metrics_after_reset_payload["question_generation_runtime"]["by_mode"]["standard"]["count"], 0)
+        self.assertEqual(metrics_after_reset_payload["question_generation"]["by_mode"]["standard"]["count"], 0)
 
         with self.server.app.test_request_context("/api/summaries"):
             summaries = self.server.get_summaries_info.__wrapped__()
