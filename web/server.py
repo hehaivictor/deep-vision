@@ -632,6 +632,7 @@ ASSESSMENT_MODEL_NAME = _cfg_text("ASSESSMENT_MODEL_NAME", SEARCH_DECISION_MODEL
 _auto_use_bearer_auth = _guess_bearer_auth_default()
 _global_use_bearer_auth = _cfg_bool("ANTHROPIC_USE_BEARER_AUTH", _auto_use_bearer_auth)
 QUESTION_USE_BEARER_AUTH = _cfg_bool("QUESTION_USE_BEARER_AUTH", _global_use_bearer_auth)
+QUESTION_DEEP_USE_BEARER_AUTH = _cfg_bool("QUESTION_DEEP_USE_BEARER_AUTH", QUESTION_USE_BEARER_AUTH)
 REPORT_USE_BEARER_AUTH = _cfg_bool("REPORT_USE_BEARER_AUTH", QUESTION_USE_BEARER_AUTH)
 REPORT_DRAFT_USE_BEARER_AUTH = _cfg_bool("REPORT_DRAFT_USE_BEARER_AUTH", REPORT_USE_BEARER_AUTH)
 REPORT_REVIEW_USE_BEARER_AUTH = _cfg_bool("REPORT_REVIEW_USE_BEARER_AUTH", REPORT_USE_BEARER_AUTH)
@@ -639,6 +640,8 @@ REPORT_REVIEW_USE_BEARER_AUTH = _cfg_bool("REPORT_REVIEW_USE_BEARER_AUTH", REPOR
 # 网关路由配置：支持问题/报告分别使用不同 API Key 和 Base URL
 _cfg_question_api_key = _cfg_text("QUESTION_API_KEY", "")
 _cfg_question_base_url = _cfg_text("QUESTION_BASE_URL", "")
+_cfg_question_deep_api_key = _cfg_text("QUESTION_DEEP_API_KEY", "")
+_cfg_question_deep_base_url = _cfg_text("QUESTION_DEEP_BASE_URL", "")
 _cfg_report_api_key = _cfg_text("REPORT_API_KEY", "")
 _cfg_report_base_url = _cfg_text("REPORT_BASE_URL", "")
 _cfg_report_draft_api_key = _cfg_text("REPORT_DRAFT_API_KEY", "")
@@ -654,6 +657,8 @@ _cfg_assessment_base_url = _cfg_text("ASSESSMENT_BASE_URL", "")
 
 QUESTION_API_KEY = _cfg_question_api_key or _cfg_text("ANTHROPIC_API_KEY", str(ANTHROPIC_API_KEY or "").strip())
 QUESTION_BASE_URL = _cfg_question_base_url or _cfg_text("ANTHROPIC_BASE_URL", str(ANTHROPIC_BASE_URL or "").strip())
+QUESTION_DEEP_API_KEY = _cfg_question_deep_api_key or QUESTION_API_KEY
+QUESTION_DEEP_BASE_URL = _cfg_question_deep_base_url or QUESTION_BASE_URL
 REPORT_API_KEY = _cfg_report_api_key or QUESTION_API_KEY
 REPORT_BASE_URL = _cfg_report_base_url or QUESTION_BASE_URL
 REPORT_DRAFT_API_KEY = _cfg_report_draft_api_key or REPORT_API_KEY
@@ -2047,8 +2052,32 @@ def _build_lane_signature(api_key: str, base_url: str, use_bearer_auth: bool) ->
     return (str(api_key or "").strip(), str(base_url or "").strip(), bool(use_bearer_auth))
 
 
+def _is_dedicated_question_deep_gateway_configured() -> bool:
+    return _build_lane_signature(
+        QUESTION_DEEP_API_KEY,
+        QUESTION_DEEP_BASE_URL,
+        QUESTION_DEEP_USE_BEARER_AUTH,
+    ) != _build_lane_signature(
+        QUESTION_API_KEY,
+        QUESTION_BASE_URL,
+        QUESTION_USE_BEARER_AUTH,
+    )
+
+
+def _should_use_deep_question_gateway(model_name: str = "") -> bool:
+    normalized_model = str(model_name or "").strip()
+    deep_model = str(QUESTION_MODEL_NAME_DEEP or "").strip()
+    if not normalized_model or not deep_model:
+        return False
+    if normalized_model != deep_model:
+        return False
+    return _is_dedicated_question_deep_gateway_configured()
+
+
 def _resolve_lane_signature(lane: str) -> tuple[str, str, bool]:
     normalized_lane = str(lane or "").strip().lower()
+    if normalized_lane == "question_deep":
+        return _build_lane_signature(QUESTION_DEEP_API_KEY, QUESTION_DEEP_BASE_URL, QUESTION_DEEP_USE_BEARER_AUTH)
     if normalized_lane == "report_draft":
         return _build_lane_signature(REPORT_DRAFT_API_KEY, REPORT_DRAFT_BASE_URL, REPORT_DRAFT_USE_BEARER_AUTH)
     if normalized_lane == "report_review":
@@ -2085,6 +2114,9 @@ def _is_report_review_call_type(call_type: str = "") -> bool:
 def _resolve_lane_model_name(lane: str) -> str:
     """根据 lane 的实际网关签名选择模型，避免模型与网关供应商不匹配。"""
     normalized_lane = str(lane or "").strip().lower()
+
+    if normalized_lane == "question_deep":
+        return QUESTION_MODEL_NAME_DEEP or QUESTION_MODEL_NAME
 
     if normalized_lane == "report_draft":
         return REPORT_DRAFT_MODEL_NAME or REPORT_MODEL_NAME or QUESTION_MODEL_NAME
@@ -2715,6 +2747,9 @@ ADMIN_ENV_SETTINGS_GROUPS: list[dict[str, Any]] = [
             _admin_password("QUESTION_API_KEY", "问题 API Key"),
             _admin_setting("QUESTION_BASE_URL", "问题 Base URL"),
             _admin_bool("QUESTION_USE_BEARER_AUTH", "问题 Bearer 鉴权"),
+            _admin_password("QUESTION_DEEP_API_KEY", "深度问题 API Key"),
+            _admin_setting("QUESTION_DEEP_BASE_URL", "深度问题 Base URL"),
+            _admin_bool("QUESTION_DEEP_USE_BEARER_AUTH", "深度问题 Bearer 鉴权"),
             _admin_password("REPORT_API_KEY", "报告 API Key"),
             _admin_setting("REPORT_BASE_URL", "报告 Base URL"),
             _admin_bool("REPORT_USE_BEARER_AUTH", "报告 Bearer 鉴权"),
@@ -14833,6 +14868,7 @@ def record_pipeline_stage_metric(
 # AI 客户端初始化（支持问题/报告分网关）
 claude_client = None  # 历史兼容：默认指向可用的主客户端
 question_ai_client = None
+question_deep_ai_client = None
 report_ai_client = None
 report_draft_ai_client = None
 report_review_ai_client = None
@@ -15098,6 +15134,7 @@ def _pick_reused_client(signature: tuple, lane_signatures: list[tuple]) -> tuple
 def _any_ai_client_available() -> bool:
     return any([
         question_ai_client,
+        question_deep_ai_client,
         report_ai_client,
         report_draft_ai_client,
         report_review_ai_client,
@@ -15109,10 +15146,11 @@ def _any_ai_client_available() -> bool:
 
 def reset_ai_clients(force_reason: str = "reset") -> None:
     """重置 AI 客户端与懒加载状态（测试/运维排障使用）。"""
-    global claude_client, question_ai_client, report_ai_client, report_draft_ai_client, report_review_ai_client, summary_ai_client, search_decision_ai_client, assessment_ai_client
+    global claude_client, question_ai_client, question_deep_ai_client, report_ai_client, report_draft_ai_client, report_review_ai_client, summary_ai_client, search_decision_ai_client, assessment_ai_client
     with ai_client_init_lock:
         claude_client = None
         question_ai_client = None
+        question_deep_ai_client = None
         report_ai_client = None
         report_draft_ai_client = None
         report_review_ai_client = None
@@ -15131,6 +15169,7 @@ def get_ai_client_bootstrap_snapshot() -> dict:
         snapshot = dict(ai_client_bootstrap_state)
         available_clients = [
             question_ai_client,
+            question_deep_ai_client,
             report_ai_client,
             report_draft_ai_client,
             report_review_ai_client,
@@ -15140,6 +15179,7 @@ def get_ai_client_bootstrap_snapshot() -> dict:
         ]
         snapshot["available_client_count"] = int(len({id(item) for item in available_clients if item}))
         snapshot["question_ai_available"] = question_ai_client is not None
+        snapshot["question_deep_ai_available"] = question_deep_ai_client is not None
         snapshot["report_ai_available"] = report_ai_client is not None
         snapshot["report_draft_ai_available"] = report_draft_ai_client is not None
         snapshot["report_review_ai_available"] = report_review_ai_client is not None
@@ -15151,14 +15191,14 @@ def get_ai_client_bootstrap_snapshot() -> dict:
 
 def ensure_ai_clients_initialized(force: bool = False) -> dict:
     """按需初始化 AI 客户端，避免导入模块即触发真实外部连接。"""
-    global claude_client, question_ai_client, report_ai_client, report_draft_ai_client, report_review_ai_client, summary_ai_client, search_decision_ai_client, assessment_ai_client
+    global claude_client, question_ai_client, question_deep_ai_client, report_ai_client, report_draft_ai_client, report_review_ai_client, summary_ai_client, search_decision_ai_client, assessment_ai_client
 
     with ai_client_init_lock:
         if _any_ai_client_available():
             ai_client_bootstrap_state["attempted"] = True
             ai_client_bootstrap_state["initialized"] = True
             ai_client_bootstrap_state["reason"] = "ready"
-            claude_client = claude_client or question_ai_client or report_review_ai_client or report_draft_ai_client or report_ai_client or summary_ai_client or search_decision_ai_client or assessment_ai_client
+            claude_client = claude_client or question_ai_client or question_deep_ai_client or report_review_ai_client or report_draft_ai_client or report_ai_client or summary_ai_client or search_decision_ai_client or assessment_ai_client
             return get_ai_client_bootstrap_snapshot()
 
         if not force and ai_client_bootstrap_state.get("attempted"):
@@ -15171,6 +15211,7 @@ def ensure_ai_clients_initialized(force: bool = False) -> dict:
 
         claude_client = None
         question_ai_client = None
+        question_deep_ai_client = None
         report_ai_client = None
         report_draft_ai_client = None
         report_review_ai_client = None
@@ -15186,6 +15227,7 @@ def ensure_ai_clients_initialized(force: bool = False) -> dict:
             return get_ai_client_bootstrap_snapshot()
 
         question_signature = (QUESTION_API_KEY, QUESTION_BASE_URL, QUESTION_USE_BEARER_AUTH)
+        question_deep_signature = (QUESTION_DEEP_API_KEY, QUESTION_DEEP_BASE_URL, QUESTION_DEEP_USE_BEARER_AUTH)
         report_draft_signature = (REPORT_DRAFT_API_KEY, REPORT_DRAFT_BASE_URL, REPORT_DRAFT_USE_BEARER_AUTH)
         report_review_signature = (REPORT_REVIEW_API_KEY, REPORT_REVIEW_BASE_URL, REPORT_REVIEW_USE_BEARER_AUTH)
         summary_signature = (SUMMARY_API_KEY, SUMMARY_BASE_URL, SUMMARY_USE_BEARER_AUTH)
@@ -15210,6 +15252,21 @@ def ensure_ai_clients_initialized(force: bool = False) -> dict:
         )
 
         reusable_lanes = [("问题", question_signature, question_ai_client)]
+
+        question_deep_ai_client, deep_reuse_lane = _pick_reused_client(question_deep_signature, reusable_lanes)
+        if question_deep_ai_client and deep_reuse_lane:
+            print(f"ℹ️  深度问题网关复用{deep_reuse_lane}网关客户端（相同 Key/Base URL）")
+        else:
+            question_deep_ai_client = _init_lane_client(
+                lane_name="深度问题",
+                api_key=QUESTION_DEEP_API_KEY,
+                base_url=QUESTION_DEEP_BASE_URL,
+                test_model=QUESTION_MODEL_NAME_DEEP or QUESTION_MODEL_NAME,
+                use_bearer_auth=QUESTION_DEEP_USE_BEARER_AUTH,
+                run_connection_test=AI_CLIENT_INIT_CONNECTION_TEST,
+            )
+
+        reusable_lanes.append(("深度问题", question_deep_signature, question_deep_ai_client))
 
         report_draft_ai_client, draft_reuse_lane = _pick_reused_client(report_draft_signature, reusable_lanes)
         if report_draft_ai_client and draft_reuse_lane:
@@ -15288,7 +15345,7 @@ def ensure_ai_clients_initialized(force: bool = False) -> dict:
                 run_connection_test=AI_CLIENT_INIT_CONNECTION_TEST,
             )
 
-        claude_client = question_ai_client or report_review_ai_client or report_draft_ai_client or report_ai_client or summary_ai_client or search_decision_ai_client or assessment_ai_client
+        claude_client = question_ai_client or question_deep_ai_client or report_review_ai_client or report_draft_ai_client or report_ai_client or summary_ai_client or search_decision_ai_client or assessment_ai_client
         if not claude_client:
             ai_client_bootstrap_state["reason"] = "no_available_client"
             return get_ai_client_bootstrap_snapshot()
@@ -15314,6 +15371,8 @@ def _lane_client_by_name(lane: str):
     lane_name = str(lane or "").strip().lower()
     if lane_name == "question":
         return question_ai_client
+    if lane_name == "question_deep":
+        return question_deep_ai_client or question_ai_client
     if lane_name == "report_draft":
         return report_draft_ai_client or report_ai_client or report_review_ai_client
     if lane_name == "report_review":
@@ -15327,6 +15386,13 @@ def _lane_client_by_name(lane: str):
     if lane_name == "assessment":
         return assessment_ai_client
     return None
+
+
+def _resolve_client_for_lane_name(lane_name: str, model_name: str = ""):
+    normalized_lane = str(lane_name or "").strip().lower()
+    if normalized_lane == "question" and _should_use_deep_question_gateway(model_name):
+        return question_deep_ai_client or question_ai_client
+    return _lane_client_by_name(normalized_lane)
 
 
 def _dedupe_lane_candidates(candidates: list[str]) -> list[str]:
@@ -15423,7 +15489,7 @@ def resolve_ai_client_with_lane(
     fallback_pool = []
 
     for lane_name in candidates:
-        client = _lane_client_by_name(lane_name)
+        client = _resolve_client_for_lane_name(lane_name, model_name=model_name)
         if not client:
             continue
         fallback_pool.append((lane_name, client))
@@ -46433,6 +46499,7 @@ if __name__ == '__main__':
         )
     )
     question_endpoint = QUESTION_BASE_URL or "(Anthropic 官方默认地址)"
+    question_deep_endpoint = QUESTION_DEEP_BASE_URL or question_endpoint
     report_endpoint = REPORT_BASE_URL or "(Anthropic 官方默认地址)"
     report_draft_endpoint = REPORT_DRAFT_BASE_URL or report_endpoint
     report_review_endpoint = REPORT_REVIEW_BASE_URL or report_endpoint
@@ -46442,6 +46509,8 @@ if __name__ == '__main__':
     if ENABLE_AI and HAS_ANTHROPIC:
         print(f"问题模型: {QUESTION_MODEL_NAME}")
         print(f"问题网关: {'可用' if question_ai_client else '待初始化'} @ {question_endpoint}")
+        print(f"深度问题模型: {QUESTION_MODEL_NAME_DEEP}")
+        print(f"深度问题网关: {'可用' if question_deep_ai_client else '待初始化'} @ {question_deep_endpoint}")
         print(f"报告模型: {REPORT_MODEL_NAME} (draft={REPORT_DRAFT_MODEL_NAME}, review={REPORT_REVIEW_MODEL_NAME})")
         print(f"报告草案网关: {'可用' if report_draft_ai_client else '待初始化'} @ {report_draft_endpoint}")
         print(f"报告审稿网关: {'可用' if report_review_ai_client else '待初始化'} @ {report_review_endpoint}")

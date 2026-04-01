@@ -68,6 +68,12 @@ class QuestionFastStrategyTests(unittest.TestCase):
     def setUp(self):
         self.server.QUESTION_MODEL_NAME = "minimax-m2.7"
         self.server.QUESTION_MODEL_NAME_DEEP = "glm-5.1"
+        self.server.QUESTION_API_KEY = "question-key"
+        self.server.QUESTION_BASE_URL = "https://question.example.com"
+        self.server.QUESTION_USE_BEARER_AUTH = True
+        self.server.QUESTION_DEEP_API_KEY = self.server.QUESTION_API_KEY
+        self.server.QUESTION_DEEP_BASE_URL = self.server.QUESTION_BASE_URL
+        self.server.QUESTION_DEEP_USE_BEARER_AUTH = self.server.QUESTION_USE_BEARER_AUTH
         self.server.QUESTION_FAST_PATH_ENABLED = True
         self.server.ENABLE_WEB_SEARCH = False
         self.server.QUESTION_FAST_TIMEOUT = 12.0
@@ -271,6 +277,45 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertEqual(strategy["lane_model_overrides"], {})
         self.assertTrue(strategy["deep_model_fallback"])
         self.assertEqual(strategy["blindspot_cap"], 4)
+
+    def test_resolve_ai_client_with_lane_prefers_dedicated_deep_question_gateway(self):
+        question_client = object()
+        deep_client = object()
+        self.server.question_ai_client = question_client
+        self.server.question_deep_ai_client = deep_client
+        self.server.QUESTION_DEEP_API_KEY = "deep-question-key"
+        self.server.QUESTION_DEEP_BASE_URL = "https://deep-question.example.com"
+        self.server.QUESTION_DEEP_USE_BEARER_AUTH = False
+
+        client, lane, meta = self.server.resolve_ai_client_with_lane(
+            call_type="question_fast",
+            model_name="glm-5.1",
+            preferred_lane="question",
+            strict_preferred_lane=True,
+        )
+
+        self.assertIs(client, deep_client)
+        self.assertEqual(lane, "question")
+        self.assertEqual(meta.get("requested_lane"), "question")
+
+    def test_resolve_ai_client_with_lane_deep_gateway_falls_back_to_default_question_client(self):
+        question_client = object()
+        self.server.question_ai_client = question_client
+        self.server.question_deep_ai_client = None
+        self.server.QUESTION_DEEP_API_KEY = "deep-question-key"
+        self.server.QUESTION_DEEP_BASE_URL = "https://deep-question.example.com"
+        self.server.QUESTION_DEEP_USE_BEARER_AUTH = False
+
+        client, lane, meta = self.server.resolve_ai_client_with_lane(
+            call_type="question_fast",
+            model_name="glm-5.1",
+            preferred_lane="question",
+            strict_preferred_lane=True,
+        )
+
+        self.assertIs(client, question_client)
+        self.assertEqual(lane, "question")
+        self.assertEqual(meta.get("requested_lane"), "question")
 
     def test_runtime_profile_keeps_fast_path_for_high_intent_follow_up_question(self):
         profile = self.server._select_question_generation_runtime_profile(
