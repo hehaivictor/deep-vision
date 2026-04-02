@@ -15,9 +15,13 @@ const QUESTION_REQUEST_HARD_TIMEOUT_MS = 90000;
 const QUESTION_REQUEST_WATCHDOG_INTERVAL_MS = 1000;
 const QUESTION_REQUEST_STALL_GRACE_MS = 4000;
 const QUESTION_REQUEST_IDLE_MS = 2500;
-const QUESTION_SUBMIT_PREFETCH_WAIT_MS = 25000;
+const QUESTION_SUBMIT_PREFETCH_WAIT_MS = 3000;
 const QUESTION_OVERLOAD_RETRY_DEFAULT_SECONDS = 2;
 const QUESTION_OVERLOAD_RETRY_MAX_WAIT_MS = 20000;
+const QUESTION_SUCCESS_TRANSITION_DELAY_MS = 150;
+const QUESTION_TYPING_CHAR_DELAY_MS = 14;
+const QUESTION_OPTION_REVEAL_DELAY_MS = 70;
+const QUESTION_INTERACTION_READY_DELAY_MS = 80;
 
 function deepVision() {
     return {
@@ -206,6 +210,7 @@ function deepVision() {
         accountMergeConfirmText: '',
         loading: false,
         loadingQuestion: false,
+        sessionOpenRequestId: 0,
         questionRequestId: 0,
         questionRequestStartedAt: 0,
         questionRequestLastActiveAt: 0,
@@ -279,6 +284,9 @@ function deepVision() {
         currentTip: '',  // 当前显示的小技巧文本
         tipRotationInterval: null,  // 小技巧轮播定时器
         themeStorageKey: 'deepvision_theme_mode',
+        appShellSnapshotStorageKey: 'deepvision_app_shell_snapshot',
+        appShellSnapshotVersion: 1,
+        appShellSnapshotPersistTimer: null,
         themeMode: 'system',
         effectiveTheme: 'light',
         authViewLightLocked: false,
@@ -485,6 +493,7 @@ function deepVision() {
 
         // 报告相关
         reports: [],
+        reportsLoaded: false,
         filteredReports: [],
         reportItems: [],
         selectedReport: null,
@@ -709,6 +718,7 @@ function deepVision() {
             if (!this.authReady || this.licenseChecking || this.licenseGateActive) {
                 return;
             }
+            this.restoreAppShellSnapshot();
             this.bootstrapAuthenticatedApp({ skipLicenseRefresh: hasStatusLicensePayload }).catch((error) => {
                 console.error('登录后初始化失败:', error);
             });
@@ -718,6 +728,158 @@ function deepVision() {
                 this.setupVirtualList();
                 this.setupVirtualReportList();
             });
+        },
+
+        canUseSessionStorage() {
+            try {
+                return typeof sessionStorage !== 'undefined';
+            } catch (error) {
+                return false;
+            }
+        },
+
+        normalizePersistedAppShellView(view = '') {
+            const normalized = String(view || '').trim().toLowerCase();
+            if (normalized === 'admin') return 'admin';
+            if (normalized === 'reports') return 'reports';
+            return 'sessions';
+        },
+
+        getAppShellSnapshotUserKey(user = this.currentUser) {
+            const source = user && typeof user === 'object' ? user : {};
+            const userId = Number(source.id || 0);
+            const phone = String(source.phone || '').trim();
+            const account = String(source.account || '').trim();
+            return [
+                userId > 0 ? `id:${userId}` : '',
+                phone ? `phone:${phone}` : '',
+                account ? `account:${account}` : ''
+            ].filter(Boolean).join('|');
+        },
+
+        clearAppShellSnapshot() {
+            if (this.appShellSnapshotPersistTimer) {
+                clearTimeout(this.appShellSnapshotPersistTimer);
+                this.appShellSnapshotPersistTimer = null;
+            }
+            if (!this.canUseSessionStorage()) return;
+            try {
+                sessionStorage.removeItem(this.appShellSnapshotStorageKey);
+            } catch (error) {
+                console.warn('清理页面快照失败:', error);
+            }
+        },
+
+        scheduleAppShellSnapshotPersist() {
+            if (this.appShellSnapshotPersistTimer) {
+                clearTimeout(this.appShellSnapshotPersistTimer);
+            }
+            this.appShellSnapshotPersistTimer = setTimeout(() => {
+                this.appShellSnapshotPersistTimer = null;
+                this.persistAppShellSnapshot();
+            }, 120);
+        },
+
+        persistAppShellSnapshot() {
+            if (!this.canUseSessionStorage()) return;
+            if (!this.authReady || this.licenseGateActive) {
+                this.clearAppShellSnapshot();
+                return;
+            }
+
+            const payload = {
+                version: this.appShellSnapshotVersion,
+                userKey: this.getAppShellSnapshotUserKey(),
+                updatedAt: Date.now(),
+                currentView: this.normalizePersistedAppShellView(this.currentView),
+                sessionSearchQuery: String(this.sessionSearchQuery || ''),
+                sessionStatusFilter: String(this.sessionStatusFilter || 'all'),
+                sessionSortOrder: String(this.sessionSortOrder || 'newest'),
+                sessionGroupBy: String(this.sessionGroupBy || 'none'),
+                currentPage: Number.isFinite(Number(this.currentPage)) ? Math.max(1, Math.floor(Number(this.currentPage))) : 1,
+                reportSearchQuery: String(this.reportSearchQuery || ''),
+                reportSortOrder: String(this.reportSortOrder || 'newest'),
+                reportGroupBy: String(this.reportGroupBy || 'none'),
+                sessionsLoaded: Boolean(this.sessionsLoaded),
+                reportsLoaded: Boolean(this.reportsLoaded),
+                sessions: this.sessionsLoaded && Array.isArray(this.sessions) ? this.sessions : [],
+                reports: this.reportsLoaded && Array.isArray(this.reports) ? this.reports : [],
+            };
+
+            try {
+                sessionStorage.setItem(this.appShellSnapshotStorageKey, JSON.stringify(payload));
+            } catch (error) {
+                console.warn('保存页面快照失败:', error);
+            }
+        },
+
+        restoreAppShellSnapshot() {
+            if (!this.canUseSessionStorage() || !this.authReady) return false;
+
+            let payload = null;
+            try {
+                const raw = sessionStorage.getItem(this.appShellSnapshotStorageKey);
+                if (!raw) return false;
+                payload = JSON.parse(raw);
+            } catch (error) {
+                this.clearAppShellSnapshot();
+                return false;
+            }
+
+            if (!payload || typeof payload !== 'object') {
+                this.clearAppShellSnapshot();
+                return false;
+            }
+            if (Number(payload.version || 0) !== Number(this.appShellSnapshotVersion || 0)) {
+                this.clearAppShellSnapshot();
+                return false;
+            }
+
+            const expectedUserKey = this.getAppShellSnapshotUserKey();
+            const snapshotUserKey = String(payload.userKey || '').trim();
+            if (!expectedUserKey || !snapshotUserKey || snapshotUserKey !== expectedUserKey) {
+                this.clearAppShellSnapshot();
+                return false;
+            }
+
+            const restoredView = this.normalizePersistedAppShellView(payload.currentView);
+            this.currentView = restoredView === 'admin' && !this.canViewAdminCenter()
+                ? 'sessions'
+                : restoredView;
+            this.sessionSearchQuery = String(payload.sessionSearchQuery || '');
+            this.sessionStatusFilter = String(payload.sessionStatusFilter || 'all') || 'all';
+            this.sessionSortOrder = String(payload.sessionSortOrder || 'newest') || 'newest';
+            this.sessionGroupBy = String(payload.sessionGroupBy || 'none') || 'none';
+            this.reportSearchQuery = String(payload.reportSearchQuery || '');
+            this.reportSortOrder = String(payload.reportSortOrder || 'newest') || 'newest';
+            this.reportGroupBy = String(payload.reportGroupBy || 'none') || 'none';
+            this.currentPage = Number.isFinite(Number(payload.currentPage))
+                ? Math.max(1, Math.floor(Number(payload.currentPage)))
+                : 1;
+
+            const restoredSessions = Array.isArray(payload.sessions)
+                ? payload.sessions.filter(item => item && typeof item === 'object')
+                : [];
+            const restoredReports = Array.isArray(payload.reports)
+                ? payload.reports.filter(item => item && typeof item === 'object')
+                : [];
+
+            let restored = false;
+            if (Boolean(payload.sessionsLoaded)) {
+                this.sessions = restoredSessions;
+                this.sessionsLoaded = true;
+                this.filterSessions({ preservePage: true });
+                restored = true;
+            }
+
+            if (Boolean(payload.reportsLoaded)) {
+                this.reports = restoredReports;
+                this.reportsLoaded = true;
+                this.filterReports();
+                restored = true;
+            }
+
+            return restored;
         },
 
         normalizeReportProfile(profile, fallback = 'balanced') {
@@ -1334,6 +1496,7 @@ function deepVision() {
             this.sessions = [];
             this.sessionsLoaded = false;
             this.reports = [];
+            this.reportsLoaded = false;
             this.filteredReports = [];
             this.filteredSessions = [];
             this.reportItems = [];
@@ -1394,6 +1557,7 @@ function deepVision() {
             this.resetPresentationProgressFeedback();
             this.resetReportGenerationFeedback();
             this.enforceAuthViewLightTheme();
+            this.clearAppShellSnapshot();
 
             if (showToast) {
                 this.showToast(toastMessage, toastType);
@@ -1416,13 +1580,26 @@ function deepVision() {
                 return;
             }
             this.initGuide();
-
-            await Promise.all([
-                this.loadScenarios(),
-                this.loadSessions(),
-                this.loadReports()
-            ]);
+            await this.loadScenarios();
             await this.consumeInitialEntryRoute();
+            if (this.currentView === 'reports') {
+                await this.refreshReportsView();
+                if (!this.sessionsLoaded) {
+                    this.refreshSessionsView({
+                        silent: true,
+                        preserveListState: true,
+                        suppressErrorToast: true
+                    }).catch((error) => {
+                        console.warn('静默刷新会话列表失败:', error);
+                    });
+                }
+                return;
+            }
+            if (this.currentView === 'admin' && this.canViewAdminCenter()) {
+                void this.ensureAdminDataForTab(this.adminTab || 'overview');
+                return;
+            }
+            await this.refreshSessionsView();
         },
 
         focusAuthAccountInput() {
@@ -5005,7 +5182,7 @@ function deepVision() {
                 this.skeletonMode = false;
             } else {
                 // 启用动效时：打字机效果 + 选项淡入
-                const typingSpeed = 30;  // 每个字符 30ms
+                const typingSpeed = QUESTION_TYPING_CHAR_DELAY_MS;
                 for (let i = 0; i <= questionText.length; i++) {
                     this.typingText = questionText.substring(0, i);
                     await new Promise(resolve => setTimeout(resolve, typingSpeed));
@@ -5013,14 +5190,14 @@ function deepVision() {
                 this.typingComplete = true;
 
                 // 选项依次淡入
-                const optionDelay = 150;  // 每个选项间隔 150ms
+                const optionDelay = QUESTION_OPTION_REVEAL_DELAY_MS;
                 for (let i = 0; i < options.length; i++) {
                     this.optionsVisible.push(i);
                     await new Promise(resolve => setTimeout(resolve, optionDelay));
                 }
 
                 // 短暂延迟后允许交互
-                await new Promise(resolve => setTimeout(resolve, 200));
+                await new Promise(resolve => setTimeout(resolve, QUESTION_INTERACTION_READY_DELAY_MS));
                 this.interactionReady = true;
                 this.skeletonMode = false;
             }
@@ -5188,6 +5365,14 @@ function deepVision() {
             });
         },
 
+        refreshReportsView(options = {}) {
+            const hasCachedReports = this.reportsLoaded;
+            return this.loadReports({
+                suppressErrorToast: hasCachedReports,
+                ...options,
+            });
+        },
+
         async createNewSession() {
             if (!this.newSessionTopic.trim() || this.loading) return;
 
@@ -5263,9 +5448,94 @@ function deepVision() {
             this.showNewSessionModal = false;
         },
 
+        findSessionSummaryById(sessionId) {
+            const targetSessionId = this.normalizeComparableId(sessionId);
+            return this.sessions.find(session => this.normalizeComparableId(session?.session_id) === targetSessionId) || null;
+        },
+
+        buildInterviewSessionPlaceholder(sessionId) {
+            const sessionSummary = this.findSessionSummaryById(sessionId) || {};
+            const dimensions = (sessionSummary?.dimensions && typeof sessionSummary.dimensions === 'object')
+                ? JSON.parse(JSON.stringify(sessionSummary.dimensions))
+                : {};
+            const documents = Array.isArray(sessionSummary?.documents) ? [...sessionSummary.documents] : [];
+            const interviewLog = Array.isArray(sessionSummary?.interview_log) ? [...sessionSummary.interview_log] : [];
+            return {
+                ...sessionSummary,
+                session_id: sessionSummary?.session_id || sessionId,
+                topic: sessionSummary?.topic || '访谈会话',
+                description: sessionSummary?.description || '',
+                dimensions,
+                documents,
+                interview_log: interviewLog,
+                scenario_config: sessionSummary?.scenario_config || null,
+            };
+        },
+
+        enterInterviewLoadingState(message = '正在读取会话与定位下一题') {
+            this.currentStep = 1;
+            this.loadingQuestion = true;
+            this.skeletonMode = false;
+            this.interactionReady = false;
+            this.currentQuestion = this.createQuestionState();
+            this.aiRecommendationExpanded = false;
+            this.aiRecommendationApplied = false;
+            this.aiRecommendationPrevSelection = null;
+            this.thinkingStage = {
+                active: true,
+                stage_index: 0,
+                stage_name: '分析回答',
+                message,
+                progress: 20
+            };
+            this.startTipRotation();
+        },
+
+        clearInterviewLoadingState() {
+            this.loadingQuestion = false;
+            this.skeletonMode = false;
+            this.thinkingStage = null;
+            this.stopTipRotation();
+        },
+
         async openSession(sessionId) {
+            const openRequestId = this.sessionOpenRequestId + 1;
+            this.sessionOpenRequestId = openRequestId;
+            const sessionPlaceholder = this.buildInterviewSessionPlaceholder(sessionId);
+            const hasStartedInterview = Number(sessionPlaceholder?.interview_count || 0) > 0
+                || (Array.isArray(sessionPlaceholder?.interview_log) && sessionPlaceholder.interview_log.length > 0);
             try {
+                this.currentSession = sessionPlaceholder;
+                this.resetReportGenerationFeedback();
+                this.updateDimensionsFromSession(this.currentSession);
+                this.stopSessionsAutoRefresh();
+                this.currentView = 'interview';
+                this.selectedAnswers = [];
+                this.rationaleText = '';
+                this.otherAnswerText = '';
+                this.otherSelected = false;
+                this.resetSingleSelectDisambiguation();
+                const predictedNextDim = this.getNextIncompleteDimension();
+                this.currentDimension = predictedNextDim || this.dimensionOrder[0] || 'customer_needs';
+                if (hasStartedInterview && predictedNextDim) {
+                    this.enterInterviewLoadingState('正在读取会话与定位下一题');
+                } else if (!predictedNextDim && hasStartedInterview) {
+                    this.clearInterviewLoadingState();
+                    this.currentStep = 2;
+                    this.currentQuestion = this.createQuestionState();
+                    this.aiRecommendationExpanded = false;
+                    this.aiRecommendationApplied = false;
+                    this.aiRecommendationPrevSelection = null;
+                } else {
+                    this.clearInterviewLoadingState();
+                    this.currentStep = 0;
+                }
+                this.scheduleAppShellSnapshotPersist();
+
                 this.currentSession = await this.apiCall(`/sessions/${sessionId}`);
+                if (openRequestId !== this.sessionOpenRequestId) {
+                    return;
+                }
                 this.resetReportGenerationFeedback();
                 this.updateDimensionsFromSession(this.currentSession);
                 this.stopSessionsAutoRefresh();
@@ -5275,6 +5545,7 @@ function deepVision() {
                 const nextDim = this.getNextIncompleteDimension();
                 if (!nextDim && this.currentSession.interview_log.length > 0) {
                     // 所有维度已完成，直接进入确认阶段
+                    this.clearInterviewLoadingState();
                     this.currentStep = 2;
                     this.currentDimension = this.dimensionOrder[this.dimensionOrder.length - 1];
                     this.currentQuestion = this.createQuestionState();
@@ -5285,15 +5556,24 @@ function deepVision() {
                     // 有未完成的维度，继续访谈流程
                     this.currentStep = 1;
                     this.currentDimension = nextDim;
-                    await this.fetchNextQuestion();
+                    await this.fetchNextQuestion({ force: true });
                 } else {
                     // 还没开始访谈
+                    this.clearInterviewLoadingState();
                     this.currentStep = 0;
                     this.currentDimension = this.dimensionOrder[0] || 'customer_needs';
                 }
 
-                await this.restoreReportGenerationState(this.currentSession?.session_id || '');
+                void this.restoreReportGenerationState(this.currentSession?.session_id || '');
+                this.scheduleAppShellSnapshotPersist();
             } catch (error) {
+                if (openRequestId !== this.sessionOpenRequestId) {
+                    return;
+                }
+                this.clearInterviewLoadingState();
+                this.currentView = 'sessions';
+                this.currentSession = null;
+                this.refreshSessionsView();
                 this.showToast('加载会话失败', 'error');
             }
         },
@@ -6178,7 +6458,7 @@ function deepVision() {
         },
 
         async fetchNextQuestion(options = {}) {
-            if (this.loadingQuestion) return;
+            if (this.loadingQuestion && !options?.force) return;
             const requestId = ++this.questionRequestId;
             let activeRequestAbortController = null;
             const preferPrefetch = !!options?.preferPrefetch;
@@ -6314,7 +6594,7 @@ function deepVision() {
                     };
 
                     // 等待 600ms 让用户看到完成动画，然后再切换到新问题
-                    await new Promise(resolve => setTimeout(resolve, 600));
+                    await new Promise(resolve => setTimeout(resolve, QUESTION_SUCCESS_TRANSITION_DELAY_MS));
 
                     // 关闭加载状态
                     this.loadingQuestion = false;
@@ -7060,6 +7340,7 @@ function deepVision() {
             if (!this.canSubmitAnswer()) return;
 
             this.submitting = true;
+            let handedOffToNextQuestion = false;
 
             const config = typeof SITE_CONFIG !== 'undefined' ? SITE_CONFIG.limits : null;
             const answerMaxLength = config?.answerMaxLength || 5000;
@@ -7134,6 +7415,18 @@ function deepVision() {
             }
 
             try {
+                this.loadingQuestion = true;
+                this.skeletonMode = false;
+                this.interactionReady = false;
+                this.startTipRotation();
+                this.thinkingStage = {
+                    active: true,
+                    stage_index: 0,
+                    stage_name: '分析回答',
+                    message: '正在提交当前回答并准备下一题',
+                    progress: 18
+                };
+
                 const updatedSession = await this.apiCall(
                     `/sessions/${this.currentSession.session_id}/submit-answer`,
                     {
@@ -7180,6 +7473,7 @@ function deepVision() {
                     if (nextDim) {
                         this.currentDimension = nextDim;
                     } else {
+                        this.clearInterviewLoadingState();
                         this.currentQuestion = this.createQuestionState();
                         this.aiRecommendationExpanded = false;
                         this.aiRecommendationApplied = false;
@@ -7189,13 +7483,20 @@ function deepVision() {
                     }
                 }
 
-                await this.fetchNextQuestion({ preferPrefetch: true });
+                handedOffToNextQuestion = true;
+                await this.fetchNextQuestion({ preferPrefetch: true, force: true });
 
             } catch (error) {
+                this.clearInterviewLoadingState();
+                this.interactionReady = true;
                 console.error('提交回答错误:', error);
                 this.showToast(`提交回答失败: ${error.message}`, 'error');
             } finally {
                 this.submitting = false;
+                if (!handedOffToNextQuestion) {
+                    this.clearInterviewLoadingState();
+                    this.interactionReady = true;
+                }
             }
         },
 
@@ -8009,12 +8310,19 @@ function deepVision() {
         },
 
         // ============ 报告查看 ============
-        async loadReports() {
+        async loadReports(options = {}) {
+            const {
+                suppressErrorToast = false
+            } = options;
             try {
                 this.reports = await this.apiCall('/reports?page=1&page_size=100');
+                this.reportsLoaded = true;
                 this.filterReports();
             } catch (error) {
                 console.error('加载报告失败:', error);
+                if (!suppressErrorToast) {
+                    this.showToast('加载报告列表失败', 'error');
+                }
             }
         },
 
@@ -11608,6 +11916,10 @@ function deepVision() {
             if (view !== 'sessions') {
                 this.stopSessionsAutoRefresh();
             }
+            if (view !== 'interview') {
+                this.sessionOpenRequestId += 1;
+                this.clearInterviewLoadingState();
+            }
             this.currentView = view;
             this.resetSelectedReportDetail();
             this.exitSessionBatchMode();
@@ -11616,21 +11928,23 @@ function deepVision() {
                 this.resetReportGenerationFeedback();
                 this.refreshSessionsView();
             } else if (view === 'reports') {
-                this.loadReports();
+                this.refreshReportsView();
             } else if (view === 'admin') {
                 void this.ensureAdminDataForTab(this.adminTab || 'overview');
             }
+            this.scheduleAppShellSnapshotPersist();
         },
 
         exitInterview() {
             if (!this.authReady) return;
             // 清理所有定时器，防止内存泄漏
+            this.sessionOpenRequestId += 1;
             this.questionRequestId += 1;
             this.abortQuestionRequest();
             this.stopQuestionRequestGuard();
             this.stopThinkingPolling();
             this.stopWebSearchPolling();
-            this.loadingQuestion = false;
+            this.clearInterviewLoadingState();
             this.resetReportGenerationFeedback();
             this.submitting = false;
 
@@ -11915,6 +12229,7 @@ function deepVision() {
                     this.resetVirtualScroll();
                 });
             }
+            this.scheduleAppShellSnapshotPersist();
         },
 
         // 报告搜索输入防抖
@@ -11970,6 +12285,7 @@ function deepVision() {
                     this.resetVirtualReportScroll();
                 });
             }
+            this.scheduleAppShellSnapshotPersist();
         },
 
         buildReportItems(reports) {
