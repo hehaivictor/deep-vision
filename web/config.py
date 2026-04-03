@@ -10,23 +10,23 @@ Deep Vision 策略配置
 # ============ 模型角色分工 ===========
 # 先看这一组，就能知道问题、报告、摘要、评分各自走哪个模型。
 # 作用：设置全局默认模型名，未单独指定 lane 模型时会回落到这里。
-MODEL_NAME = "glm-5"  # 默认主模型（问题链路）
+MODEL_NAME = "doubao-seed-2-0-pro"  # 默认主模型（问题链路）
 # 作用：设置问题生成链路使用的模型名称。
 QUESTION_MODEL_NAME = MODEL_NAME
 # 作用：设置深度访谈模式下 question lane 的专用模型名称。
-QUESTION_MODEL_NAME_DEEP = "glm-5"
+QUESTION_MODEL_NAME_DEEP = "deepseek-ai/DeepSeek-V3.2"
 # 作用：设置报告主链路使用的模型名称。
-REPORT_MODEL_NAME = "glm-5"
+REPORT_MODEL_NAME = "deepseek-ai/DeepSeek-V3.2"
 # 作用：设置报告草案阶段使用的模型名称。
 REPORT_DRAFT_MODEL_NAME = REPORT_MODEL_NAME
 # 作用：设置报告审稿阶段使用的模型名称。
-REPORT_REVIEW_MODEL_NAME = "glm-5"
+REPORT_REVIEW_MODEL_NAME = "doubao-seed-2-0-pro"
 # 作用：设置摘要链路使用的模型名称。
-SUMMARY_MODEL_NAME = "glm-4.7"
+SUMMARY_MODEL_NAME = "deepseek-ai/DeepSeek-V3.2"
 # 作用：设置搜索决策链路使用的模型名称。
-SEARCH_DECISION_MODEL_NAME = SUMMARY_MODEL_NAME
+SEARCH_DECISION_MODEL_NAME = "doubao-seed-2.0-code"
 # 作用：设置评分链路使用的模型名称。
-ASSESSMENT_MODEL_NAME = SEARCH_DECISION_MODEL_NAME
+ASSESSMENT_MODEL_NAME = "deepseek-ai/DeepSeek-V3.2"
 
 # ============ AI 客户端通用策略 ===========
 # 客户端启动方式与接入开关请放在 .env；这里只保留非敏感运行默认值。
@@ -44,13 +44,13 @@ MAX_TOKENS_QUESTION = 2200
 # 作用：设置报告主生成链路单次响应允许输出的最大 token 数。
 MAX_TOKENS_REPORT = 8000
 # 作用：设置摘要链路单次响应允许输出的最大 token 数。
-MAX_TOKENS_SUMMARY = 700
+MAX_TOKENS_SUMMARY = 600
 # 作用：设置搜索决策首轮轻量判断阶段允许输出的最大 token 数。
 SEARCH_DECISION_FIRST_MAX_TOKENS = 220
 # 作用：设置搜索决策重试阶段允许输出的最大 token 数。
 SEARCH_DECISION_RETRY_MAX_TOKENS = 420
 # 作用：设置单题评分调用允许输出的最大 token 数。
-ASSESSMENT_SCORE_MAX_TOKENS = 256
+ASSESSMENT_SCORE_MAX_TOKENS = 160
 # 作用：设置会话上下文中保留的最近完整问答轮数。
 CONTEXT_WINDOW_SIZE = 5
 # 作用：设置触发历史摘要前需要累积的问答条数阈值。
@@ -163,7 +163,7 @@ QUESTION_HEDGE_ADAPTIVE_TIMEOUT_RATIO = 0.45
 # 作用：按 lane 覆盖问题快档超时时间。
 QUESTION_FAST_TIMEOUT_BY_LANE = {"question": 8.0, "summary": 6.0, "report": 12.0, "search_decision": 6.0}
 # 作用：按 lane 覆盖问题快档最大 token 数。
-QUESTION_FAST_MAX_TOKENS_BY_LANE = {"question": 900, "summary": 650, "report": 1200, "search_decision": 420}
+QUESTION_FAST_MAX_TOKENS_BY_LANE = {"question": 900, "summary": 600, "report": 1200, "search_decision": 420}
 
 # 作用：控制发布期问题链路是否默认启用保守降档策略。
 QUESTION_RELEASE_CONSERVATIVE_MODE = False
@@ -204,9 +204,9 @@ REPORT_V3_PROFILE = "balanced"
 # 作用：设置报告链路默认调用超时时间（秒）。
 REPORT_API_TIMEOUT = 240.0
 # 作用：设置报告草案阶段的调用超时时间（秒）。
-REPORT_DRAFT_API_TIMEOUT = 130.0
+REPORT_DRAFT_API_TIMEOUT = 120.0
 # 作用：设置报告审稿阶段的调用超时时间（秒）。
-REPORT_REVIEW_API_TIMEOUT = 70.0
+REPORT_REVIEW_API_TIMEOUT = 60.0
 # 作用：设置报告草案阶段允许生成的最大 token 数，留空则按档位默认。
 REPORT_V3_DRAFT_MAX_TOKENS = 5200
 # 作用：设置报告草案阶段可注入的事实证据上限。
