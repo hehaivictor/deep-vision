@@ -13,7 +13,12 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 SERVER_PATH = ROOT_DIR / "web" / "server.py"
 
 
-def load_server_module(config_overrides=None, env_overrides=None, process_env_overrides=None):
+def load_server_module(
+    config_overrides=None,
+    env_overrides=None,
+    process_env_overrides=None,
+    env_file_overlays=None,
+):
     config_stub = types.ModuleType("config")
     config_stub.ANTHROPIC_API_KEY = ""
     config_stub.ANTHROPIC_BASE_URL = ""
@@ -53,13 +58,19 @@ def load_server_module(config_overrides=None, env_overrides=None, process_env_ov
     previous_web_package = sys.modules.get("web")
     previous_web_package_config = getattr(previous_web_package, "config", None) if previous_web_package else None
 
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as env_file:
-        for key, value in (env_overrides or {}).items():
-            env_file.write(f"{key}={value}\n")
-        env_path = env_file.name
+    overlay_payloads = list(env_file_overlays or [])
+    if not overlay_payloads:
+        overlay_payloads = [env_overrides or {}]
+
+    env_paths: list[str] = []
+    for payload in overlay_payloads:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as env_file:
+            for key, value in (payload or {}).items():
+                env_file.write(f"{key}={value}\n")
+            env_paths.append(env_file.name)
 
     try:
-        patched_env = {"DEEPVISION_ENV_FILE": env_path}
+        patched_env = {"DEEPVISION_ENV_FILE": os.pathsep.join(env_paths)}
         patched_env.update(process_env_overrides or {})
         with patch.dict(os.environ, patched_env, clear=True):
             sys.modules["config"] = config_stub
@@ -68,7 +79,8 @@ def load_server_module(config_overrides=None, env_overrides=None, process_env_ov
                 setattr(previous_web_package, "config", config_stub)
             spec.loader.exec_module(module)
     finally:
-        Path(env_path).unlink(missing_ok=True)
+        for env_path in env_paths:
+            Path(env_path).unlink(missing_ok=True)
         if previous_config is None:
             sys.modules.pop("config", None)
         else:
@@ -87,6 +99,27 @@ def load_server_module(config_overrides=None, env_overrides=None, process_env_ov
 
 
 class RuntimeTokenConfigTests(unittest.TestCase):
+    def test_explicit_env_file_supports_base_and_overlay(self):
+        module = load_server_module(
+            env_file_overlays=[
+                {
+                    "DEBUG_MODE": "true",
+                    "SECRET_KEY": "base-secret",
+                    "INSTANCE_SCOPE_KEY": "base-scope",
+                    "SMS_PROVIDER": "mock",
+                },
+                {
+                    "SECRET_KEY": "overlay-secret",
+                    "INSTANCE_SCOPE_KEY": "overlay-scope",
+                },
+            ]
+        )
+
+        self.assertEqual(module.app.secret_key, "overlay-secret")
+        self.assertEqual(module.INSTANCE_SCOPE_KEY, "overlay-scope")
+        self.assertEqual(len(module.LOADED_ENV_FILES), 2)
+        self.assertEqual(module.get_admin_env_file_path().resolve(), Path(module.LOADED_ENV_FILES[-1]).resolve())
+
     def test_production_import_rejects_placeholder_secret_key(self):
         with self.assertRaises(RuntimeError) as ctx:
             load_server_module(

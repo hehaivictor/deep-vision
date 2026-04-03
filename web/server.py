@@ -103,13 +103,15 @@ def load_env_files() -> dict:
     project_dir = current_dir.parent
     explicit_env_file = os.environ.get("DEEPVISION_ENV_FILE", "").strip()
     override_existing = str(os.environ.get("DEEPVISION_ENV_OVERRIDE", "")).strip().lower() in {"1", "true", "yes", "on", "y"}
+    preexisting_env_keys = set(os.environ.keys())
 
     candidates: list[Path] = []
     if explicit_env_file:
-        explicit_path = Path(explicit_env_file).expanduser()
-        if not explicit_path.is_absolute():
-            explicit_path = (project_dir / explicit_path).resolve()
-        candidates.append(explicit_path)
+        for raw_path in [part.strip() for part in explicit_env_file.split(os.pathsep) if part.strip()]:
+            explicit_path = Path(raw_path).expanduser()
+            if not explicit_path.is_absolute():
+                explicit_path = (project_dir / explicit_path).resolve()
+            candidates.append(explicit_path)
     else:
         candidates.extend([
             current_dir / ".env",
@@ -130,7 +132,7 @@ def load_env_files() -> dict:
                 if not parsed:
                     continue
                 key, value = parsed
-                if not override_existing and key in os.environ:
+                if not override_existing and key in preexisting_env_keys:
                     continue
                 os.environ[key] = value
                 loaded_keys.add(key)
@@ -153,6 +155,7 @@ def load_env_files() -> dict:
         "loaded_key_count": len(loaded_keys),
         "override_existing": bool(override_existing),
         "explicit_env_file": explicit_env_file,
+        "explicit_env_files": [str(path) for path in candidates] if explicit_env_file else [],
     }
 
 
@@ -160,6 +163,18 @@ ENV_LOAD_METADATA = load_env_files()
 LOADED_ENV_FILES = list(ENV_LOAD_METADATA.get("loaded_files", []) or [])
 LOADED_ENV_KEYS = set(ENV_LOAD_METADATA.get("loaded_keys", set()) or set())
 LOADED_ENV_KEY_COUNT = int(ENV_LOAD_METADATA.get("loaded_key_count", 0) or 0)
+
+runtime_startup_state = {
+    "initialized": False,
+    "reason": "",
+    "started_at": "",
+    "completed_at": "",
+    "total_ms": 0.0,
+    "phases": [],
+    "failed_phase": "",
+    "error": "",
+}
+runtime_startup_lock = threading.Lock()
 
 runtime_config = None
 runtime_config_source = ""
@@ -2332,8 +2347,6 @@ OBJECT_STORAGE_PRESENTATION_MIGRATION_LOCK = threading.Lock()
 OBJECT_STORAGE_PRESENTATION_MIGRATED = False
 OBJECT_STORAGE_OPS_ARCHIVE_LOCK = threading.Lock()
 OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED = False
-OBJECT_STORAGE_STARTUP_TASKS_LOCK = threading.Lock()
-OBJECT_STORAGE_STARTUP_TASKS_STARTED = False
 DELETED_REPORTS_FILE = REPORTS_DIR / ".deleted_reports.json"
 DELETED_DOCS_FILE = DATA_DIR / ".deleted_docs.json"  # 软删除记录文件
 REPORT_OWNERS_FILE = REPORTS_DIR / ".owners.json"
@@ -3084,9 +3097,9 @@ ADMIN_SETTINGS_FIELD_INDEX: dict[str, dict[str, dict[str, Any]]] = {
 
 
 def get_admin_env_file_path() -> Path:
-    explicit_env_file = str(ENV_LOAD_METADATA.get("explicit_env_file") or "").strip()
-    if explicit_env_file:
-        env_path = Path(explicit_env_file).expanduser()
+    explicit_env_files = list(ENV_LOAD_METADATA.get("explicit_env_files") or [])
+    if explicit_env_files:
+        env_path = Path(str(explicit_env_files[-1]).strip()).expanduser()
         if not env_path.is_absolute():
             env_path = (SKILL_DIR / env_path).resolve()
         return env_path
@@ -9560,6 +9573,96 @@ def init_license_db() -> None:
         print("🔐 已为 License 库初始化共享签名密钥")
 
 
+def _format_runtime_startup_summary(summary: dict) -> str:
+    phase_items = []
+    for phase in list(summary.get("phases", []) or []):
+        name = str(phase.get("name") or "").strip()
+        elapsed_ms = float(phase.get("elapsed_ms", 0.0) or 0.0)
+        if not name:
+            continue
+        phase_items.append(f"{name}={elapsed_ms:.1f}ms")
+    phase_text = "，".join(phase_items) if phase_items else "无阶段明细"
+    total_ms = float(summary.get("total_ms", 0.0) or 0.0)
+    reason = str(summary.get("reason") or "").strip() or "startup"
+    return f"reason={reason}，total={total_ms:.1f}ms，{phase_text}"
+
+
+def _log_runtime_startup_summary(summary: dict) -> None:
+    if summary.get("initialized"):
+        print(f"启动初始化完成：{_format_runtime_startup_summary(summary)}")
+        return
+    failed_phase = str(summary.get("failed_phase") or "").strip() or "unknown"
+    error_text = str(summary.get("error") or "").strip() or "未知错误"
+    print(
+        "启动初始化失败："
+        + _format_runtime_startup_summary(summary)
+        + f"，failed_phase={failed_phase}，error={error_text}"
+    )
+
+
+def ensure_runtime_startup_initialized(
+    *,
+    force: bool = False,
+    reason: str = "startup",
+    emit_logs: bool = False,
+) -> dict:
+    with runtime_startup_lock:
+        if runtime_startup_state.get("initialized") and not force:
+            return copy.deepcopy(runtime_startup_state)
+
+        started_at_iso = datetime.now(timezone.utc).isoformat()
+        started_at = _time.perf_counter()
+        phases: list[dict[str, object]] = []
+        current_phase = ""
+
+        try:
+            for phase_name, phase_func in (
+                ("auth_db", init_auth_db),
+                ("license_db", init_license_db),
+                ("meta_index_schema", ensure_meta_index_schema),
+            ):
+                current_phase = phase_name
+                phase_started_at = _time.perf_counter()
+                phase_func()
+                phases.append(
+                    {
+                        "name": phase_name,
+                        "elapsed_ms": round((_time.perf_counter() - phase_started_at) * 1000.0, 2),
+                    }
+                )
+        except Exception as exc:
+            summary = {
+                "initialized": False,
+                "reason": str(reason or "startup"),
+                "started_at": started_at_iso,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "total_ms": round((_time.perf_counter() - started_at) * 1000.0, 2),
+                "phases": phases,
+                "failed_phase": current_phase,
+                "error": str(exc),
+            }
+            runtime_startup_state.update(summary)
+            if emit_logs:
+                _log_runtime_startup_summary(summary)
+            raise
+
+        summary = {
+            "initialized": True,
+            "reason": str(reason or "startup"),
+            "started_at": started_at_iso,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "total_ms": round((_time.perf_counter() - started_at) * 1000.0, 2),
+            "phases": phases,
+            "failed_phase": "",
+            "error": "",
+        }
+        runtime_startup_state.update(summary)
+
+    if emit_logs:
+        _log_runtime_startup_summary(summary)
+    return copy.deepcopy(summary)
+
+
 def normalize_phone_number(raw_phone: str) -> str:
     normalized = re.sub(r"[\s-]", "", raw_phone or "")
     if normalized.startswith("+86"):
@@ -12564,8 +12667,10 @@ def is_license_protected_route(path: str) -> bool:
 
 
 @app.before_request
-def schedule_background_startup_tasks():
-    schedule_object_storage_startup_tasks()
+def ensure_runtime_startup_ready_for_request():
+    if runtime_startup_state.get("initialized"):
+        return None
+    ensure_runtime_startup_initialized(reason="first_request_fallback", emit_logs=True)
     return None
 
 
@@ -12603,11 +12708,6 @@ def enforce_auth_for_protected_routes():
             }), 403
 
     return None
-
-
-init_auth_db()
-init_license_db()
-
 
 def load_presentation_map() -> dict:
     if _use_pure_cloud_report_storage():
@@ -12869,26 +12969,39 @@ def get_presentation_record(report_filename: str) -> Optional[dict]:
     return record if isinstance(record, dict) else None
 
 
-def migrate_presentation_assets_to_object_storage_if_needed() -> None:
+def migrate_presentation_assets_to_object_storage_if_needed(*, force: bool = False) -> dict:
     global OBJECT_STORAGE_PRESENTATION_MIGRATED
-    if OBJECT_STORAGE_PRESENTATION_MIGRATED or not is_object_storage_enabled():
-        return
+    summary = {
+        "enabled": bool(is_object_storage_enabled()),
+        "scanned": 0,
+        "uploaded": 0,
+        "already_migrated": bool(OBJECT_STORAGE_PRESENTATION_MIGRATED),
+    }
+    if not is_object_storage_enabled():
+        return summary
+    if OBJECT_STORAGE_PRESENTATION_MIGRATED and not force:
+        return summary
     available, error_message = ensure_object_storage_sdk_available()
     if not available:
+        summary["error"] = error_message or "当前环境未安装 boto3，请先安装 boto3"
         if ENABLE_DEBUG_LOG:
             print(f"⚠️ 演示文件迁移到对象存储已跳过: {error_message}")
-        return
+        return summary
     with OBJECT_STORAGE_PRESENTATION_MIGRATION_LOCK:
-        if OBJECT_STORAGE_PRESENTATION_MIGRATED:
-            return
+        if OBJECT_STORAGE_PRESENTATION_MIGRATED and not force:
+            summary["already_migrated"] = True
+            return summary
         try:
             with PRESENTATION_MAP_LOCK:
                 with named_file_lock("sidecar", "presentation_map"):
                     data = load_presentation_map()
                     mutated = False
                     for report_name, record in list(data.items()):
-                        if not isinstance(record, dict) or record.get("object_key"):
+                        if not isinstance(record, dict):
                             continue
+                        if record.get("object_key"):
+                            continue
+                        summary["scanned"] += 1
                         path_str = str(record.get("path") or "").strip()
                         if not path_str:
                             continue
@@ -12915,13 +13028,17 @@ def migrate_presentation_assets_to_object_storage_if_needed() -> None:
                         record["size"] = uploaded["size"]
                         record["filename"] = str(record.get("filename") or file_path.name)
                         mutated = True
+                        summary["uploaded"] += 1
                     if mutated:
                         save_presentation_map(data)
         except Exception as exc:
+            summary["error"] = str(exc)
             if ENABLE_DEBUG_LOG:
                 print(f"⚠️ 演示文件迁移到对象存储失败: {exc}")
-            return
+            return summary
         OBJECT_STORAGE_PRESENTATION_MIGRATED = True
+        summary["already_migrated"] = True
+        return summary
 
 
 def is_presentation_execution_stopped(report_filename: str, execution_id: str = "") -> bool:
@@ -13428,58 +13545,46 @@ def list_archived_ownership_migrations(limit: int = 50) -> list[dict]:
     return items[: max(1, int(limit or 50))]
 
 
-def migrate_ops_archives_to_object_storage_if_needed() -> None:
+def migrate_ops_archives_to_object_storage_if_needed(*, force: bool = False) -> dict:
     global OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED
-    if OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED or not is_object_storage_enabled():
-        return
+    summary = {
+        "enabled": bool(is_object_storage_enabled()),
+        "roots": [],
+        "uploaded": 0,
+        "already_migrated": bool(OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED),
+    }
+    if not is_object_storage_enabled():
+        return summary
+    if OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED and not force:
+        return summary
     available, error_message = ensure_object_storage_sdk_available()
     if not available:
+        summary["error"] = error_message or "当前环境未安装 boto3，请先安装 boto3"
         if ENABLE_DEBUG_LOG:
             _safe_log(f"⚠️ 运维归档上传已跳过: {error_message}")
-        return
+        return summary
     with OBJECT_STORAGE_OPS_ARCHIVE_LOCK:
-        if OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED:
-            return
+        if OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED and not force:
+            summary["already_migrated"] = True
+            return summary
         total_synced = 0
         for root_dir in (
             DATA_DIR / "operations",
             get_restore_backups_root(),
             get_session_backups_root(),
         ):
-            total_synced += sync_ops_archive_directory_to_object_storage(root_dir)
+            synced = sync_ops_archive_directory_to_object_storage(root_dir)
+            summary["roots"].append({
+                "path": str(root_dir),
+                "uploaded": int(synced or 0),
+            })
+            total_synced += synced
         OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED = True
+        summary["uploaded"] = int(total_synced or 0)
+        summary["already_migrated"] = True
         if ENABLE_DEBUG_LOG and total_synced > 0:
             _safe_log(f"✅ 已归档运维备份与回滚产物到对象存储: {total_synced} 个文件")
-
-
-def _run_object_storage_startup_tasks() -> None:
-    if not is_object_storage_enabled():
-        return
-    try:
-        migrate_presentation_assets_to_object_storage_if_needed()
-    except Exception as exc:
-        if ENABLE_DEBUG_LOG:
-            print(f"⚠️ 对象存储演示文件启动迁移失败: {exc}")
-    try:
-        migrate_ops_archives_to_object_storage_if_needed()
-    except Exception as exc:
-        if ENABLE_DEBUG_LOG:
-            print(f"⚠️ 对象存储运维归档启动迁移失败: {exc}")
-
-
-def schedule_object_storage_startup_tasks() -> None:
-    global OBJECT_STORAGE_STARTUP_TASKS_STARTED
-    if not is_object_storage_enabled():
-        return
-    with OBJECT_STORAGE_STARTUP_TASKS_LOCK:
-        if OBJECT_STORAGE_STARTUP_TASKS_STARTED:
-            return
-        OBJECT_STORAGE_STARTUP_TASKS_STARTED = True
-    threading.Thread(
-        target=_run_object_storage_startup_tasks,
-        name="object-storage-startup-tasks",
-        daemon=True,
-    ).start()
+        return summary
 
 
 def update_thinking_status(session_id: str, stage: str, has_search: bool = True):
@@ -46807,6 +46912,11 @@ class SelectiveAccessLogRequestHandler(WSGIRequestHandler):
         return super().log_request(code, size)
 
 if __name__ == '__main__':
+    should_init_in_main = (not DEBUG_MODE) or str(os.environ.get("WERKZEUG_RUN_MAIN", "")).strip().lower() in {"1", "true", "yes", "on"}
+    if should_init_in_main:
+        ensure_runtime_startup_initialized(reason="dev_server_start", emit_logs=True)
+    else:
+        print("启动初始化: 调试重载父进程跳过，等待子进程执行。")
     ai_bootstrap_snapshot = get_ai_client_bootstrap_snapshot()
     ai_state_reason = str(ai_bootstrap_snapshot.get("reason", "") or "")
     if claude_client:
@@ -46833,6 +46943,8 @@ if __name__ == '__main__':
             else "⚠️  未启用"
         )
     )
+    if is_object_storage_enabled():
+        print("对象存储历史迁移: 已移出 Web 启动链路，需手动运行 scripts/sync_object_storage_history.py")
     question_endpoint = QUESTION_BASE_URL or "(Anthropic 官方默认地址)"
     question_deep_endpoint = QUESTION_DEEP_BASE_URL or question_endpoint
     report_endpoint = REPORT_BASE_URL or "(Anthropic 官方默认地址)"

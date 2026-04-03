@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "cfc1fc4",
+  "committedAt": "2026-04-03T20:17:13+08:00",
+  "versionType": "minor",
+  "title": "收口启动链路并拆分环境基线",
+  "changes": [
+    "重构：将数据库初始化从 import 副作用改为显式 prestart/startup 执行，并补充分段耗时日志",
+    "配置：新增 local/cloud 环境基线与启动脚本，支持多环境文件链式加载",
+    "存储：将对象存储历史补传移出 Web 启动链路，新增离线补传脚本",
+    "文档：补充完整迁移手册并更新现有迁移与启动说明",
+    "测试：更新运行时配置验证，覆盖多环境文件叠加场景"
+  ],
+  "changedFiles": [
+    ".gitignore",
+    "README.md",
+    "docs/external-local-data-cloud-import-guide.md",
+    "docs/full-data-migration-runbook.md",
+    "scripts/prestart_web.py",
+    "scripts/run_gunicorn.py",
+    "scripts/start-cloud-dev.sh",
+    "scripts/start-local-dev.sh",
+    "scripts/sync_object_storage_history.py",
+    "tests/test_runtime_token_config.py",
+    "web/.env.cloud",
+    "web/.env.example",
+    "web/.env.local",
+    "web/server.py"
+  ]
+}

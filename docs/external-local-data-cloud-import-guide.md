@@ -2,6 +2,16 @@
 
 本文档用于指导第三方将本地 `data/` 历史数据导入到当前 DeepVision 云端环境。
 
+如果你要执行“完整迁移”，包括：
+
+- 业务数据导入
+- 历史演示稿与运维归档补齐到对象存储
+- 迁移后验证与回滚
+
+请优先阅读：
+
+- [docs/full-data-migration-runbook.md](./full-data-migration-runbook.md)
+
 默认行为说明：
 
 - 脚本会自动把导入数据的 `instance_scope_key` 改写成当前云端实例的 scope。

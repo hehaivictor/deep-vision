@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 
 
@@ -22,6 +23,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 SERVER_SCRIPT = ROOT_DIR / "web" / "server.py"
 GUNICORN_CONFIG = "web/gunicorn.conf.py"
 WSGI_APP = "web.wsgi:app"
+PRESTART_SCRIPT = "scripts/prestart_web.py"
 
 
 def parse_server_dependencies() -> list[str]:
@@ -40,10 +42,21 @@ def parse_server_dependencies() -> list[str]:
     return deps
 
 
-def build_command(extra_args: list[str]) -> list[str]:
+def build_uv_prefix() -> list[str]:
     cmd = ["uv", "run"]
     for dep in parse_server_dependencies():
         cmd.extend(["--with", dep])
+    return cmd
+
+
+def build_prestart_command() -> list[str]:
+    cmd = build_uv_prefix()
+    cmd.extend(["python", PRESTART_SCRIPT])
+    return cmd
+
+
+def build_command(extra_args: list[str]) -> list[str]:
+    cmd = build_uv_prefix()
     cmd.extend(["--with", "gunicorn", "gunicorn", "-c", GUNICORN_CONFIG])
     cmd.extend(extra_args)
     cmd.append(WSGI_APP)
@@ -57,11 +70,18 @@ def main(argv: list[str]) -> int:
         return 1
 
     os.chdir(ROOT_DIR)
+    prestart_cmd = build_prestart_command()
     cmd = build_command(argv[1:])
 
     print("启动 DeepVision 生产模式（Gunicorn）")
     print("依赖来源: web/server.py inline dependency metadata + gunicorn")
     print(f"配置文件: {GUNICORN_CONFIG}")
+    print("预启动初始化命令:")
+    print("  " + " ".join(shlex.quote(part) for part in prestart_cmd))
+    prestart_result = subprocess.run(prestart_cmd, check=False)
+    if prestart_result.returncode != 0:
+        print(f"预启动初始化失败，退出码: {prestart_result.returncode}", file=sys.stderr)
+        return int(prestart_result.returncode or 1)
     print("执行命令:")
     print("  " + " ".join(shlex.quote(part) for part in cmd))
 
