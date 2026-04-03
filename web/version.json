@@ -1,7 +1,18 @@
 {
-  "version": "7.3.0",
+  "version": "8.0.0",
   "releaseDate": "2026-04-03",
   "changelog": [
+    {
+      "version": "8.0.0",
+      "date": "2026-04-03",
+      "type": "major",
+      "title": "简化本地环境切换方式",
+      "changes": [
+        "配置：只保留 web/.env.local 与 web/.env.cloud 两套本机环境文件，并将其从版本库移除",
+        "启动：本地与云端联调脚本改为单文件加载，不再支持 .private 和旧 web/.env 回退",
+        "文档：统一 README、迁移手册、实例隔离与前端配置说明中的 env 使用口径"
+      ]
+    },
     {
       "version": "7.3.0",
       "date": "2026-04-03",
