@@ -1,7 +1,18 @@
 {
-  "version": "7.1.0",
-  "releaseDate": "2026-04-02",
+  "version": "7.2.0",
+  "releaseDate": "2026-04-03",
   "changelog": [
+    {
+      "version": "7.2.0",
+      "date": "2026-04-03",
+      "type": "minor",
+      "title": "新增 GLM 运行策略配置",
+      "changes": [
+        "配置：新增 web/config.py，收敛 glm-5 与 glm-4.7 的问题、报告、摘要和评分模型分工",
+        "参数：提升 assessment token 预算并固化问题快档、竞速与报告链路默认阈值",
+        "运维：将非敏感策略默认值纳入版本库，便于环境切换时统一生效"
+      ]
+    },
     {
       "version": "7.1.0",
       "date": "2026-04-02",
