@@ -3945,6 +3945,7 @@ class ComprehensiveApiTests(unittest.TestCase):
     def test_safe_load_session_applies_report_runtime_meta_from_session_index(self):
         self.server.set_license_enforcement_override(False)
         self._register()
+        self._activate_license(self._generate_license_batch(level_key="standard", note="索引覆盖报告绑定")["licenses"][0]["code"])
         created = self._create_session(topic="索引覆盖报告绑定")
         session_id = created["session_id"]
         session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
@@ -3974,6 +3975,56 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(loaded.get("current_report_updated_at"), "2026-03-31T10:00:00+08:00")
         self.assertEqual(loaded.get("last_report_quality_meta", {}).get("score"), 0.92)
         self.assertEqual(Path(loaded.get("current_report_path", "")).name, report_name)
+
+    def test_safe_load_session_uses_report_store_reference_for_current_report_path(self):
+        self.server.set_license_enforcement_override(False)
+        self._register()
+        self._activate_license(self._generate_license_batch(level_key="standard", note="云端报告路径归一化")["licenses"][0]["code"])
+        created = self._create_session(topic="云端报告路径归一化")
+        session_id = created["session_id"]
+        session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+        session_data = self.server.safe_load_session(session_file)
+        report_name = f"{session_id}-cloud-report.md"
+
+        original_use_cloud_report = self.server._use_pure_cloud_report_storage
+        self.server._use_pure_cloud_report_storage = lambda: True
+        self.addCleanup(setattr, self.server, "_use_pure_cloud_report_storage", original_use_cloud_report)
+
+        self.server.save_report_content_and_sync(report_name, "# 云端报告\n")
+        session_data["current_report_name"] = report_name
+        session_data["current_report_path"] = str((self.server.REPORTS_DIR / report_name).resolve())
+        self.server.save_session_json_and_sync(session_file, session_data)
+
+        loaded = self.server.safe_load_session(session_file)
+
+        self.assertEqual(loaded.get("current_report_name"), report_name)
+        self.assertEqual(loaded.get("current_report_path"), f"report_store://{report_name}")
+        self.assertEqual(Path(loaded.get("current_report_path", "")).name, report_name)
+
+    def test_report_generation_metadata_uses_report_store_reference(self):
+        report_name = "cloud-status-report.md"
+
+        original_use_cloud_report = self.server._use_pure_cloud_report_storage
+        self.server._use_pure_cloud_report_storage = lambda: True
+        self.addCleanup(setattr, self.server, "_use_pure_cloud_report_storage", original_use_cloud_report)
+
+        self.server.save_report_content_and_sync(report_name, "# 云端状态报告\n")
+        self.server.set_report_generation_metadata(
+            "session-cloud-status",
+            {
+                "report_name": report_name,
+                "report_path": str((self.server.REPORTS_DIR / report_name).resolve()),
+                "ai_generated": True,
+            },
+        )
+
+        payload = self.server.build_report_generation_payload(
+            self.server.get_report_generation_record("session-cloud-status")
+        )
+
+        self.assertEqual(payload.get("report_name"), report_name)
+        self.assertEqual(payload.get("report_path"), f"report_store://{report_name}")
+        self.assertEqual(Path(payload.get("report_path", "")).name, report_name)
 
     def test_report_generation_and_report_endpoints(self):
         user = self._register()
@@ -4306,6 +4357,43 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.assertEqual("professional", (payload.get("required_level") or {}).get("key"))
         finally:
             self.server.is_license_protected_route = original_is_license_protected_route
+
+    def test_quick_mode_generate_report_requires_follow_up_for_high_evidence_pick_answer(self):
+        self._register()
+        standard_code = self._generate_license_batch(level_key="standard", note="待补问拦截测试")["licenses"][0]["code"]
+        self._activate_license(standard_code)
+        created = self._create_session(topic="待补问拦截", interview_mode="quick")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        submit_resp = self.client.post(
+            f"/api/sessions/{session_id}/submit-answer",
+            json={
+                "question": "你属于使用 Codex 的哪类用户角色？",
+                "answer": "专业后端开发人员",
+                "dimension": dimension,
+                "options": ["专业后端开发人员", "产品经理", "数据分析师"],
+                "is_follow_up": False,
+                "answer_mode": "pick_with_reason",
+                "requires_rationale": True,
+                "evidence_intent": "high",
+            },
+        )
+        self.assertEqual(submit_resp.status_code, 200, submit_resp.get_data(as_text=True))
+
+        response = self.client.post(
+            f"/api/sessions/{session_id}/generate-report",
+            json={"report_profile": "balanced"},
+        )
+        self.assertEqual(response.status_code, 409, response.get_data(as_text=True))
+        payload = response.get_json() or {}
+        blocker = payload.get("follow_up_blocker") or {}
+        self.assertEqual("follow_up_required_before_report", payload.get("error_code"))
+        self.assertTrue(payload.get("follow_up_required"))
+        self.assertEqual("你属于使用 Codex 的哪类用户角色？", blocker.get("question"))
+        self.assertEqual("high", blocker.get("evidence_intent"))
+        self.assertIn("option_only", blocker.get("follow_up_signals", []))
+        self.assertIn("too_short", blocker.get("follow_up_signals", []))
 
     def test_new_license_replaces_old_license_and_switches_level(self):
         self._register()

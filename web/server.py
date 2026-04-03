@@ -7208,6 +7208,26 @@ def _report_exists(file_name: str) -> bool:
     return report_path.exists() and report_path.is_file()
 
 
+def build_report_storage_reference(file_name: str) -> str:
+    normalized_name = normalize_solution_report_filename(file_name)
+    if not normalized_name:
+        return ""
+
+    local_report_path = REPORTS_DIR / normalized_name
+    if _use_pure_cloud_report_storage():
+        if _load_report_store_row(normalized_name):
+            return f"report_store://{normalized_name}"
+        if local_report_path.exists() and local_report_path.is_file():
+            return str(local_report_path.resolve())
+        return ""
+
+    if local_report_path.exists() and local_report_path.is_file():
+        return str(local_report_path.resolve())
+    if _load_report_store_row(normalized_name):
+        return f"report_store://{normalized_name}"
+    return ""
+
+
 def save_report_content_and_sync(file_name: str, content: str) -> Path:
     normalized_name = normalize_solution_report_filename(file_name)
     if not normalized_name:
@@ -7912,6 +7932,20 @@ def get_session_index_runtime_meta(session_id: str) -> dict:
 def apply_session_index_runtime_meta(session_data: Optional[dict]) -> Optional[dict]:
     if not isinstance(session_data, dict):
         return session_data
+
+    current_report_name = normalize_solution_report_filename(session_data.get("current_report_name", ""))
+    if current_report_name:
+        session_data["current_report_name"] = current_report_name
+        report_reference = build_report_storage_reference(current_report_name)
+        if report_reference:
+            session_data["current_report_path"] = report_reference
+        else:
+            session_data.pop("current_report_path", None)
+
+    last_report_name = normalize_solution_report_filename(session_data.get("last_report_name", ""))
+    if last_report_name:
+        session_data["last_report_name"] = last_report_name
+
     session_id = str(session_data.get("session_id") or "").strip()
     runtime_meta = get_session_index_runtime_meta(session_id)
     if not isinstance(runtime_meta, dict) or not runtime_meta:
@@ -7926,7 +7960,11 @@ def apply_session_index_runtime_meta(session_data: Optional[dict]) -> Optional[d
     current_report_name = normalize_solution_report_filename(runtime_meta.get("current_report_name", ""))
     if current_report_name:
         session_data["current_report_name"] = current_report_name
-        session_data["current_report_path"] = str((REPORTS_DIR / current_report_name).resolve())
+        report_reference = build_report_storage_reference(current_report_name)
+        if report_reference:
+            session_data["current_report_path"] = report_reference
+        else:
+            session_data.pop("current_report_path", None)
     current_report_updated_at = str(runtime_meta.get("current_report_updated_at") or "").strip()
     if current_report_updated_at:
         session_data["current_report_updated_at"] = current_report_updated_at
@@ -13552,6 +13590,12 @@ def set_report_generation_metadata(session_id: str, updates: Optional[dict] = No
         existing = report_generation_status.get(session_id)
         merged = dict(existing) if isinstance(existing, dict) else {}
         merged.update(updates)
+        report_name = normalize_solution_report_filename(merged.get("report_name", ""))
+        if report_name:
+            merged["report_name"] = report_name
+            report_reference = build_report_storage_reference(report_name)
+            if report_reference:
+                merged["report_path"] = report_reference
         merged["updated_at"] = datetime.now(timezone.utc).isoformat()
         report_generation_status[session_id] = merged
 
@@ -13576,6 +13620,13 @@ def build_report_generation_payload(record: Optional[dict]) -> dict:
         except Exception:
             return default
 
+    report_name = normalize_solution_report_filename(record.get("report_name", ""))
+    report_path = str(record.get("report_path", "") or "").strip()
+    if report_name:
+        report_reference = build_report_storage_reference(report_name)
+        if report_reference:
+            report_path = report_reference
+
     payload = {
         "active": bool(record.get("active", False)),
         "processing": bool(record.get("active", False)),
@@ -13594,8 +13645,8 @@ def build_report_generation_payload(record: Optional[dict]) -> dict:
         "action": record.get("action", "generate"),
         "started_at": record.get("started_at", ""),
         "completed_at": record.get("completed_at", ""),
-        "report_name": record.get("report_name", ""),
-        "report_path": record.get("report_path", ""),
+        "report_name": report_name,
+        "report_path": report_path,
         "ai_generated": record.get("ai_generated"),
         "v3_enabled": record.get("v3_enabled"),
         "report_profile": normalize_report_profile_choice(record.get("report_profile", ""), fallback=REPORT_V3_PROFILE),
@@ -33889,6 +33940,7 @@ def run_report_generation_job(
                 filename = build_session_report_filename(session, now=datetime.now())
 
             report_file = save_report_content_and_sync(filename, content)
+            report_reference = build_report_storage_reference(filename) or str(report_file)
             unmark_report_as_deleted(filename)
             set_report_owner_id(filename, user_id)
 
@@ -33900,31 +33952,24 @@ def run_report_generation_job(
                     report_updated_at = get_utc_now()
                     if not is_quality_variant:
                         latest_session["current_report_name"] = filename
-                        latest_session["current_report_path"] = str(report_file)
+                        latest_session["current_report_path"] = report_reference
                         latest_session["current_report_updated_at"] = report_updated_at
                     latest_session["last_report_name"] = filename
                     if isinstance(quality_meta, dict):
                         latest_session["last_report_quality_meta"] = quality_meta
                     if isinstance(session.get("last_report_v3_debug"), dict):
                         latest_session["last_report_v3_debug"] = session["last_report_v3_debug"]
-                    sync_session_index_and_bound_reports(session_file, latest_session)
-                    latest_signature = get_file_signature(session_file)
-                    latest_session_id = str(latest_session.get("session_id") or session_id).strip()
-                    if latest_session_id:
-                        _set_session_payload_cache(
-                            latest_session_id,
-                            session_file.name,
-                            latest_session,
-                            signature=latest_signature,
-                        )
+                    save_session_json_and_sync(session_file, latest_session)
 
                     if not is_quality_variant:
                         session["current_report_name"] = filename
-                        session["current_report_path"] = str(report_file)
+                        session["current_report_path"] = report_reference
                         session["current_report_updated_at"] = latest_session["current_report_updated_at"]
                     session["last_report_name"] = filename
                     if isinstance(quality_meta, dict):
                         session["last_report_quality_meta"] = quality_meta
+                    if isinstance(latest_session.get("last_report_v3_debug"), dict):
+                        session["last_report_v3_debug"] = latest_session["last_report_v3_debug"]
 
             report_runtime_durations["persist_ms"] = round(
                 float(report_runtime_durations.get("persist_ms", 0.0) or 0.0) + _job_elapsed_ms(persist_started_at),

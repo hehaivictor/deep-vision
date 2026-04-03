@@ -1786,6 +1786,157 @@ class SecurityRegressionTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
+    def test_can_balanced_low_evidence_soft_pass_v3_accepts_factful_sparse_report(self):
+        quality_gate_issues = [
+            {"type": "quality_gate_evidence"},
+            {"type": "style_template_violation"},
+        ]
+        quality_meta = {
+            "runtime_profile": "balanced",
+            "overall": 0.475,
+            "consistency": 1.0,
+            "actionability": 0.40,
+            "table_readiness": 0.50,
+            "pending_follow_up_count": 1,
+            "review_issue_count": 2,
+            "evidence_context": {
+                "facts_count": 2,
+                "blindspots_count": 13,
+            },
+        }
+
+        allowed = self.server.can_balanced_low_evidence_soft_pass_v3(
+            quality_gate_issues,
+            quality_meta,
+            {"profile": "balanced"},
+        )
+
+        self.assertTrue(allowed)
+
+    def test_can_balanced_low_evidence_soft_pass_v3_rejects_consistency_or_empty_facts(self):
+        blocked_by_issue = self.server.can_balanced_low_evidence_soft_pass_v3(
+            [{"type": "quality_gate_consistency"}],
+            {
+                "runtime_profile": "balanced",
+                "overall": 0.52,
+                "consistency": 1.0,
+                "actionability": 0.50,
+                "table_readiness": 0.55,
+                "pending_follow_up_count": 1,
+                "review_issue_count": 1,
+                "evidence_context": {
+                    "facts_count": 3,
+                    "blindspots_count": 9,
+                },
+            },
+            {"profile": "balanced"},
+        )
+        blocked_by_facts = self.server.can_balanced_low_evidence_soft_pass_v3(
+            [{"type": "quality_gate_evidence"}],
+            {
+                "runtime_profile": "balanced",
+                "overall": 0.52,
+                "consistency": 1.0,
+                "actionability": 0.50,
+                "table_readiness": 0.55,
+                "pending_follow_up_count": 1,
+                "review_issue_count": 1,
+                "evidence_context": {
+                    "facts_count": 0,
+                    "blindspots_count": 9,
+                },
+            },
+            {"profile": "balanced"},
+        )
+
+        self.assertFalse(blocked_by_issue)
+        self.assertFalse(blocked_by_facts)
+
+    def test_run_report_generation_job_persists_v3_debug_on_legacy_fallback(self):
+        user = self._register_user()
+        standard_code = self._generate_license_batch(level_key="standard", note="V3 调试落库回归")["licenses"][0]["code"]
+        self._activate_license(standard_code)
+        session_id = self._create_session(topic="V3 调试落库回归")
+
+        fn_keys = [
+            "resolve_ai_client",
+            "get_release_conservative_report_short_circuit_meta",
+            "generate_report_v3_pipeline",
+            "attempt_salvage_v3_review_failure",
+            "build_report_prompt_with_options",
+            "call_claude",
+            "generate_interview_appendix",
+            "build_bound_solution_sidecar_snapshot",
+            "write_solution_sidecar",
+            "ensure_solution_payload_ready",
+        ]
+        fn_backup = {key: getattr(self.server, key) for key in fn_keys}
+        try:
+            self.server.resolve_ai_client = lambda *args, **kwargs: object()
+            self.server.get_release_conservative_report_short_circuit_meta = lambda *_args, **_kwargs: {"triggered": False}
+            self.server.generate_report_v3_pipeline = lambda *_args, **_kwargs: {
+                "status": "failed",
+                "reason": "quality_gate_failed",
+                "legacy_reason": "review_not_passed_or_quality_gate_failed",
+                "error": "profile=balanced,final_issue_count=1",
+                "parse_stage": "quality_gate",
+                "profile": "balanced",
+                "lane": "report",
+                "phase_lanes": {"draft": "report", "review": "report"},
+                "raw_excerpt": "",
+                "repair_applied": False,
+                "parse_meta": {},
+                "review_issues": [{"type": "quality_gate_evidence", "message": "证据覆盖率不足"}],
+                "final_issue_count": 1,
+                "final_issue_types": ["quality_gate_evidence"],
+                "failure_stage": "quality_gate",
+                "evidence_pack": {"facts": [{"q_id": "Q1"}], "overall_coverage": 0.2},
+                "timings": {"evidence_pack_ms": 1.0, "draft_gen_ms": 2.0, "review_ms": 3.0},
+            }
+            self.server.attempt_salvage_v3_review_failure = lambda *_args, **_kwargs: {
+                "attempted": True,
+                "success": False,
+                "note": "quality_gate_blocked",
+                "error": "",
+                "quality_gate_issue_count": 1,
+                "quality_gate_issue_types": ["quality_gate_evidence"],
+                "quality_gate_issues": [{"type": "quality_gate_evidence", "message": "证据覆盖率不足"}],
+            }
+            self.server.build_report_prompt_with_options = lambda *_args, **_kwargs: "legacy prompt"
+            self.server.call_claude = lambda *_args, **_kwargs: (
+                "# 回退报告\n\n"
+                "## 一、访谈概览\n\n这是标准回退生成内容。\n\n"
+                "## 二、核心需求\n\n- 需要稳定报告链路。\n\n"
+                "## 三、关键风险\n\n- V3 审稿可能失败。\n\n"
+                "## 四、行动建议\n\n- 保留 fallback 并落库调试信息。\n"
+            )
+            self.server.generate_interview_appendix = lambda _session: ""
+            self.server.build_bound_solution_sidecar_snapshot = lambda *_args, **_kwargs: None
+            self.server.write_solution_sidecar = lambda *_args, **_kwargs: None
+            self.server.ensure_solution_payload_ready = lambda *_args, **_kwargs: None
+
+            self.server.run_report_generation_job(
+                session_id,
+                int(user["id"]),
+                "req-debug-persist",
+                "balanced",
+                "generate",
+                "",
+            )
+
+            session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+            saved = self.server.safe_load_session(session_file)
+            self.assertIsInstance(saved, dict)
+            self.assertEqual("completed", saved.get("status"))
+            self.assertEqual("legacy_ai_fallback", (saved.get("last_report_quality_meta") or {}).get("mode"))
+            self.assertEqual("quality_gate_failed", (saved.get("last_report_v3_debug") or {}).get("reason"))
+            self.assertEqual("quality_gate", (saved.get("last_report_v3_debug") or {}).get("parse_stage"))
+            self.assertEqual("quality_gate", (saved.get("last_report_v3_debug") or {}).get("failure_stage"))
+            self.assertEqual(["quality_gate_evidence"], (saved.get("last_report_v3_debug") or {}).get("final_issue_types"))
+        finally:
+            for key, value in fn_backup.items():
+                setattr(self.server, key, value)
+
     def test_filter_model_review_issues_v3_skips_hallucinated_template_rules(self):
         draft = {
             "overview": "ok",
