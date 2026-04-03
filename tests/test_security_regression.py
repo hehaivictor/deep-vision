@@ -1786,6 +1786,29 @@ class SecurityRegressionTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
+    def test_generate_report_v3_pipeline_exception_includes_stage_and_kind(self):
+        backup = self.server.build_report_evidence_pack
+        try:
+            self.server.build_report_evidence_pack = lambda _session: (_ for _ in ()).throw(TimeoutError("simulated timeout"))
+
+            result = self.server.generate_report_v3_pipeline(
+                {"topic": "测试"},
+                report_profile="balanced",
+                preferred_lane="report",
+            )
+
+            self.assertIsInstance(result, dict)
+            self.assertEqual("failed", result.get("status"))
+            self.assertEqual("exception", result.get("reason"))
+            self.assertEqual("evidence_pack", result.get("exception_stage"))
+            self.assertEqual("timeout", result.get("exception_kind"))
+            self.assertEqual("evidence_pack", result.get("failure_stage"))
+            self.assertEqual({}, result.get("evidence_pack"))
+            self.assertIsInstance(result.get("exception_context"), dict)
+            self.assertEqual("balanced", (result.get("exception_context") or {}).get("profile"))
+        finally:
+            self.server.build_report_evidence_pack = backup
+
     def test_can_balanced_low_evidence_soft_pass_v3_accepts_factful_sparse_report(self):
         quality_gate_issues = [
             {"type": "quality_gate_evidence"},
@@ -1851,6 +1874,166 @@ class SecurityRegressionTests(unittest.TestCase):
 
         self.assertFalse(blocked_by_issue)
         self.assertFalse(blocked_by_facts)
+
+    def test_can_balanced_low_evidence_soft_pass_v3_accepts_single_fact_high_signal_report(self):
+        allowed = self.server.can_balanced_low_evidence_soft_pass_v3(
+            [
+                {"type": "quality_gate_evidence"},
+                {"type": "quality_gate_expression"},
+                {"type": "quality_gate_milestone"},
+                {"type": "style_template_violation"},
+            ],
+            {
+                "runtime_profile": "balanced",
+                "evidence_coverage": 0.817,
+                "overall": 0.46,
+                "consistency": 1.0,
+                "actionability": 0.40,
+                "table_readiness": 0.50,
+                "weak_binding_ratio": 0.0,
+                "pending_follow_up_count": 0,
+                "review_issue_count": 4,
+                "evidence_context": {
+                    "facts_count": 1,
+                    "blindspots_count": 15,
+                    "unknown_ratio": 0.0,
+                    "average_quality_score": 0.6,
+                },
+            },
+            {"profile": "balanced"},
+        )
+
+        self.assertTrue(allowed)
+
+    def test_can_balanced_low_evidence_soft_pass_v3_rejects_single_fact_low_signal_report(self):
+        blocked = self.server.can_balanced_low_evidence_soft_pass_v3(
+            [
+                {"type": "quality_gate_evidence"},
+                {"type": "quality_gate_expression"},
+            ],
+            {
+                "runtime_profile": "balanced",
+                "evidence_coverage": 0.68,
+                "overall": 0.47,
+                "consistency": 1.0,
+                "actionability": 0.38,
+                "table_readiness": 0.48,
+                "weak_binding_ratio": 0.12,
+                "pending_follow_up_count": 0,
+                "review_issue_count": 2,
+                "evidence_context": {
+                    "facts_count": 1,
+                    "blindspots_count": 6,
+                    "unknown_ratio": 0.18,
+                    "average_quality_score": 0.42,
+                },
+            },
+            {"profile": "balanced"},
+        )
+
+        self.assertFalse(blocked)
+
+    def test_can_balanced_low_evidence_soft_pass_v3_accepts_multi_fact_light_weak_binding_report(self):
+        allowed = self.server.can_balanced_low_evidence_soft_pass_v3(
+            [
+                {"type": "quality_gate_evidence"},
+                {"type": "quality_gate_weak_binding", "target": "actions"},
+            ],
+            {
+                "runtime_profile": "balanced",
+                "evidence_coverage": 0.788,
+                "overall": 0.58,
+                "consistency": 1.0,
+                "actionability": 0.56,
+                "table_readiness": 0.72,
+                "weak_binding_ratio": 0.16,
+                "weak_binding_ratio_by_field": {
+                    "actions": 0.50,
+                    "solutions": 0.0,
+                    "risks": 0.0,
+                },
+                "pending_follow_up_count": 0,
+                "review_issue_count": 2,
+                "evidence_context": {
+                    "facts_count": 3,
+                    "blindspots_count": 13,
+                    "unknown_ratio": 0.0,
+                    "average_quality_score": 0.65,
+                },
+            },
+            {"profile": "balanced"},
+        )
+
+        self.assertTrue(allowed)
+
+        resolved = self.server.resolve_quality_gate_soft_pass_v3(
+            [
+                {"type": "quality_gate_evidence"},
+                {"type": "quality_gate_weak_binding", "target": "actions"},
+            ],
+            {
+                "runtime_profile": "balanced",
+                "evidence_coverage": 0.788,
+                "overall": 0.58,
+                "consistency": 1.0,
+                "actionability": 0.56,
+                "table_readiness": 0.72,
+                "weak_binding_ratio": 0.16,
+                "weak_binding_ratio_by_field": {
+                    "actions": 0.50,
+                    "solutions": 0.0,
+                    "risks": 0.0,
+                },
+                "pending_follow_up_count": 0,
+                "review_issue_count": 2,
+                "evidence_context": {
+                    "facts_count": 3,
+                    "blindspots_count": 13,
+                    "unknown_ratio": 0.0,
+                    "average_quality_score": 0.65,
+                },
+            },
+            {"profile": "balanced"},
+        )
+
+        self.assertEqual("balanced_low_evidence_soft_pass", (resolved or {}).get("kind"))
+        self.assertEqual(
+            "multi_fact_light_weak_binding",
+            ((resolved or {}).get("quality_meta_updates") or {}).get("balanced_low_evidence_soft_pass_variant"),
+        )
+
+    def test_can_balanced_low_evidence_soft_pass_v3_rejects_multi_fact_heavy_weak_binding_report(self):
+        blocked = self.server.can_balanced_low_evidence_soft_pass_v3(
+            [
+                {"type": "quality_gate_evidence"},
+                {"type": "quality_gate_weak_binding", "target": "actions"},
+            ],
+            {
+                "runtime_profile": "balanced",
+                "evidence_coverage": 0.79,
+                "overall": 0.57,
+                "consistency": 1.0,
+                "actionability": 0.54,
+                "table_readiness": 0.70,
+                "weak_binding_ratio": 0.24,
+                "weak_binding_ratio_by_field": {
+                    "actions": 0.67,
+                    "solutions": 0.0,
+                    "risks": 0.0,
+                },
+                "pending_follow_up_count": 0,
+                "review_issue_count": 2,
+                "evidence_context": {
+                    "facts_count": 3,
+                    "blindspots_count": 13,
+                    "unknown_ratio": 0.0,
+                    "average_quality_score": 0.65,
+                },
+            },
+            {"profile": "balanced"},
+        )
+
+        self.assertFalse(blocked)
 
     def test_run_report_generation_job_persists_v3_debug_on_legacy_fallback(self):
         user = self._register_user()
@@ -1933,6 +2116,97 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertEqual("quality_gate", (saved.get("last_report_v3_debug") or {}).get("parse_stage"))
             self.assertEqual("quality_gate", (saved.get("last_report_v3_debug") or {}).get("failure_stage"))
             self.assertEqual(["quality_gate_evidence"], (saved.get("last_report_v3_debug") or {}).get("final_issue_types"))
+        finally:
+            for key, value in fn_backup.items():
+                setattr(self.server, key, value)
+
+    def test_run_report_generation_job_persists_exception_debug_fields_on_legacy_fallback(self):
+        user = self._register_user()
+        standard_code = self._generate_license_batch(level_key="standard", note="V3 异常调试字段落库回归")["licenses"][0]["code"]
+        self._activate_license(standard_code)
+        session_id = self._create_session(topic="V3 异常调试字段落库回归")
+
+        fn_keys = [
+            "resolve_ai_client",
+            "get_release_conservative_report_short_circuit_meta",
+            "generate_report_v3_pipeline",
+            "attempt_salvage_v3_review_failure",
+            "build_report_prompt_with_options",
+            "call_claude",
+            "generate_interview_appendix",
+            "build_bound_solution_sidecar_snapshot",
+            "write_solution_sidecar",
+            "ensure_solution_payload_ready",
+            "can_use_v3_failover_lane",
+        ]
+        fn_backup = {key: getattr(self.server, key) for key in fn_keys}
+        try:
+            self.server.resolve_ai_client = lambda *args, **kwargs: object()
+            self.server.get_release_conservative_report_short_circuit_meta = lambda *_args, **_kwargs: {"triggered": False}
+            self.server.generate_report_v3_pipeline = lambda *_args, **_kwargs: {
+                "status": "failed",
+                "reason": "exception",
+                "error": "simulated timeout",
+                "parse_stage": "review_generation",
+                "profile": "balanced",
+                "lane": "report",
+                "phase_lanes": {"draft": "report", "review": "report"},
+                "raw_excerpt": "",
+                "repair_applied": False,
+                "parse_meta": {},
+                "review_issues": [],
+                "final_issue_count": 0,
+                "final_issue_types": [],
+                "failure_stage": "review_generation",
+                "exception_stage": "review_generation",
+                "exception_kind": "timeout",
+                "exception_context": {"review_round_no": 1, "timeout": 60},
+                "evidence_pack": {"facts": [{"q_id": "Q1"}], "overall_coverage": 0.4},
+                "timings": {"evidence_pack_ms": 1.0, "draft_gen_ms": 2.0, "review_ms": 3.0},
+            }
+            self.server.attempt_salvage_v3_review_failure = lambda *_args, **_kwargs: {
+                "attempted": False,
+                "success": False,
+                "note": "not_applicable",
+                "error": "",
+                "quality_gate_issue_count": 0,
+                "quality_gate_issue_types": [],
+                "quality_gate_issues": [],
+            }
+            self.server.build_report_prompt_with_options = lambda *_args, **_kwargs: "legacy prompt"
+            self.server.call_claude = lambda *_args, **_kwargs: (
+                "# 回退报告\n\n"
+                "## 一、访谈概览\n\n这是标准回退生成内容。\n\n"
+                "## 二、核心需求\n\n- 保留异常调试字段。\n\n"
+                "## 三、关键风险\n\n- V3 审稿阶段可能超时。\n\n"
+                "## 四、行动建议\n\n- 对异常类型做更细分类。\n"
+            )
+            self.server.generate_interview_appendix = lambda _session: ""
+            self.server.build_bound_solution_sidecar_snapshot = lambda *_args, **_kwargs: None
+            self.server.write_solution_sidecar = lambda *_args, **_kwargs: None
+            self.server.ensure_solution_payload_ready = lambda *_args, **_kwargs: None
+            self.server.can_use_v3_failover_lane = lambda: False
+
+            self.server.run_report_generation_job(
+                session_id,
+                int(user["id"]),
+                "req-exception-debug-persist",
+                "balanced",
+                "generate",
+                "",
+            )
+
+            session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+            saved = self.server.safe_load_session(session_file)
+            self.assertIsInstance(saved, dict)
+            debug_info = saved.get("last_report_v3_debug") or {}
+            self.assertEqual("exception", debug_info.get("reason"))
+            self.assertEqual("review_generation", debug_info.get("parse_stage"))
+            self.assertEqual("review_generation", debug_info.get("failure_stage"))
+            self.assertEqual("review_generation", debug_info.get("exception_stage"))
+            self.assertEqual("timeout", debug_info.get("exception_kind"))
+            self.assertEqual({"review_round_no": 1, "timeout": 60}, debug_info.get("exception_context"))
+            self.assertFalse(debug_info.get("failover_attempted"))
         finally:
             for key, value in fn_backup.items():
                 setattr(self.server, key, value)

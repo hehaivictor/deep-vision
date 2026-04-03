@@ -4395,6 +4395,67 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertIn("option_only", blocker.get("follow_up_signals", []))
         self.assertIn("too_short", blocker.get("follow_up_signals", []))
 
+    def test_quick_mode_generate_report_requires_high_signal_answer_for_all_low_signal_formals(self):
+        self._register()
+        standard_code = self._generate_license_batch(level_key="standard", note="低信号拦截测试")["licenses"][0]["code"]
+        self._activate_license(standard_code)
+        created = self._create_session(topic="低信号拦截", interview_mode="quick")
+        session_id = created["session_id"]
+        dimensions = list((created.get("dimensions") or {}).keys())
+        self.assertGreaterEqual(len(dimensions), 3)
+
+        payloads = [
+            {
+                "question": "当前最想解决的核心问题是什么？",
+                "answer": "我们希望报告回退时能直接看清失败阶段，不想每次都靠人工猜。",
+                "dimension": dimensions[0],
+                "options": [],
+                "is_follow_up": False,
+                "answer_mode": "pick_only",
+                "requires_rationale": False,
+                "evidence_intent": "low",
+            },
+            {
+                "question": "最重要的验收指标是什么？",
+                "answer": "需要让团队第一时间知道是质量门失败还是运行异常。",
+                "dimension": dimensions[1],
+                "options": [],
+                "is_follow_up": False,
+                "answer_mode": "pick_only",
+                "requires_rationale": False,
+                "evidence_intent": "low",
+            },
+            {
+                "question": "当前最大的风险或阻塞是什么？",
+                "answer": "最大风险是回退后缺少可定位信息，排障效率非常低。",
+                "dimension": dimensions[2],
+                "options": [],
+                "is_follow_up": False,
+                "answer_mode": "pick_only",
+                "requires_rationale": False,
+                "evidence_intent": "low",
+            },
+        ]
+        for payload in payloads:
+            submit_resp = self.client.post(
+                f"/api/sessions/{session_id}/submit-answer",
+                json=payload,
+            )
+            self.assertEqual(submit_resp.status_code, 200, submit_resp.get_data(as_text=True))
+
+        response = self.client.post(
+            f"/api/sessions/{session_id}/generate-report",
+            json={"report_profile": "balanced"},
+        )
+        self.assertEqual(response.status_code, 409, response.get_data(as_text=True))
+        payload = response.get_json() or {}
+        blocker = payload.get("evidence_signal_blocker") or {}
+        self.assertEqual("high_signal_answer_required_before_report", payload.get("error_code"))
+        self.assertTrue(payload.get("high_signal_answer_required"))
+        self.assertEqual(3, blocker.get("formal_count"))
+        self.assertEqual("pick_only", blocker.get("answer_mode"))
+        self.assertEqual("low", blocker.get("evidence_intent"))
+
     def test_new_license_replaces_old_license_and_switches_level(self):
         self._register()
         standard_license = self._generate_license_batch(level_key="standard", note="标准版替换测试")["licenses"][0]
