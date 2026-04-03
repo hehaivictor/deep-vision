@@ -1,7 +1,16 @@
 {
-  "version": "8.0.0",
-  "releaseDate": "2026-04-03",
+  "version": "8.0.1",
+  "releaseDate": "2026-04-04",
   "changelog": [
+    {
+      "version": "8.0.1",
+      "date": "2026-04-04",
+      "type": "patch",
+      "title": "优化 V3 小样本场景的弱绑定行动收敛",
+      "changes": [
+        "修复：将全局证据覆盖不足型 no_evidence 归一化到 quality_gate_evidence，避免在 review gate 提前误拦截\\n优化：针对小样本高盲区场景动态收紧 actions 生成策略，优先输出 open_questions 并提高弱绑定阈值\\n优化：在确定性修复阶段收缩 weak_inferred actions，降级为待补问并补充强证据补采 action\\n测试：补充 V3 质量门语义对齐、稀疏场景 actions 收缩与弱绑定阈值回归用例"
+      ]
+    },
     {
       "version": "8.0.0",
       "date": "2026-04-03",
