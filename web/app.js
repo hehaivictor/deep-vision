@@ -5031,7 +5031,7 @@ function deepVision() {
         // ========== 方案B: 思考进度轮询 ==========
         startThinkingPolling(requestId = this.questionRequestId) {
             // 先停止旧的轮询，防止多个轮询并发
-            this.stopThinkingPolling();
+            this.stopThinkingPolling(false);
             const currentRequestId = Number(requestId) || 0;
             this.thinkingPollRequestId = currentRequestId;
 
@@ -5039,7 +5039,7 @@ function deepVision() {
 
             this.thinkingPollInterval = setInterval(async () => {
                 if (!this.loadingQuestion || currentRequestId !== this.questionRequestId || currentRequestId !== this.thinkingPollRequestId) {
-                    this.stopThinkingPolling();
+                    this.stopThinkingPolling(false);
                     return;
                 }
                 try {
@@ -5056,19 +5056,17 @@ function deepVision() {
                             return;
                         }
                         if (data.active) {
-                            this.thinkingStage = data;
+                            this.applyThinkingStage(data);
                             this.markQuestionRequestActive(currentRequestId);
                         } else if (this.questionRequestPreferPrefetch && (Date.now() - (Number(this.questionRequestStartedAt) || Date.now())) < QUESTION_SUBMIT_PREFETCH_WAIT_MS) {
-                            this.thinkingStage = {
-                                active: true,
-                                stage_index: 2,
-                                stage_name: '生成问题',
+                            this.applyThinkingStage({
+                                stage_index: this.thinkingStage?.stage_index ?? 0,
+                                stage_name: this.thinkingStage?.stage_name || '分析回答',
                                 message: '正在等待上一题提交后的预取结果',
-                                progress: 88
-                            };
+                                progress: Math.max(Number(this.thinkingStage?.progress ?? 0), 36)
+                            });
                             this.markQuestionRequestActive(currentRequestId);
                         } else {
-                            this.thinkingStage = null;
                             this.observeQuestionRequestIdle(currentRequestId);
                         }
                     }
@@ -5078,13 +5076,15 @@ function deepVision() {
             }, pollInterval);
         },
 
-        stopThinkingPolling() {
+        stopThinkingPolling(resetStage = true) {
             if (this.thinkingPollInterval) {
                 clearInterval(this.thinkingPollInterval);
                 this.thinkingPollInterval = null;
             }
             this.thinkingPollRequestId = 0;
-            this.thinkingStage = null;  // 重置状态
+            if (resetStage) {
+                this.thinkingStage = null;
+            }
         },
 
         // 访谈小技巧轮播
@@ -5106,6 +5106,54 @@ function deepVision() {
                 clearInterval(this.tipRotationInterval);
                 this.tipRotationInterval = null;
             }
+        },
+
+        getThinkingStageDefaultProgress(stageIndex = 0) {
+            const normalizedStageIndex = Math.max(0, Math.min(2, Number(stageIndex) || 0));
+            const progressByStage = [18, 56, 82];
+            return progressByStage[normalizedStageIndex] || 18;
+        },
+
+        buildThinkingStageState(stage = {}) {
+            const normalizedStageIndex = Math.max(
+                0,
+                Math.min(2, Number(stage.stage_index ?? stage.stageIndex ?? 0) || 0)
+            );
+            const rawProgress = Number(stage.progress);
+            const normalizedProgress = Number.isFinite(rawProgress)
+                ? Math.max(0, Math.min(100, rawProgress))
+                : this.getThinkingStageDefaultProgress(normalizedStageIndex);
+            const fallbackStageName = ['分析回答', '检索资料', '生成问题'][normalizedStageIndex] || '分析回答';
+
+            return {
+                active: true,
+                stage_index: normalizedStageIndex,
+                stage_name: String(stage.stage_name || stage.stageName || stage.stage || fallbackStageName),
+                message: String(stage.message || ''),
+                progress: normalizedProgress
+            };
+        },
+
+        applyThinkingStage(stage, options = {}) {
+            if (!stage || stage.active === false) {
+                return;
+            }
+
+            const preserveProgress = options.preserveProgress !== false;
+            const normalizedStage = this.buildThinkingStageState(stage);
+            const currentStageIndex = Number(this.thinkingStage?.stage_index ?? -1);
+            const currentProgress = Number(this.thinkingStage?.progress ?? 0);
+
+            if (preserveProgress && currentStageIndex > normalizedStage.stage_index) {
+                normalizedStage.stage_index = currentStageIndex;
+                normalizedStage.stage_name = this.thinkingStage?.stage_name || normalizedStage.stage_name;
+                normalizedStage.message = this.thinkingStage?.message || normalizedStage.message;
+                normalizedStage.progress = Math.max(currentProgress, normalizedStage.progress);
+            } else if (preserveProgress && currentStageIndex === normalizedStage.stage_index) {
+                normalizedStage.progress = Math.max(currentProgress, normalizedStage.progress);
+            }
+
+            this.thinkingStage = normalizedStage;
         },
 
         // ========== 方案D: 骨架填充 ==========
@@ -5481,13 +5529,12 @@ function deepVision() {
             this.aiRecommendationExpanded = false;
             this.aiRecommendationApplied = false;
             this.aiRecommendationPrevSelection = null;
-            this.thinkingStage = {
-                active: true,
+            this.applyThinkingStage({
                 stage_index: 0,
                 stage_name: '分析回答',
                 message,
                 progress: 20
-            };
+            }, { preserveProgress: false });
             this.startTipRotation();
         },
 
@@ -6476,13 +6523,12 @@ function deepVision() {
             this.aiRecommendationApplied = false;
             this.aiRecommendationPrevSelection = null;
             if (preferPrefetch) {
-                this.thinkingStage = {
-                    active: true,
-                    stage_index: 2,
-                    stage_name: '生成问题',
+                this.applyThinkingStage({
+                    stage_index: this.thinkingStage?.stage_index ?? 0,
+                    stage_name: this.thinkingStage?.stage_name || '分析回答',
                     message: '正在等待上一题提交后的预取结果',
-                    progress: 88
-                };
+                    progress: Math.max(Number(this.thinkingStage?.progress ?? 0), 36)
+                });
             }
             this.startQuestionRequestGuard(requestId);
             this.questionRequestPreferPrefetch = preferPrefetch;
@@ -6532,7 +6578,7 @@ function deepVision() {
                         this.questionRequestAbortController = null;
                     }
                     this.stopQuestionRequestGuard();
-                    this.stopThinkingPolling();
+                    this.stopThinkingPolling(false);
                     this.stopWebSearchPolling();
 
                     if (response.status === 429 && result?.code === 'overloaded') {
@@ -6569,13 +6615,12 @@ function deepVision() {
                             return;
                         }
 
-                        this.thinkingStage = {
-                            active: true,
+                        this.applyThinkingStage({
                             stage_index: 2,
                             stage_name: '生成问题',
                             message: `问题生成链路繁忙，正在排队，${retryAfterSeconds}秒后自动重试`,
                             progress: 92
-                        };
+                        }, { preserveProgress: false });
 
                         const shouldContinue = await this.waitForQuestionOverloadRetry(requestId, retryAfterSeconds * 1000);
                         if (!shouldContinue) {
@@ -6584,25 +6629,11 @@ function deepVision() {
                         continue;
                     }
 
-                    // 先停止轮询，手动设置完成状态让所有步骤显示为已完成
-                    this.thinkingStage = {
-                        active: true,
-                        stage_index: 2,
-                        stage_name: '生成问题',
-                        message: '问题生成完成',
-                        progress: 100
-                    };
-
-                    // 等待 600ms 让用户看到完成动画，然后再切换到新问题
-                    await new Promise(resolve => setTimeout(resolve, QUESTION_SUCCESS_TRANSITION_DELAY_MS));
-
-                    // 关闭加载状态
-                    this.loadingQuestion = false;
-                    this.thinkingStage = null;
-                    this.stopTipRotation();
-
                     // 检查是否有错误
                     if (!response.ok || result.error) {
+                        this.loadingQuestion = false;
+                        this.thinkingStage = null;
+                        this.stopTipRotation();
                         const errorTitle = result.error || '服务错误';
                         const errorDetail = result.detail || '请稍后重试';
                         this.recordQuestionOpsOutcome('error', {
@@ -6623,6 +6654,49 @@ function deepVision() {
                         this.interactionReady = true;
                         return;
                     }
+
+                    const hasUsableQuestion = Boolean(
+                        typeof result.question === 'string'
+                        && result.question.trim()
+                        && Array.isArray(result.options)
+                        && result.options.filter(option => String(option || '').trim()).length >= 2
+                    );
+
+                    if (!result.completed && !hasUsableQuestion) {
+                        this.loadingQuestion = false;
+                        this.thinkingStage = null;
+                        this.stopTipRotation();
+                        this.recordQuestionOpsOutcome('error', {
+                            overloadRetryCount,
+                            overloadWaitMs,
+                            error: '问题数据异常'
+                        });
+                        this.currentQuestion = this.createQuestionState({
+                            serviceError: true,
+                            errorTitle: '问题数据异常',
+                            errorDetail: '问题生成结果缺少有效问题或选项，请点击“重试”继续。'
+                        });
+                        this.aiRecommendationExpanded = false;
+                        this.aiRecommendationApplied = false;
+                        this.aiRecommendationPrevSelection = null;
+                        this.interactionReady = true;
+                        return;
+                    }
+
+                    this.applyThinkingStage({
+                        stage_index: 2,
+                        stage_name: '生成问题',
+                        message: result.completed ? '当前维度已完成' : '问题生成完成',
+                        progress: 100
+                    }, { preserveProgress: false });
+
+                    // 等待 600ms 让用户看到完成动画，然后再切换到新问题
+                    await new Promise(resolve => setTimeout(resolve, QUESTION_SUCCESS_TRANSITION_DELAY_MS));
+
+                    // 关闭加载状态
+                    this.loadingQuestion = false;
+                    this.thinkingStage = null;
+                    this.stopTipRotation();
 
                     if (result.completed) {
                         this.recordQuestionOpsOutcome('completed', {
@@ -7419,13 +7493,12 @@ function deepVision() {
                 this.skeletonMode = false;
                 this.interactionReady = false;
                 this.startTipRotation();
-                this.thinkingStage = {
-                    active: true,
+                this.applyThinkingStage({
                     stage_index: 0,
                     stage_name: '分析回答',
                     message: '正在提交当前回答并准备下一题',
                     progress: 18
-                };
+                }, { preserveProgress: false });
 
                 const updatedSession = await this.apiCall(
                     `/sessions/${this.currentSession.session_id}/submit-answer`,

@@ -2324,10 +2324,16 @@ PRESENTATION_MAP_FILE = PRESENTATIONS_DIR / ".presentation_map.json"
 PRESENTATION_MAP_LOCK = threading.Lock()
 OBJECT_STORAGE_CLIENT_LOCK = threading.Lock()
 OBJECT_STORAGE_CLIENT = None
+OBJECT_STORAGE_SDK_STATUS_LOCK = threading.Lock()
+OBJECT_STORAGE_SDK_CHECKED = False
+OBJECT_STORAGE_SDK_AVAILABLE = False
+OBJECT_STORAGE_SDK_ERROR = ""
 OBJECT_STORAGE_PRESENTATION_MIGRATION_LOCK = threading.Lock()
 OBJECT_STORAGE_PRESENTATION_MIGRATED = False
 OBJECT_STORAGE_OPS_ARCHIVE_LOCK = threading.Lock()
 OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED = False
+OBJECT_STORAGE_STARTUP_TASKS_LOCK = threading.Lock()
+OBJECT_STORAGE_STARTUP_TASKS_STARTED = False
 DELETED_REPORTS_FILE = REPORTS_DIR / ".deleted_reports.json"
 DELETED_DOCS_FILE = DATA_DIR / ".deleted_docs.json"  # 软删除记录文件
 REPORT_OWNERS_FILE = REPORTS_DIR / ".owners.json"
@@ -12520,6 +12526,12 @@ def is_license_protected_route(path: str) -> bool:
 
 
 @app.before_request
+def schedule_background_startup_tasks():
+    schedule_object_storage_startup_tasks()
+    return None
+
+
+@app.before_request
 def enforce_auth_for_protected_routes():
     if request.method == "OPTIONS":
         return None
@@ -12823,6 +12835,11 @@ def migrate_presentation_assets_to_object_storage_if_needed() -> None:
     global OBJECT_STORAGE_PRESENTATION_MIGRATED
     if OBJECT_STORAGE_PRESENTATION_MIGRATED or not is_object_storage_enabled():
         return
+    available, error_message = ensure_object_storage_sdk_available()
+    if not available:
+        if ENABLE_DEBUG_LOG:
+            print(f"⚠️ 演示文件迁移到对象存储已跳过: {error_message}")
+        return
     with OBJECT_STORAGE_PRESENTATION_MIGRATION_LOCK:
         if OBJECT_STORAGE_PRESENTATION_MIGRATED:
             return
@@ -12902,6 +12919,23 @@ def is_object_storage_enabled() -> bool:
     )
 
 
+def ensure_object_storage_sdk_available() -> tuple[bool, str]:
+    global OBJECT_STORAGE_SDK_CHECKED, OBJECT_STORAGE_SDK_AVAILABLE, OBJECT_STORAGE_SDK_ERROR
+    with OBJECT_STORAGE_SDK_STATUS_LOCK:
+        if OBJECT_STORAGE_SDK_CHECKED:
+            return OBJECT_STORAGE_SDK_AVAILABLE, OBJECT_STORAGE_SDK_ERROR
+        try:
+            import boto3  # noqa: F401
+            from botocore.config import Config as _BotoConfig  # noqa: F401
+            OBJECT_STORAGE_SDK_AVAILABLE = True
+            OBJECT_STORAGE_SDK_ERROR = ""
+        except ImportError:
+            OBJECT_STORAGE_SDK_AVAILABLE = False
+            OBJECT_STORAGE_SDK_ERROR = "当前环境未安装 boto3，请先安装 boto3"
+        OBJECT_STORAGE_SDK_CHECKED = True
+        return OBJECT_STORAGE_SDK_AVAILABLE, OBJECT_STORAGE_SDK_ERROR
+
+
 def _normalize_object_storage_signature_version(value: object) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in {"v4", "s3v4", "4"}:
@@ -12937,14 +12971,14 @@ def get_object_storage_client():
     global OBJECT_STORAGE_CLIENT
     if not is_object_storage_enabled():
         raise RuntimeError("对象存储未配置")
+    available, error_message = ensure_object_storage_sdk_available()
+    if not available:
+        raise RuntimeError(error_message or "当前环境未安装 boto3，请先安装 boto3")
     with OBJECT_STORAGE_CLIENT_LOCK:
         if OBJECT_STORAGE_CLIENT is not None:
             return OBJECT_STORAGE_CLIENT
-        try:
-            import boto3
-            from botocore.config import Config as BotoConfig
-        except ImportError as exc:
-            raise RuntimeError("当前环境未安装 boto3，请先安装 boto3") from exc
+        import boto3
+        from botocore.config import Config as BotoConfig
 
         OBJECT_STORAGE_CLIENT = boto3.client(
             "s3",
@@ -13360,6 +13394,11 @@ def migrate_ops_archives_to_object_storage_if_needed() -> None:
     global OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED
     if OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED or not is_object_storage_enabled():
         return
+    available, error_message = ensure_object_storage_sdk_available()
+    if not available:
+        if ENABLE_DEBUG_LOG:
+            _safe_log(f"⚠️ 运维归档上传已跳过: {error_message}")
+        return
     with OBJECT_STORAGE_OPS_ARCHIVE_LOCK:
         if OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED:
             return
@@ -13373,6 +13412,36 @@ def migrate_ops_archives_to_object_storage_if_needed() -> None:
         OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED = True
         if ENABLE_DEBUG_LOG and total_synced > 0:
             _safe_log(f"✅ 已归档运维备份与回滚产物到对象存储: {total_synced} 个文件")
+
+
+def _run_object_storage_startup_tasks() -> None:
+    if not is_object_storage_enabled():
+        return
+    try:
+        migrate_presentation_assets_to_object_storage_if_needed()
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            print(f"⚠️ 对象存储演示文件启动迁移失败: {exc}")
+    try:
+        migrate_ops_archives_to_object_storage_if_needed()
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            print(f"⚠️ 对象存储运维归档启动迁移失败: {exc}")
+
+
+def schedule_object_storage_startup_tasks() -> None:
+    global OBJECT_STORAGE_STARTUP_TASKS_STARTED
+    if not is_object_storage_enabled():
+        return
+    with OBJECT_STORAGE_STARTUP_TASKS_LOCK:
+        if OBJECT_STORAGE_STARTUP_TASKS_STARTED:
+            return
+        OBJECT_STORAGE_STARTUP_TASKS_STARTED = True
+    threading.Thread(
+        target=_run_object_storage_startup_tasks,
+        name="object-storage-startup-tasks",
+        daemon=True,
+    ).start()
 
 
 def update_thinking_status(session_id: str, stage: str, has_search: bool = True):
@@ -26774,18 +26843,18 @@ def generate_report_v3_pipeline(
             quality_gate_issues = build_quality_gate_issues_v3(quality_meta)
             quality_gate_elapsed = _time.perf_counter() - quality_gate_start
             if quality_gate_issues:
-                if can_release_conservative_soft_pass_v3(quality_gate_issues, quality_meta, runtime_cfg):
-                    soft_issue_types = summarize_issue_types_v3(quality_gate_issues)
+                soft_pass = resolve_quality_gate_soft_pass_v3(quality_gate_issues, quality_meta, runtime_cfg)
+                if soft_pass:
+                    soft_issue_types = list(soft_pass.get("issue_types", []) or [])
                     if isinstance(quality_meta, dict):
-                        quality_meta["release_conservative_soft_pass"] = True
-                        quality_meta["release_conservative_soft_issue_types"] = soft_issue_types
+                        quality_meta.update(soft_pass.get("quality_meta_updates", {}))
                     record_pipeline_stage_metric(
                         stage="quality_gate",
                         success=True,
                         elapsed_seconds=quality_gate_elapsed,
                         lane=review_phase_lane,
                         model=review_phase_model,
-                        error_msg=f"soft_pass:{'|'.join(soft_issue_types)}",
+                        error_msg=f"{soft_pass.get('kind', 'soft_pass')}:{'|'.join(soft_issue_types)}",
                     )
                     report_content = render_report_from_draft_v3(session, current_draft, quality_meta)
                     return {
@@ -27040,18 +27109,18 @@ def generate_report_v3_pipeline(
                 quality_gate_issues = build_quality_gate_issues_v3(quality_meta)
                 quality_gate_elapsed = _time.perf_counter() - quality_gate_start
                 if quality_gate_issues:
-                    if can_release_conservative_soft_pass_v3(quality_gate_issues, quality_meta, runtime_cfg):
-                        soft_issue_types = summarize_issue_types_v3(quality_gate_issues)
+                    soft_pass = resolve_quality_gate_soft_pass_v3(quality_gate_issues, quality_meta, runtime_cfg)
+                    if soft_pass:
+                        soft_issue_types = list(soft_pass.get("issue_types", []) or [])
                         if isinstance(quality_meta, dict):
-                            quality_meta["release_conservative_soft_pass"] = True
-                            quality_meta["release_conservative_soft_issue_types"] = soft_issue_types
+                            quality_meta.update(soft_pass.get("quality_meta_updates", {}))
                         record_pipeline_stage_metric(
                             stage="quality_gate",
                             success=True,
                             elapsed_seconds=quality_gate_elapsed,
                             lane=review_phase_lane,
                             model=review_phase_model,
-                            error_msg=f"soft_pass:{'|'.join(soft_issue_types)}",
+                            error_msg=f"{soft_pass.get('kind', 'soft_pass')}:{'|'.join(soft_issue_types)}",
                         )
                         report_content = render_report_from_draft_v3(session, current_draft, quality_meta)
                         pipeline_timings["review_ms"] += max(0.0, (_time.perf_counter() - review_round_started_at) * 1000.0)
@@ -29650,6 +29719,10 @@ def _normalize_generated_question_text(question: str) -> str:
     return re.sub(r"\s+", "", str(question or "")).strip().lower()
 
 
+def _clean_generated_question_text(question: str) -> str:
+    return re.sub(r"\s+", " ", str(question or "")).strip()
+
+
 def _normalize_generated_option_label(option: str) -> str:
     """统一移除模型常见的选项序号前缀，避免不同 lane 混用 A/B/C/D 或数字编号。"""
     text = str(option or "").strip()
@@ -29733,6 +29806,10 @@ def normalize_generated_question_result(result: Optional[dict], fallback_contrac
 
     fallback_contract = dict(fallback_contract or {})
     interview_mode = normalize_interview_mode_key(fallback_contract.get("interview_mode", DEFAULT_INTERVIEW_MODE))
+    question_text = _clean_generated_question_text(result.get("question", ""))
+    if not question_text:
+        return None
+    result["question"] = question_text[:240]
     if "multi_select" not in result:
         result["multi_select"] = False
     if "is_follow_up" not in result:
@@ -29764,6 +29841,8 @@ def normalize_generated_question_result(result: Optional[dict], fallback_contrac
     original_multi_select = bool(result.get("multi_select", False))
     option_list = result.get("options") if isinstance(result.get("options"), list) else []
     normalized_options = _normalize_generated_option_list(option_list)
+    if len(normalized_options) < 2:
+        return None
     result["options"] = normalized_options[:6]
     result["question_multi_select"] = original_multi_select
 
@@ -33162,6 +33241,98 @@ def can_release_conservative_soft_pass_v3(quality_gate_issues: list, quality_met
     return True
 
 
+V3_BALANCED_LOW_EVIDENCE_SOFT_PASS_ISSUE_TYPES = {
+    "quality_gate_evidence",
+    "quality_gate_expression",
+    "quality_gate_table",
+    "quality_gate_acceptance",
+    "quality_gate_milestone",
+    "style_template_violation",
+}
+
+
+def can_balanced_low_evidence_soft_pass_v3(
+    quality_gate_issues: list,
+    quality_meta: Optional[dict],
+    runtime_cfg: Optional[dict],
+) -> bool:
+    """balanced 档下，允许对低证据但已有事实支撑的报告做保守放行。"""
+    if not isinstance(quality_meta, dict):
+        return False
+
+    runtime_profile = normalize_report_profile_choice(
+        str(quality_meta.get("runtime_profile", "") or ""),
+        fallback=str((runtime_cfg or {}).get("profile", "") or REPORT_V3_PROFILE),
+    )
+    if runtime_profile != "balanced":
+        return False
+
+    issue_types = summarize_issue_types_v3(quality_gate_issues)
+    if not issue_types or len(quality_gate_issues or []) > 5:
+        return False
+    if not all(issue_type in V3_BALANCED_LOW_EVIDENCE_SOFT_PASS_ISSUE_TYPES for issue_type in issue_types):
+        return False
+
+    overall = max(0.0, min(1.0, _safe_float(quality_meta.get("overall", 0.0), default=0.0)))
+    consistency = max(0.0, min(1.0, _safe_float(quality_meta.get("consistency", 0.0), default=0.0)))
+    actionability = max(0.0, min(1.0, _safe_float(quality_meta.get("actionability", 0.0), default=0.0)))
+    table_readiness = max(0.0, min(1.0, _safe_float(quality_meta.get("table_readiness", 0.0), default=0.0)))
+    review_issue_count = max(0, int(quality_meta.get("review_issue_count", len(quality_gate_issues or [])) or 0))
+    pending_follow_up_count = max(0, int(quality_meta.get("pending_follow_up_count", 0) or 0))
+    evidence_context = quality_meta.get("evidence_context", {}) if isinstance(quality_meta.get("evidence_context", {}), dict) else {}
+    facts_count = max(0, int(evidence_context.get("facts_count", 0) or 0))
+    blindspots_count = max(0, int(evidence_context.get("blindspots_count", 0) or 0))
+
+    if facts_count < 2:
+        return False
+    if overall < 0.45:
+        return False
+    if consistency < 0.95:
+        return False
+    if actionability < 0.35:
+        return False
+    if table_readiness < 0.40:
+        return False
+    if review_issue_count > 8:
+        return False
+    if blindspots_count < 8 and pending_follow_up_count < 1 and "quality_gate_evidence" not in issue_types:
+        return False
+    return True
+
+
+def resolve_quality_gate_soft_pass_v3(
+    quality_gate_issues: list,
+    quality_meta: Optional[dict],
+    runtime_cfg: Optional[dict],
+) -> Optional[dict]:
+    """统一计算 V3 质量门禁的软放行结果。"""
+    if not isinstance(quality_meta, dict):
+        return None
+
+    issue_types = summarize_issue_types_v3(quality_gate_issues)
+    if can_release_conservative_soft_pass_v3(quality_gate_issues, quality_meta, runtime_cfg):
+        return {
+            "kind": "release_conservative_soft_pass",
+            "issue_types": issue_types,
+            "quality_meta_updates": {
+                "release_conservative_soft_pass": True,
+                "release_conservative_soft_issue_types": issue_types,
+            },
+        }
+
+    if can_balanced_low_evidence_soft_pass_v3(quality_gate_issues, quality_meta, runtime_cfg):
+        return {
+            "kind": "balanced_low_evidence_soft_pass",
+            "issue_types": issue_types,
+            "quality_meta_updates": {
+                "balanced_low_evidence_soft_pass": True,
+                "balanced_low_evidence_issue_types": issue_types,
+            },
+        }
+
+    return None
+
+
 def get_release_conservative_report_short_circuit_meta(runtime_cfg: Optional[dict], preferred_lane: str = "report") -> dict:
     """发布保守档下，根据 draft 超时/熔断状态决定是否直接跳过 V3。"""
     if not isinstance(runtime_cfg, dict):
@@ -33381,10 +33552,16 @@ def attempt_salvage_v3_review_failure(session: dict, v3_result: Optional[dict]) 
         outcome["quality_gate_issue_count"] = len(quality_gate_issues)
         outcome["quality_gate_issue_types"] = summarize_issue_types_v3(quality_gate_issues)
         if quality_gate_issues:
-            outcome["note"] = "quality_gate_blocked"
-            outcome["quality_gate_issues"] = quality_gate_issues[:60]
-            outcome["review_issues"] = quality_gate_issues[:60]
-            return outcome
+            runtime_cfg = get_report_v3_runtime_config(outcome.get("profile", REPORT_V3_PROFILE))
+            soft_pass = resolve_quality_gate_soft_pass_v3(quality_gate_issues, quality_meta, runtime_cfg)
+            if not soft_pass:
+                outcome["note"] = "quality_gate_blocked"
+                outcome["quality_gate_issues"] = quality_gate_issues[:60]
+                outcome["review_issues"] = quality_gate_issues[:60]
+                return outcome
+            if isinstance(quality_meta, dict):
+                quality_meta.update(soft_pass.get("quality_meta_updates", {}))
+            outcome["note"] = str(soft_pass.get("kind", "") or "quality_gate_soft_pass")
 
         report_content = render_report_from_draft_v3(session, sanitized_draft, quality_meta)
         if not report_content:
@@ -33392,15 +33569,15 @@ def attempt_salvage_v3_review_failure(session: dict, v3_result: Optional[dict]) 
             return outcome
 
         outcome["success"] = True
-        outcome["note"] = "quality_gate_passed"
+        if not outcome["note"]:
+            outcome["note"] = "quality_gate_passed"
         outcome["draft_snapshot"] = copy.deepcopy(sanitized_draft)
         outcome["quality_meta"] = quality_meta if isinstance(quality_meta, dict) else {}
         outcome["report_content"] = report_content
         outcome["report_template"] = resolve_report_template_for_session(session, evidence_pack=evidence_pack)
         outcome["report_type"] = str(evidence_pack.get("report_type", "standard") or "standard").strip().lower() or "standard"
-        outcome["review_issues"] = merged_issues[:60]
-        outcome["quality_gate_issues"] = []
-        outcome["quality_gate_issue_types"] = []
+        outcome["review_issues"] = (quality_gate_issues or merged_issues)[:60]
+        outcome["quality_gate_issues"] = quality_gate_issues[:60]
         return outcome
     except Exception as exc:
         outcome["error"] = summarize_error_for_log(exc, limit=200)
@@ -34484,6 +34661,89 @@ def run_report_generation_job(
         release_report_generation_slot()
 
 
+def _has_follow_up_answer_after_formal_log(interview_log: list, formal_index: int, dimension: str) -> bool:
+    """判断某条正式问题后、下一条同维度正式问题前，是否已存在有效追问回答。"""
+    if not isinstance(interview_log, list):
+        return False
+
+    normalized_dimension = str(dimension or "").strip()
+    for idx in range(int(formal_index) + 1, len(interview_log)):
+        log = interview_log[idx]
+        if not isinstance(log, dict):
+            continue
+        if str(log.get("dimension", "") or "").strip() != normalized_dimension:
+            continue
+        if not bool(log.get("is_follow_up", False)):
+            return False
+        if str(log.get("answer", "") or "").strip():
+            return True
+    return False
+
+
+def build_report_follow_up_blocker(session: dict) -> Optional[dict]:
+    """quick 模式下，阻止带关键待补问的会话直接生成报告。"""
+    if not isinstance(session, dict):
+        return None
+    if get_mode_identifier(session) != "quick":
+        return None
+
+    interview_log = session.get("interview_log", [])
+    if not isinstance(interview_log, list) or not interview_log:
+        return None
+
+    dim_info_map = get_dimension_info_for_session(session)
+    blockers = []
+    for index, log in enumerate(interview_log):
+        if not isinstance(log, dict):
+            continue
+        if bool(log.get("is_follow_up", False)):
+            continue
+        if not bool(log.get("needs_follow_up", False)):
+            continue
+        if bool(log.get("user_skip_follow_up", False)):
+            continue
+
+        requires_rationale = bool(log.get("requires_rationale", False))
+        evidence_intent = normalize_question_evidence_intent(log.get("evidence_intent", ""), fallback="")
+        if not (requires_rationale or evidence_intent == "high"):
+            continue
+
+        dimension = str(log.get("dimension", "") or "").strip()
+        if _has_follow_up_answer_after_formal_log(interview_log, index, dimension):
+            continue
+
+        dimension_name = dimension
+        dim_info = dim_info_map.get(dimension, {}) if isinstance(dim_info_map, dict) else {}
+        if isinstance(dim_info, dict):
+            dimension_name = str(dim_info.get("name", "") or dim_info.get("title", "") or dimension).strip() or dimension
+
+        blockers.append({
+            "dimension": dimension,
+            "dimension_name": dimension_name,
+            "question": str(log.get("question", "") or "").strip(),
+            "follow_up_signals": [
+                str(item or "").strip()
+                for item in (log.get("follow_up_signals", []) or [])
+                if str(item or "").strip()
+            ],
+            "answer_mode": normalize_question_answer_mode(log.get("answer_mode", ""), fallback="pick_only"),
+            "evidence_intent": evidence_intent,
+        })
+
+    if not blockers:
+        return None
+
+    blocker = dict(blockers[0])
+    blocker_count = len(blockers)
+    blocker["blocker_count"] = blocker_count
+    blocker["message"] = (
+        f"还有 {blocker_count} 个关键信息未补充："
+        f"“{blocker.get('question', '当前问题')}”当前只完成了选项式回答，缺少理由或场景说明。"
+        "请先补 1 句原因、场景或依据，再生成报告。"
+    )
+    return blocker
+
+
 @app.route('/api/sessions/<session_id>/generate-report', methods=['POST'])
 def generate_report(session_id):
     """异步生成访谈报告。"""
@@ -34500,6 +34760,7 @@ def generate_report(session_id):
     if len(loaded) == 3:
         _file, error_msg, status_code = loaded
         return jsonify({"error": error_msg}), status_code
+    _session_file, session = loaded
 
     data = request.get_json(silent=True) or {}
     action = "regenerate" if data.get("action") == "regenerate" else "generate"
@@ -34529,6 +34790,16 @@ def generate_report(session_id):
             "report.profile.quality",
             level_context=level_context,
         )
+
+    follow_up_blocker = build_report_follow_up_blocker(session)
+    if follow_up_blocker:
+        return jsonify({
+            "error": follow_up_blocker.get("message", "仍有待补充的关键信息，请先完成追问再生成报告"),
+            "error_code": "follow_up_required_before_report",
+            "follow_up_required": True,
+            "follow_up_blocker": follow_up_blocker,
+            "report_profile": report_profile,
+        }), 409
 
     current_record = get_report_generation_record(session_id) or {}
     worker_alive = is_report_generation_worker_alive(session_id)
@@ -46489,11 +46760,6 @@ class SelectiveAccessLogRequestHandler(WSGIRequestHandler):
         except Exception:
             pass
         return super().log_request(code, size)
-
-
-migrate_presentation_assets_to_object_storage_if_needed()
-migrate_ops_archives_to_object_storage_if_needed()
-
 
 if __name__ == '__main__':
     ai_bootstrap_snapshot = get_ai_client_bootstrap_snapshot()
