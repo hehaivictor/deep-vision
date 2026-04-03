@@ -23118,6 +23118,21 @@ def build_report_draft_prompt_v3(
         for item in blindspots[:blindspot_limit]
     ]
     blindspot_text = "\n".join(blindspot_lines) if blindspot_lines else "- 暂无盲区"
+    action_strategy = _derive_action_generation_strategy_v3(evidence_pack)
+    action_strategy_text = (
+        f"- facts={action_strategy.get('facts_count', 0)}，盲区={action_strategy.get('blindspots_count', 0)}，"
+        f"unknown_ratio={float(action_strategy.get('unknown_ratio', 0.0)):.0%}，平均质量={float(action_strategy.get('average_quality_score', 0.0)):.0%}，"
+        f"pick_only={float(action_strategy.get('pick_only_ratio', 0.0)):.0%}，low_intent={float(action_strategy.get('low_intent_ratio', 0.0)):.0%}"
+    )
+    if int(action_strategy.get("min_actions", 2) or 2) <= 1:
+        action_constraint = "actions 至少 1 条，但只保留高证据或高可验证的近期动作；若缺少强 evidence_refs，宁可转为 open_questions，不得为了凑条数硬写行动项。"
+    elif int(action_strategy.get("min_actions", 2) or 2) == 2:
+        if action_strategy.get("prefer_open_questions"):
+            action_constraint = "actions 至少 2 条，优先选择高证据动作；证据不足时，不要扩写到 3 条，应把不确定内容写进 open_questions，timeline 以近期/中期验证为主。"
+        else:
+            action_constraint = "actions 至少 2 条，并尽量覆盖短期与中期里程碑。"
+    else:
+        action_constraint = "actions 至少 3 条（证据不足时至少 2 条），且 timeline 需覆盖短期与中期里程碑。"
 
     schema_example = {
         "overview": "访谈概述（2-4段）",
@@ -23226,6 +23241,9 @@ def build_report_draft_prompt_v3(
 ## 盲区清单（必须优先补齐）
 {blindspot_text}
 
+## 证据密度策略
+{action_strategy_text}
+
 ## 输出硬性约束
 1. 输出必须是合法 JSON 对象，首字符是 {{，末字符是 }}。
 2. 所有关键结论都要携带 evidence_refs（格式必须是 Q数字）。
@@ -23238,8 +23256,9 @@ def build_report_draft_prompt_v3(
 9. 禁止输出 markdown 代码块、注释、额外解释或前后缀文本。
 10. 顶层字段必须仅包含：overview/needs/analysis/visualizations/solutions/risks/actions/open_questions/evidence_index。
 11. 草案采用“咨询交付风格”：描述简洁、结论先行、避免口语与空泛表述。
-12. actions 至少 3 条（证据不足时至少 2 条），且 timeline 需覆盖短期与中期里程碑。
-13. needs/solutions/risks/actions 要满足表格化呈现：每项字段完整，单项表达尽量控制在 70 字内。
+12. {action_constraint}
+13. 证据稀疏、盲区偏多或低信号占比高时，优先把不确定内容写进 open_questions；没有强 evidence_refs 时不要为了凑条数硬写行动项。
+14. needs/solutions/risks/actions 要满足表格化呈现：每项字段完整，单项表达尽量控制在 70 字内。
 
 ## 风格锁定模板（审稿会按此门禁）
 - 2.需求摘要：needs 必须可直接渲染为表格（优先级/需求项/描述/证据）。
@@ -23870,6 +23889,84 @@ def _is_evidence_sparse_v3(evidence_pack: Optional[dict]) -> bool:
     return unknown_ratio >= REPORT_V3_UNKNOWN_RATIO_TRIGGER or avg_quality <= 0.32
 
 
+def _derive_action_generation_strategy_v3(evidence_pack: Optional[dict]) -> dict:
+    """根据证据密度决定 actions 的最小数量与生成策略。"""
+    strategy = {
+        "facts_count": 0,
+        "blindspots_count": 0,
+        "unknown_count": 0,
+        "unknown_ratio": 0.0,
+        "average_quality_score": 0.0,
+        "pick_only_ratio": 0.0,
+        "low_intent_ratio": 0.0,
+        "sparse_evidence": False,
+        "low_signal_pressure": False,
+        "prefer_open_questions": False,
+        "min_actions": 2,
+        "timeline_expectation": "short_and_mid",
+    }
+    if not isinstance(evidence_pack, dict):
+        return strategy
+
+    facts = evidence_pack.get("facts", [])
+    blindspots = evidence_pack.get("blindspots", [])
+    unknowns = evidence_pack.get("unknowns", [])
+    quality_snapshot = evidence_pack.get("quality_snapshot", {})
+    facts_count = len(facts) if isinstance(facts, list) else 0
+    blindspots_count = len(blindspots) if isinstance(blindspots, list) else 0
+    unknown_count = len(unknowns) if isinstance(unknowns, list) else 0
+    unknown_ratio = (unknown_count / facts_count) if facts_count > 0 else 0.0
+    avg_quality = max(0.0, min(1.0, _safe_float((quality_snapshot or {}).get("average_quality_score", 0.0), default=0.0)))
+
+    total_formal = max(0, int((quality_snapshot or {}).get("total_formal_questions", 0) or 0))
+    answer_mode_distribution = (quality_snapshot or {}).get("answer_mode_distribution", {})
+    evidence_intent_distribution = (quality_snapshot or {}).get("evidence_intent_distribution", {})
+    if not isinstance(answer_mode_distribution, dict):
+        answer_mode_distribution = {}
+    if not isinstance(evidence_intent_distribution, dict):
+        evidence_intent_distribution = {}
+
+    pick_only_ratio = (
+        max(0, int(answer_mode_distribution.get("pick_only", 0) or 0)) / total_formal
+        if total_formal > 0 else 0.0
+    )
+    low_intent_ratio = (
+        max(0, int(evidence_intent_distribution.get("low", 0) or 0)) / total_formal
+        if total_formal > 0 else 0.0
+    )
+    sparse_evidence = _is_evidence_sparse_v3(evidence_pack)
+    low_signal_pressure = total_formal > 0 and (pick_only_ratio >= 0.55 or low_intent_ratio >= 0.55)
+
+    min_actions = 3 if facts_count >= 10 else 2
+    timeline_expectation = "short_and_mid"
+    prefer_open_questions = bool(sparse_evidence or blindspots_count >= 8 or low_signal_pressure)
+
+    if facts_count <= 3 and blindspots_count >= 8 and (unknown_ratio >= 0.25 or avg_quality <= 0.58 or low_signal_pressure):
+        min_actions = 1
+        timeline_expectation = "short_only"
+        prefer_open_questions = True
+    elif facts_count <= 6 and (blindspots_count >= 6 or unknown_ratio >= 0.40 or avg_quality <= 0.42 or low_signal_pressure):
+        min_actions = min(min_actions, 2)
+        timeline_expectation = "short_preferred"
+        prefer_open_questions = True
+
+    strategy.update({
+        "facts_count": facts_count,
+        "blindspots_count": blindspots_count,
+        "unknown_count": unknown_count,
+        "unknown_ratio": round(unknown_ratio, 3),
+        "average_quality_score": round(avg_quality, 3),
+        "pick_only_ratio": round(pick_only_ratio, 3),
+        "low_intent_ratio": round(low_intent_ratio, 3),
+        "sparse_evidence": bool(sparse_evidence),
+        "low_signal_pressure": bool(low_signal_pressure),
+        "prefer_open_questions": bool(prefer_open_questions),
+        "min_actions": int(min_actions),
+        "timeline_expectation": timeline_expectation,
+    })
+    return strategy
+
+
 def _pick_evidence_refs_for_dimension_v3(evidence_pack: dict, dimension_hint: str = "", limit: int = 1) -> list[str]:
     if not isinstance(evidence_pack, dict):
         return []
@@ -24270,12 +24367,56 @@ def _issue_target_exists_v3(target: str, draft: dict) -> bool:
 
 
 def _normalize_review_issue_payload_v3(item: dict) -> dict:
-    return {
+    normalized = {
         "type": str(item.get("type", "unknown")).strip().lower() or "unknown",
         "severity": str(item.get("severity", "medium")).strip().lower() or "medium",
         "message": str(item.get("message", "")).strip(),
         "target": str(item.get("target", "unknown")).strip(),
     }
+    return _normalize_review_issue_semantics_v3(normalized)
+
+
+def _normalize_review_issue_semantics_v3(issue: dict) -> dict:
+    if not isinstance(issue, dict):
+        return {
+            "type": "unknown",
+            "severity": "medium",
+            "message": "",
+            "target": "unknown",
+        }
+
+    normalized = dict(issue)
+    issue_type = str(normalized.get("type", "") or "").strip().lower()
+    target = str(normalized.get("target", "") or "").strip().lower()
+    message = str(normalized.get("message", "") or "").strip().lower()
+    if issue_type != "no_evidence":
+        return normalized
+
+    aggregate_target = (
+        target in {
+            "needs/solutions/actions/risks/evidence_index",
+            "needs/solutions/actions/risks",
+            "overall",
+            "report",
+        }
+        or ("/" in target and "[" not in target and "." not in target)
+    )
+    coverage_markers = (
+        "证据覆盖率",
+        "覆盖率",
+        "未达到≥",
+        "未达到>=",
+        "门槛",
+        "信息盲区",
+        "多个维度",
+    )
+    if not aggregate_target or not any(marker in message for marker in coverage_markers):
+        return normalized
+
+    normalized["type"] = "quality_gate_evidence"
+    if not target or target == "unknown":
+        normalized["target"] = "needs/solutions/actions/risks/evidence_index"
+    return normalized
 
 
 def filter_model_review_issues_v3(
@@ -24444,6 +24585,7 @@ def infer_weak_evidence_refs_v3(
     preferred_dimension = _infer_item_dimension_key_v3(field, item, evidence_pack)
     quality_snapshot = evidence_pack.get("quality_snapshot", {})
     avg_quality = _safe_float((quality_snapshot or {}).get("average_quality_score", 0.0), default=0.0)
+    action_strategy = _derive_action_generation_strategy_v3(evidence_pack) if field == "actions" else {}
 
     best = None
     for fact in facts:
@@ -24483,6 +24625,10 @@ def infer_weak_evidence_refs_v3(
     threshold = float(min_score or REPORT_V3_WEAK_BINDING_MIN_SCORE)
     if field == "actions":
         threshold += 0.04
+        if action_strategy.get("prefer_open_questions"):
+            threshold += 0.02
+        if int(action_strategy.get("min_actions", 2) or 2) <= 1:
+            threshold += 0.04
     if preferred_dimension:
         threshold -= 0.03
     if avg_quality <= 0.30:
@@ -24724,6 +24870,131 @@ def _reinforce_long_horizon_actions_v3(working: dict, evidence_pack: dict, issue
     return working, notes, changed
 
 
+def _pick_strong_action_seed_refs_v3(evidence_pack: dict, limit: int = 2) -> list[str]:
+    if not isinstance(evidence_pack, dict):
+        return []
+    facts = evidence_pack.get("facts", [])
+    if not isinstance(facts, list):
+        return []
+
+    ranked = []
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        q_id = str(fact.get("q_id", "") or "").upper().strip()
+        if not re.fullmatch(r"Q\d+", q_id):
+            continue
+        evidence_class = str(fact.get("answer_evidence_class", "") or "explicit").strip().lower()
+        if evidence_class in {"pending_follow_up", "none"}:
+            continue
+        quality_score = max(0.0, min(1.0, _safe_float(fact.get("quality_score", 0.0), default=0.0)))
+        ranked.append((quality_score, q_id))
+
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return _normalize_evidence_refs([q_id for _score, q_id in ranked[:max(1, int(limit or 1))]])
+
+
+def _build_sparse_session_explicit_action_v3(working: dict, evidence_pack: dict) -> dict:
+    refs = _pick_strong_action_seed_refs_v3(evidence_pack, limit=2)
+    if not refs:
+        return {}
+
+    blindspots = evidence_pack.get("blindspots", []) if isinstance(evidence_pack.get("blindspots", []), list) else []
+    primary_blindspot = blindspots[0] if blindspots else {}
+    dim_text = str((primary_blindspot or {}).get("dimension", "") or "相关维度").strip()
+    aspect_text = str((primary_blindspot or {}).get("aspect", "") or "").strip()
+
+    needs = working.get("needs", []) if isinstance(working.get("needs", []), list) else []
+    need_name = ""
+    if needs and isinstance(needs[0], dict):
+        need_name = str(needs[0].get("name", "") or "").strip()
+
+    focus_text = need_name or aspect_text or "当前已确认的核心问题"
+    action_text = f"围绕“{focus_text}”组织一次补采澄清，并确认责任边界与验收口径"
+    metric_text = "完成补采清单，明确负责人、验收口径与下一步决策记录"
+    return {
+        "action": action_text,
+        "owner": _infer_default_action_owner_v3(action_text, dim_text),
+        "timeline": "1周内",
+        "metric": metric_text,
+        "evidence_refs": refs,
+        "evidence_binding_mode": "strong_explicit",
+        "inference_origin_field": "sparse_session_action",
+        "dimension": dim_text,
+    }
+
+
+def _stabilize_sparse_actions_v3(working: dict, evidence_pack: dict, issues: list, runtime_profile: str = "") -> tuple[dict, list[str], bool]:
+    if not isinstance(working, dict):
+        return working, [], False
+
+    action_strategy = _derive_action_generation_strategy_v3(evidence_pack)
+    if not action_strategy.get("prefer_open_questions"):
+        return working, [], False
+
+    issue_types = summarize_issue_types_v3(issues)
+    if "quality_gate_weak_binding" not in issue_types and "style_template_violation" not in issue_types:
+        return working, [], False
+
+    actions = working.get("actions", [])
+    if not isinstance(actions, list) or not actions:
+        return working, [], False
+
+    action_minimum = max(1, int(action_strategy.get("min_actions", 2) or 2))
+    open_questions = working.get("open_questions", [])
+    if not isinstance(open_questions, list):
+        open_questions = []
+
+    changed = False
+    notes = []
+    kept_actions = []
+    demoted_count = 0
+
+    for item in actions:
+        if not isinstance(item, dict):
+            continue
+        binding_mode = str(item.get("evidence_binding_mode", "") or "").strip().lower()
+        binding_score = max(0.0, min(1.0, _safe_float(item.get("evidence_binding_score", 0.0), default=0.0)))
+        refs = _normalize_evidence_refs(item.get("evidence_refs", []))
+        is_strong = bool(refs) and binding_mode not in {"weak_inferred", "pending_follow_up", ""}
+        if is_strong:
+            kept_actions.append(item)
+            continue
+
+        should_demote = False
+        if not refs:
+            should_demote = True
+        elif binding_mode == "weak_inferred":
+            should_demote = True
+            if action_minimum > 1 and binding_score >= 0.78:
+                should_demote = False
+
+        if should_demote:
+            open_questions.append(_demote_item_to_open_question_v3("actions", item))
+            demoted_count += 1
+            changed = True
+            continue
+
+        kept_actions.append(item)
+
+    if demoted_count > 0:
+        notes.append(f"actions 收缩为待补问 {demoted_count} 条")
+
+    if not kept_actions and action_minimum >= 1:
+        fallback_action = _build_sparse_session_explicit_action_v3(working, evidence_pack)
+        if fallback_action:
+            kept_actions.append(fallback_action)
+            changed = True
+            notes.append("补充 1 条强证据补采 action")
+
+    if not changed:
+        return working, [], False
+
+    working["actions"] = kept_actions
+    working["open_questions"] = open_questions
+    return working, notes, True
+
+
 def _deduplicate_structured_list_v3(items: list, id_fields: list[str]) -> list:
     if not isinstance(items, list):
         return []
@@ -24902,6 +25173,15 @@ def apply_deterministic_report_repairs_v3(
     if metric_changed:
         changed = True
         notes.extend(metric_notes)
+    working, sparse_action_notes, sparse_action_changed = _stabilize_sparse_actions_v3(
+        working,
+        evidence_pack,
+        issues,
+        runtime_profile=runtime_profile,
+    )
+    if sparse_action_changed:
+        changed = True
+        notes.extend(sparse_action_notes)
 
     # 盲区规则补全：优先进入 open_questions；质量档可按配置补一条待验证行动项。
     blindspot_candidates = []
@@ -25522,12 +25802,14 @@ def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: lis
     quality_snapshot = evidence_pack.get("quality_snapshot", {}) if isinstance(evidence_pack.get("quality_snapshot", {}), dict) else {}
     avg_quality_score = max(0.0, min(1.0, _safe_float(quality_snapshot.get("average_quality_score", 0.0), default=0.0)))
     unknown_ratio = (unknown_count / facts_count) if facts_count > 0 else 0.0
+    action_strategy = _derive_action_generation_strategy_v3(evidence_pack)
+    action_minimum = max(1, int(action_strategy.get("min_actions", 2) or 2))
 
     template_minimums = {
         "needs": 2 if facts_count >= 8 else 1,
         "solutions": 2 if facts_count >= 8 else 1,
         "risks": 1,
-        "actions": 3 if facts_count >= 10 else 2,
+        "actions": action_minimum,
         "open_questions": 1 if (blindspot_count > 0 or unknown_count > 0) else 0,
     }
     if unknown_ratio >= 0.65 or avg_quality_score <= 0.30:
@@ -25535,6 +25817,8 @@ def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: lis
         template_minimums["solutions"] = min(template_minimums["solutions"], 1 if facts_count < 14 else 2)
         if unknown_count > 0:
             template_minimums["open_questions"] = max(template_minimums["open_questions"], 2 if facts_count >= 10 else 1)
+    if action_strategy.get("prefer_open_questions") and (blindspot_count > 0 or unknown_count > 0):
+        template_minimums["open_questions"] = max(template_minimums["open_questions"], 2 if blindspot_count >= 8 or unknown_ratio >= 0.25 else 1)
 
     list_counts = {
         "needs": len(needs),
@@ -25605,6 +25889,13 @@ def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: lis
     action_acceptance = (measurable_actions / action_total) if action_total > 0 else 0.0
     if action_total <= 0:
         milestone_coverage = 0.0
+    elif action_minimum <= 1:
+        if len(timeline_buckets) >= 2:
+            milestone_coverage = 1.0
+        elif len(timeline_buckets) == 1:
+            milestone_coverage = 0.68
+        else:
+            milestone_coverage = 0.28
     elif "short" in timeline_buckets and "mid" in timeline_buckets and action_total >= 3:
         milestone_coverage = 1.0
     elif len(timeline_buckets) >= 2:
@@ -25660,6 +25951,12 @@ def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: lis
             "blindspots_count": blindspot_count,
             "unknown_ratio": round(unknown_ratio, 3),
             "average_quality_score": round(avg_quality_score, 3),
+            "action_generation_strategy": {
+                "min_actions": action_minimum,
+                "prefer_open_questions": bool(action_strategy.get("prefer_open_questions")),
+                "low_signal_pressure": bool(action_strategy.get("low_signal_pressure")),
+                "timeline_expectation": str(action_strategy.get("timeline_expectation", "short_and_mid") or "short_and_mid"),
+            },
         },
         "timeline_buckets": sorted(timeline_buckets),
         "measurable_actions": measurable_actions,
