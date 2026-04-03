@@ -2,7 +2,7 @@
 
 本文档说明如何通过 `site-config.js` 配置文件自定义 Deep Vision 前端的各项设置。
 
-`site-config.js` 只负责前端展示层和 API 基础地址，不负责后端运行、鉴权、短信、实例隔离或运维白名单配置。这些部署相关参数统一放在 `web/.env`，可参考 `web/.env.example` 与仓库根目录 `README.md`。
+`site-config.js` 只负责前端展示层和 API 基础地址，不负责后端运行、鉴权、短信、实例隔离或运维白名单配置。这些部署相关参数统一放在进程环境变量或本地自建的 `web/.env.local` / `web/.env.cloud` 中，可参考 `web/.env.example` 与仓库根目录 `README.md`。
 
 ## 配置文件位置
 
@@ -15,7 +15,7 @@
 当前项目的配置分为两层：
 
 - `site-config.js`：前端页面行为与展示配置，例如诗句轮播、主题颜色、API 基础地址
-- `web/.env`：后端运行与部署配置，例如会话密钥、短信登录、管理员白名单、实例隔离、微信登录、AI 网关等
+- 进程环境变量或本地自建的 `web/.env.local` / `web/.env.cloud`：后端运行与部署配置，例如会话密钥、短信登录、管理员白名单、实例隔离、微信登录、AI 网关等
 
 常见但不属于 `site-config.js` 的配置包括：
 
@@ -31,7 +31,7 @@
 - `META_INDEX_DB_PATH`
 - `LICENSE_CODE_SIGNING_SECRET`
 
-如果当前是内测或演示环境，并且仍在使用 `mock` 短信登录，建议在 `web/.env` 中显式配置固定测试码和演示管理员手机号，而不是尝试在 `site-config.js` 中处理。
+如果当前是内测或演示环境，并且仍在使用 `mock` 短信登录，建议在进程环境变量或本地自建的 `web/.env.local` / `web/.env.cloud` 中显式配置固定测试码和演示管理员手机号，而不是尝试在 `site-config.js` 中处理。
 
 后端部署与鉴权的权威说明统一放在：
 
@@ -133,7 +133,7 @@ api: {
 说明：
 
 - `api.baseUrl` 只决定前端请求哪个后端，不会改变后端自身的鉴权方式或短信供应商
-- 是否启用短信登录、微信登录、管理员运维接口权限，均由后端 `web/.env` 决定；登录后 License 校验默认值由 `web/.env` 决定，也可通过管理员接口在运行时动态切换
+- 是否启用短信登录、微信登录、管理员运维接口权限，均由后端进程环境变量或本地自建的 `web/.env.local` / `web/.env.cloud` 决定；登录后 License 校验默认值也由这一层决定，并可通过管理员接口在运行时动态切换
 - 当前管理员能力已经收口到前端“管理员中心”，除了 `metrics` / `summaries` / `admin/licenses*` / `admin/ownership-migrations*` 外，也支持通过 `admin/config-center*` 对 `.env`、`config.py` 与 `site-config.js` 做分组化查看和写入
 
 ## 后端相关配置入口
@@ -146,7 +146,7 @@ api: {
 一句话判断：
 
 - 改页面表现、主题、前端请求地址：看本文档
-- 改登录方式、短信供应商、管理员权限、部署行为：看 `web/.env` 与 `README.md`
+- 改登录方式、短信供应商、管理员权限、部署行为：看进程环境变量、`web/.env.local` / `web/.env.cloud` 与 `README.md`
 
 ## 使用示例
 

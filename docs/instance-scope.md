@@ -43,9 +43,9 @@ DeepVision 现在支持按实例作用域隔离会话和报告。系统在读取
 
 推荐做法：
 
-- 部署环境优先写入 `web/.env` 或进程环境变量
+- 部署环境优先写入进程环境变量；本地开发或云端联调可分别写入 `web/.env.local` / `web/.env.cloud`
 - `web/config.py` 仅建议作为本地开发或临时排障时的兜底配置
-- 如果同时维护 `web/.env` 与 `web/config.py`，请确保两处值完全一致，避免排查时混淆
+- 如果同时维护进程环境变量（或本地自建的 `web/.env.local` / `web/.env.cloud`）与 `web/config.py`，请确保两处值完全一致，避免排查时混淆
 
 ## 推荐命名规则
 
@@ -77,7 +77,7 @@ https://your-instance.example.com
 your-instance-example-com
 ```
 
-`web/.env`：
+本地开发或云端联调环境文件：
 
 ```env
 WECHAT_LOGIN_ENABLED=true
@@ -213,7 +213,7 @@ pod-3 -> INSTANCE_SCOPE_KEY=pod-3
 访问链接:
 是否共享 data 目录: 是 / 否
 INSTANCE_SCOPE_KEY:
-配置位置: web/.env（推荐） / 环境变量 / web/config.py（本地兜底）
+配置位置: 环境变量（推荐） / `web/.env.local` / `web/.env.cloud` / `web/config.py`（本地兜底）
 备注:
 ```
 
@@ -224,6 +224,6 @@ INSTANCE_SCOPE_KEY:
 访问链接: https://wjkuhannejiw.sealosbja.site
 是否共享 data 目录: 是
 INSTANCE_SCOPE_KEY: wjkuhannejiw-sealosbja-site
-配置位置: web/.env
+配置位置: 环境变量 / `web/.env.local` / `web/.env.cloud`
 备注: 同链接下所有副本统一使用该值
 ```

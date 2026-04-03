@@ -34,8 +34,6 @@ ENV/
 web/.env
 web/.env.*
 !web/.env.example
-!web/.env.local
-!web/.env.cloud
 
 # IDE
 .vscode/

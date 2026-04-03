@@ -94,32 +94,19 @@
 
 推荐优先使用两套环境中的云端联调链路：
 
-- [web/.env.cloud](../web/.env.cloud)
-- 可选私有覆盖：`web/.env.cloud.private`
-
-如果当前还没有拆分私有云端文件，也可以临时沿用：
-
-- `web/.env`
-
+- 本机自建的 `web/.env.cloud`
 推荐写法：
 
 ```bash
 cd /Users/hehai/Documents/开目软件/Agents/project/DeepVision
 
-export DEEPVISION_ENV_FILE="web/.env.cloud:web/.env.cloud.private"
-```
-
-如果当前没有 `web/.env.cloud.private`，可以改成：
-
-```bash
-export DEEPVISION_ENV_FILE="web/.env.cloud:web/.env"
+export DEEPVISION_ENV_FILE="web/.env.cloud"
 ```
 
 说明：
 
-- `DEEPVISION_ENV_FILE` 支持多文件链式加载
-- 后面的文件会覆盖前面的同名键
-- 这样可以把“可入库基线”和“私有凭证”分开
+- `DEEPVISION_ENV_FILE` 直接指向当前云端联调文件
+- 生产环境仍建议使用平台或进程环境变量注入，而不是依赖本地 env 文件
 
 ## 4. 迁移前检查清单
 
@@ -156,7 +143,7 @@ export DEEPVISION_ENV_FILE="web/.env.cloud:web/.env"
 先做 `dry-run`：
 
 ```bash
-DEEPVISION_ENV_FILE="web/.env.cloud:web/.env.cloud.private" \
+DEEPVISION_ENV_FILE="web/.env.cloud" \
 uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' \
 python3 scripts/import_external_local_data_to_cloud.py \
   --source-data-dir /你的路径/data \
@@ -178,7 +165,7 @@ python3 scripts/import_external_local_data_to_cloud.py \
 确认无误后正式执行：
 
 ```bash
-DEEPVISION_ENV_FILE="web/.env.cloud:web/.env.cloud.private" \
+DEEPVISION_ENV_FILE="web/.env.cloud" \
 uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' \
 python3 scripts/import_external_local_data_to_cloud.py \
   --source-data-dir /你的路径/data \
@@ -201,7 +188,7 @@ python3 scripts/import_external_local_data_to_cloud.py \
 先做 `dry-run`：
 
 ```bash
-DEEPVISION_ENV_FILE="web/.env.cloud:web/.env.cloud.private" \
+DEEPVISION_ENV_FILE="web/.env.cloud" \
 uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' \
 python3 scripts/import_external_local_data_to_cloud.py \
   --source-data-dir /你的路径/data \
@@ -213,7 +200,7 @@ python3 scripts/import_external_local_data_to_cloud.py \
 确认无误后正式执行：
 
 ```bash
-DEEPVISION_ENV_FILE="web/.env.cloud:web/.env.cloud.private" \
+DEEPVISION_ENV_FILE="web/.env.cloud" \
 uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' \
 python3 scripts/import_external_local_data_to_cloud.py \
   --source-data-dir /你的路径/data \
@@ -249,7 +236,7 @@ python3 scripts/import_external_local_data_to_cloud.py \
 ### 7.1 全量补全
 
 ```bash
-DEEPVISION_ENV_FILE="web/.env.cloud:web/.env.cloud.private" \
+DEEPVISION_ENV_FILE="web/.env.cloud" \
 uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' --with boto3 \
 python3 scripts/sync_object_storage_history.py \
   --output-json /tmp/object-storage-sync.json
@@ -258,7 +245,7 @@ python3 scripts/sync_object_storage_history.py \
 ### 7.2 只补演示稿
 
 ```bash
-DEEPVISION_ENV_FILE="web/.env.cloud:web/.env.cloud.private" \
+DEEPVISION_ENV_FILE="web/.env.cloud" \
 uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' --with boto3 \
 python3 scripts/sync_object_storage_history.py \
   --presentations \
@@ -268,7 +255,7 @@ python3 scripts/sync_object_storage_history.py \
 ### 7.3 只补运维归档
 
 ```bash
-DEEPVISION_ENV_FILE="web/.env.cloud:web/.env.cloud.private" \
+DEEPVISION_ENV_FILE="web/.env.cloud" \
 uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' --with boto3 \
 python3 scripts/sync_object_storage_history.py \
   --ops-archives \
@@ -286,7 +273,7 @@ python3 scripts/sync_object_storage_history.py \
 示例：
 
 ```bash
-DEEPVISION_ENV_FILE="web/.env.cloud:web/.env.cloud.private" \
+DEEPVISION_ENV_FILE="web/.env.cloud" \
 uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' --with boto3 \
 python3 scripts/sync_object_storage_history.py \
   --ops-archives \
@@ -313,7 +300,7 @@ python3 scripts/sync_object_storage_history.py \
 如果业务迁移有问题，可以按 `import-apply.json` 里的 `backup.backup_dir` 回滚：
 
 ```bash
-DEEPVISION_ENV_FILE="web/.env.cloud:web/.env.cloud.private" \
+DEEPVISION_ENV_FILE="web/.env.cloud" \
 uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' \
 python3 scripts/rollback_external_local_data_import.py \
   --backup-dir /备份目录路径 \
@@ -356,7 +343,7 @@ python3 scripts/rollback_external_local_data_import.py \
 ### 11.1 业务迁移 dry-run
 
 ```bash
-DEEPVISION_ENV_FILE="web/.env.cloud:web/.env.cloud.private" \
+DEEPVISION_ENV_FILE="web/.env.cloud" \
 uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' \
 python3 scripts/import_external_local_data_to_cloud.py \
   --source-data-dir /你的路径/data \
@@ -368,7 +355,7 @@ python3 scripts/import_external_local_data_to_cloud.py \
 ### 11.2 业务迁移 apply
 
 ```bash
-DEEPVISION_ENV_FILE="web/.env.cloud:web/.env.cloud.private" \
+DEEPVISION_ENV_FILE="web/.env.cloud" \
 uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' \
 python3 scripts/import_external_local_data_to_cloud.py \
   --source-data-dir /你的路径/data \
@@ -380,7 +367,7 @@ python3 scripts/import_external_local_data_to_cloud.py \
 ### 11.3 补全历史对象存储
 
 ```bash
-DEEPVISION_ENV_FILE="web/.env.cloud:web/.env.cloud.private" \
+DEEPVISION_ENV_FILE="web/.env.cloud" \
 uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' --with boto3 \
 python3 scripts/sync_object_storage_history.py \
   --output-json /tmp/object-storage-sync.json
@@ -389,7 +376,7 @@ python3 scripts/sync_object_storage_history.py \
 ### 11.4 业务回滚
 
 ```bash
-DEEPVISION_ENV_FILE="web/.env.cloud:web/.env.cloud.private" \
+DEEPVISION_ENV_FILE="web/.env.cloud" \
 uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' \
 python3 scripts/rollback_external_local_data_import.py \
   --backup-dir /备份目录路径 \
