@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 WEB_DIR = ROOT_DIR / "web"
 SERVER_PATH = WEB_DIR / "server.py"
-CONFIG_EXAMPLE_PATH = WEB_DIR / "config.example.py"
+CONFIG_PATH = WEB_DIR / "config.py"
 ENV_EXAMPLE_PATH = WEB_DIR / ".env.example"
 
 
@@ -29,7 +29,7 @@ def _parse_server_cfg_keys(path: Path) -> set[str]:
     text = path.read_text(encoding="utf-8")
     keys = set(
         re.findall(
-            r'_cfg_(?:get|int|float|bool|text|text_list|numeric_map)\("([A-Z][A-Z0-9_]+)"',
+            r'_cfg_(?:get|int|float|bool|text|text_list|numeric_map)\(\s*"([A-Z][A-Z0-9_]+)"',
             text,
         )
     )
@@ -60,30 +60,30 @@ class ConfigTemplateConsistencyTests(unittest.TestCase):
 
         cls.server = server
         cls.server_keys = _parse_server_cfg_keys(SERVER_PATH)
-        cls.config_example_keys = _parse_template_keys(CONFIG_EXAMPLE_PATH)
+        cls.config_keys = _parse_template_keys(CONFIG_PATH)
         cls.env_example_keys = _parse_template_keys(ENV_EXAMPLE_PATH)
 
-    def test_config_example_keys_are_all_consumed_by_server(self):
-        missing = sorted(key for key in self.config_example_keys if key not in self.server_keys)
+    def test_config_keys_are_all_consumed_by_server(self):
+        missing = sorted(key for key in self.config_keys if key not in self.server_keys)
         self.assertEqual(missing, [])
 
     def test_env_example_keys_are_all_consumed_by_server(self):
         missing = sorted(key for key in self.env_example_keys if key not in self.server_keys)
         self.assertEqual(missing, [])
 
-    def test_config_example_does_not_contain_env_managed_only_keys(self):
+    def test_config_does_not_contain_env_managed_only_keys(self):
         misplaced = sorted(
-            key for key in self.config_example_keys if self.server._is_env_managed_config_key(key)
+            key for key in self.config_keys if self.server._is_env_managed_config_key(key)
         )
         self.assertEqual(misplaced, [])
 
-    def test_config_example_covers_all_strategy_keys(self):
+    def test_config_covers_all_strategy_keys(self):
         missing = sorted(
             key
             for key in self.server_keys
             if not key.startswith("GUNICORN_")
             if not self.server._is_env_managed_config_key(key)
-            if key not in self.config_example_keys
+            if key not in self.config_keys
         )
         self.assertEqual(missing, [])
 

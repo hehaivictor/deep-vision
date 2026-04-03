@@ -131,6 +131,19 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="默认会把导入数据的 instance_scope_key 改写为当前实例 scope；传此参数可保留源 scope",
     )
+    parser.add_argument(
+        "--cleanup-target-user-scope-residue",
+        dest="cleanup_target_user_scope_residue",
+        action="store_true",
+        default=None,
+        help="按本次迁移涉及的目标用户，额外清理其历史会话/报告/自定义场景中的旧 scope 残留",
+    )
+    parser.add_argument(
+        "--no-cleanup-target-user-scope-residue",
+        dest="cleanup_target_user_scope_residue",
+        action="store_false",
+        help="禁用按目标用户清理历史 scope 残留",
+    )
     args = parser.parse_args()
     if args.dry_run == args.apply:
         raise SystemExit("必须且只能选择 --dry-run 或 --apply 其中一个")
@@ -1008,6 +1021,7 @@ def build_summary_payload(
     backup: Optional[dict[str, Any]],
     applied: bool,
     cloud_summary_after: Optional[dict[str, Any]],
+    scope_cleanup: Optional[dict[str, Any]],
 ) -> dict[str, Any]:
     return {
         "source_summary": {
@@ -1058,11 +1072,298 @@ def build_summary_payload(
         "backup": backup or {"performed": False},
         "applied": bool(applied),
         "cloud_summary_after": cloud_summary_after or {},
+        "scope_cleanup": scope_cleanup or {},
         "ownerless_mode": bool(ownerless_mode),
         "default_target_user_id": int(default_target_user_id or 0),
         "session_map_override_count": len((plan.get("session_map_overrides") or {})) if isinstance(plan, dict) else 0,
         "report_map_override_count": len((plan.get("report_map_overrides") or {})) if isinstance(plan, dict) else 0,
     }
+
+
+def resolve_scope_cleanup_enabled(
+    *,
+    rewrite_to_active_scope: bool,
+    cleanup_target_user_scope_residue: Optional[bool],
+) -> bool:
+    if cleanup_target_user_scope_residue is None:
+        return bool(rewrite_to_active_scope)
+    return bool(cleanup_target_user_scope_residue)
+
+
+def collect_target_owner_user_ids(plan: dict[str, Any]) -> list[int]:
+    owner_ids: set[int] = set()
+    for item in plan.get("planned_sessions") or []:
+        owner_id = ownership_admin_service.parse_owner_id(item.get("target_owner_user_id"))
+        if owner_id > 0:
+            owner_ids.add(owner_id)
+    for item in plan.get("planned_reports") or []:
+        owner_id = ownership_admin_service.parse_owner_id(item.get("target_owner_user_id"))
+        if owner_id > 0:
+            owner_ids.add(owner_id)
+    for item in plan.get("planned_custom_scenarios") or []:
+        owner_id = ownership_admin_service.parse_owner_id(item.get("target_owner_user_id"))
+        if owner_id > 0:
+            owner_ids.add(owner_id)
+    return sorted(owner_ids)
+
+
+def _build_owner_placeholders(owner_ids: list[int]) -> tuple[str, tuple[int, ...]]:
+    normalized = tuple(int(owner_id) for owner_id in owner_ids if int(owner_id) > 0)
+    if not normalized:
+        return "", ()
+    return ", ".join(["?"] * len(normalized)), normalized
+
+
+def _apply_scope_to_payload(payload: dict[str, Any], *, target_scope_key: str, scope_field: str) -> dict[str, Any]:
+    payload[scope_field] = target_scope_key
+    meta = payload.get("meta")
+    if isinstance(meta, dict):
+        meta[scope_field] = target_scope_key
+    return payload
+
+
+def collect_scope_cleanup_candidates(
+    *,
+    target_owner_user_ids: list[int],
+    target_scope_key: str,
+    server_module,
+) -> dict[str, Any]:
+    summary = {
+        "target_owner_user_ids": [int(owner_id) for owner_id in target_owner_user_ids if int(owner_id) > 0],
+        "target_scope_key": str(target_scope_key or ""),
+        "required": False,
+        "session_store": {"count": 0, "examples": []},
+        "report_meta_scopes": {"count": 0, "examples": []},
+        "custom_scenarios": {"count": 0, "examples": []},
+    }
+    if not summary["target_owner_user_ids"]:
+        return summary
+
+    placeholders, params = _build_owner_placeholders(summary["target_owner_user_ids"])
+    if not placeholders:
+        return summary
+
+    scope_field = str(getattr(server_module, "INSTANCE_SCOPE_FIELD", "instance_scope_key") or "instance_scope_key")
+    target_scope = str(target_scope_key or "")
+    session_examples: list[str] = []
+    report_examples: list[str] = []
+    scenario_examples: list[str] = []
+    session_count = 0
+    report_count = 0
+    scenario_count = 0
+
+    with ownership_admin_service.get_meta_index_connection(str(server_module.get_meta_index_db_target())) as conn:
+        session_rows = fetch_all_dicts(
+            conn,
+            f"""
+            SELECT session_id, instance_scope_key, payload_json
+            FROM session_store
+            WHERE owner_user_id IN ({placeholders})
+            """,
+            params,
+        )
+        for row in session_rows:
+            row_scope = server_module.get_record_instance_scope_key(row.get("instance_scope_key"))
+            payload_scope = row_scope
+            try:
+                payload = json.loads(str(row.get("payload_json") or "{}"))
+                if isinstance(payload, dict):
+                    payload_scope = server_module.get_record_instance_scope_key(payload.get(scope_field))
+            except Exception:
+                payload_scope = row_scope
+            if row_scope == target_scope and payload_scope == target_scope:
+                continue
+            session_count += 1
+            session_id = str(row.get("session_id") or "").strip()
+            if session_id and len(session_examples) < 20:
+                session_examples.append(session_id)
+
+        report_rows = fetch_all_dicts(
+            conn,
+            f"""
+            SELECT o.file_name, COALESCE(s.instance_scope_key, '') AS instance_scope_key
+            FROM report_meta_owners o
+            LEFT JOIN report_meta_scopes s ON s.file_name = o.file_name
+            WHERE o.owner_user_id IN ({placeholders})
+            """,
+            params,
+        )
+        for row in report_rows:
+            row_scope = server_module.get_record_instance_scope_key(row.get("instance_scope_key"))
+            if row_scope == target_scope:
+                continue
+            report_count += 1
+            file_name = str(row.get("file_name") or "").strip()
+            if file_name and len(report_examples) < 20:
+                report_examples.append(file_name)
+
+        scenario_rows = fetch_all_dicts(
+            conn,
+            f"""
+            SELECT scenario_id, instance_scope_key, payload_json
+            FROM custom_scenarios
+            WHERE owner_user_id IN ({placeholders})
+            """,
+            params,
+        )
+        for row in scenario_rows:
+            row_scope = server_module.get_record_instance_scope_key(row.get("instance_scope_key"))
+            payload_scope = row_scope
+            try:
+                payload = json.loads(str(row.get("payload_json") or "{}"))
+                if isinstance(payload, dict):
+                    payload_scope = server_module.get_record_instance_scope_key(payload.get(scope_field) or (payload.get("meta") or {}).get(scope_field))
+            except Exception:
+                payload_scope = row_scope
+            if row_scope == target_scope and payload_scope == target_scope:
+                continue
+            scenario_count += 1
+            scenario_id = str(row.get("scenario_id") or "").strip()
+            if scenario_id and len(scenario_examples) < 20:
+                scenario_examples.append(scenario_id)
+
+    summary["session_store"] = {"count": session_count, "examples": session_examples}
+    summary["report_meta_scopes"] = {"count": report_count, "examples": report_examples}
+    summary["custom_scenarios"] = {"count": scenario_count, "examples": scenario_examples}
+    summary["required"] = bool(session_count or report_count or scenario_count)
+    return summary
+
+
+def apply_scope_cleanup(
+    *,
+    target_owner_user_ids: list[int],
+    target_scope_key: str,
+    server_module,
+) -> dict[str, Any]:
+    cleanup_summary = {
+        "target_owner_user_ids": [int(owner_id) for owner_id in target_owner_user_ids if int(owner_id) > 0],
+        "target_scope_key": str(target_scope_key or ""),
+        "session_store": 0,
+        "report_meta_scopes": 0,
+        "custom_scenarios": 0,
+        "requires_indexes_rebuild": False,
+        "requires_scenario_loader_reload": False,
+    }
+    if not cleanup_summary["target_owner_user_ids"]:
+        return cleanup_summary
+
+    placeholders, params = _build_owner_placeholders(cleanup_summary["target_owner_user_ids"])
+    if not placeholders:
+        return cleanup_summary
+
+    now_iso = utc_now_iso()
+    time_ns = int(datetime.now().timestamp() * 1_000_000_000)
+    scope_field = str(getattr(server_module, "INSTANCE_SCOPE_FIELD", "instance_scope_key") or "instance_scope_key")
+    target_scope = str(target_scope_key or "")
+
+    with ownership_admin_service.get_meta_index_connection(str(server_module.get_meta_index_db_target())) as conn:
+        session_rows = fetch_all_dicts(
+            conn,
+            f"""
+            SELECT session_id, instance_scope_key, payload_json
+            FROM session_store
+            WHERE owner_user_id IN ({placeholders})
+            """,
+            params,
+        )
+        for row in session_rows:
+            session_id = str(row.get("session_id") or "").strip()
+            if not session_id:
+                continue
+            try:
+                payload = json.loads(str(row.get("payload_json") or "{}"))
+            except Exception:
+                payload = {}
+            if not isinstance(payload, dict):
+                continue
+            row_scope = server_module.get_record_instance_scope_key(row.get("instance_scope_key"))
+            payload_scope = server_module.get_record_instance_scope_key(payload.get(scope_field))
+            if row_scope == target_scope and payload_scope == target_scope:
+                continue
+            payload = _apply_scope_to_payload(payload, target_scope_key=target_scope, scope_field=scope_field)
+            payload_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            conn.execute(
+                """
+                UPDATE session_store
+                SET instance_scope_key = ?, payload_json = ?, payload_mtime_ns = ?, payload_size = ?
+                WHERE session_id = ?
+                """,
+                (target_scope, payload_text, time_ns, len(payload_text.encode("utf-8")), session_id),
+            )
+            cleanup_summary["session_store"] += 1
+
+        report_rows = fetch_all_dicts(
+            conn,
+            f"""
+            SELECT o.file_name, COALESCE(s.instance_scope_key, '') AS instance_scope_key
+            FROM report_meta_owners o
+            LEFT JOIN report_meta_scopes s ON s.file_name = o.file_name
+            WHERE o.owner_user_id IN ({placeholders})
+            """,
+            params,
+        )
+        for row in report_rows:
+            file_name = str(row.get("file_name") or "").strip()
+            if not file_name:
+                continue
+            row_scope = server_module.get_record_instance_scope_key(row.get("instance_scope_key"))
+            if row_scope == target_scope:
+                continue
+            if target_scope:
+                conn.execute(
+                    """
+                    INSERT INTO report_meta_scopes(file_name, instance_scope_key, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(file_name) DO UPDATE SET
+                        instance_scope_key=excluded.instance_scope_key,
+                        updated_at=excluded.updated_at
+                    """,
+                    (file_name, target_scope, now_iso),
+                )
+            else:
+                conn.execute("DELETE FROM report_meta_scopes WHERE file_name = ?", (file_name,))
+            cleanup_summary["report_meta_scopes"] += 1
+
+        scenario_rows = fetch_all_dicts(
+            conn,
+            f"""
+            SELECT scenario_id, instance_scope_key, payload_json
+            FROM custom_scenarios
+            WHERE owner_user_id IN ({placeholders})
+            """,
+            params,
+        )
+        for row in scenario_rows:
+            scenario_id = str(row.get("scenario_id") or "").strip()
+            if not scenario_id:
+                continue
+            try:
+                payload = json.loads(str(row.get("payload_json") or "{}"))
+            except Exception:
+                payload = {}
+            if not isinstance(payload, dict):
+                continue
+            row_scope = server_module.get_record_instance_scope_key(row.get("instance_scope_key"))
+            payload_scope = server_module.get_record_instance_scope_key(payload.get(scope_field) or (payload.get("meta") or {}).get(scope_field))
+            if row_scope == target_scope and payload_scope == target_scope:
+                continue
+            payload = _apply_scope_to_payload(payload, target_scope_key=target_scope, scope_field=scope_field)
+            payload_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            conn.execute(
+                """
+                UPDATE custom_scenarios
+                SET instance_scope_key = ?, payload_json = ?, updated_at = ?
+                WHERE scenario_id = ?
+                """,
+                (target_scope, payload_text, now_iso, scenario_id),
+            )
+            cleanup_summary["custom_scenarios"] += 1
+
+    cleanup_summary["requires_indexes_rebuild"] = bool(
+        cleanup_summary["session_store"] or cleanup_summary["report_meta_scopes"]
+    )
+    cleanup_summary["requires_scenario_loader_reload"] = bool(cleanup_summary["custom_scenarios"])
+    return cleanup_summary
 
 
 def apply_import_plan(
@@ -1156,6 +1457,11 @@ def apply_import_plan(
                         (item["file_name"], scope_key, now_iso),
                     )
                     imported["report_meta_scopes"] += 1
+                else:
+                    conn.execute(
+                        "DELETE FROM report_meta_scopes WHERE file_name = ?",
+                        (item["file_name"],),
+                    )
                 if item.get("deleted"):
                     conn.execute(
                         """
@@ -1238,6 +1544,7 @@ def run_import(
     skip_existing: bool = True,
     rebuild_indexes: bool = True,
     rewrite_to_active_scope: bool = True,
+    cleanup_target_user_scope_residue: Optional[bool] = None,
     server_module=None,
 ) -> dict[str, Any]:
     if server_module is None:
@@ -1314,10 +1621,33 @@ def run_import(
     )
     plan["session_map_overrides"] = user_map_config.get("session_map") or {}
     plan["report_map_overrides"] = user_map_config.get("report_map") or {}
+    scope_cleanup_enabled = resolve_scope_cleanup_enabled(
+        rewrite_to_active_scope=bool(rewrite_to_active_scope),
+        cleanup_target_user_scope_residue=cleanup_target_user_scope_residue,
+    )
+    plan["scope_cleanup"] = {
+        "enabled": bool(scope_cleanup_enabled),
+        **collect_scope_cleanup_candidates(
+            target_owner_user_ids=collect_target_owner_user_ids(plan) if scope_cleanup_enabled else [],
+            target_scope_key=server_module.get_record_instance_scope_key(active_scope_key),
+            server_module=server_module,
+        ),
+    }
 
     backup_summary = None
     cloud_summary_after = None
     imported_summary = None
+    scope_cleanup_summary = {
+        **(plan.get("scope_cleanup") or {}),
+        "applied": False,
+        "cleaned": {
+            "session_store": 0,
+            "report_meta_scopes": 0,
+            "custom_scenarios": 0,
+        },
+        "indexes_rebuilt": False,
+        "scenario_loader_reloaded": False,
+    }
     if apply_changes:
         backup_id = f"external-import-{utc_now_tag()}"
         backup_dir = ownership_admin_service.prepare_backup_dir(
@@ -1340,6 +1670,33 @@ def run_import(
             rewrite_to_active_scope=bool(rewrite_to_active_scope),
             active_scope_key=active_scope_key,
         )
+        if scope_cleanup_enabled:
+            cleanup_result = apply_scope_cleanup(
+                target_owner_user_ids=list((plan.get("scope_cleanup") or {}).get("target_owner_user_ids") or []),
+                target_scope_key=server_module.get_record_instance_scope_key(active_scope_key),
+                server_module=server_module,
+            )
+            scope_cleanup_summary["applied"] = bool(
+                cleanup_result.get("session_store")
+                or cleanup_result.get("report_meta_scopes")
+                or cleanup_result.get("custom_scenarios")
+            )
+            scope_cleanup_summary["cleaned"] = {
+                "session_store": int(cleanup_result.get("session_store") or 0),
+                "report_meta_scopes": int(cleanup_result.get("report_meta_scopes") or 0),
+                "custom_scenarios": int(cleanup_result.get("custom_scenarios") or 0),
+            }
+            if cleanup_result.get("requires_indexes_rebuild"):
+                server_module.rebuild_session_index_from_disk(full_reset=True)
+                server_module.rebuild_report_index_from_sources(full_reset=True)
+                imported_summary["indexes_rebuilt"] = True
+                scope_cleanup_summary["indexes_rebuilt"] = True
+            if cleanup_result.get("requires_scenario_loader_reload"):
+                try:
+                    server_module.scenario_loader.reload()
+                    scope_cleanup_summary["scenario_loader_reloaded"] = True
+                except Exception:
+                    scope_cleanup_summary["scenario_loader_reloaded"] = False
         cloud_summary_after = summarize_cloud_tables(server_module)
         backup_summary = {
             "performed": True,
@@ -1364,6 +1721,7 @@ def run_import(
         backup=backup_summary,
         applied=apply_changes,
         cloud_summary_after=cloud_summary_after,
+        scope_cleanup=scope_cleanup_summary,
     )
     if imported_summary is not None:
         result["imported"] = imported_summary
@@ -1385,6 +1743,7 @@ def main() -> None:
         skip_existing=bool(args.skip_existing),
         rebuild_indexes=bool(args.rebuild_indexes),
         rewrite_to_active_scope=bool(args.rewrite_to_active_scope),
+        cleanup_target_user_scope_residue=args.cleanup_target_user_scope_residue,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

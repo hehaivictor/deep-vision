@@ -184,6 +184,38 @@ class ExternalLocalDataImportTests(unittest.TestCase):
             )
         self.server.rebuild_report_index_from_sources(full_reset=True)
 
+    def _seed_target_custom_scenario(
+        self,
+        scenario_id: str,
+        owner_user_id: int,
+        *,
+        scope_key: str = "",
+        title: str = "已有自定义场景",
+    ):
+        payload = {
+            "id": scenario_id,
+            "name": title,
+            "owner_user_id": int(owner_user_id),
+            "instance_scope_key": str(scope_key or ""),
+            "meta": {
+                "owner_user_id": int(owner_user_id),
+                "instance_scope_key": str(scope_key or ""),
+            },
+            "created_at": "2026-04-01T00:00:00Z",
+            "updated_at": "2026-04-01T00:00:00Z",
+        }
+        row = {
+            "scenario_id": scenario_id,
+            "owner_user_id": int(owner_user_id),
+            "instance_scope_key": str(scope_key or ""),
+            "payload_json": json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            "created_at": "2026-04-01T00:00:00Z",
+            "updated_at": "2026-04-01T00:00:00Z",
+        }
+        with self.server.get_meta_index_connection() as conn:
+            import_script.ownership_admin_service._upsert_custom_scenario_rows(conn, [row])
+        self.server.scenario_loader.reload()
+
     def _create_source_bundle(self) -> Path:
         source_root = self.root / "source-package" / "data"
         (source_root / "sessions").mkdir(parents=True, exist_ok=True)
@@ -440,6 +472,159 @@ class ExternalLocalDataImportTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual("cloud-prod", str(session_row["instance_scope_key"] or ""))
         self.assertEqual("cloud-prod", str(report_scope_row["instance_scope_key"] or ""))
+
+    def test_apply_clears_stale_report_scope_when_target_scope_is_empty(self):
+        self._create_target_user(user_id=3, phone="13886047722")
+        self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED = True
+        self.server.INSTANCE_SCOPE_KEY = ""
+
+        self._seed_target_report("stale-scope.md", 3)
+        with self.server.get_meta_index_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO report_meta_scopes(file_name, instance_scope_key, updated_at)
+                VALUES (?, ?, '2026-04-01T00:00:00Z')
+                ON CONFLICT(file_name) DO UPDATE SET
+                    instance_scope_key=excluded.instance_scope_key,
+                    updated_at=excluded.updated_at
+                """,
+                ("stale-scope.md", "legacy-local"),
+            )
+        self.server.rebuild_report_index_from_sources(full_reset=True)
+
+        reports_before, total_before = self.server.query_report_index_for_user(3, 1, 20)
+        self.assertEqual(0, total_before)
+        self.assertEqual([], reports_before)
+
+        source_root = self._create_source_bundle()
+        (source_root / "reports" / "stale-scope.md").write_text("# 新导入报告", encoding="utf-8")
+
+        result = import_script.run_import(
+            source_data_dir=str(source_root),
+            target_user_id=3,
+            apply_changes=True,
+            include="reports,report-meta,indexes",
+            skip_existing=False,
+            server_module=self.server,
+        )
+
+        self.assertTrue(result["applied"])
+        reports_after, total_after = self.server.query_report_index_for_user(3, 1, 20)
+        self.assertEqual(1, total_after)
+        self.assertEqual({"stale-scope.md"}, {item["name"] for item in reports_after})
+
+        with self.server.get_meta_index_connection() as conn:
+            scope_row = conn.execute(
+                "SELECT instance_scope_key FROM report_meta_scopes WHERE file_name = ?",
+                ("stale-scope.md",),
+            ).fetchone()
+            index_row = conn.execute(
+                "SELECT instance_scope_key FROM report_index WHERE file_name = ?",
+                ("stale-scope.md",),
+            ).fetchone()
+        self.assertIsNone(scope_row)
+        self.assertEqual("", str(index_row["instance_scope_key"] or ""))
+
+    def test_apply_also_cleans_existing_scope_residue_for_target_user(self):
+        self._create_target_user(user_id=3, phone="13886047722")
+        self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED = True
+        self.server.INSTANCE_SCOPE_KEY = ""
+
+        legacy_session = {
+            "session_id": "legacy-session",
+            "owner_user_id": 3,
+            "topic": "历史脏会话",
+            "status": "completed",
+            "created_at": "2026-04-01T00:00:00Z",
+            "updated_at": "2026-04-01T00:00:00Z",
+            "instance_scope_key": "legacy-local",
+            "dimensions": {},
+            "interview_log": [{"question": "q", "answer": "a"}],
+        }
+        legacy_session_file = self.server.SESSIONS_DIR / "legacy-session.json"
+        with self.server.get_meta_index_connection() as conn:
+            record = self.server._build_session_store_record(legacy_session_file, legacy_session)
+            self.server._upsert_session_store_record(conn, record)
+
+        self._seed_target_report("legacy-report.md", 3)
+        with self.server.get_meta_index_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO report_meta_scopes(file_name, instance_scope_key, updated_at)
+                VALUES (?, ?, '2026-04-01T00:00:00Z')
+                ON CONFLICT(file_name) DO UPDATE SET
+                    instance_scope_key=excluded.instance_scope_key,
+                    updated_at=excluded.updated_at
+                """,
+                ("legacy-report.md", "legacy-local"),
+            )
+        self._seed_target_custom_scenario("legacy-scenario", 3, scope_key="legacy-local")
+        self.server.rebuild_session_index_from_disk(full_reset=True)
+        self.server.rebuild_report_index_from_sources(full_reset=True)
+
+        sessions_before, total_sessions_before = self.server.query_session_index_for_user(3, 1, 20)
+        reports_before, total_reports_before = self.server.query_report_index_for_user(3, 1, 20)
+        self.assertEqual(0, total_sessions_before)
+        self.assertEqual(0, total_reports_before)
+
+        source_root = self._create_source_bundle()
+        session_new = {
+            "session_id": "imported-session",
+            "topic": "新导入会话",
+            "created_at": "2026-04-01T00:00:00Z",
+            "updated_at": "2026-04-01T00:00:00Z",
+            "dimensions": {},
+            "interview_log": [],
+        }
+        (source_root / "sessions" / "imported-session.json").write_text(
+            json.dumps(session_new, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (source_root / "reports" / "imported-report.md").write_text("# 新导入报告", encoding="utf-8")
+
+        result = import_script.run_import(
+            source_data_dir=str(source_root),
+            target_user_id=3,
+            apply_changes=True,
+            include="sessions,reports,report-meta,indexes",
+            server_module=self.server,
+        )
+
+        self.assertTrue(result["applied"])
+        self.assertTrue(result["scope_cleanup"]["enabled"])
+        self.assertTrue(result["scope_cleanup"]["applied"])
+        self.assertEqual(1, result["scope_cleanup"]["cleaned"]["session_store"])
+        self.assertEqual(1, result["scope_cleanup"]["cleaned"]["report_meta_scopes"])
+        self.assertEqual(1, result["scope_cleanup"]["cleaned"]["custom_scenarios"])
+
+        sessions_after, total_sessions_after = self.server.query_session_index_for_user(3, 1, 20)
+        reports_after, total_reports_after = self.server.query_report_index_for_user(3, 1, 20)
+        self.assertEqual(2, total_sessions_after)
+        self.assertEqual({"legacy-session", "imported-session"}, {item["session_id"] for item in sessions_after})
+        self.assertEqual(2, total_reports_after)
+        self.assertEqual({"legacy-report.md", "imported-report.md"}, {item["name"] for item in reports_after})
+
+        with self.server.get_meta_index_connection() as conn:
+            session_row = conn.execute(
+                "SELECT instance_scope_key, payload_json FROM session_store WHERE session_id = ?",
+                ("legacy-session",),
+            ).fetchone()
+            report_scope_row = conn.execute(
+                "SELECT instance_scope_key FROM report_meta_scopes WHERE file_name = ?",
+                ("legacy-report.md",),
+            ).fetchone()
+            scenario_row = conn.execute(
+                "SELECT instance_scope_key, payload_json FROM custom_scenarios WHERE scenario_id = ?",
+                ("legacy-scenario",),
+            ).fetchone()
+        self.assertEqual("", str(session_row["instance_scope_key"] or ""))
+        self.assertIsNone(report_scope_row)
+        self.assertEqual("", str(scenario_row["instance_scope_key"] or ""))
+        session_payload = json.loads(str(session_row["payload_json"] or "{}"))
+        scenario_payload = json.loads(str(scenario_row["payload_json"] or "{}"))
+        self.assertEqual("", str(session_payload.get("instance_scope_key") or ""))
+        self.assertEqual("", str(scenario_payload.get("instance_scope_key") or ""))
+        self.assertEqual("", str((scenario_payload.get("meta") or {}).get("instance_scope_key") or ""))
 
     def test_rollback_restores_pre_import_snapshot(self):
         self._create_target_user(user_id=3, phone="13886047722")

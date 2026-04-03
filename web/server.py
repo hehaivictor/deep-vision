@@ -178,7 +178,7 @@ if runtime_config is not None:
     print(f"✅ 配置文件加载成功 ({runtime_config_source})")
 else:
     print("⚠️  未找到 config.py，使用默认配置")
-    print("   请复制 config.example.py 为 config.py 并填入实际配置")
+    print("   如需覆盖默认策略，请补充 web/config.py；密钥与部署参数请写入 .env")
 
 try:
     import anthropic
@@ -242,6 +242,8 @@ if CONFIG_RESOLUTION_MODE not in {"auto", "hybrid", "env_only"}:
 ENV_MANAGED_CONFIG_EXACT_KEYS = {
     "ADMIN_PHONE_NUMBERS",
     "ADMIN_USER_IDS",
+    "AI_CLIENT_EAGER_INIT",
+    "AI_CLIENT_INIT_CONNECTION_TEST",
     "AUTH_DB_PATH",
     "BUILTIN_SCENARIOS_DIR",
     "CONFIG_RESOLUTION_MODE",
@@ -258,6 +260,14 @@ ENV_MANAGED_CONFIG_EXACT_KEYS = {
     "LICENSE_DB_PATH",
     "LICENSE_ENFORCEMENT_ENABLED",
     "META_INDEX_DB_PATH",
+    "OBJECT_STORAGE_ACCESS_KEY_ID",
+    "OBJECT_STORAGE_BUCKET",
+    "OBJECT_STORAGE_ENDPOINT",
+    "OBJECT_STORAGE_FORCE_PATH_STYLE",
+    "OBJECT_STORAGE_PREFIX",
+    "OBJECT_STORAGE_REGION",
+    "OBJECT_STORAGE_SECRET_ACCESS_KEY",
+    "OBJECT_STORAGE_SIGNATURE_VERSION",
     "REFLY_API_URL",
     "REFLY_FILES_FIELD",
     "REFLY_INPUT_FIELD",
@@ -15547,8 +15557,18 @@ def _content_block_field(block, field: str):
     return getattr(block, field, None)
 
 
+def _strip_reasoning_tags(text: str) -> str:
+    """移除兼容网关把思考内容混入 text block 的 <think> 段。"""
+    normalized = str(text or "")
+    if not normalized:
+        return ""
+
+    cleaned = re.sub(r"<think>\s*[\s\S]*?\s*</think>", "", normalized, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
 def extract_message_text(message, allow_non_text_fallback: bool = False) -> str:
-    """从模型响应中提取文本内容，优先提取 type=text。"""
+    """从模型响应中提取文本内容，优先提取 type=text，并剥离混入的思考标签。"""
     content = getattr(message, "content", None) or []
     if not content:
         return ""
@@ -15559,8 +15579,10 @@ def extract_message_text(message, allow_non_text_fallback: bool = False) -> str:
         if _content_block_field(block, "type") != "text":
             continue
         block_text = _content_block_field(block, "text")
-        if isinstance(block_text, str) and block_text.strip():
-            text_parts.append(block_text.strip())
+        if isinstance(block_text, str):
+            cleaned_text = _strip_reasoning_tags(block_text)
+            if cleaned_text:
+                text_parts.append(cleaned_text)
 
     if text_parts:
         return "\n".join(text_parts).strip()
@@ -15573,8 +15595,10 @@ def extract_message_text(message, allow_non_text_fallback: bool = False) -> str:
     fallback_parts = []
     for block in content:
         block_text = _content_block_field(block, "text")
-        if isinstance(block_text, str) and block_text.strip():
-            fallback_parts.append(block_text.strip())
+        if isinstance(block_text, str):
+            cleaned_text = _strip_reasoning_tags(block_text)
+            if cleaned_text:
+                fallback_parts.append(cleaned_text)
 
     return "\n".join(fallback_parts).strip()
 

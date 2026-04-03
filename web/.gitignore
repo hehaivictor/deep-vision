@@ -1,6 +1,3 @@
-# 配置文件（包含敏感信息）
-config.py
-
 # Python 缓存
 __pycache__/
 *.py[cod]
