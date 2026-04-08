@@ -161,6 +161,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.client = self.server.app.test_client()
         self.server.LICENSE_ENFORCEMENT_ENABLED = False
         self.server.set_license_enforcement_override(False)
+        self.server.SMS_LOGIN_ENABLED = True
         self.server.SMS_PROVIDER = "mock"
         self.server.reset_list_metrics()
         self.server.report_owners_cache["signature"] = None
@@ -251,6 +252,50 @@ class ComprehensiveApiTests(unittest.TestCase):
         response = target.post("/api/licenses/activate", json={"code": code})
         self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
         return response.get_json() or {}
+
+    def test_runtime_startup_snapshot_persists_to_store_and_file(self):
+        snapshot_file = self.server.get_runtime_startup_snapshot_file()
+        snapshot_file.unlink(missing_ok=True)
+        with self.server.runtime_startup_lock:
+            self.server.runtime_startup_state.update(
+                {
+                    "initialized": False,
+                    "reason": "",
+                    "started_at": "",
+                    "completed_at": "",
+                    "total_ms": 0.0,
+                    "phases": [],
+                    "failed_phase": "",
+                    "error": "",
+                }
+            )
+
+        summary = self.server.ensure_runtime_startup_initialized(
+            force=True,
+            reason="api_test_startup_snapshot",
+        )
+
+        self.assertTrue(summary["initialized"])
+        self.assertEqual("api_test_startup_snapshot", summary["reason"])
+        self.assertTrue(snapshot_file.exists())
+
+        file_payload = json.loads(snapshot_file.read_text(encoding="utf-8"))
+        self.assertTrue(file_payload["initialized"])
+        self.assertEqual("api_test_startup_snapshot", file_payload["reason"])
+        self.assertEqual(
+            ["auth_db", "license_db", "meta_index_schema"],
+            [item["name"] for item in file_payload["phases"]],
+        )
+
+        with self.server.get_meta_index_connection() as conn:
+            row = conn.execute(
+                "SELECT payload_json FROM runtime_metrics_store WHERE metric_key = 'runtime_startup' LIMIT 1"
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+        store_payload = json.loads(str(row["payload_json"] or "{}"))
+        self.assertTrue(store_payload["initialized"])
+        self.assertEqual(file_payload["completed_at"], store_payload["completed_at"])
 
     def _create_wechat_user(
         self,
@@ -485,6 +530,54 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(["balanced"], status_payload.get("report_profile_options"))
         self.assertEqual(["quick"], status_payload.get("allowed_interview_modes"))
         self.assertEqual("quick", status_payload.get("interview_mode_default"))
+
+    def test_status_reports_sms_login_disabled_when_explicitly_closed(self):
+        old_enabled = self.server.SMS_LOGIN_ENABLED
+        try:
+            self.server.SMS_LOGIN_ENABLED = False
+            status_resp = self.client.get("/api/status")
+            self.assertEqual(status_resp.status_code, 200, status_resp.get_data(as_text=True))
+            status_payload = status_resp.get_json() or {}
+            self.assertFalse(status_payload.get("sms_login_enabled"))
+        finally:
+            self.server.SMS_LOGIN_ENABLED = old_enabled
+
+    def test_sms_auth_routes_return_503_when_sms_login_disabled(self):
+        account = f"1{uuid.uuid4().int % 10**10:010d}"
+        self._register()
+        old_enabled = self.server.SMS_LOGIN_ENABLED
+        try:
+            self.server.SMS_LOGIN_ENABLED = False
+
+            send_resp = self.client.post(
+                "/api/auth/sms/send-code",
+                json={"account": account, "scene": "login"},
+            )
+            self.assertEqual(send_resp.status_code, 503, send_resp.get_data(as_text=True))
+            self.assertEqual("短信登录未启用", (send_resp.get_json() or {}).get("error"))
+
+            login_resp = self.client.post(
+                "/api/auth/login/code",
+                json={"account": account, "code": "123456", "scene": "login"},
+            )
+            self.assertEqual(login_resp.status_code, 503, login_resp.get_data(as_text=True))
+            self.assertEqual("短信登录未启用", (login_resp.get_json() or {}).get("error"))
+
+            recover_resp = self.client.post(
+                "/api/auth/recover/send-code",
+                json={"account": account},
+            )
+            self.assertEqual(recover_resp.status_code, 503, recover_resp.get_data(as_text=True))
+            self.assertEqual("短信登录未启用", (recover_resp.get_json() or {}).get("error"))
+
+            bind_resp = self.client.post(
+                "/api/auth/bind/phone",
+                json={"phone": account, "code": "123456"},
+            )
+            self.assertEqual(bind_resp.status_code, 503, bind_resp.get_data(as_text=True))
+            self.assertEqual("短信登录未启用", (bind_resp.get_json() or {}).get("error"))
+        finally:
+            self.server.SMS_LOGIN_ENABLED = old_enabled
 
     def test_experience_user_cannot_create_standard_or_deep_session(self):
         self._register()
@@ -1347,6 +1440,14 @@ class ComprehensiveApiTests(unittest.TestCase):
                 REPORT_V3_PROFILE="balanced",
             )
 
+            blocked_catalog_resp = self.client.get("/api/admin/config-center")
+            self.assertEqual(blocked_catalog_resp.status_code, 403, blocked_catalog_resp.get_data(as_text=True))
+            self.assertEqual("license_required", (blocked_catalog_resp.get_json() or {}).get("error_code"))
+
+            activation_code = self._generate_license_batch(note="配置中心管理激活")["licenses"][0]["code"]
+            activate_resp = self.client.post("/api/licenses/activate", json={"code": activation_code})
+            self.assertEqual(activate_resp.status_code, 200, activate_resp.get_data(as_text=True))
+
             catalog_resp = self.client.get("/api/admin/config-center")
             self.assertEqual(catalog_resp.status_code, 200, catalog_resp.get_data(as_text=True))
             catalog_payload = catalog_resp.get_json()
@@ -2034,9 +2135,13 @@ class ComprehensiveApiTests(unittest.TestCase):
 
     def test_session_isolation_between_instance_scopes_for_same_user(self):
         old_scope = self.server.INSTANCE_SCOPE_KEY
+        old_scope_enforcement = self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED
         try:
+            self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED = True
             self.server.INSTANCE_SCOPE_KEY = "instance-a"
             user = self._register()
+            standard_code = self._generate_license_batch(level_key="standard", note="实例隔离会话测试")["licenses"][0]["code"]
+            self._activate_license(standard_code)
             session_id = self._create_session(topic="实例隔离会话")["session_id"]
 
             list_a = self.client.get("/api/sessions")
@@ -2056,13 +2161,18 @@ class ComprehensiveApiTests(unittest.TestCase):
 
             self.assertGreater(user["id"], 0)
         finally:
+            self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED = old_scope_enforcement
             self.server.INSTANCE_SCOPE_KEY = old_scope
 
     def test_report_isolation_between_instance_scopes_for_same_user(self):
         old_scope = self.server.INSTANCE_SCOPE_KEY
+        old_scope_enforcement = self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED
         try:
+            self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED = True
             self.server.INSTANCE_SCOPE_KEY = "instance-a"
             user = self._register()
+            standard_code = self._generate_license_batch(level_key="standard", note="实例隔离报告测试")["licenses"][0]["code"]
+            self._activate_license(standard_code)
             report_name = self._build_scoped_report_name("实例隔离报告")
             (self.server.REPORTS_DIR / report_name).write_text("# 实例隔离报告\n", encoding="utf-8")
             self.server.set_report_owner_id(report_name, int(user["id"]))
@@ -2082,6 +2192,7 @@ class ComprehensiveApiTests(unittest.TestCase):
             delete_b = self.client.delete(f"/api/reports/{report_name}")
             self.assertEqual(delete_b.status_code, 404)
         finally:
+            self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED = old_scope_enforcement
             self.server.INSTANCE_SCOPE_KEY = old_scope
 
     def test_sessions_list_supports_pagination_headers(self):
@@ -4599,6 +4710,14 @@ class ComprehensiveApiTests(unittest.TestCase):
         )
         self.assertEqual(md_resp.status_code, 201, md_resp.get_data(as_text=True))
         md_asset = md_resp.get_json() or {}
+        md_uploaded = uploaded_objects[md_asset["object_key"]]
+        md_metadata = md_uploaded["metadata"]
+        self.assertEqual(standard_report, md_metadata["report_name"])
+        self.assertEqual(str(standard_user["id"]), md_metadata["owner_user_id"])
+        self.assertEqual(self.server.get_active_instance_scope_key(), md_metadata["instance_scope_key"])
+        self.assertEqual("report", md_metadata["export_scope"])
+        self.assertEqual("md", md_metadata["export_format"])
+        self.assertEqual("test_suite", md_metadata["source"])
 
         docx_resp = self.client.post(
             f"/api/reports/{standard_report}/exports",
@@ -4635,9 +4754,10 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(download_resp.status_code, 200, download_resp.get_data(as_text=True))
         self.assertEqual(b"# markdown export", download_resp.get_data())
 
-        self.server.set_license_enforcement_override(False)
         experience_client = self.server.app.test_client()
         experience_user = self._register(client=experience_client)
+        experience_code = self._generate_license_batch(level_key="experience", note="体验版导出测试")["licenses"][0]["code"]
+        self._activate_license(experience_code, client=experience_client)
         experience_report = self._create_owned_report(int(experience_user["id"]), topic="体验版导出")
         denied_resp = experience_client.post(
             f"/api/reports/{experience_report}/exports",
@@ -4930,9 +5050,13 @@ class ComprehensiveApiTests(unittest.TestCase):
 
     def test_batch_delete_sessions_does_not_delete_reports_from_other_scope(self):
         old_scope = self.server.INSTANCE_SCOPE_KEY
+        old_scope_enforcement = self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED
         try:
+            self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED = True
             self.server.INSTANCE_SCOPE_KEY = "instance-a"
             user = self._register()
+            standard_code = self._generate_license_batch(level_key="standard", note="跨实例批量删除测试")["licenses"][0]["code"]
+            self._activate_license(standard_code)
             created = self._create_session(topic="跨实例同主题")
             session_id = created["session_id"]
             report_a = self._build_scoped_report_name(created["topic"])
@@ -4960,6 +5084,7 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.assertEqual(reports_b.status_code, 200)
             self.assertIn(report_b, [item["name"] for item in reports_b.get_json()])
         finally:
+            self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED = old_scope_enforcement
             self.server.INSTANCE_SCOPE_KEY = old_scope
 
     def test_submit_answer_persists_original_and_effective_selection_modes(self):

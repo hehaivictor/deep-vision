@@ -129,6 +129,7 @@ class SecurityRegressionTests(unittest.TestCase):
         self.client = self.server.app.test_client()
         self.server.LICENSE_ENFORCEMENT_ENABLED = False
         self.server.set_license_enforcement_override(False)
+        self.server.SMS_LOGIN_ENABLED = True
         self.server.SMS_PROVIDER = "mock"
         self.server.SMS_SEND_COOLDOWN_SECONDS = 0
         self.server.SMS_TEST_CODE = ""
@@ -315,18 +316,101 @@ class SecurityRegressionTests(unittest.TestCase):
             self.server.get_admin_config_file_path = lambda: config_path
             self.server.get_admin_site_config_file_path = lambda: site_config_path
 
-            admin_get_metrics = self.client.get("/api/metrics")
-            self.assertEqual(admin_get_metrics.status_code, 200, admin_get_metrics.get_data(as_text=True))
-            admin_reset_metrics = self.client.post("/api/metrics/reset", json={})
-            self.assertEqual(admin_reset_metrics.status_code, 200, admin_reset_metrics.get_data(as_text=True))
             admin_license_without_valid_license = self.client.get("/api/admin/license-enforcement")
             self.assertEqual(admin_license_without_valid_license.status_code, 403, admin_license_without_valid_license.get_data(as_text=True))
             self.assertEqual("license_required", admin_license_without_valid_license.get_json().get("error_code"))
             admin_license_summary_without_valid_license = self.client.get("/api/admin/licenses/summary")
             self.assertEqual(admin_license_summary_without_valid_license.status_code, 403, admin_license_summary_without_valid_license.get_data(as_text=True))
             self.assertEqual("license_required", admin_license_summary_without_valid_license.get_json().get("error_code"))
+            admin_get_metrics_without_valid_license = self.client.get("/api/metrics")
+            self.assertEqual(
+                admin_get_metrics_without_valid_license.status_code,
+                403,
+                admin_get_metrics_without_valid_license.get_data(as_text=True),
+            )
+            self.assertEqual(
+                "license_required",
+                (admin_get_metrics_without_valid_license.get_json() or {}).get("error_code"),
+            )
+            admin_get_users_without_valid_license = self.client.get("/api/admin/users")
+            self.assertEqual(
+                admin_get_users_without_valid_license.status_code,
+                403,
+                admin_get_users_without_valid_license.get_data(as_text=True),
+            )
+            self.assertEqual(
+                "license_required",
+                (admin_get_users_without_valid_license.get_json() or {}).get("error_code"),
+            )
             admin_get_bootstrap_status = self.client.get("/api/admin/licenses/bootstrap/status")
             self.assertEqual(admin_get_bootstrap_status.status_code, 200, admin_get_bootstrap_status.get_data(as_text=True))
+            admin_get_config_center_without_valid_license = self.client.get("/api/admin/config-center")
+            self.assertEqual(
+                admin_get_config_center_without_valid_license.status_code,
+                403,
+                admin_get_config_center_without_valid_license.get_data(as_text=True),
+            )
+            self.assertEqual(
+                "license_required",
+                (admin_get_config_center_without_valid_license.get_json() or {}).get("error_code"),
+            )
+            admin_save_config_center_without_valid_license = self.client.post(
+                "/api/admin/config-center/save",
+                json={
+                    "source": "env",
+                    "group_id": "env_resolution",
+                    "values": {
+                        "CONFIG_RESOLUTION_MODE": "auto",
+                    },
+                },
+            )
+            self.assertEqual(
+                admin_save_config_center_without_valid_license.status_code,
+                403,
+                admin_save_config_center_without_valid_license.get_data(as_text=True),
+            )
+            self.assertEqual(
+                "license_required",
+                (admin_save_config_center_without_valid_license.get_json() or {}).get("error_code"),
+            )
+            admin_list_migrations_without_valid_license = self.client.get("/api/admin/ownership-migrations")
+            self.assertEqual(
+                admin_list_migrations_without_valid_license.status_code,
+                403,
+                admin_list_migrations_without_valid_license.get_data(as_text=True),
+            )
+            self.assertEqual(
+                "license_required",
+                (admin_list_migrations_without_valid_license.get_json() or {}).get("error_code"),
+            )
+            admin_get_summaries_without_valid_license = self.client.get("/api/summaries")
+            self.assertEqual(
+                admin_get_summaries_without_valid_license.status_code,
+                403,
+                admin_get_summaries_without_valid_license.get_data(as_text=True),
+            )
+            self.assertEqual(
+                "license_required",
+                (admin_get_summaries_without_valid_license.get_json() or {}).get("error_code"),
+            )
+            admin_clear_summaries_without_valid_license = self.client.post("/api/summaries/clear", json={})
+            self.assertEqual(
+                admin_clear_summaries_without_valid_license.status_code,
+                403,
+                admin_clear_summaries_without_valid_license.get_data(as_text=True),
+            )
+            self.assertEqual(
+                "license_required",
+                (admin_clear_summaries_without_valid_license.get_json() or {}).get("error_code"),
+            )
+
+            activation_code = self._generate_license_batch(note="管理员运维激活")["licenses"][0]["code"]
+            self._activate_license(activation_code)
+
+            admin_get_metrics = self.client.get("/api/metrics")
+            self.assertEqual(admin_get_metrics.status_code, 200, admin_get_metrics.get_data(as_text=True))
+            admin_reset_metrics = self.client.post("/api/metrics/reset", json={})
+            self.assertEqual(admin_reset_metrics.status_code, 200, admin_reset_metrics.get_data(as_text=True))
             admin_get_users = self.client.get("/api/admin/users")
             self.assertEqual(admin_get_users.status_code, 200, admin_get_users.get_data(as_text=True))
             admin_get_config_center = self.client.get("/api/admin/config-center")

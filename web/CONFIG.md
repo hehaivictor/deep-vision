@@ -20,6 +20,7 @@
 常见但不属于 `site-config.js` 的配置包括：
 
 - `SECRET_KEY`
+- `SMS_LOGIN_ENABLED`
 - `SMS_PROVIDER`
 - `SMS_TEST_CODE`
 - `ADMIN_USER_IDS`

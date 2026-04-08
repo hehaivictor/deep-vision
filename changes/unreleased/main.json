@@ -2,16 +2,23 @@
   "schemaVersion": 1,
   "branch": "main",
   "baseRef": "origin/main",
-  "sourceCommit": "fc735f5",
-  "committedAt": "2026-04-08T12:21:58+08:00",
-  "versionType": "patch",
-  "title": "新增生产环境 Docker 部署文件",
+  "sourceCommit": "76c4ecd",
+  "committedAt": "2026-04-08T12:24:52+08:00",
+  "versionType": "minor",
+  "title": "支持通过配置开关控制短信登录",
   "changes": [
-    "部署：新增生产镜像构建用 Dockerfile 配置",
-    "部署：新增 docker-compose 生产编排模板并接入独立 env 文件"
+    "后端：新增 SMS_LOGIN_ENABLED 配置并统一拦截短信登录、找回与绑定手机号接口",
+    "前端：登录页和绑定手机号入口按短信开关决定展示与交互",
+    "测试：补充状态页与短信接口关闭场景的 API 和安全回归",
+    "文档：更新示例配置与配置中心托管项说明"
   ],
   "changedFiles": [
-    "output/Dockerfile.production",
-    "output/docker-compose.production.yml"
+    "tests/test_api_comprehensive.py",
+    "tests/test_security_regression.py",
+    "web/.env.example",
+    "web/CONFIG.md",
+    "web/app.js",
+    "web/index.html",
+    "web/server.py"
   ]
 }

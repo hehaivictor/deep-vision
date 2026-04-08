@@ -256,6 +256,7 @@ ENV_MANAGED_CONFIG_EXACT_KEYS = {
     "BUILTIN_SCENARIOS_DIR",
     "CONFIG_RESOLUTION_MODE",
     "CUSTOM_SCENARIOS_DIR",
+    "DATA_DIR",
     "DEBUG_MODE",
     "ENABLE_AI",
     "ENABLE_DEBUG_LOG",
@@ -283,6 +284,7 @@ ENV_MANAGED_CONFIG_EXACT_KEYS = {
     "SECRET_KEY",
     "SERVER_HOST",
     "SERVER_PORT",
+    "SMS_LOGIN_ENABLED",
     "SMS_PROVIDER",
     "SMS_TEST_CODE",
     "SUPPRESS_STATUS_POLL_ACCESS_LOG",
@@ -2001,6 +2003,7 @@ def resolve_report_template_for_session(session: dict, evidence_pack: Optional[d
     return normalized
 
 # 手机验证码登录配置
+SMS_LOGIN_ENABLED = _cfg_bool("SMS_LOGIN_ENABLED", True)
 SMS_PROVIDER = _cfg_text("SMS_PROVIDER", "mock").lower()
 if SMS_PROVIDER not in {"mock", "jdcloud"}:
     SMS_PROVIDER = "mock"
@@ -2061,6 +2064,7 @@ ASSESSMENT_SCORE_MAX_TOKENS = max(32, ASSESSMENT_SCORE_MAX_TOKENS)
 
 # 集中读取后复用
 CONFIG_SECRET_KEY = _cfg_text("SECRET_KEY", "")
+CONFIG_DATA_DIR = _cfg_text("DATA_DIR", "")
 CONFIG_AUTH_DB_PATH = _cfg_text("AUTH_DB_PATH", "")
 CONFIG_LICENSE_DB_PATH = _cfg_text("LICENSE_DB_PATH", "")
 CONFIG_META_INDEX_DB_PATH = _cfg_text("META_INDEX_DB_PATH", "")
@@ -2322,7 +2326,14 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=30)
 SKILL_DIR = Path(__file__).parent.parent.resolve()
 WEB_DIR = Path(__file__).parent.resolve()
 RESOURCES_DIR = SKILL_DIR / "resources"
-DATA_DIR = SKILL_DIR / "data"
+configured_data_dir = str(os.environ.get("DEEPVISION_DATA_DIR", "") or CONFIG_DATA_DIR).strip()
+if configured_data_dir:
+    resolved_data_dir = Path(configured_data_dir).expanduser()
+    if not resolved_data_dir.is_absolute():
+        resolved_data_dir = (SKILL_DIR / resolved_data_dir).resolve()
+    DATA_DIR = resolved_data_dir.resolve()
+else:
+    DATA_DIR = (SKILL_DIR / "data").resolve()
 SESSIONS_DIR = DATA_DIR / "sessions"
 REPORTS_DIR = DATA_DIR / "reports"
 CONVERTED_DIR = DATA_DIR / "converted"
@@ -2365,6 +2376,14 @@ ALLOWED_STATIC_EXTENSIONS = {
 
 def get_admin_ownership_backup_root() -> Path:
     return DATA_DIR / "operations" / "ownership-migrations"
+
+
+def get_runtime_startup_snapshot_root() -> Path:
+    return DATA_DIR / "operations" / "runtime-startup"
+
+
+def get_runtime_startup_snapshot_file() -> Path:
+    return get_runtime_startup_snapshot_root() / "latest.json"
 
 
 def get_restore_backups_root() -> Path:
@@ -2686,6 +2705,7 @@ ADMIN_ENV_SETTINGS_GROUPS: list[dict[str, Any]] = [
         "items": [
             _admin_setting("SERVER_HOST", "监听地址", description="服务监听地址。"),
             _admin_int("SERVER_PORT", "监听端口", description="服务监听端口。"),
+            _admin_setting("DATA_DIR", "运行数据目录", description="会话、报告、指标与运维快照根目录。"),
             _admin_int("GUNICORN_WORKERS", "Gunicorn Workers", description="进程数。"),
             _admin_int("GUNICORN_THREADS", "Gunicorn Threads", description="每个 worker 的线程数。"),
             _admin_int("GUNICORN_TIMEOUT", "Gunicorn Timeout", description="请求超时秒数。"),
@@ -2726,6 +2746,7 @@ ADMIN_ENV_SETTINGS_GROUPS: list[dict[str, Any]] = [
         "description": "短信验证码通道、测试码与京东云短信配置。",
         "source": "env",
         "items": [
+            _admin_bool("SMS_LOGIN_ENABLED", "启用短信登录"),
             _admin_select(
                 "SMS_PROVIDER",
                 "短信通道",
@@ -3284,7 +3305,7 @@ def _normalize_runtime_metrics_payload(payload: Any) -> dict[str, Any]:
     }
 
 
-def _load_runtime_metrics_store_payload(conn: Any, metric_key: str) -> dict[str, Any]:
+def _load_runtime_store_payload(conn: Any, metric_key: str) -> dict[str, Any]:
     row = conn.execute(
         """
         SELECT payload_json
@@ -3300,10 +3321,10 @@ def _load_runtime_metrics_store_payload(conn: Any, metric_key: str) -> dict[str,
         payload = json.loads(str(row["payload_json"] or "{}"))
     except Exception:
         return {}
-    return _normalize_runtime_metrics_payload(payload)
+    return payload if isinstance(payload, dict) else {}
 
 
-def _upsert_runtime_metrics_store_payload(conn: Any, metric_key: str, payload: dict[str, Any]) -> None:
+def _upsert_runtime_store_payload(conn: Any, metric_key: str, payload: dict[str, Any]) -> None:
     now_iso = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """
@@ -3315,10 +3336,44 @@ def _upsert_runtime_metrics_store_payload(conn: Any, metric_key: str, payload: d
         """,
         (
             str(metric_key or "").strip(),
-            json.dumps(_normalize_runtime_metrics_payload(payload), ensure_ascii=False),
+            json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False),
             now_iso,
         ),
     )
+
+
+def _load_runtime_metrics_store_payload(conn: Any, metric_key: str) -> dict[str, Any]:
+    payload = _load_runtime_store_payload(conn, metric_key)
+    return _normalize_runtime_metrics_payload(payload)
+
+
+def _upsert_runtime_metrics_store_payload(conn: Any, metric_key: str, payload: dict[str, Any]) -> None:
+    _upsert_runtime_store_payload(conn, metric_key, _normalize_runtime_metrics_payload(payload))
+
+
+def _normalize_runtime_startup_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    phases: list[dict[str, object]] = []
+    for item in payload.get("phases", []) if isinstance(payload.get("phases", []), list) else []:
+        if not isinstance(item, dict):
+            continue
+        phases.append(
+            {
+                "name": str(item.get("name") or "").strip(),
+                "elapsed_ms": round(float(item.get("elapsed_ms", 0) or 0), 2),
+            }
+        )
+    return {
+        "initialized": bool(payload.get("initialized", False)),
+        "reason": str(payload.get("reason") or "").strip(),
+        "started_at": str(payload.get("started_at") or "").strip(),
+        "completed_at": str(payload.get("completed_at") or "").strip(),
+        "total_ms": round(float(payload.get("total_ms", 0) or 0), 2),
+        "phases": phases,
+        "failed_phase": str(payload.get("failed_phase") or "").strip(),
+        "error": str(payload.get("error") or "").strip(),
+    }
 
 
 def load_runtime_site_config_values() -> dict[str, Any]:
@@ -9596,6 +9651,38 @@ def _log_runtime_startup_summary(summary: dict) -> None:
     )
 
 
+def _persist_runtime_startup_snapshot_file(summary: dict) -> None:
+    _write_json_atomic(
+        get_runtime_startup_snapshot_file(),
+        _normalize_runtime_startup_payload(summary),
+    )
+
+
+def _persist_runtime_startup_snapshot_store(summary: dict) -> None:
+    with get_meta_index_connection() as conn:
+        _upsert_runtime_store_payload(
+            conn,
+            "runtime_startup",
+            _normalize_runtime_startup_payload(summary),
+        )
+        conn.commit()
+
+
+def _persist_runtime_startup_summary(summary: dict) -> None:
+    try:
+        _persist_runtime_startup_snapshot_file(summary)
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            _safe_log(f"⚠️  写入 runtime startup snapshot 文件失败: {exc}")
+    if not bool(summary.get("initialized", False)):
+        return
+    try:
+        _persist_runtime_startup_snapshot_store(summary)
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            _safe_log(f"⚠️  写入 runtime startup snapshot store 失败: {exc}")
+
+
 def ensure_runtime_startup_initialized(
     *,
     force: bool = False,
@@ -9610,6 +9697,7 @@ def ensure_runtime_startup_initialized(
         started_at = _time.perf_counter()
         phases: list[dict[str, object]] = []
         current_phase = ""
+        startup_error: Exception | None = None
 
         try:
             for phase_name, phase_func in (
@@ -9627,6 +9715,7 @@ def ensure_runtime_startup_initialized(
                     }
                 )
         except Exception as exc:
+            startup_error = exc
             summary = {
                 "initialized": False,
                 "reason": str(reason or "startup"),
@@ -9638,24 +9727,24 @@ def ensure_runtime_startup_initialized(
                 "error": str(exc),
             }
             runtime_startup_state.update(summary)
-            if emit_logs:
-                _log_runtime_startup_summary(summary)
-            raise
+        else:
+            summary = {
+                "initialized": True,
+                "reason": str(reason or "startup"),
+                "started_at": started_at_iso,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "total_ms": round((_time.perf_counter() - started_at) * 1000.0, 2),
+                "phases": phases,
+                "failed_phase": "",
+                "error": "",
+            }
+            runtime_startup_state.update(summary)
 
-        summary = {
-            "initialized": True,
-            "reason": str(reason or "startup"),
-            "started_at": started_at_iso,
-            "completed_at": datetime.now(timezone.utc).isoformat(),
-            "total_ms": round((_time.perf_counter() - started_at) * 1000.0, 2),
-            "phases": phases,
-            "failed_phase": "",
-            "error": "",
-        }
-        runtime_startup_state.update(summary)
-
+    _persist_runtime_startup_summary(summary)
     if emit_logs:
         _log_runtime_startup_summary(summary)
+    if startup_error is not None:
+        raise startup_error
     return copy.deepcopy(summary)
 
 
@@ -11269,6 +11358,26 @@ def is_jd_sms_configured(scene: str = "login") -> tuple[bool, str]:
     if not JD_SMS_SDK_AVAILABLE:
         return False, "未安装 jdcloud-sdk，请先安装后再启用京东云发码"
     return True, ""
+
+
+def get_sms_login_unavailable_reason(scene: str = "login") -> str:
+    if not SMS_LOGIN_ENABLED:
+        return "短信登录未启用"
+
+    if SMS_PROVIDER == "mock":
+        return ""
+
+    if SMS_PROVIDER == "jdcloud":
+        configured, reason = is_jd_sms_configured(scene)
+        if not configured:
+            return reason or "短信服务配置不完整"
+        return ""
+
+    return "短信服务提供商未配置"
+
+
+def is_sms_login_available(scene: str = "login") -> bool:
+    return get_sms_login_unavailable_reason(scene) == ""
 
 
 def send_sms_code_via_jdcloud(phone: str, code: str, scene: str) -> tuple[bool, str]:
@@ -29018,6 +29127,9 @@ def auth_send_sms_code():
     data = request.get_json() or {}
     raw_phone = str(data.get("phone") or data.get("account") or "").strip()
     scene = normalize_sms_scene(data.get("scene") or "login")
+    unavailable_reason = get_sms_login_unavailable_reason(scene)
+    if unavailable_reason:
+        return jsonify({"error": unavailable_reason}), 503
 
     phone, phone_error = normalize_account(raw_phone)
     if phone_error:
@@ -29054,6 +29166,9 @@ def auth_login_with_code():
     scene = normalize_sms_scene(data.get("scene") or "login")
     if scene not in {"login", "recover"}:
         scene = "login"
+    unavailable_reason = get_sms_login_unavailable_reason(scene)
+    if unavailable_reason:
+        return jsonify({"error": unavailable_reason}), 503
 
     phone, phone_error = normalize_account(raw_phone)
     if phone_error:
@@ -29084,6 +29199,9 @@ def auth_login_with_code():
 def auth_recover_send_code():
     data = request.get_json() or {}
     raw_phone = str(data.get("phone") or data.get("account") or "").strip()
+    unavailable_reason = get_sms_login_unavailable_reason("recover")
+    if unavailable_reason:
+        return jsonify({"error": unavailable_reason}), 503
     phone, phone_error = normalize_account(raw_phone)
     if phone_error:
         return jsonify({"error": phone_error}), 400
@@ -29410,6 +29528,9 @@ def auth_bind_phone():
     user_row = get_current_user()
     if not user_row:
         return jsonify({"error": "请先登录"}), 401
+    unavailable_reason = get_sms_login_unavailable_reason("bind")
+    if unavailable_reason:
+        return jsonify({"error": unavailable_reason}), 503
 
     data = request.get_json() or {}
     phone = str(data.get("phone") or data.get("account") or "").strip()
@@ -46683,7 +46804,7 @@ def batch_delete_reports():
 def get_status():
     """获取服务状态"""
     wechat_enabled = bool(WECHAT_LOGIN_ENABLED and WECHAT_APP_ID and WECHAT_APP_SECRET)
-    sms_enabled = bool(SMS_PROVIDER in {"mock", "jdcloud"})
+    sms_enabled = is_sms_login_available("login")
     license_enforcement_state = get_license_enforcement_state()
     presentation_feature_state = get_presentation_feature_state()
     current_user = get_current_user()
