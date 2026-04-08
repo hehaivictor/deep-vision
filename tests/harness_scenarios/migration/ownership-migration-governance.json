@@ -1,0 +1,23 @@
+{
+  "name": "ownership-migration-governance",
+  "category": "migration",
+  "description": "覆盖归属迁移预览、应用、回滚，以及运维接口管理员权限边界。",
+  "tags": [
+    "migration",
+    "admin",
+    "manual"
+  ],
+  "budgets": {
+    "max_duration_ms": 180000
+  },
+  "cases": [
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_ownership_migration_endpoints_cover_search_preview_apply_and_rollback",
+      "label": "归属迁移预览与回滚"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_ops_endpoints_require_admin_role",
+      "label": "运维接口管理员权限"
+    }
+  ]
+}

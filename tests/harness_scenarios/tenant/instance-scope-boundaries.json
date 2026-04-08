@@ -1,0 +1,27 @@
+{
+  "name": "instance-scope-boundaries",
+  "category": "tenant",
+  "description": "覆盖同一账号在不同 INSTANCE_SCOPE_KEY 下的会话、报告和批量删除隔离边界。",
+  "tags": [
+    "nightly",
+    "tenant",
+    "core"
+  ],
+  "budgets": {
+    "max_duration_ms": 150000
+  },
+  "cases": [
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_session_isolation_between_instance_scopes_for_same_user",
+      "label": "会话实例隔离"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_report_isolation_between_instance_scopes_for_same_user",
+      "label": "报告实例隔离"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_batch_delete_sessions_does_not_delete_reports_from_other_scope",
+      "label": "跨实例批量删除边界"
+    }
+  ]
+}

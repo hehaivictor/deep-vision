@@ -1,0 +1,27 @@
+{
+  "name": "runtime-readiness",
+  "category": "ops",
+  "description": "覆盖 cloud doctor 风险识别、本地 startup snapshot 持久化，以及 observe 读取运行态快照。",
+  "tags": [
+    "nightly",
+    "ops",
+    "observability"
+  ],
+  "budgets": {
+    "max_duration_ms": 120000
+  },
+  "cases": [
+    {
+      "test_id": "tests.test_scripts_comprehensive.ComprehensiveScriptTests.test_agent_doctor_collects_failures_for_placeholder_cloud_env",
+      "label": "cloud doctor 风险识别"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_runtime_startup_snapshot_persists_to_store_and_file",
+      "label": "启动初始化快照持久化"
+    },
+    {
+      "test_id": "tests.test_scripts_comprehensive.ComprehensiveScriptTests.test_agent_observe_collects_runtime_snapshot_from_temp_workspace",
+      "label": "observe 读取持久化快照"
+    }
+  ]
+}

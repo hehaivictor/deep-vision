@@ -1,0 +1,74 @@
+name: Harness Nightly
+
+on:
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  harness-nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装 uv
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install uv
+
+      - name: 安装浏览器依赖
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npx playwright install chromium chromium-headless-shell
+
+      - name: 执行 nightly harness evaluator
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/agent_eval.py --tag nightly --artifact-dir artifacts/harness-eval
+
+      - name: 写入 nightly evaluator 摘要
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f artifacts/harness-eval/latest.json ]]; then
+            python3 scripts/agent_ci_summary.py \
+              --latest-json artifacts/harness-eval/latest.json \
+              --title "Harness Nightly Summary" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Harness Nightly Summary"
+              echo
+              echo "- Overall: \`UNKNOWN\`"
+              echo "- 运行未生成 latest.json，请优先检查执行步骤日志。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 上传 evaluator 工件
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-eval-artifacts
+          path: artifacts/harness-eval
+          if-no-files-found: ignore

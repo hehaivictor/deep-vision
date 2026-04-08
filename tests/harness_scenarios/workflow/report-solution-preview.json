@@ -1,0 +1,21 @@
+{
+  "name": "report-solution-preview",
+  "category": "workflow",
+  "description": "通过 task workflow 预演报告与方案页链路，验证 targeted tests 与 smoke 的组合执行。",
+  "tags": [
+    "nightly",
+    "workflow",
+    "report"
+  ],
+  "budgets": {
+    "max_duration_ms": 240000
+  },
+  "executor": {
+    "type": "workflow",
+    "task": "report-solution",
+    "execute_mode": "preview",
+    "allowed_overalls": [
+      "READY"
+    ]
+  }
+}

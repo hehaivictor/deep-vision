@@ -99,6 +99,26 @@ def load_server_module(
 
 
 class RuntimeTokenConfigTests(unittest.TestCase):
+    def test_data_dir_supports_env_file_and_process_override(self):
+        with tempfile.TemporaryDirectory() as temp_root:
+            isolated_data_dir = Path(temp_root) / "isolated-data"
+            module = load_server_module(
+                env_overrides={
+                    "DEBUG_MODE": "true",
+                    "DATA_DIR": "from-env-file-data",
+                    "SECRET_KEY": "data-dir-secret",
+                    "INSTANCE_SCOPE_KEY": "data-dir-scope",
+                    "SMS_PROVIDER": "mock",
+                },
+                process_env_overrides={
+                    "DEEPVISION_DATA_DIR": str(isolated_data_dir),
+                },
+            )
+
+        self.assertEqual(module.DATA_DIR.resolve(), isolated_data_dir.resolve())
+        self.assertEqual(module.SESSIONS_DIR.resolve(), (isolated_data_dir / "sessions").resolve())
+        self.assertEqual(module.AUTH_DIR.resolve(), (isolated_data_dir / "auth").resolve())
+
     def test_explicit_env_file_supports_base_and_overlay(self):
         module = load_server_module(
             env_file_overlays=[

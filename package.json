@@ -1,0 +1,7 @@
+{
+  "name": "deepvision-browser-smoke",
+  "private": true,
+  "devDependencies": {
+    "playwright": "1.59.1"
+  }
+}

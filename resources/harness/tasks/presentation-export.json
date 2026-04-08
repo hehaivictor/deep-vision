@@ -1,0 +1,79 @@
+{
+  "name": "presentation-export",
+  "description": "报告导出、附录 PDF 与演示稿能力链路，优先验证级别门禁、导出资产与 presentation feature 状态。",
+  "risk_level": "medium",
+  "doctor_profile": "auto",
+  "guardrails_suite": "minimal",
+  "smoke_suite": "minimal",
+  "strict_doctor": false,
+  "docs": [
+    "docs/agent/report-solution.md",
+    "docs/agent/admin-ops.md"
+  ],
+  "playbook": {
+    "output": "docs/agent/playbooks/presentation-export.md",
+    "title": "导出与演示稿链路核对",
+    "summary": "先确认报告导出、附录 PDF、演示稿能力与权限门禁，再决定是否修改导出资产或 presentation feature。",
+    "when_to_use": [
+      "报告导出、附录 PDF 或演示稿生成链路异常",
+      "需要确认标准版/专业版在导出和 presentation 能力上的边界",
+      "需要区分问题来自报告详情、导出资产权限，还是 presentation feature 开关"
+    ],
+    "command_blocks": [
+      {
+        "commands": [
+          "python3 scripts/agent_observe.py --profile auto",
+          "python3 scripts/agent_harness.py --task presentation-export --observe --profile auto --artifact-dir artifacts/harness-runs",
+          "python3 scripts/agent_eval.py --scenario report-solution-core --artifact-dir artifacts/harness-eval",
+          "python3 -m unittest tests.test_api_comprehensive.ComprehensiveApiTests.test_standard_user_can_generate_balanced_but_cannot_access_solution_appendix_or_presentation tests.test_api_comprehensive.ComprehensiveApiTests.test_professional_user_can_access_solution_share_appendix_and_presentation_endpoints tests.test_security_regression.SecurityRegressionTests.test_presentation_map_remains_valid_under_parallel_updates"
+        ]
+      }
+    ],
+    "artifact_files": [
+      "artifacts/harness-runs/latest.json",
+      "对应 run 目录下的 observe.json",
+      "对应 run 目录下的 workflow.json",
+      "artifacts/harness-eval/latest.json"
+    ],
+    "focus_points": [
+      "标准版与专业版在 appendix / presentation / export asset 上的能力边界",
+      "presentation map 并发更新后是否仍保持记录有效",
+      "导出与演示稿链路在当前 License gate 下是否仍保持预期门禁"
+    ],
+    "manual_confirmations": [
+      "修改导出文件格式、appendix 下载策略或 presentation feature 开关",
+      "删除、覆盖或迁移历史演示稿记录",
+      "更改专业版能力边界或导出权限矩阵"
+    ]
+  },
+  "workflow": {
+    "mode": "verify_first",
+    "steps": [
+      {
+        "id": "read",
+        "title": "先读报告导出与演示稿文档",
+        "detail": "优先阅读 docs/agent/report-solution.md，确认导出资产、appendix PDF 与 presentation feature 的归属和能力边界。"
+      },
+      {
+        "id": "verify",
+        "title": "跑导出与演示稿专项回归",
+        "executor": "unittest",
+        "quiet": true,
+        "cases": [
+          {
+            "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_standard_user_can_generate_balanced_but_cannot_access_solution_appendix_or_presentation",
+            "label": "标准版导出与演示稿边界"
+          },
+          {
+            "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_professional_user_can_access_solution_share_appendix_and_presentation_endpoints",
+            "label": "专业版导出与演示稿能力"
+          },
+          {
+            "test_id": "tests.test_security_regression.SecurityRegressionTests.test_presentation_map_remains_valid_under_parallel_updates",
+            "label": "演示稿映射并发一致性"
+          }
+        ]
+      }
+    ]
+  }
+}

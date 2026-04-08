@@ -1,0 +1,85 @@
+{
+  "name": "report-solution",
+  "description": "报告生成、方案页渲染与分享链路，优先做局部回归与最小链路验证。",
+  "risk_level": "medium",
+  "doctor_profile": "local",
+  "guardrails_suite": "minimal",
+  "smoke_suite": "minimal",
+  "strict_doctor": false,
+  "docs": [
+    "docs/agent/report-solution.md"
+  ],
+  "playbook": {
+    "output": "docs/agent/playbooks/report-debug.md",
+    "title": "报告与方案页问题排查",
+    "summary": "把报告生成、方案页渲染与分享问题收口到固定诊断顺序，先看运行态与 task harness，再决定是否下钻专项回归。",
+    "when_to_use": [
+      "报告生成失败、卡住或状态异常",
+      "方案页渲染错误、分享链路异常、旧报告 fallback 可疑",
+      "想确认问题在后端 payload、分享边界，还是前端渲染"
+    ],
+    "command_blocks": [
+      {
+        "commands": [
+          "python3 scripts/agent_observe.py --profile auto",
+          "python3 scripts/agent_harness.py --task report-solution --observe --profile auto --artifact-dir artifacts/harness-runs",
+          "python3 scripts/agent_eval.py --scenario report-solution-core --artifact-dir artifacts/harness-eval"
+        ]
+      },
+      {
+        "intro": "如怀疑只读分享或权限边界问题，再补：",
+        "commands": [
+          "python3 -m unittest tests.test_security_regression"
+        ]
+      }
+    ],
+    "artifact_files": [
+      "artifacts/harness-runs/latest.json",
+      "对应 run 目录下的 observe.json",
+      "对应 run 目录下的 smoke.json",
+      "artifacts/harness-eval/latest.json",
+      "对应 evaluator run 目录下的 report-solution-core.json"
+    ],
+    "focus_points": [
+      "startup_snapshot、metrics、harness_runs 是否已有告警",
+      "report-solution-core 场景里失败的是报告生成、分享边界，还是旧报告兼容",
+      "smoke / security_regression 里是否直接出现权限拒绝、结构断言失败、payload 回退"
+    ],
+    "manual_confirmations": [
+      "修改报告模板、结构化 sidecar、方案页 payload 字段",
+      "修改公开分享行为、token 暴露字段、导出下载权限",
+      "删除或弱化旧报告 Markdown fallback"
+    ]
+  },
+  "workflow": {
+    "mode": "verify_first",
+    "steps": [
+      {
+        "id": "read",
+        "title": "先读方案页领域文档",
+        "detail": "优先阅读 docs/agent/report-solution.md，并对照 tests.test_solution_payload 与 tests.test_security_regression 中的方案页边界测试。"
+      },
+      {
+        "id": "targeted-tests",
+        "title": "跑方案页专项回归",
+        "executor": "unittest",
+        "quiet": true,
+        "cases": [
+          {
+            "test_id": "tests.test_solution_payload",
+            "label": "方案页载荷专项回归"
+          },
+          {
+            "test_id": "tests.test_security_regression.SecurityRegressionTests.test_report_solution_share_link_requires_owner_and_allows_public_readonly_access",
+            "label": "方案页分享权限边界"
+          }
+        ]
+      },
+      {
+        "id": "smoke",
+        "title": "补跑最小主链路 harness",
+        "command": "python3 scripts/agent_smoke.py --suite minimal"
+      }
+    ]
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "account-merge-rollback",
+  "category": "migration",
+  "description": "覆盖手机号冲突下的账号合并预演、正式应用以及管理员回滚链路。",
+  "tags": [
+    "identity",
+    "manual",
+    "migration",
+    "rollback"
+  ],
+  "budgets": {
+    "max_duration_ms": 180000
+  },
+  "cases": [
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_bind_phone_conflict_requires_preview_apply_and_admin_rollback",
+      "label": "账号合并预演、应用与回滚"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "presentation-map-concurrency",
+  "category": "security",
+  "description": "覆盖演示稿 sidecar 映射在并发更新下的完整性，防止导出资产索引丢失。",
+  "tags": [
+    "nightly",
+    "presentation",
+    "security"
+  ],
+  "budgets": {
+    "max_duration_ms": 120000
+  },
+  "cases": [
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_presentation_map_remains_valid_under_parallel_updates",
+      "label": "演示稿 sidecar 并发完整性"
+    }
+  ]
+}
