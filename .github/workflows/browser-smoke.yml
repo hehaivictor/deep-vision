@@ -1,0 +1,95 @@
+name: Browser Smoke
+
+on:
+  pull_request:
+    paths:
+      - 'web/**'
+      - 'scripts/agent_browser_smoke.py'
+      - 'scripts/agent_browser_smoke_runner.mjs'
+      - 'scripts/agent_harness.py'
+      - 'scripts/agent_ci_summary.py'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/browser-smoke.yml'
+  workflow_dispatch:
+  schedule:
+    - cron: '0 19 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装 uv
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install uv
+
+      - name: 安装浏览器依赖
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npx playwright install chromium chromium-headless-shell
+
+      - name: 执行 browser smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/agent_harness.py \
+            --skip-doctor \
+            --skip-static-guardrails \
+            --skip-guardrails \
+            --skip-smoke \
+            --browser-smoke \
+            --browser-smoke-suite extended \
+            --artifact-dir artifacts/ci/browser-smoke
+
+      - name: 写入 browser smoke 摘要
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f artifacts/ci/browser-smoke/latest.json ]]; then
+            python3 scripts/agent_ci_summary.py \
+              --latest-json artifacts/ci/browser-smoke/latest.json \
+              --title "Browser Smoke Summary" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Browser Smoke Summary"
+              echo
+              echo "- Overall: \`UNKNOWN\`"
+              echo "- 运行未生成 latest.json，请优先检查执行步骤日志。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 上传 browser smoke 工件
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-smoke-artifacts
+          path: artifacts/ci/browser-smoke
+          if-no-files-found: ignore

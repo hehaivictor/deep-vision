@@ -1,0 +1,20 @@
+{
+  "name": "browser-smoke-extended",
+  "category": "browser",
+  "description": "覆盖登录视图、License 门禁、绑定成功切换、报告详情链路和配置中心页签切换的扩展浏览器回归。",
+  "tags": [
+    "browser",
+    "manual",
+    "ui"
+  ],
+  "budgets": {
+    "max_duration_ms": 240000
+  },
+  "executor": {
+    "type": "browser_smoke",
+    "suite": "extended",
+    "allowed_overalls": [
+      "READY"
+    ]
+  }
+}

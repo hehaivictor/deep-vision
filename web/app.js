@@ -3803,6 +3803,10 @@ function deepVision() {
 
         openBindPhoneModal() {
             if (!this.authReady || this.bindPhoneLoading) return;
+            if (!this.smsLoginEnabled) {
+                this.showToast('当前未启用短信登录，无法绑定手机号', 'warning');
+                return;
+            }
             this.showAccountMenu = false;
             this.showSettingsModal = false;
             this.bindCodeSending = false;
@@ -4752,6 +4756,9 @@ function deepVision() {
                     }
                     if (typeof this.serverStatus.sms_login_enabled === 'boolean') {
                         this.smsLoginEnabled = this.serverStatus.sms_login_enabled;
+                        if (!this.smsLoginEnabled && this.showBindPhoneModal && !this.bindPhoneLoading) {
+                            this.closeBindPhoneModal();
+                        }
                     }
                     if (Number.isFinite(Number(this.serverStatus.sms_code_length))) {
                         this.smsCodeLength = Math.max(4, Math.min(8, Math.floor(Number(this.serverStatus.sms_code_length))));

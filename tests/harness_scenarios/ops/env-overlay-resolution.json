@@ -1,0 +1,19 @@
+{
+  "name": "env-overlay-resolution",
+  "category": "ops",
+  "description": "覆盖显式环境文件的 base + overlay 叠加解析，确保运行时配置来源可预测。",
+  "tags": [
+    "nightly",
+    "ops",
+    "runtime"
+  ],
+  "budgets": {
+    "max_duration_ms": 60000
+  },
+  "cases": [
+    {
+      "test_id": "tests.test_runtime_token_config.RuntimeTokenConfigTests.test_explicit_env_file_supports_base_and_overlay",
+      "label": "环境文件叠加解析"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "name": "access-boundaries",
+  "category": "security",
+  "description": "覆盖匿名写接口、License 门禁和方案页分享只读边界。",
+  "tags": [
+    "nightly",
+    "security",
+    "core"
+  ],
+  "budgets": {
+    "max_duration_ms": 150000
+  },
+  "cases": [
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_anonymous_write_endpoints_are_blocked",
+      "label": "匿名写接口拦截"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_license_gate_blocks_business_routes_but_allows_auth_and_license_endpoints",
+      "label": "License 门禁边界"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_report_solution_share_link_requires_owner_and_allows_public_readonly_access",
+      "label": "方案页分享只读边界"
+    }
+  ]
+}

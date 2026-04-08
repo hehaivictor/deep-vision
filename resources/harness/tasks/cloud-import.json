@@ -1,0 +1,134 @@
+{
+  "name": "cloud-import",
+  "description": "外部本地 data 导入云端，默认先 dry-run 评估，再决定是否 apply。",
+  "risk_level": "high",
+  "doctor_profile": "cloud",
+  "guardrails_suite": "extended",
+  "smoke_suite": "minimal",
+  "strict_doctor": true,
+  "docs": [
+    "docs/agent/migration.md",
+    "docs/full-data-migration-runbook.md",
+    "docs/external-local-data-cloud-import-guide.md"
+  ],
+  "playbook": {
+    "output": "docs/agent/playbooks/cloud-import-verify.md",
+    "title": "云端导入预演",
+    "summary": "外部本地 data 导入云端时，先确认源目录、目标用户、dry-run 结果和回滚入口，再决定是否进入 apply。",
+    "when_to_use": [
+      "需要把外部本地 data 目录导入到云端目标用户",
+      "需要确认源目录是否完整、目标用户是否存在、dry-run 是否命中预期对象",
+      "正式导入前需要先准备回滚目录和专项回归"
+    ],
+    "command_blocks": [
+      {
+        "commands": [
+          "python3 scripts/agent_harness.py --task cloud-import --task-var source_data_dir=/path/to/source-data --task-var target_user_id=123 --profile cloud --artifact-dir artifacts/harness-runs",
+          "python3 scripts/import_external_local_data_to_cloud.py --source-data-dir /path/to/source-data --target-user-id 123 --dry-run --output-json artifacts/harness-runs/cloud-import-dry-run.json",
+          "python3 -m unittest tests.test_external_local_data_import"
+        ]
+      },
+      {
+        "intro": "确认需要正式执行时，再显式使用：",
+        "commands": [
+          "python3 scripts/import_external_local_data_to_cloud.py --source-data-dir /path/to/source-data --target-user-id 123 --apply --output-json artifacts/harness-runs/cloud-import-apply.json"
+        ]
+      },
+      {
+        "intro": "如需回滚：",
+        "commands": [
+          "python3 scripts/rollback_external_local_data_import.py --backup-dir data/operations/cloud-imports/<backup-id> --output-json artifacts/harness-runs/cloud-import-rollback.json"
+        ]
+      }
+    ],
+    "artifact_files": [
+      "artifacts/harness-runs/latest.json",
+      "对应 run 目录下的 workflow.json",
+      "artifacts/harness-runs/cloud-import-dry-run.json",
+      "artifacts/harness-runs/cloud-import-apply.json",
+      "artifacts/harness-runs/cloud-import-rollback.json"
+    ],
+    "focus_points": [
+      "source_data_dir 是否完整，dry-run 命中的 sessions / reports / assets 是否合理",
+      "target_user_id 是否存在且目标实例范围符合预期",
+      "专项回归是否覆盖导入与回滚链路",
+      "apply 后是否产出可用于回滚的 backup_dir 和 JSON 摘要"
+    ],
+    "manual_confirmations": [
+      "使用 --apply 正式导入外部数据",
+      "覆盖已有目标用户数据或跨实例范围导入",
+      "执行 rollback 或手工修改 backup_dir 内容"
+    ]
+  },
+  "workflow": {
+    "mode": "preview_first",
+    "governance": {
+      "required_for_apply": true,
+      "fields": [
+        { "name": "change_reason", "label": "变更原因", "required": true },
+        { "name": "operator", "label": "操作者", "required": true },
+        { "name": "approver", "label": "审批人", "required": true },
+        { "name": "ticket", "label": "关联工单", "required": true }
+      ]
+    },
+    "preconditions": [
+      {
+        "id": "source-data-dir-exists",
+        "title": "确认源数据目录存在",
+        "type": "path_exists",
+        "path": "{source_data_dir}",
+        "path_kind": "dir",
+        "requires": ["source_data_dir"]
+      },
+      {
+        "id": "target-user-exists",
+        "title": "确认目标用户存在",
+        "type": "user_exists",
+        "user_id_var": "target_user_id",
+        "auth_db": "data/auth/users.db",
+        "requires": ["target_user_id"]
+      }
+    ],
+    "steps": [
+      {
+        "id": "dry-run",
+        "title": "先做 dry-run 导入诊断",
+        "command": "python3 scripts/import_external_local_data_to_cloud.py --source-data-dir {source_data_dir} --target-user-id {target_user_id} --dry-run --output-json artifacts/harness-runs/cloud-import-dry-run.json",
+        "requires": ["source_data_dir", "target_user_id"],
+        "produces_artifact": "artifacts/harness-runs/cloud-import-dry-run.json"
+      },
+      {
+        "id": "verify",
+        "title": "跑导入与回滚专项回归",
+        "executor": "unittest",
+        "quiet": true,
+        "cases": [
+          {
+            "test_id": "tests.test_external_local_data_import",
+            "label": "导入与回滚专项回归"
+          }
+        ]
+      },
+      {
+        "id": "apply",
+        "title": "正式执行导入",
+        "command": "python3 scripts/import_external_local_data_to_cloud.py --source-data-dir {source_data_dir} --target-user-id {target_user_id} --apply --output-json artifacts/harness-runs/cloud-import-apply.json",
+        "requires": ["source_data_dir", "target_user_id"],
+        "requires_apply": true,
+        "confirmation_token": "CLOUD_IMPORT_APPLY",
+        "produces_artifact": "artifacts/harness-runs/cloud-import-apply.json"
+      },
+      {
+        "id": "rollback",
+        "title": "按备份目录回滚导入",
+        "command": "python3 scripts/rollback_external_local_data_import.py --backup-dir {backup_dir} --output-json artifacts/harness-runs/cloud-import-rollback.json",
+        "requires": ["backup_dir"],
+        "requires_apply": true,
+        "requires_backup": true,
+        "confirmation_token": "CLOUD_IMPORT_ROLLBACK",
+        "rollback_of": "apply",
+        "produces_artifact": "artifacts/harness-runs/cloud-import-rollback.json"
+      }
+    ]
+  }
+}

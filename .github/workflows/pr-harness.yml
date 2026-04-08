@@ -1,0 +1,140 @@
+name: PR Harness
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-harness-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-smoke:
+    name: pr-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 初始化环境
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+
+      - name: 执行脚本回归与源码级 guardrail
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest tests.test_version_manager tests.test_scripts_comprehensive
+          python3 scripts/agent_static_guardrails.py
+
+  agent-smoke:
+    name: agent-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装 uv
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install uv
+
+      - name: 执行 agent smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/agent_harness.py --skip-doctor --skip-static-guardrails --skip-guardrails --smoke-suite minimal --artifact-dir artifacts/ci/agent-smoke
+
+      - name: 写入 agent smoke 摘要
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f artifacts/ci/agent-smoke/latest.json ]]; then
+            python3 scripts/agent_ci_summary.py \
+              --latest-json artifacts/ci/agent-smoke/latest.json \
+              --title "Agent Smoke Summary" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Agent Smoke Summary"
+              echo
+              echo "- Overall: \`UNKNOWN\`"
+              echo "- 运行未生成 latest.json，请优先检查执行步骤日志。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 上传 agent smoke 工件
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-smoke-artifacts
+          path: artifacts/ci/agent-smoke
+          if-no-files-found: ignore
+
+  guardrails:
+    name: guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装 uv
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install uv
+
+      - name: 执行关键不变量检查
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/agent_harness.py --skip-doctor --skip-static-guardrails --skip-smoke --guardrails-suite minimal --artifact-dir artifacts/ci/guardrails
+
+      - name: 写入 guardrails 摘要
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f artifacts/ci/guardrails/latest.json ]]; then
+            python3 scripts/agent_ci_summary.py \
+              --latest-json artifacts/ci/guardrails/latest.json \
+              --title "Guardrails Summary" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Guardrails Summary"
+              echo
+              echo "- Overall: \`UNKNOWN\`"
+              echo "- 运行未生成 latest.json，请优先检查执行步骤日志。"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 上传 guardrails 工件
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: guardrails-artifacts
+          path: artifacts/ci/guardrails
+          if-no-files-found: ignore

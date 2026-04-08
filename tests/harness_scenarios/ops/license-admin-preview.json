@@ -1,0 +1,21 @@
+{
+  "name": "license-admin-preview",
+  "category": "ops",
+  "description": "通过 task workflow 预演 License 管理审计链路，验证管理员前置条件和专项回归组合。",
+  "tags": [
+    "manual",
+    "ops",
+    "workflow"
+  ],
+  "budgets": {
+    "max_duration_ms": 180000
+  },
+  "executor": {
+    "type": "workflow",
+    "task": "license-admin",
+    "execute_mode": "preview",
+    "allowed_overalls": [
+      "READY"
+    ]
+  }
+}

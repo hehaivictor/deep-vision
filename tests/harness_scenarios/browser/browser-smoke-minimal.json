@@ -1,0 +1,20 @@
+{
+  "name": "browser-smoke-minimal",
+  "category": "browser",
+  "description": "覆盖帮助页、方案页分享和管理员入口的最小浏览器回归。",
+  "tags": [
+    "nightly",
+    "browser",
+    "ui"
+  ],
+  "budgets": {
+    "max_duration_ms": 180000
+  },
+  "executor": {
+    "type": "browser_smoke",
+    "suite": "minimal",
+    "allowed_overalls": [
+      "READY"
+    ]
+  }
+}

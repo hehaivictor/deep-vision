@@ -1,0 +1,27 @@
+{
+  "name": "asset-ownership-boundaries",
+  "category": "tenant",
+  "description": "覆盖方案分享 owner 约束、账号合并后的资产归属迁移，以及导出资产写入对象存储元数据的 owner/scope 边界。",
+  "tags": [
+    "manual",
+    "tenant",
+    "ownership"
+  ],
+  "budgets": {
+    "max_duration_ms": 240000
+  },
+  "cases": [
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_report_solution_share_link_requires_owner_and_allows_public_readonly_access",
+      "label": "方案分享 owner 与公开只读边界"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_bind_phone_conflict_requires_preview_apply_and_admin_rollback",
+      "label": "账号合并资产归属迁移与回滚"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_export_asset_permission_follows_current_level",
+      "label": "导出资产对象存储元数据边界"
+    }
+  ]
+}

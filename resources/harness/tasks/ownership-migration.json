@@ -1,0 +1,144 @@
+{
+  "name": "ownership-migration",
+  "description": "管理员归属迁移，默认先审计和 dry-run 预演，再决定是否 apply。",
+  "risk_level": "high",
+  "doctor_profile": "auto",
+  "guardrails_suite": "extended",
+  "smoke_suite": "minimal",
+  "strict_doctor": false,
+  "docs": [
+    "docs/agent/admin-ops.md",
+    "docs/agent/migration.md",
+    "docs/full-data-migration-runbook.md"
+  ],
+  "playbook": {
+    "output": "docs/agent/playbooks/migration-preview.md",
+    "title": "归属迁移预演",
+    "summary": "优先使用 task harness 和 preview 链路确认账号、范围、备份与回滚入口，不直接跳到 apply。",
+    "when_to_use": [
+      "需要把历史会话或报告批量归属给某个账号",
+      "需要确认某个用户当前拥有多少数据，再决定迁移范围",
+      "迁移前需要保留摘要 JSON、备份目录和回滚路径"
+    ],
+    "command_blocks": [
+      {
+        "commands": [
+          "python3 scripts/admin_migrate_ownership.py list-users --query 137",
+          "python3 scripts/admin_migrate_ownership.py audit --user-account 13700000000",
+          "python3 scripts/agent_harness.py --task ownership-migration --task-var target_account=13700000000 --profile auto --artifact-dir artifacts/harness-runs",
+          "python3 scripts/admin_migrate_ownership.py migrate --to-account 13700000000 --scope unowned --summary-json artifacts/ownership-migration-preview.json"
+        ]
+      },
+      {
+        "intro": "确认需要正式执行时，再显式使用：",
+        "commands": [
+          "python3 scripts/admin_migrate_ownership.py migrate --to-account 13700000000 --scope unowned --apply --summary-json artifacts/ownership-migration-apply.json"
+        ]
+      },
+      {
+        "intro": "如需回滚：",
+        "commands": [
+          "python3 scripts/admin_migrate_ownership.py rollback --backup-dir data/operations/ownership-migrations/<backup-id>"
+        ]
+      }
+    ],
+    "artifact_files": [
+      "artifacts/harness-runs/latest.json",
+      "对应 run 目录下的 workflow.json",
+      "对应 run 目录下的 guardrails.json",
+      "artifacts/ownership-migration-preview.json",
+      "data/operations/ownership-migrations/<backup-id>/metadata.json",
+      "data/operations/ownership-migrations/<backup-id>/rollback.json"
+    ],
+    "focus_points": [
+      "目标账号、scope、kind 是否符合预期",
+      "preview 命中的 sessions / reports 数量是否异常偏大",
+      "guardrails 是否仍通过 owner / scope 边界检查",
+      "apply 后是否生成了可用备份目录"
+    ],
+    "manual_confirmations": [
+      "使用 --apply 正式改写归属",
+      "使用 scope=all 或 scope=from-user",
+      "删除、覆盖或手工修改备份目录内容",
+      "对生产风格数据执行 rollback"
+    ]
+  },
+  "workflow": {
+    "mode": "preview_first",
+    "governance": {
+      "required_for_apply": true,
+      "fields": [
+        { "name": "change_reason", "label": "变更原因", "required": true },
+        { "name": "operator", "label": "操作者", "required": true },
+        { "name": "approver", "label": "审批人", "required": true },
+        { "name": "ticket", "label": "关联工单", "required": true }
+      ]
+    },
+    "preconditions": [
+      {
+        "id": "admin-session-ready",
+        "title": "确认当前环境已配置管理员白名单",
+        "type": "requires_admin_session",
+        "auth_db": "data/auth/users.db"
+      },
+      {
+        "id": "target-account-exists",
+        "title": "确认目标账号存在",
+        "type": "account_exists",
+        "account": "{target_account}",
+        "auth_db": "data/auth/users.db",
+        "requires": ["target_account"]
+      }
+    ],
+    "steps": [
+      {
+        "id": "audit",
+        "title": "审计目标账号当前归属",
+        "command": "python3 scripts/admin_migrate_ownership.py audit --user-account {target_account} --kinds sessions,reports",
+        "requires": ["target_account"]
+      },
+      {
+        "id": "preview",
+        "title": "预演无归属数据迁移",
+        "command": "python3 scripts/admin_migrate_ownership.py migrate --to-account {target_account} --scope unowned --summary-json artifacts/harness-runs/ownership-migration-preview.json",
+        "requires": ["target_account"],
+        "produces_artifact": "artifacts/harness-runs/ownership-migration-preview.json"
+      },
+      {
+        "id": "verify",
+        "title": "跑归属迁移专项回归",
+        "executor": "unittest",
+        "quiet": true,
+        "cases": [
+          {
+            "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_ownership_migration_endpoints_cover_search_preview_apply_and_rollback",
+            "label": "归属迁移 preview/apply/rollback"
+          },
+          {
+            "test_id": "tests.test_security_regression.SecurityRegressionTests.test_ops_endpoints_require_admin_role",
+            "label": "运维接口管理员权限"
+          }
+        ]
+      },
+      {
+        "id": "apply",
+        "title": "正式落盘迁移",
+        "command": "python3 scripts/admin_migrate_ownership.py migrate --to-account {target_account} --scope unowned --apply --summary-json artifacts/harness-runs/ownership-migration-apply.json",
+        "requires": ["target_account"],
+        "requires_apply": true,
+        "confirmation_token": "OWNERSHIP_MIGRATION_APPLY",
+        "produces_artifact": "artifacts/harness-runs/ownership-migration-apply.json"
+      },
+      {
+        "id": "rollback",
+        "title": "按备份目录回滚",
+        "command": "python3 scripts/admin_migrate_ownership.py rollback --backup-dir {backup_dir}",
+        "requires": ["backup_dir"],
+        "requires_apply": true,
+        "requires_backup": true,
+        "confirmation_token": "OWNERSHIP_MIGRATION_ROLLBACK",
+        "rollback_of": "apply"
+      }
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "ownership-migration-core",
+  "category": "migration",
+  "description": "覆盖归属迁移 audit、preview、apply 和 rollback 的主链路。",
+  "tags": [
+    "nightly",
+    "migration"
+  ],
+  "budgets": {
+    "max_duration_ms": 120000
+  },
+  "cases": [
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_ownership_migration_endpoints_cover_search_preview_apply_and_rollback",
+      "label": "归属迁移主链路"
+    }
+  ]
+}

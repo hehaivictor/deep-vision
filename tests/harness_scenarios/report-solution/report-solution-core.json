@@ -1,0 +1,27 @@
+{
+  "name": "report-solution-core",
+  "category": "report-solution",
+  "description": "覆盖标准版报告生成、专业版方案页访问和旧报告兼容回退。",
+  "tags": [
+    "nightly",
+    "core",
+    "report"
+  ],
+  "budgets": {
+    "max_duration_ms": 180000
+  },
+  "cases": [
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_standard_user_can_generate_balanced_but_cannot_access_solution_appendix_or_presentation",
+      "label": "标准版报告与能力门禁"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_professional_user_can_access_solution_share_appendix_and_presentation_endpoints",
+      "label": "专业版方案页与分享能力"
+    },
+    {
+      "test_id": "tests.test_solution_payload.SolutionPayloadTests.test_build_solution_payload_falls_back_to_legacy_markdown_for_old_report",
+      "label": "方案页旧报告兼容"
+    }
+  ]
+}

@@ -1,0 +1,112 @@
+{
+  "name": "config-center",
+  "description": "管理员配置中心改动，先读当前分组和回归，再在人工确认后写入。",
+  "risk_level": "high",
+  "doctor_profile": "auto",
+  "guardrails_suite": "extended",
+  "smoke_suite": "minimal",
+  "strict_doctor": false,
+  "docs": [
+    "docs/agent/admin-ops.md",
+    "web/CONFIG.md"
+  ],
+  "playbook": {
+    "output": "docs/agent/playbooks/config-center-verify.md",
+    "title": "配置中心核对",
+    "summary": "先确认运行态、配置来源和 License 门禁，再进入配置中心专项回归和人工写入。",
+    "when_to_use": [
+      "准备修改 .env、config.py 或配置中心托管区块前",
+      "需要判断某个配置应该改环境变量、后端配置，还是前端展示配置",
+      "用户反馈配置改了但没生效，需要确认运行态、文件值和重启边界"
+    ],
+    "command_blocks": [
+      {
+        "commands": [
+          "python3 scripts/agent_observe.py --profile auto",
+          "python3 scripts/agent_harness.py --task config-center --observe --profile auto --artifact-dir artifacts/harness-runs",
+          "python3 scripts/agent_eval.py --scenario runtime-readiness --artifact-dir artifacts/harness-eval"
+        ]
+      },
+      {
+        "intro": "如只做静态配置核对，再补：",
+        "commands": [
+          "python3 scripts/agent_doctor.py --profile auto"
+        ]
+      }
+    ],
+    "artifact_files": [
+      "artifacts/harness-runs/latest.json",
+      "对应 run 目录下的 doctor.json",
+      "对应 run 目录下的 observe.json",
+      "对应 run 目录下的 workflow.json",
+      "artifacts/harness-eval/latest.json",
+      "对应 evaluator run 目录下的 runtime-readiness.json"
+    ],
+    "focus_points": [
+      "config_sources 中 env、config.py、site-config.js 的来源与修改时间",
+      "doctor 是否提示 SECRET_KEY、INSTANCE_SCOPE_KEY、SMS_PROVIDER 风险",
+      "runtime-readiness 是否仍通过 startup snapshot 和 observe 读取链路"
+    ],
+    "manual_confirmations": [
+      "通过配置中心写回 .env 或 config.py",
+      "修改 INSTANCE_SCOPE_KEY、SECRET_KEY、管理员白名单、短信与微信接入",
+      "依赖重启才能完全生效的配置变更"
+    ]
+  },
+  "workflow": {
+    "mode": "preview_first",
+    "governance": {
+      "required_for_apply": true,
+      "fields": [
+        { "name": "change_reason", "label": "变更原因", "required": true },
+        { "name": "operator", "label": "操作者", "required": true },
+        { "name": "approver", "label": "审批人", "required": true },
+        { "name": "ticket", "label": "关联工单", "required": true }
+      ]
+    },
+    "preconditions": [
+      {
+        "id": "admin-session-ready",
+        "title": "确认当前环境已配置管理员白名单",
+        "type": "requires_admin_session",
+        "auth_db": "data/auth/users.db"
+      },
+      {
+        "id": "active-license-exists",
+        "title": "确认当前环境至少存在活跃 License",
+        "type": "active_license_exists",
+        "license_db": "data/auth/licenses.db"
+      }
+    ],
+    "steps": [
+      {
+        "id": "inspect",
+        "title": "先查看当前配置中心分组",
+        "detail": "通过管理员中心页面或 GET /api/admin/config-center 查看 env、config、site 三类来源与当前值。"
+      },
+      {
+        "id": "verify",
+        "title": "跑配置中心专项回归",
+        "executor": "unittest",
+        "quiet": true,
+        "cases": [
+          {
+            "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_config_center_endpoints_cover_catalog_and_file_persistence",
+            "label": "配置中心目录与落盘"
+          },
+          {
+            "test_id": "tests.test_security_regression.SecurityRegressionTests.test_ops_endpoints_require_admin_role",
+            "label": "运维接口管理员权限"
+          }
+        ]
+      },
+      {
+        "id": "apply",
+        "title": "人工确认后写入配置",
+        "detail": "仅在人工确认后，通过管理员中心或 POST /api/admin/config-center/<group> 写入，写入后需复跑 harness 与配置中心专项回归。",
+        "requires_apply": true,
+        "confirmation_token": "CONFIG_CENTER_APPLY"
+      }
+    ]
+  }
+}

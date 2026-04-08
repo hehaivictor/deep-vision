@@ -847,98 +847,101 @@
                     </div>
 
                     <form class="space-y-4" @submit.prevent="submitAuth()" novalidate>
-                        <div class="relative" @click.outside="closeAuthAccountSuggestions()">
-                            <label for="auth-account" class="block text-sm font-medium text-primary mb-1">手机号</label>
-                            <input id="auth-account"
-                                   data-auth-autofocus
-                                   x-model.trim="authForm.account"
-                                   @input="authErrors.account = ''; openAuthAccountSuggestions()"
-                                   @focus="openAuthAccountSuggestions()"
-                                   @blur="scheduleAuthAccountSuggestionsClose()"
-                                   @keydown.escape.prevent="closeAuthAccountSuggestions()"
-                                   @keydown.arrow-down.prevent="focusFirstAuthHistoryItem()"
-                                   :type="getAuthInputType(authForm.account)"
-                                   inputmode="numeric"
-                                   autocomplete="tel"
-                                   placeholder="请输入手机号（11位）"
-                                   class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
-                                   :aria-invalid="authErrors.account ? 'true' : 'false'"
-                                   :aria-expanded="(authAccountSuggestionsOpen && getFilteredAuthAccountHistory().length > 0) ? 'true' : 'false'"
-                                   aria-controls="auth-account-history-list"
-                                   required>
-                            <div x-show="authAccountSuggestionsOpen && getFilteredAuthAccountHistory().length > 0"
-                                 x-cloak
-                                 x-transition:enter="transition ease-out duration-150"
-                                 x-transition:enter-start="opacity-0 -translate-y-1"
-                                 x-transition:enter-end="opacity-100 translate-y-0"
-                                 x-transition:leave="transition ease-in duration-100"
-                                 x-transition:leave-start="opacity-100 translate-y-0"
-                                 x-transition:leave-end="opacity-0 -translate-y-1"
-                                 class="absolute left-0 right-0 mt-1 z-20">
-                                <div id="auth-account-history-list"
-                                     role="listbox"
-                                     class="rounded-lg border border-gray-200 bg-white shadow-md overflow-hidden">
-                                    <p class="px-3 pt-2 pb-1 text-[11px] font-medium text-muted">最近登录手机号</p>
-                                    <template x-for="account in getFilteredAuthAccountHistory()" :key="`auth-history-${account}`">
-                                        <button type="button"
-                                                data-auth-history-item
-                                                role="option"
-                                                @mousedown.prevent
-                                                @focus="openAuthAccountSuggestions()"
-                                                @blur="scheduleAuthAccountSuggestionsClose()"
-                                                @click="selectAuthHistoryAccount(account)"
-                                                class="w-full h-10 px-3 text-left text-sm text-primary hover:bg-gray-50 focus:outline-none focus:bg-gray-50 focus:ring-2 focus:ring-primary/20 transition-colors duration-150 cursor-pointer">
-                                            <span x-text="account"></span>
-                                        </button>
-                                    </template>
-                                </div>
-                            </div>
-                            <p x-show="authErrors.account" x-text="authErrors.account" role="alert" class="mt-1 text-xs text-red-500"></p>
-                        </div>
-
-                        <div>
-                            <label for="auth-code" class="block text-sm font-medium text-primary mb-1">验证码</label>
-                            <div class="flex items-center gap-2">
-                                <input id="auth-code"
-                                       data-auth-code
-                                       x-model.trim="authForm.code"
-                                       @input="authErrors.code = ''"
-                                       @keydown.enter="handleAuthCodeEnter($event)"
-                                       type="text"
+                        <div x-show="smsLoginEnabled" x-cloak class="space-y-4">
+                            <div class="relative" @click.outside="closeAuthAccountSuggestions()">
+                                <label for="auth-account" class="block text-sm font-medium text-primary mb-1">手机号</label>
+                                <input id="auth-account"
+                                       data-auth-autofocus
+                                       x-model.trim="authForm.account"
+                                       @input="authErrors.account = ''; openAuthAccountSuggestions()"
+                                       @focus="openAuthAccountSuggestions()"
+                                       @blur="scheduleAuthAccountSuggestionsClose()"
+                                       @keydown.escape.prevent="closeAuthAccountSuggestions()"
+                                       @keydown.arrow-down.prevent="focusFirstAuthHistoryItem()"
+                                       :type="getAuthInputType(authForm.account)"
                                        inputmode="numeric"
-                                       autocomplete="one-time-code"
-                                       :maxlength="smsCodeLength"
-                                       placeholder="请输入验证码"
-                                       class="flex-1 min-w-0 h-10 px-3 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
-                                       :aria-invalid="authErrors.code ? 'true' : 'false'"
+                                       autocomplete="tel"
+                                       placeholder="请输入手机号（11位）"
+                                       class="w-full px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                                       :aria-invalid="authErrors.account ? 'true' : 'false'"
+                                       :aria-expanded="(authAccountSuggestionsOpen && getFilteredAuthAccountHistory().length > 0) ? 'true' : 'false'"
+                                       aria-controls="auth-account-history-list"
                                        required>
-                                <button type="button"
-                                        @click="sendAuthCode()"
-                                        :disabled="!canSendAuthCode()"
-                                        class="h-10 px-3 text-sm whitespace-nowrap rounded-lg border border-gray-200 text-primary hover:bg-gray-50 transition-colors duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-1.5">
-                                    <svg x-show="authCodeSending" class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke-width="4"></circle>
-                                        <path class="opacity-75" d="M4 12a8 8 0 018-8" stroke-width="4" stroke-linecap="round"></path>
-                                    </svg>
-                                    <span x-text="authCodeCountdown > 0 ? `${authCodeCountdown}s 后重发` : (authCodeSending ? '发送中...' : '获取验证码')"></span>
-                                </button>
+                                <div x-show="authAccountSuggestionsOpen && getFilteredAuthAccountHistory().length > 0"
+                                     x-cloak
+                                     x-transition:enter="transition ease-out duration-150"
+                                     x-transition:enter-start="opacity-0 -translate-y-1"
+                                     x-transition:enter-end="opacity-100 translate-y-0"
+                                     x-transition:leave="transition ease-in duration-100"
+                                     x-transition:leave-start="opacity-100 translate-y-0"
+                                     x-transition:leave-end="opacity-0 -translate-y-1"
+                                     class="absolute left-0 right-0 mt-1 z-20">
+                                    <div id="auth-account-history-list"
+                                         role="listbox"
+                                         class="rounded-lg border border-gray-200 bg-white shadow-md overflow-hidden">
+                                        <p class="px-3 pt-2 pb-1 text-[11px] font-medium text-muted">最近登录手机号</p>
+                                        <template x-for="account in getFilteredAuthAccountHistory()" :key="`auth-history-${account}`">
+                                            <button type="button"
+                                                    data-auth-history-item
+                                                    role="option"
+                                                    @mousedown.prevent
+                                                    @focus="openAuthAccountSuggestions()"
+                                                    @blur="scheduleAuthAccountSuggestionsClose()"
+                                                    @click="selectAuthHistoryAccount(account)"
+                                                    class="w-full h-10 px-3 text-left text-sm text-primary hover:bg-gray-50 focus:outline-none focus:bg-gray-50 focus:ring-2 focus:ring-primary/20 transition-colors duration-150 cursor-pointer">
+                                                <span x-text="account"></span>
+                                            </button>
+                                        </template>
+                                    </div>
+                                </div>
+                                <p x-show="authErrors.account" x-text="authErrors.account" role="alert" class="mt-1 text-xs text-red-500"></p>
                             </div>
-                            <p x-show="authErrors.code" x-text="authErrors.code" role="alert" class="mt-1 text-xs text-red-500"></p>
+
+                            <div>
+                                <label for="auth-code" class="block text-sm font-medium text-primary mb-1">验证码</label>
+                                <div class="flex items-center gap-2">
+                                    <input id="auth-code"
+                                           data-auth-code
+                                           x-model.trim="authForm.code"
+                                           @input="authErrors.code = ''"
+                                           @keydown.enter="handleAuthCodeEnter($event)"
+                                           type="text"
+                                           inputmode="numeric"
+                                           autocomplete="one-time-code"
+                                           :maxlength="smsCodeLength"
+                                           placeholder="请输入验证码"
+                                           class="flex-1 min-w-0 h-10 px-3 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary"
+                                           :aria-invalid="authErrors.code ? 'true' : 'false'"
+                                           required>
+                                    <button type="button"
+                                            @click="sendAuthCode()"
+                                            :disabled="!canSendAuthCode()"
+                                            class="h-10 px-3 text-sm whitespace-nowrap rounded-lg border border-gray-200 text-primary hover:bg-gray-50 transition-colors duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-1.5">
+                                        <svg x-show="authCodeSending" class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke-width="4"></circle>
+                                            <path class="opacity-75" d="M4 12a8 8 0 018-8" stroke-width="4" stroke-linecap="round"></path>
+                                        </svg>
+                                        <span x-text="authCodeCountdown > 0 ? `${authCodeCountdown}s 后重发` : (authCodeSending ? '发送中...' : '获取验证码')"></span>
+                                    </button>
+                                </div>
+                                <p x-show="authErrors.code" x-text="authErrors.code" role="alert" class="mt-1 text-xs text-red-500"></p>
+                            </div>
+
+                            <button type="submit"
+                                    :disabled="authLoading"
+                                    class="btn-sage-blue w-full text-white px-5 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                                <svg x-show="authLoading" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke-width="4"></circle>
+                                    <path class="opacity-75" d="M4 12a8 8 0 018-8" stroke-width="4" stroke-linecap="round"></path>
+                                </svg>
+                                <span x-text="authLoading ? '登录中...' : '登录'"></span>
+                            </button>
                         </div>
 
-                        <button type="submit"
-                                :disabled="authLoading || !smsLoginEnabled"
-                                class="btn-sage-blue w-full text-white px-5 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2">
-                            <svg x-show="authLoading" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke-width="4"></circle>
-                                <path class="opacity-75" d="M4 12a8 8 0 018-8" stroke-width="4" stroke-linecap="round"></path>
-                            </svg>
-                            <span x-text="authLoading ? '登录中...' : '登录'"></span>
-                        </button>
-                        <p x-show="!smsLoginEnabled" x-cloak role="alert" class="text-xs text-danger">短信登录暂未启用，请联系管理员。</p>
+                        <p x-show="!smsLoginEnabled && !wechatLoginEnabled" x-cloak role="alert" class="text-xs text-danger">当前未启用可用登录方式，请联系管理员。</p>
 
-                        <div x-show="wechatLoginEnabled" x-cloak class="pt-1 space-y-3">
-                            <div class="flex items-center gap-3">
+                        <div x-show="wechatLoginEnabled" x-cloak class="space-y-3" :class="smsLoginEnabled ? 'pt-1' : ''">
+                            <div x-show="smsLoginEnabled" x-cloak class="flex items-center gap-3">
                                 <span class="h-px flex-1 bg-gray-200"></span>
                                 <span class="text-xs text-muted">或</span>
                                 <span class="h-px flex-1 bg-gray-200"></span>
@@ -5651,7 +5654,7 @@
                                     <span x-text="wechatBindLoading ? '正在跳转微信...' : '绑定微信'"></span>
                                 </button>
                                 <button @click="openBindPhoneModal()"
-                                        x-show="!currentUser?.phone"
+                                        x-show="!currentUser?.phone && smsLoginEnabled"
                                         :disabled="bindPhoneLoading"
                                         class="settings-action-btn w-full text-left px-3 py-2.5 rounded-lg border text-sm font-medium">
                                     绑定手机号
@@ -5830,7 +5833,7 @@
         </div>
 
         <!-- ========== 绑定手机号弹窗 ========== -->
-        <div x-show="showBindPhoneModal"
+        <div x-show="showBindPhoneModal && smsLoginEnabled"
              data-dialog-key="showBindPhoneModal"
              x-bind="getDialogAttrs('showBindPhoneModal')"
              x-transition:enter="transition ease-out duration-200"
@@ -5893,7 +5896,6 @@
                         </div>
                         <p x-show="bindPhoneErrors.code" x-text="bindPhoneErrors.code" role="alert" class="mt-1 text-xs text-red-500"></p>
                     </div>
-                    <p x-show="!smsLoginEnabled" x-cloak role="alert" class="text-xs text-danger">短信登录暂未启用，当前无法绑定手机号。</p>
                     <div class="dv-modal-actions">
                         <button type="button"
                                 @click="closeBindPhoneModal()"
@@ -5901,7 +5903,7 @@
                             取消
                         </button>
                         <button type="submit"
-                                :disabled="bindPhoneLoading || !smsLoginEnabled"
+                                :disabled="bindPhoneLoading"
                                 class="dv-modal-btn-primary px-5 py-2 rounded-lg font-medium transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
                             <span x-text="bindPhoneLoading ? '绑定中...' : '确认绑定'"></span>
                         </button>

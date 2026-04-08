@@ -1,0 +1,28 @@
+{
+  "name": "observability-and-config",
+  "category": "ops",
+  "description": "覆盖配置中心落盘、启动初始化快照持久化和 observe 读取链路。",
+  "tags": [
+    "ops",
+    "observability",
+    "manual",
+    "config"
+  ],
+  "budgets": {
+    "max_duration_ms": 120000
+  },
+  "cases": [
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_config_center_endpoints_cover_catalog_and_file_persistence",
+      "label": "配置中心目录与落盘"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_runtime_startup_snapshot_persists_to_store_and_file",
+      "label": "启动初始化快照持久化"
+    },
+    {
+      "test_id": "tests.test_scripts_comprehensive.ComprehensiveScriptTests.test_agent_observe_collects_runtime_snapshot_from_temp_workspace",
+      "label": "observe 读取持久化快照"
+    }
+  ]
+}

@@ -30,7 +30,8 @@ DeepVision 当前固定使用以下项目配置：
 - `project.default_base = main`
 - `project.branch_prefix = codex/`
 - `pr.merge_method = squash`
-- `checks.required_jobs = [pr-smoke]`
+- `checks.required_jobs = [pr-smoke, agent-smoke, guardrails]`
+- `checks.smoke_commands = [unittest scripts, agent_harness --profile auto]`
 - `cleanup.remove_local_worktree = true`
 - `cleanup.remove_local_branch = true`
 - `cleanup.sync_main_after_batch = true`
@@ -79,16 +80,29 @@ DeepVision 当前只允许两类确定性自动修复：
 当前 PR 必需检查：
 
 - `pr-smoke`
+- `agent-smoke`
+- `guardrails`
 
 当前冒烟 workflow 位于：
 
-- `/Users/hehai/Documents/开目软件/Agents/project/DeepVision/.github/workflows/pr-smoke.yml`
+- `/Users/hehai/Documents/开目软件/Agents/project/DeepVision/.github/workflows/pr-harness.yml`
 
 其职责是：
 
-- 安装最小 Python 测试环境
-- 执行 `tests/test_version_manager.py`
-- 执行 `tests/test_scripts_comprehensive.py`
+- `pr-smoke`：执行 `python3 -m unittest tests.test_version_manager tests.test_scripts_comprehensive`，并顺带执行一次 `agent_static_guardrails.py`
+- `agent-smoke`：通过 `agent_harness` 的 skip 模式只执行 `smoke`，并上传 `progress / failure-summary / handoff` 工件
+- `guardrails`：通过 `agent_harness` 的 skip 模式只执行 runtime `guardrails`，并上传 `progress / failure-summary / handoff` 工件
+- `browser-smoke`：继续保留在独立 workflow 中，仅在前端相关变更或手动/定时场景下执行
+
+本地 ship 预检则统一收口到：
+
+- `python3 scripts/agent_harness.py --profile auto`
+- 如需保留完整检查证据，可在本地先执行 `python3 scripts/agent_harness.py --profile auto --artifact-dir artifacts/harness-runs`
+- 开启 `--artifact-dir` 后，除 `summary.json` 外还会写出 `progress.md`、`failure-summary.md` 与 `handoff.json`，更适合跨 session 交接
+- 如任务属于高风险运维链路，可先用 `python3 scripts/agent_harness.py --list-tasks` 选择对应 task 画像，再单独跑一次 task harness
+- 如需先看最近运行状态，可先执行 `python3 scripts/agent_observe.py --profile auto`
+
+这样在真正进入交付链路前，会把环境自检、关键不变量和最小主链路结果合并成一份摘要。
 
 PR `squash merge` 成功后，交付链路不会立刻继续清理，而是先等待：
 
