@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "fc735f5",
+  "committedAt": "2026-04-08T12:21:58+08:00",
+  "versionType": "patch",
+  "title": "新增生产环境 Docker 部署文件",
+  "changes": [
+    "部署：新增生产镜像构建用 Dockerfile 配置",
+    "部署：新增 docker-compose 生产编排模板并接入独立 env 文件"
+  ],
+  "changedFiles": [
+    "output/Dockerfile.production",
+    "output/docker-compose.production.yml"
+  ]
+}
