@@ -1,7 +1,17 @@
 {
-  "version": "8.0.1",
-  "releaseDate": "2026-04-04",
+  "version": "8.0.2",
+  "releaseDate": "2026-04-08",
   "changelog": [
+    {
+      "version": "8.0.2",
+      "date": "2026-04-08",
+      "type": "patch",
+      "title": "新增生产环境 Docker 部署文件",
+      "changes": [
+        "部署：新增生产镜像构建用 Dockerfile 配置",
+        "部署：新增 docker-compose 生产编排模板并接入独立 env 文件"
+      ]
+    },
     {
       "version": "8.0.1",
       "date": "2026-04-04",
