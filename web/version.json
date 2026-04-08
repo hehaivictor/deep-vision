@@ -1,7 +1,21 @@
 {
-  "version": "8.1.0",
+  "version": "8.1.1",
   "releaseDate": "2026-04-08",
   "changelog": [
+    {
+      "version": "8.1.1",
+      "date": "2026-04-08",
+      "type": "patch",
+      "title": "修复 guardrails 在 CI 下的临时目录清理报错",
+      "changes": [
+        "测试：为综合 API 测试的临时目录清理启用 ignore_cleanup_errors",
+        "CI：消除 GitHub runner 上因目录残留写入导致的 tearDownClass 偶发失败",
+        "优化 harness 第三阶段 CI 成本控制",
+        "CI：为 pr-harness 增加变更路径预判并跳过无关 runtime 检查",
+        "CI：为 browser-smoke 与 harness-nightly 增加 pip 和 Playwright 缓存及 nightly 并发收敛",
+        "文档：同步更新第三阶段计划、进度台账与 CI 使用说明"
+      ]
+    },
     {
       "version": "8.1.0",
       "date": "2026-04-08",
