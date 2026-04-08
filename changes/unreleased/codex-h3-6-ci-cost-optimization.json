@@ -2,11 +2,14 @@
   "schemaVersion": 1,
   "branch": "codex/h3-6-ci-cost-optimization",
   "baseRef": "origin/main",
-  "sourceCommit": "98fa5ed",
-  "committedAt": "2026-04-08T16:58:05+08:00",
+  "sourceCommit": "68e9de7",
+  "committedAt": "2026-04-08T17:17:04+08:00",
   "versionType": "patch",
-  "title": "优化 harness 第三阶段 CI 成本控制",
+  "title": "修复 guardrails 在 CI 下的临时目录清理报错",
   "changes": [
+    "测试：为综合 API 测试的临时目录清理启用 ignore_cleanup_errors",
+    "CI：消除 GitHub runner 上因目录残留写入导致的 tearDownClass 偶发失败",
+    "优化 harness 第三阶段 CI 成本控制",
     "CI：为 pr-harness 增加变更路径预判并跳过无关 runtime 检查",
     "CI：为 browser-smoke 与 harness-nightly 增加 pip 和 Playwright 缓存及 nightly 并发收敛",
     "文档：同步更新第三阶段计划、进度台账与 CI 使用说明"
@@ -20,6 +23,7 @@
     "docs/agent/README.md",
     "docs/agent/harness-iteration-plan-phase3.md",
     "docs/agent/harness-progress-phase3.md",
-    "docs/worktree-shipping.md"
+    "docs/worktree-shipping.md",
+    "tests/test_api_comprehensive.py"
   ]
 }
