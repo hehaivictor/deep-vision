@@ -90,9 +90,14 @@ DeepVision 当前只允许两类确定性自动修复：
 其职责是：
 
 - `pr-smoke`：执行 `python3 -m unittest tests.test_version_manager tests.test_scripts_comprehensive`，并顺带执行一次 `agent_static_guardrails.py`
-- `agent-smoke`：通过 `agent_harness` 的 skip 模式只执行 `smoke`，并上传 `progress / failure-summary / handoff` 工件
-- `guardrails`：通过 `agent_harness` 的 skip 模式只执行 runtime `guardrails`，并上传 `progress / failure-summary / handoff` 工件
+- `agent-smoke`：对涉及 runtime harness 的 PR，通过 `agent_harness` 的 skip 模式只执行 `smoke`，否则写入 `SKIPPED` 摘要并跳过重安装
+- `guardrails`：对涉及 runtime harness 的 PR，通过 `agent_harness` 的 skip 模式只执行 runtime `guardrails`，否则写入 `SKIPPED` 摘要并跳过重安装
 - `browser-smoke`：继续保留在独立 workflow 中，仅在前端相关变更或手动/定时场景下执行
+
+当前还额外做了两类成本优化：
+
+- `browser-smoke.yml` 与 `harness-nightly.yml` 会缓存 pip 与 Playwright 浏览器目录，减少 `uv` 与浏览器二进制的重复下载
+- `harness-nightly.yml` 增加并发收敛，避免同一 ref 的 nightly / 手动重跑互相堆积
 
 本地 ship 预检则统一收口到：
 

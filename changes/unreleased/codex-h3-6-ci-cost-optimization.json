@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "branch": "codex/h3-6-ci-cost-optimization",
+  "baseRef": "origin/main",
+  "sourceCommit": "98fa5ed",
+  "committedAt": "2026-04-08T16:58:05+08:00",
+  "versionType": "patch",
+  "title": "优化 harness 第三阶段 CI 成本控制",
+  "changes": [
+    "CI：为 pr-harness 增加变更路径预判并跳过无关 runtime 检查",
+    "CI：为 browser-smoke 与 harness-nightly 增加 pip 和 Playwright 缓存及 nightly 并发收敛",
+    "文档：同步更新第三阶段计划、进度台账与 CI 使用说明"
+  ],
+  "changedFiles": [
+    ".github/workflows/browser-smoke.yml",
+    ".github/workflows/harness-nightly.yml",
+    ".github/workflows/pr-harness.yml",
+    "AGENTS.md",
+    "README.md",
+    "docs/agent/README.md",
+    "docs/agent/harness-iteration-plan-phase3.md",
+    "docs/agent/harness-progress-phase3.md",
+    "docs/worktree-shipping.md"
+  ]
+}

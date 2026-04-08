@@ -86,6 +86,8 @@
 - PR 基础检查已收口到 `.github/workflows/pr-harness.yml`，其中 `pr-smoke` 负责脚本回归与 `static_guardrails`，`agent-smoke` 只跑 runtime smoke，`guardrails` 只跑 runtime guardrails
 - 浏览器回归已提供独立 workflow：`.github/workflows/browser-smoke.yml`，当前会在前端相关 PR 改动时自动触发 `extended` 套件，并保留手动与周跑入口
 - `pr-harness.yml`、`browser-smoke.yml` 与 `harness-nightly.yml` 现在都会额外写 GitHub Step Summary，便于直接查看一屏结论
+- `pr-harness.yml` 现已增加 `changes` 预判；当 PR 未涉及 runtime harness 相关路径时，`agent-smoke` 与 `guardrails` 会输出 `SKIPPED` 摘要而不再重复安装 `uv`
+- `browser-smoke.yml` 与 `harness-nightly.yml` 现已缓存 pip 与 Playwright 浏览器目录，并为 nightly 增加并发收敛，减少重复安装与重叠运行成本
 - `agent_observe.py` 的 `history_trends` 现在会额外聚合最近最常告警 task、blocker 和慢场景，并标记连续失败、重复 blocker、慢场景回归三类阈值信号
 - `agent_observe.py` 现在还会输出 `diagnostic_panel`，直接给出 Top task / blocker / 慢场景、阈值告警摘要和推荐复跑命令
 - `extended` browser smoke 现在覆盖帮助页、方案页分享、公开分享只读、登录前端视图、License 门禁前端视图、License 绑定成功切回业务壳、报告详情与方案入口以及管理员配置中心页签切换

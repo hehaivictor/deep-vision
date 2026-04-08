@@ -12,6 +12,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    outputs:
+      runtime_harness_changed: ${{ steps.detect.outputs.runtime_harness_changed }}
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 识别是否需要 runtime harness
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" != "pull_request" ]]; then
+            echo "runtime_harness_changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > changed-files.txt
+          cat changed-files.txt
+
+          if grep -Eq '^(web/|scripts/|tests/|resources/|package\.json|package-lock\.json|\.github/workflows/(pr-harness|browser-smoke|harness-nightly)\.yml)' changed-files.txt; then
+            echo "runtime_harness_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "runtime_harness_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   pr-smoke:
     name: pr-smoke
     runs-on: ubuntu-latest
@@ -39,6 +73,7 @@ jobs:
 
   agent-smoke:
     name: agent-smoke
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - name: 检出仓库
@@ -49,7 +84,17 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: 缓存 pip
+        if: needs.changes.outputs.runtime_harness_changed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-python-3.11-agent-smoke-v1
+          restore-keys: |
+            pip-${{ runner.os }}-python-3.11-
+
       - name: 安装 uv
+        if: needs.changes.outputs.runtime_harness_changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -57,13 +102,26 @@ jobs:
           python3 -m pip install uv
 
       - name: 执行 agent smoke
+        if: needs.changes.outputs.runtime_harness_changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/agent_harness.py --skip-doctor --skip-static-guardrails --skip-guardrails --smoke-suite minimal --artifact-dir artifacts/ci/agent-smoke
 
+      - name: 写入跳过说明
+        if: always() && needs.changes.outputs.runtime_harness_changed != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Agent Smoke Summary"
+            echo
+            echo "- Overall: \`SKIPPED\`"
+            echo "- 本次 PR 未涉及 runtime harness 相关路径，跳过 agent smoke 以降低 CI 成本。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: 写入 agent smoke 摘要
-        if: always()
+        if: always() && needs.changes.outputs.runtime_harness_changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -81,7 +139,7 @@ jobs:
           fi
 
       - name: 上传 agent smoke 工件
-        if: always()
+        if: always() && needs.changes.outputs.runtime_harness_changed == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: agent-smoke-artifacts
@@ -90,6 +148,7 @@ jobs:
 
   guardrails:
     name: guardrails
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - name: 检出仓库
@@ -100,7 +159,17 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: 缓存 pip
+        if: needs.changes.outputs.runtime_harness_changed == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-python-3.11-guardrails-v1
+          restore-keys: |
+            pip-${{ runner.os }}-python-3.11-
+
       - name: 安装 uv
+        if: needs.changes.outputs.runtime_harness_changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -108,13 +177,26 @@ jobs:
           python3 -m pip install uv
 
       - name: 执行关键不变量检查
+        if: needs.changes.outputs.runtime_harness_changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/agent_harness.py --skip-doctor --skip-static-guardrails --skip-smoke --guardrails-suite minimal --artifact-dir artifacts/ci/guardrails
 
+      - name: 写入跳过说明
+        if: always() && needs.changes.outputs.runtime_harness_changed != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Guardrails Summary"
+            echo
+            echo "- Overall: \`SKIPPED\`"
+            echo "- 本次 PR 未涉及 runtime harness 相关路径，跳过 runtime guardrails 以降低 CI 成本。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: 写入 guardrails 摘要
-        if: always()
+        if: always() && needs.changes.outputs.runtime_harness_changed == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -132,7 +214,7 @@ jobs:
           fi
 
       - name: 上传 guardrails 工件
-        if: always()
+        if: always() && needs.changes.outputs.runtime_harness_changed == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: guardrails-artifacts

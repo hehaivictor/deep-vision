@@ -284,6 +284,8 @@ python3 scripts/agent_smoke.py
 - PR 基础检查已统一收口到 `.github/workflows/pr-harness.yml`；其中 `pr-smoke` 负责脚本回归与 `static_guardrails`，`agent-smoke` 只跑 runtime smoke，`guardrails` 只跑 runtime guardrails
 - 仓库内已提供独立的 browser smoke workflow：`.github/workflows/browser-smoke.yml`；当前会在前端相关 PR 改动时自动触发 `extended` 套件，并保留手动与周跑入口
 - `pr-harness.yml`、`browser-smoke.yml` 与 `harness-nightly.yml` 现在会额外写 GitHub Step Summary，失败时不必先下载 artifact 才能看结论
+- `pr-harness.yml` 现在会先识别变更路径；若 PR 未触及 runtime harness 相关目录，`agent-smoke` 与 `guardrails` 会直接写 `SKIPPED` 摘要，避免无效安装 `uv`
+- `browser-smoke.yml` 与 `harness-nightly.yml` 现在会缓存 pip 与 Playwright 浏览器目录，nightly 还会在同一 ref 上自动取消重叠运行
 - `--task` 会按任务画像自动选择 doctor 场景、guardrails/smoke 套件和 workflow 预演步骤
 - `agent_workflow.py` 用于单独执行 task workflow；`--execute plan` 仅预演，`--execute preview` 执行安全步骤，`--execute full` 只在 `--allow-apply` 后才会真正覆盖高风险步骤
 - `agent_harness.py --workflow-execute preview/full` 会把 workflow 执行结果并入 harness 阶段摘要和 artifact
