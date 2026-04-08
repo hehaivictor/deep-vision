@@ -534,13 +534,18 @@ class ComprehensiveScriptTests(unittest.TestCase):
         )
 
         file_values, effective_env = agent_doctor.build_effective_env(env_file, {})
-        results = agent_doctor.collect_checks(
-            profile="local",
-            selected_env_file=env_file,
-            env_source="test",
-            file_values=file_values,
-            effective_env=effective_env,
-        )
+        with patch("scripts.agent_doctor.shutil.which") as mock_which:
+            mock_which.side_effect = lambda name: {
+                "python3": "/usr/bin/python3",
+                "uv": "/usr/bin/uv",
+            }.get(name)
+            results = agent_doctor.collect_checks(
+                profile="local",
+                selected_env_file=env_file,
+                env_source="test",
+                file_values=file_values,
+                effective_env=effective_env,
+            )
         summary = agent_doctor.build_summary(results)
         self.assertEqual(0, summary["FAIL"])
         by_name = {item.name: item for item in results}
