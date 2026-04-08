@@ -72,6 +72,8 @@
 - PR 基础检查已统一收口到 `.github/workflows/pr-harness.yml`；其中 `pr-smoke` 负责脚本回归与 `static_guardrails`，`agent-smoke` 只跑 runtime smoke，`guardrails` 只跑 runtime guardrails
 - 仓库已提供独立的 browser smoke workflow，位于 `.github/workflows/browser-smoke.yml`；前端相关 PR 改动会自动触发 `extended` 套件，`live-minimal` 继续保留为手动深回归
 - PR / nightly 相关 workflow 现在都会额外写 GitHub Step Summary，可先看摘要再决定是否下载 artifact
+- `pr-harness.yml` 现已加入 `changes` 预判；对不涉及 runtime harness 的 PR，`agent-smoke` 与 `guardrails` 会写出 `SKIPPED` 摘要并跳过重安装
+- `browser-smoke.yml` 与 `harness-nightly.yml` 现已缓存 pip 与 Playwright 浏览器目录，nightly 也会自动取消同 ref 的重叠运行
 - `agent_scenario_scaffold.py` 会优先从 harness/evaluator artifact 里提取 unittest id，生成 `manual + incident` 场景模板，再由人工补充业务背景
 - `agent_scenario_scaffold.py` 现在还会自动推断 `category / tags / budget / output`；对 `browser_smoke`、`workflow`、`harness` 失败也能直接生成 executor 场景模板
 - `agent_observe.py` 现在会附带最近 harness / evaluator / CI 趋势摘要；`agent_history.py` 用于继续查看完整 diff

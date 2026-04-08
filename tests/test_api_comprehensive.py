@@ -68,7 +68,10 @@ class ComprehensiveApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.server = load_server_module()
-        cls.temp_dir = tempfile.TemporaryDirectory(prefix="dv-api-tests-")
+        cls.temp_dir = tempfile.TemporaryDirectory(
+            prefix="dv-api-tests-",
+            ignore_cleanup_errors=True,
+        )
         cls.sandbox_root = Path(cls.temp_dir.name).resolve()
         cls._configure_sandbox_paths()
         cls.server.app.config["TESTING"] = True

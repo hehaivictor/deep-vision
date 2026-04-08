@@ -38,7 +38,7 @@
 | H3-3 | done | Observe 告警化 | 让 observe 不只给摘要，还给阈值、连续失败统计和推荐动作 | `scripts/agent_observe.py`、`scripts/agent_history.py`、`docs/agent/observability.md` | 至少输出连续失败、慢场景回归和高频 blocker 三类告警信号 |
 | H3-4 | done | Workflow 治理字段 | 为高风险 task 增加变更原因、操作者、审批人、关联工单等治理字段 | `scripts/agent_workflow.py`、`resources/harness/tasks/*.json`、artifact/handoff 模板 | 高风险 workflow 的 apply/rollback 工件能带出治理元数据并进入 handoff |
 | H3-5 | done | 失败回灌自动化 | 让失败 run 更快变成正式场景，减少人工复制与分类成本 | `scripts/agent_scenario_scaffold.py`、`scripts/agent_artifacts.py`、文档入口 | failure-summary / handoff 可直接给出更完整的场景脚手架建议和默认分类 |
-| H3-6 | active | CI 成本优化 | 在不削弱信号的前提下继续做路径过滤、缓存和 lane 分层 | `.github/workflows/*.yml`、CI 文档 | PR / nightly 总耗时或重复安装成本下降，且 required checks 语义不变差 |
+| H3-6 | done | CI 成本优化 | 在不削弱信号的前提下继续做路径过滤、缓存和 lane 分层 | `.github/workflows/*.yml`、CI 文档 | PR / nightly 总耗时或重复安装成本下降，且 required checks 语义不变差 |
 
 ## 推荐执行顺序
 
