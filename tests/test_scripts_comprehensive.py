@@ -51,6 +51,19 @@ class ComprehensiveScriptTests(unittest.TestCase):
         (base / "reports").mkdir(parents=True, exist_ok=True)
         return base
 
+    def _agent_doctor_env_lines(self, case_name: str) -> list[str]:
+        env_root = self.sandbox_root / case_name / "data"
+        auth_dir = env_root / "auth"
+        scenarios_dir = env_root / "scenarios" / "custom"
+        auth_dir.mkdir(parents=True, exist_ok=True)
+        scenarios_dir.mkdir(parents=True, exist_ok=True)
+        return [
+            f"AUTH_DB_PATH={auth_dir / 'users.db'}",
+            f"LICENSE_DB_PATH={auth_dir / 'licenses.db'}",
+            f"META_INDEX_DB_PATH={env_root / 'meta_index.db'}",
+            f"CUSTOM_SCENARIOS_DIR={scenarios_dir}",
+        ]
+
     def _make_harness_execution(
         self,
         *,
@@ -482,6 +495,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
                     "SECRET_KEY=replace-with-a-strong-random-secret",
                     "INSTANCE_SCOPE_KEY=replace-with-instance-scope-key",
                     "WECHAT_LOGIN_ENABLED=true",
+                    *self._agent_doctor_env_lines("agent-doctor-cloud"),
                 ]
             )
             + "\n",
@@ -512,9 +526,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
                     "SMS_PROVIDER=mock",
                     "SECRET_KEY=local-dev-secret",
                     "INSTANCE_SCOPE_KEY=deepvision-local",
-                    "AUTH_DB_PATH=data/auth/users.db",
-                    "LICENSE_DB_PATH=data/auth/licenses.db",
-                    "META_INDEX_DB_PATH=data/meta_index.db",
+                    *self._agent_doctor_env_lines("agent-doctor-local"),
                 ]
             )
             + "\n",
@@ -546,6 +558,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
                     "SMS_PROVIDER=mock",
                     "SECRET_KEY=cloud-secret",
                     "INSTANCE_SCOPE_KEY=deepvision-cloud",
+                    *self._agent_doctor_env_lines("agent-doctor-cloud-sms-disabled"),
                 ]
             )
             + "\n",
