@@ -19,6 +19,7 @@
    - Harness 四阶段计划：[harness-iteration-plan-phase4.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-iteration-plan-phase4.md)
    - Harness 四阶段进度台账：[harness-progress-phase4.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress-phase4.md)
    - Planner artifact 目录：[plans/README.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/plans/README.md)
+   - 第二阶段模块化拆分计划：[plans/module-split-phase2.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/plans/module-split-phase2.md)
    - Sprint Contract 目录：`resources/harness/contracts/*.json`
    - Evaluator 校准样本：[evaluator-calibration.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/evaluator-calibration.md)
    - 高频任务标准流程：[playbooks/README.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/playbooks/README.md)

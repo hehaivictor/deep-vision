@@ -29,8 +29,6 @@
         filteredReports: [],
         reportItems: [],
         selectedReport: null,
-        presentationPdfUrl: '',
-        presentationLocalUrl: '',
         reportContent: '',
         showDeleteReportModal: false,
         reportToDelete: null,
@@ -71,7 +69,6 @@
         reportDetailObserver: null,
         reportDetailSectionRegistry: [],
         reportTableCleanupFns: [],
-        lastPresentationUrl: '',
     };
 
     const reportStateMethods = {

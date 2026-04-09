@@ -47,7 +47,6 @@ Thumbs.db
 .claude/
 .codex/*
 !.codex/ship.yml
-.memory/
 
 # macOS
 .DS_Store
