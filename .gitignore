@@ -67,3 +67,6 @@ read_ppt_size.py
 
 # Local clipboard artifacts
 .gemini-clipboard/
+
+# Graphify output
+graphify-out/
