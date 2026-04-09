@@ -267,7 +267,7 @@ DeepVision/
 ├── tests/               # 回归测试
 ├── docs/                # 配置、交付与专题文档
 ├── deploy/              # 部署示例（如 Nginx）
-├── data/                # 运行期数据（会话、报告、摘要、鉴权、演示产物等）
+├── data/                # 运行期数据（会话、报告、鉴权、演示产物等）
 ├── .githooks/           # 仓库内 Git Hook
 └── changes/             # 待发布变更碎片目录，首次生成碎片时自动创建
 ```
@@ -277,7 +277,6 @@ DeepVision/
 - `data/sessions/`：访谈会话数据
 - `data/reports/`：生成后的 Markdown 报告与分享映射；新报告文件名包含 `session_id` 以避免同日同主题碰撞
 - `data/presentations/`：演示或导出相关产物
-- `data/summaries/`：文档摘要缓存
 - `data/auth/`：鉴权相关运行数据
 
 ## 常用脚本
