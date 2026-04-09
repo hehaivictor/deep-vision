@@ -3,7 +3,7 @@ services:
     container_name: deepvision
     build:
       context: ..
-      dockerfile: output/Dockerfile.production
+      dockerfile: deploy/Dockerfile.production
     restart: unless-stopped
     env_file:
       - ../web/.env.production

@@ -41,11 +41,13 @@ web/.env.*
 *.swp
 *.swo
 *~
+Thumbs.db
 
 # 本地工具目录
 .claude/
 .codex/*
 !.codex/ship.yml
+.memory/
 
 # macOS
 .DS_Store
@@ -54,6 +56,10 @@ web/.env.*
 *.tmp
 *.temp
 .~*
+*.bak
+
+# 日志文件
+*.log
 
 # Node
 node_modules/

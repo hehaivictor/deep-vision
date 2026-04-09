@@ -63,111 +63,30 @@ from db_compat import (
     normalize_db_cache_key,
     resolve_db_target,
 )
+from web.server_modules.runtime_bootstrap import (
+    RuntimeStartupCoordinator,
+    load_env_files,
+    log_runtime_startup_summary,
+    parse_env_assignment,
+)
+from web.server_modules.object_storage_history import ObjectStorageHistoryService
+from web.server_modules.admin_config_center import AdminConfigCenterService
+from web.server_modules.ownership_admin_flow import AdminOwnershipMigrationService
 
 try:
     import fcntl
 except ImportError:
     fcntl = None
 
-
-def _parse_env_assignment(line: str) -> Optional[tuple[str, str]]:
-    text = str(line or "").strip()
-    if not text or text.startswith("#"):
-        return None
-
-    if text.startswith("export "):
-        text = text[len("export "):].strip()
-
-    match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$", text)
-    if not match:
-        return None
-
-    key = match.group(1).strip()
-    raw_value = match.group(2).strip()
-
-    if not raw_value:
-        return key, ""
-
-    if (raw_value.startswith('"') and raw_value.endswith('"')) or (raw_value.startswith("'") and raw_value.endswith("'")):
-        return key, raw_value[1:-1]
-
-    # 非引号值允许行尾注释：KEY=value # comment
-    if " #" in raw_value:
-        raw_value = raw_value.split(" #", 1)[0].rstrip()
-    return key, raw_value
+_parse_env_assignment = parse_env_assignment
 
 
-def load_env_files() -> dict:
-    """加载 .env 文件到 os.environ（默认不覆盖已存在环境变量）。"""
-    project_dir = Path(__file__).resolve().parent.parent
-    explicit_env_file = os.environ.get("DEEPVISION_ENV_FILE", "").strip()
-    override_existing = str(os.environ.get("DEEPVISION_ENV_OVERRIDE", "")).strip().lower() in {"1", "true", "yes", "on", "y"}
-    preexisting_env_keys = set(os.environ.keys())
-
-    candidates: list[Path] = []
-    if explicit_env_file:
-        for raw_path in [part.strip() for part in explicit_env_file.split(os.pathsep) if part.strip()]:
-            explicit_path = Path(raw_path).expanduser()
-            if not explicit_path.is_absolute():
-                explicit_path = (project_dir / explicit_path).resolve()
-            candidates.append(explicit_path)
-    loaded_any = False
-    loaded_files: list[str] = []
-    loaded_keys: set[str] = set()
-    for env_path in candidates:
-        if not env_path.exists() or not env_path.is_file():
-            continue
-
-        try:
-            applied_keys = 0
-            for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-                parsed = _parse_env_assignment(raw_line)
-                if not parsed:
-                    continue
-                key, value = parsed
-                if not override_existing and key in preexisting_env_keys:
-                    continue
-                os.environ[key] = value
-                loaded_keys.add(key)
-                applied_keys += 1
-            loaded_any = True
-            loaded_files.append(str(env_path))
-            print(f"✅ 已加载环境变量文件: {env_path}")
-            if applied_keys <= 0:
-                print("ℹ️  环境变量文件已读取，但未写入新键")
-        except Exception as exc:
-            print(f"⚠️  读取环境变量文件失败: {env_path}, 错误: {exc}")
-
-    if explicit_env_file and not loaded_any:
-        print(f"⚠️  指定的环境变量文件不存在或不可读: {explicit_env_file}")
-
-    return {
-        "loaded_any_file": bool(loaded_any),
-        "loaded_files": loaded_files,
-        "loaded_keys": loaded_keys,
-        "loaded_key_count": len(loaded_keys),
-        "override_existing": bool(override_existing),
-        "explicit_env_file": explicit_env_file,
-        "explicit_env_files": [str(path) for path in candidates] if explicit_env_file else [],
-    }
-
-
-ENV_LOAD_METADATA = load_env_files()
+ENV_LOAD_METADATA = load_env_files(PROJECT_ROOT)
 LOADED_ENV_FILES = list(ENV_LOAD_METADATA.get("loaded_files", []) or [])
 LOADED_ENV_KEYS = set(ENV_LOAD_METADATA.get("loaded_keys", set()) or set())
 LOADED_ENV_KEY_COUNT = int(ENV_LOAD_METADATA.get("loaded_key_count", 0) or 0)
 
-runtime_startup_state = {
-    "initialized": False,
-    "reason": "",
-    "started_at": "",
-    "completed_at": "",
-    "total_ms": 0.0,
-    "phases": [],
-    "failed_phase": "",
-    "error": "",
-}
-runtime_startup_lock = threading.Lock()
+runtime_startup = RuntimeStartupCoordinator()
 
 runtime_config = None
 runtime_config_source = ""
@@ -2350,10 +2269,6 @@ OBJECT_STORAGE_SDK_STATUS_LOCK = threading.Lock()
 OBJECT_STORAGE_SDK_CHECKED = False
 OBJECT_STORAGE_SDK_AVAILABLE = False
 OBJECT_STORAGE_SDK_ERROR = ""
-OBJECT_STORAGE_PRESENTATION_MIGRATION_LOCK = threading.Lock()
-OBJECT_STORAGE_PRESENTATION_MIGRATED = False
-OBJECT_STORAGE_OPS_ARCHIVE_LOCK = threading.Lock()
-OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED = False
 DELETED_REPORTS_FILE = REPORTS_DIR / ".deleted_reports.json"
 DELETED_DOCS_FILE = DATA_DIR / ".deleted_docs.json"  # 软删除记录文件
 REPORT_OWNERS_FILE = REPORTS_DIR / ".owners.json"
@@ -3709,184 +3624,33 @@ def _get_admin_runtime_setting_value(source: str, key: str, *, site_values: Opti
     return value
 
 
-def _get_admin_file_setting_value(
-    source: str,
-    key: str,
-    *,
-    env_values: dict[str, str],
-    config_managed_values: dict[str, Any],
-    site_values: dict[str, Any],
-) -> Any:
-    if source == "env":
-        if key not in env_values:
-            return None
-        setting_meta = ADMIN_SETTINGS_FIELD_INDEX["env"].get(key, {})
-        return _coerce_admin_env_storage_value(setting_meta, env_values.get(key, ""))
-
-    if source == "site":
-        return _get_admin_nested_setting_value(site_values, key)
-
-    if key in config_managed_values:
-        return config_managed_values.get(key)
-    if runtime_config and hasattr(runtime_config, key):
-        return getattr(runtime_config, key)
-    return None
-
-
-def _build_admin_setting_payload(
-    source: str,
-    setting_meta: dict[str, Any],
-    *,
-    env_values: dict[str, str],
-    config_managed_values: dict[str, Any],
-    site_values: dict[str, Any],
-) -> dict[str, Any]:
-    key = str(setting_meta.get("key") or "").strip()
-    file_value = _get_admin_file_setting_value(
-        source,
-        key,
-        env_values=env_values,
-        config_managed_values=config_managed_values,
-        site_values=site_values,
-    )
-    runtime_value = _get_admin_runtime_setting_value(source, key, site_values=site_values)
-    return {
-        **setting_meta,
-        "value": _format_admin_setting_form_value(setting_meta, file_value),
-        "file_value_display": _format_admin_setting_display_value(setting_meta, file_value, mask_secret=True),
-        "runtime_value_display": _format_admin_setting_display_value(setting_meta, runtime_value, mask_secret=True),
-        "runtime_source_label": _get_admin_runtime_source_label(source, key),
-        "value_in_file": file_value is not None,
-        "runtime_matches_file": runtime_value == file_value,
-    }
-
-
-def _build_admin_settings_source_payload(source: str) -> dict[str, Any]:
-    source = source if source in {"env", "config", "site"} else "env"
-    env_path = get_admin_env_file_path()
-    config_path = get_admin_config_file_path()
-    site_config_path = get_admin_site_config_file_path()
-    env_values = _read_env_file_map(env_path)
-    config_managed_values = _read_admin_managed_config_values(config_path)
-    site_values = load_runtime_site_config_values()
-    groups_payload = []
-    for group in ADMIN_SETTINGS_GROUPS_BY_SOURCE[source]:
-        groups_payload.append({
-            "id": group["id"],
-            "title": group["title"],
-            "description": group.get("description", ""),
-            "source": source,
-            "items": [
-                _build_admin_setting_payload(
-                    source,
-                    item,
-                    env_values=env_values,
-                    config_managed_values=config_managed_values,
-                    site_values=site_values,
-                )
-                for item in group.get("items", [])
-            ],
-        })
-
-    if source == "env":
-        file_meta = {
-            "path": str(env_path),
-            "exists": env_path.exists(),
-            "loaded_files": list(LOADED_ENV_FILES),
-            "override_existing": bool(ENV_LOAD_METADATA.get("override_existing")),
-        }
-    else:
-        if source == "config":
-            file_meta = {
-                "path": str(config_path),
-                "exists": config_path.exists(),
-                "has_runtime_config": bool(runtime_config),
-                "managed_block_keys": sorted(config_managed_values.keys()),
-            }
-        else:
-            file_meta = {
-                "path": str(get_meta_index_db_target()),
-                "exists": True,
-                "storage": "site_config_store",
-                "fallback_path": str(site_config_path),
-                "top_level_keys": sorted(site_values.keys()),
-            }
-
-    return {
-        "file": file_meta,
-        "groups": groups_payload,
-    }
-
-
-def build_admin_config_center_payload() -> dict[str, Any]:
-    return {
-        "meta": {
-            "config_resolution_mode": CONFIG_RESOLUTION_MODE,
-            "restart_hint": "配置会写入 .env / config.py。除少量动态读取项外，大多数改动需要重启服务后完全生效。",
-            "source_meta": {
-                "env": {
-                    "mode_label": CONFIG_RESOLUTION_MODE,
-                    "hint": "配置会写入 .env。除少量动态读取项外，大多数改动需要重启服务后完全生效。",
-                },
-                "config": {
-                    "mode_label": CONFIG_RESOLUTION_MODE,
-                    "hint": "配置会写入 config.py 的托管区块。大多数改动需要重启服务后完全生效。",
-                },
-                "site": {
-                    "mode_label": "共享数据库配置",
-                    "hint": "配置会写入共享数据库，并由 /site-config.js 动态输出。保存后请刷新浏览器页面以应用最新前端配置。",
-                },
-            },
-        },
-        "env": _build_admin_settings_source_payload("env"),
-        "config": _build_admin_settings_source_payload("config"),
-        "site": _build_admin_settings_source_payload("site"),
-    }
-
-
-def save_admin_config_group(source: str, group_id: str, values: Optional[dict[str, Any]]) -> dict[str, Any]:
-    normalized_source = str(source or "").strip().lower()
-    if normalized_source not in {"env", "config", "site"}:
-        normalized_source = "env"
-    group = ADMIN_SETTINGS_GROUP_INDEX.get(normalized_source, {}).get(str(group_id or "").strip())
-    if not group:
-        raise ValueError("未知的配置分组")
-    if not isinstance(values, dict):
-        raise ValueError("values 必须为对象")
-
-    parsed_updates: dict[str, Any] = {}
-    for item in group.get("items", []):
-        key = str(item.get("key") or "").strip()
-        if not key or key not in values:
-            continue
-        parsed_updates[key] = _coerce_admin_request_value(item, values.get(key))
-
-    if not parsed_updates:
-        raise ValueError("至少需要提交一个配置项")
-
-    if normalized_source == "env":
-        target_path = _write_admin_env_updates(parsed_updates)
-        source_label = ".env"
-    elif normalized_source == "config":
-        target_path = _write_admin_config_updates(parsed_updates)
-        source_label = "config.py"
-    else:
-        target_path = _write_admin_site_config_updates(parsed_updates)
-        source_label = "共享数据库 site_config_store"
-
-    return {
-        "success": True,
-        "message": (
-            f"已写入 {source_label}，刷新浏览器页面后生效"
-            if normalized_source == "site"
-            else f"已写入 {source_label}，建议按需重启服务"
-        ),
-        "saved_keys": sorted(parsed_updates.keys()),
-        "source": normalized_source,
-        "group_id": group["id"],
-        "target_path": str(target_path),
-        "config_center": build_admin_config_center_payload(),
-    }
+admin_config_center_service = AdminConfigCenterService(
+    config_resolution_mode=CONFIG_RESOLUTION_MODE,
+    loaded_env_files=LOADED_ENV_FILES,
+    env_load_metadata=ENV_LOAD_METADATA,
+    groups_by_source=ADMIN_SETTINGS_GROUPS_BY_SOURCE,
+    group_index=ADMIN_SETTINGS_GROUP_INDEX,
+    field_index=ADMIN_SETTINGS_FIELD_INDEX,
+    runtime_config=runtime_config,
+    get_admin_env_file_path=get_admin_env_file_path,
+    get_admin_config_file_path=get_admin_config_file_path,
+    get_admin_site_config_file_path=get_admin_site_config_file_path,
+    get_meta_index_db_target=lambda: get_meta_index_db_target(),
+    read_env_file_map=_read_env_file_map,
+    read_admin_managed_config_values=_read_admin_managed_config_values,
+    load_runtime_site_config_values=load_runtime_site_config_values,
+    format_admin_setting_form_value=_format_admin_setting_form_value,
+    format_admin_setting_display_value=_format_admin_setting_display_value,
+    coerce_admin_env_storage_value=_coerce_admin_env_storage_value,
+    coerce_admin_request_value=_coerce_admin_request_value,
+    write_admin_env_updates=_write_admin_env_updates,
+    write_admin_config_updates=_write_admin_config_updates,
+    write_admin_site_config_updates=_write_admin_site_config_updates,
+    runtime_source_label_getter=_get_admin_runtime_source_label,
+    runtime_setting_value_getter=_get_admin_runtime_setting_value,
+)
+build_admin_config_center_payload = admin_config_center_service.build_payload
+save_admin_config_group = admin_config_center_service.save_group
 
 
 AUTH_PHONE_PATTERN = re.compile(r"^1\d{10}$")
@@ -9624,33 +9388,6 @@ def init_license_db() -> None:
         print("🔐 已为 License 库初始化共享签名密钥")
 
 
-def _format_runtime_startup_summary(summary: dict) -> str:
-    phase_items = []
-    for phase in list(summary.get("phases", []) or []):
-        name = str(phase.get("name") or "").strip()
-        elapsed_ms = float(phase.get("elapsed_ms", 0.0) or 0.0)
-        if not name:
-            continue
-        phase_items.append(f"{name}={elapsed_ms:.1f}ms")
-    phase_text = "，".join(phase_items) if phase_items else "无阶段明细"
-    total_ms = float(summary.get("total_ms", 0.0) or 0.0)
-    reason = str(summary.get("reason") or "").strip() or "startup"
-    return f"reason={reason}，total={total_ms:.1f}ms，{phase_text}"
-
-
-def _log_runtime_startup_summary(summary: dict) -> None:
-    if summary.get("initialized"):
-        print(f"启动初始化完成：{_format_runtime_startup_summary(summary)}")
-        return
-    failed_phase = str(summary.get("failed_phase") or "").strip() or "unknown"
-    error_text = str(summary.get("error") or "").strip() or "未知错误"
-    print(
-        "启动初始化失败："
-        + _format_runtime_startup_summary(summary)
-        + f"，failed_phase={failed_phase}，error={error_text}"
-    )
-
-
 def _persist_runtime_startup_snapshot_file(summary: dict) -> None:
     _write_json_atomic(
         get_runtime_startup_snapshot_file(),
@@ -9689,63 +9426,18 @@ def ensure_runtime_startup_initialized(
     reason: str = "startup",
     emit_logs: bool = False,
 ) -> dict:
-    with runtime_startup_lock:
-        if runtime_startup_state.get("initialized") and not force:
-            return copy.deepcopy(runtime_startup_state)
-
-        started_at_iso = datetime.now(timezone.utc).isoformat()
-        started_at = _time.perf_counter()
-        phases: list[dict[str, object]] = []
-        current_phase = ""
-        startup_error: Exception | None = None
-
-        try:
-            for phase_name, phase_func in (
-                ("auth_db", init_auth_db),
-                ("license_db", init_license_db),
-                ("meta_index_schema", ensure_meta_index_schema),
-            ):
-                current_phase = phase_name
-                phase_started_at = _time.perf_counter()
-                phase_func()
-                phases.append(
-                    {
-                        "name": phase_name,
-                        "elapsed_ms": round((_time.perf_counter() - phase_started_at) * 1000.0, 2),
-                    }
-                )
-        except Exception as exc:
-            startup_error = exc
-            summary = {
-                "initialized": False,
-                "reason": str(reason or "startup"),
-                "started_at": started_at_iso,
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "total_ms": round((_time.perf_counter() - started_at) * 1000.0, 2),
-                "phases": phases,
-                "failed_phase": current_phase,
-                "error": str(exc),
-            }
-            runtime_startup_state.update(summary)
-        else:
-            summary = {
-                "initialized": True,
-                "reason": str(reason or "startup"),
-                "started_at": started_at_iso,
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "total_ms": round((_time.perf_counter() - started_at) * 1000.0, 2),
-                "phases": phases,
-                "failed_phase": "",
-                "error": "",
-            }
-            runtime_startup_state.update(summary)
-
-    _persist_runtime_startup_summary(summary)
-    if emit_logs:
-        _log_runtime_startup_summary(summary)
-    if startup_error is not None:
-        raise startup_error
-    return copy.deepcopy(summary)
+    return runtime_startup.ensure(
+        steps=(
+            ("auth_db", init_auth_db),
+            ("license_db", init_license_db),
+            ("meta_index_schema", ensure_meta_index_schema),
+        ),
+        force=force,
+        reason=reason,
+        emit_logs=emit_logs,
+        persist_callback=_persist_runtime_startup_summary,
+        log_callback=log_runtime_startup_summary,
+    )
 
 
 def normalize_phone_number(raw_phone: str) -> str:
@@ -12773,7 +12465,7 @@ def is_license_protected_route(path: str) -> bool:
 
 @app.before_request
 def ensure_runtime_startup_ready_for_request():
-    if runtime_startup_state.get("initialized"):
+    if runtime_startup.is_initialized():
         return None
     ensure_runtime_startup_initialized(reason="first_request_fallback", emit_logs=True)
     return None
@@ -13074,78 +12766,6 @@ def get_presentation_record(report_filename: str) -> Optional[dict]:
     return record if isinstance(record, dict) else None
 
 
-def migrate_presentation_assets_to_object_storage_if_needed(*, force: bool = False) -> dict:
-    global OBJECT_STORAGE_PRESENTATION_MIGRATED
-    summary = {
-        "enabled": bool(is_object_storage_enabled()),
-        "scanned": 0,
-        "uploaded": 0,
-        "already_migrated": bool(OBJECT_STORAGE_PRESENTATION_MIGRATED),
-    }
-    if not is_object_storage_enabled():
-        return summary
-    if OBJECT_STORAGE_PRESENTATION_MIGRATED and not force:
-        return summary
-    available, error_message = ensure_object_storage_sdk_available()
-    if not available:
-        summary["error"] = error_message or "当前环境未安装 boto3，请先安装 boto3"
-        if ENABLE_DEBUG_LOG:
-            print(f"⚠️ 演示文件迁移到对象存储已跳过: {error_message}")
-        return summary
-    with OBJECT_STORAGE_PRESENTATION_MIGRATION_LOCK:
-        if OBJECT_STORAGE_PRESENTATION_MIGRATED and not force:
-            summary["already_migrated"] = True
-            return summary
-        try:
-            with PRESENTATION_MAP_LOCK:
-                with named_file_lock("sidecar", "presentation_map"):
-                    data = load_presentation_map()
-                    mutated = False
-                    for report_name, record in list(data.items()):
-                        if not isinstance(record, dict):
-                            continue
-                        if record.get("object_key"):
-                            continue
-                        summary["scanned"] += 1
-                        path_str = str(record.get("path") or "").strip()
-                        if not path_str:
-                            continue
-                        file_path = Path(path_str)
-                        if not file_path.exists() or not file_path.is_file():
-                            continue
-                        uploaded = upload_file_to_object_storage(
-                            file_path,
-                            object_key=build_object_storage_key(
-                                "presentations",
-                                Path(report_name).stem,
-                                filename=file_path.name,
-                            ),
-                            content_type=str(record.get("content_type") or _guess_content_type(file_path.name)),
-                            metadata={
-                                "report_name": report_name,
-                                "instance_scope_key": get_active_instance_scope_key(),
-                            },
-                        )
-                        record["object_key"] = uploaded["object_key"]
-                        record["bucket"] = uploaded["bucket"]
-                        record["storage_backend"] = uploaded["storage_backend"]
-                        record["content_type"] = uploaded["content_type"]
-                        record["size"] = uploaded["size"]
-                        record["filename"] = str(record.get("filename") or file_path.name)
-                        mutated = True
-                        summary["uploaded"] += 1
-                    if mutated:
-                        save_presentation_map(data)
-        except Exception as exc:
-            summary["error"] = str(exc)
-            if ENABLE_DEBUG_LOG:
-                print(f"⚠️ 演示文件迁移到对象存储失败: {exc}")
-            return summary
-        OBJECT_STORAGE_PRESENTATION_MIGRATED = True
-        summary["already_migrated"] = True
-        return summary
-
-
 def is_presentation_execution_stopped(report_filename: str, execution_id: str = "") -> bool:
     report_filename = normalize_presentation_report_filename(report_filename)
     if not report_filename:
@@ -13328,368 +12948,83 @@ def object_storage_key_exists(object_key: str) -> bool:
         return False
 
 
-def _normalize_ops_archive_relative_path(file_path: Path) -> str:
-    target = Path(file_path).expanduser().resolve()
-    relative = target.relative_to(DATA_DIR.resolve())
-    return str(relative).replace("\\", "/")
+object_storage_history_service = ObjectStorageHistoryService(
+    is_object_storage_enabled=is_object_storage_enabled,
+    ensure_object_storage_sdk_available=ensure_object_storage_sdk_available,
+    debug_enabled=ENABLE_DEBUG_LOG,
+    debug_print=print,
+    debug_log=_safe_log,
+    presentation_map_lock=PRESENTATION_MAP_LOCK,
+    named_file_lock=named_file_lock,
+    load_presentation_map=load_presentation_map,
+    save_presentation_map=save_presentation_map,
+    upload_file_to_object_storage=upload_file_to_object_storage,
+    build_object_storage_key=build_object_storage_key,
+    guess_content_type=_guess_content_type,
+    get_active_instance_scope_key=lambda: get_active_instance_scope_key(),
+    normalize_object_storage_segment=_normalize_object_storage_segment,
+    object_storage_prefix=OBJECT_STORAGE_PREFIX,
+    object_storage_key_exists=object_storage_key_exists,
+    compute_file_sha256=_compute_file_sha256,
+    get_meta_index_connection=get_meta_index_connection,
+    data_dir=DATA_DIR,
+    get_restore_backups_root=get_restore_backups_root,
+    get_session_backups_root=get_session_backups_root,
+    temp_dir=TEMP_DIR,
+    download_object_storage_bytes=download_object_storage_bytes,
+)
+migrate_presentation_assets_to_object_storage_if_needed = (
+    object_storage_history_service.migrate_presentation_assets_to_object_storage_if_needed
+)
+build_ops_archive_object_key = object_storage_history_service.build_ops_archive_object_key
+list_ops_archive_records = object_storage_history_service.list_ops_archive_records
+sync_ops_archive_file_to_object_storage = object_storage_history_service.sync_ops_archive_file_to_object_storage
+sync_ops_archive_directory_to_object_storage = object_storage_history_service.sync_ops_archive_directory_to_object_storage
+sync_materialized_ownership_backup_to_object_storage = (
+    object_storage_history_service.sync_materialized_ownership_backup_to_object_storage
+)
+materialize_ownership_backup_from_object_storage = (
+    object_storage_history_service.materialize_ownership_backup_from_object_storage
+)
+list_archived_ownership_migrations = object_storage_history_service.list_archived_ownership_migrations
+migrate_ops_archives_to_object_storage_if_needed = (
+    object_storage_history_service.migrate_ops_archives_to_object_storage_if_needed
+)
 
-
-def _classify_ops_archive_relative_path(relative_path: str) -> tuple[str, str]:
-    normalized = str(relative_path or "").strip().replace("\\", "/")
-    path_obj = Path(normalized)
-    parts = path_obj.parts
-    if len(parts) >= 3 and parts[0] == "operations" and parts[1] == "ownership-migrations":
-        return "ownership_migration", str(parts[2]).strip()
-    if len(parts) >= 2 and parts[0] == "restore_backups":
-        return "restore_backup", str(parts[1]).strip()
-    if len(parts) >= 2 and parts[0] == "session_backups":
-        return "session_backup", str(parts[1]).strip()
-    if parts and parts[0] == "operations":
-        return "operations", ""
-    return "", ""
-
-
-def build_ops_archive_object_key(relative_path: str) -> str:
-    normalized = str(relative_path or "").strip().replace("\\", "/")
-    path_obj = Path(normalized)
-    scope_key = _normalize_object_storage_segment(get_active_instance_scope_key(), fallback="default")
-    prefix = _normalize_object_storage_segment(OBJECT_STORAGE_PREFIX, fallback="deepvision")
-    parts = [prefix, scope_key, "ops-archives"]
-    for segment in path_obj.parts:
-        normalized_segment = _normalize_object_storage_segment(segment, fallback="")
-        if normalized_segment:
-            parts.append(normalized_segment)
-    return "/".join(parts)
-
-
-def _build_ops_archive_record_payload(row: Any) -> Optional[dict]:
-    if not row:
-        return None
-    return {
-        "archive_id": str(row["archive_id"] or "").strip(),
-        "archive_group": str(row["archive_group"] or "").strip(),
-        "backup_id": str(row["backup_id"] or "").strip(),
-        "relative_path": str(row["relative_path"] or "").strip(),
-        "object_key": str(row["object_key"] or "").strip(),
-        "content_type": str(row["content_type"] or "application/octet-stream"),
-        "file_sha256": str(row["file_sha256"] or "").strip(),
-        "size": _safe_int(row["size"] if "size" in row.keys() else 0, 0),
-        "created_at": str(row["created_at"] or "").strip(),
-        "updated_at": str(row["updated_at"] or "").strip(),
-    }
-
-
-def _load_ops_archive_record_by_relative_path(conn: Any, relative_path: str) -> Optional[dict]:
-    row = conn.execute(
-        """
-        SELECT archive_id, archive_group, backup_id, relative_path, object_key,
-               content_type, file_sha256, size, created_at, updated_at
-        FROM ops_archive_store
-        WHERE relative_path = ?
-        LIMIT 1
-        """,
-        (str(relative_path or "").strip(),),
-    ).fetchone()
-    return _build_ops_archive_record_payload(row)
-
-
-def _upsert_ops_archive_record(
-    conn: Any,
-    *,
-    archive_group: str,
-    backup_id: str,
-    relative_path: str,
-    object_key: str,
-    content_type: str,
-    file_sha256: str,
-    size: int,
-    created_at: str,
-    updated_at: str,
-) -> dict:
-    normalized_relative_path = str(relative_path or "").strip().replace("\\", "/")
-    archive_id = hashlib.sha1(normalized_relative_path.encode("utf-8")).hexdigest()
-    conn.execute(
-        """
-        INSERT INTO ops_archive_store(
-            archive_id, archive_group, backup_id, relative_path, object_key,
-            content_type, file_sha256, size, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(relative_path) DO UPDATE SET
-            archive_group = excluded.archive_group,
-            backup_id = excluded.backup_id,
-            object_key = excluded.object_key,
-            content_type = excluded.content_type,
-            file_sha256 = excluded.file_sha256,
-            size = excluded.size,
-            created_at = excluded.created_at,
-            updated_at = excluded.updated_at
-        """,
-        (
-            archive_id,
-            str(archive_group or "").strip(),
-            str(backup_id or "").strip(),
-            normalized_relative_path,
-            str(object_key or "").strip(),
-            str(content_type or "application/octet-stream"),
-            str(file_sha256 or "").strip(),
-            int(size or 0),
-            str(created_at or "").strip(),
-            str(updated_at or "").strip(),
-        ),
-    )
-    return {
-        "archive_id": archive_id,
-        "archive_group": str(archive_group or "").strip(),
-        "backup_id": str(backup_id or "").strip(),
-        "relative_path": normalized_relative_path,
-        "object_key": str(object_key or "").strip(),
-        "content_type": str(content_type or "application/octet-stream"),
-        "file_sha256": str(file_sha256 or "").strip(),
-        "size": int(size or 0),
-        "created_at": str(created_at or "").strip(),
-        "updated_at": str(updated_at or "").strip(),
-    }
-
-
-def list_ops_archive_records(*, archive_group: str = "", backup_id: str = "") -> list[dict]:
-    with get_meta_index_connection() as conn:
-        clauses = []
-        params: list[Any] = []
-        if archive_group:
-            clauses.append("archive_group = ?")
-            params.append(str(archive_group).strip())
-        if backup_id:
-            clauses.append("backup_id = ?")
-            params.append(str(backup_id).strip())
-        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = conn.execute(
-            f"""
-            SELECT archive_id, archive_group, backup_id, relative_path, object_key,
-                   content_type, file_sha256, size, created_at, updated_at
-            FROM ops_archive_store
-            {where_sql}
-            ORDER BY relative_path ASC
-            """,
-            tuple(params),
-        ).fetchall()
-    return [_build_ops_archive_record_payload(row) for row in rows if row]
-
-
-def sync_ops_archive_file_to_object_storage(file_path: Path, *, relative_path: Optional[str] = None) -> Optional[dict]:
-    if not is_object_storage_enabled():
-        return None
-    target = Path(file_path).expanduser().resolve()
-    if not target.exists() or not target.is_file():
-        return None
-    normalized_relative_path = str(relative_path or _normalize_ops_archive_relative_path(target)).strip().replace("\\", "/")
-    archive_group, backup_id = _classify_ops_archive_relative_path(normalized_relative_path)
-    if not archive_group:
-        return None
-    sha256 = _compute_file_sha256(target)
-    object_key = build_ops_archive_object_key(normalized_relative_path)
-    content_type = _guess_content_type(target.name)
-    stat = target.stat()
-    created_at = datetime.fromtimestamp(stat.st_ctime, timezone.utc).isoformat()
-    updated_at = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
-    with get_meta_index_connection() as conn:
-        existing = _load_ops_archive_record_by_relative_path(conn, normalized_relative_path)
-        if existing and existing.get("file_sha256") == sha256 and object_storage_key_exists(existing.get("object_key") or ""):
-            return existing
-        upload_file_to_object_storage(
-            target,
-            object_key=object_key,
-            content_type=content_type,
-            metadata={
-                "archive-group": archive_group,
-                "backup-id": backup_id,
-                "relative-path": normalized_relative_path,
-                "sha256": sha256,
-            },
-        )
-        return _upsert_ops_archive_record(
-            conn,
-            archive_group=archive_group,
-            backup_id=backup_id,
-            relative_path=normalized_relative_path,
-            object_key=object_key,
-            content_type=content_type,
-            file_sha256=sha256,
-            size=int(stat.st_size),
-            created_at=created_at,
-            updated_at=updated_at,
-        )
-
-
-def _iter_files_recursively(root_dir: Path) -> list[Path]:
-    target_root = Path(root_dir)
-    if not target_root.exists() or not target_root.is_dir():
-        return []
-    files: list[Path] = []
-    for current_root, _dirs, filenames in os.walk(target_root):
-        for filename in filenames:
-            files.append((Path(current_root) / filename).resolve())
-    return files
-
-
-def sync_ops_archive_directory_to_object_storage(root_dir: Path) -> int:
-    synced_count = 0
-    for file_path in _iter_files_recursively(root_dir):
-        try:
-            if sync_ops_archive_file_to_object_storage(file_path):
-                synced_count += 1
-        except Exception as exc:
-            if ENABLE_DEBUG_LOG:
-                _safe_log(f"⚠️ 运维归档上传失败: file={file_path}, error={exc}")
-    return synced_count
-
-
-def sync_materialized_ownership_backup_to_object_storage(backup_dir: Path, backup_id: str) -> int:
-    target = Path(backup_dir).expanduser().resolve()
-    if not target.exists() or not target.is_dir():
-        return 0
-    synced_count = 0
-    canonical_prefix = Path("operations") / "ownership-migrations" / str(backup_id or "").strip()
-    for file_path in _iter_files_recursively(target):
-        relative_inside = file_path.relative_to(target)
-        canonical_relative = str((canonical_prefix / relative_inside).as_posix())
-        try:
-            if sync_ops_archive_file_to_object_storage(file_path, relative_path=canonical_relative):
-                synced_count += 1
-        except Exception as exc:
-            if ENABLE_DEBUG_LOG:
-                _safe_log(f"⚠️ 回滚归档上传失败: file={file_path}, error={exc}")
-    return synced_count
-
-
-def materialize_ownership_backup_from_object_storage(backup_id: str) -> Path:
-    normalized_backup_id = str(backup_id or "").strip()
-    if not normalized_backup_id:
-        raise RuntimeError("backup_id 不能为空")
-    records = list_ops_archive_records(archive_group="ownership_migration", backup_id=normalized_backup_id)
-    if not records:
-        raise RuntimeError(f"对象存储中不存在备份: {normalized_backup_id}")
-    temp_backup_dir = (TEMP_DIR / "ownership-migration-archives" / normalized_backup_id).resolve()
-    if temp_backup_dir.exists():
-        shutil.rmtree(temp_backup_dir, ignore_errors=True)
-    temp_backup_dir.mkdir(parents=True, exist_ok=True)
-    canonical_prefix = Path("operations") / "ownership-migrations" / normalized_backup_id
-    for record in records:
-        relative_path = Path(str(record.get("relative_path") or "").strip())
-        try:
-            relative_inside = relative_path.relative_to(canonical_prefix)
-        except Exception:
-            continue
-        content, _meta = download_object_storage_bytes(str(record.get("object_key") or "").strip())
-        target_path = temp_backup_dir / relative_inside
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_bytes(content)
-    return temp_backup_dir
-
-
-def list_archived_ownership_migrations(limit: int = 50) -> list[dict]:
-    records = list_ops_archive_records(archive_group="ownership_migration")
-    metadata_records = [
-        record for record in records
-        if str(record.get("relative_path") or "").strip().endswith("/metadata.json")
-    ]
-    items: list[dict] = []
-    for record in metadata_records:
-        backup_id = str(record.get("backup_id") or "").strip()
-        if not backup_id:
-            continue
-        try:
-            metadata_bytes, _ = download_object_storage_bytes(str(record.get("object_key") or "").strip())
-            metadata = json.loads(metadata_bytes.decode("utf-8"))
-        except Exception:
-            continue
-        rollback_payload = None
-        rollback_record = next(
-            (
-                candidate for candidate in records
-                if str(candidate.get("backup_id") or "").strip() == backup_id
-                and str(candidate.get("relative_path") or "").strip().endswith("/rollback.json")
-            ),
-            None,
-        )
-        if rollback_record:
-            try:
-                rollback_bytes, _ = download_object_storage_bytes(str(rollback_record.get("object_key") or "").strip())
-                rollback_payload = json.loads(rollback_bytes.decode("utf-8"))
-            except Exception:
-                rollback_payload = None
-        items.append(
-            {
-                "backup_id": backup_id,
-                "backup_dir": "",
-                "generated_at": str(metadata.get("generated_at") or "").strip(),
-                "scope": str(metadata.get("scope") or "").strip(),
-                "mode": str(metadata.get("mode") or "").strip(),
-                "operation_type": str(metadata.get("operation_type") or "ownership_migration").strip(),
-                "kinds": metadata.get("kinds") or [],
-                "target_user": metadata.get("target_user") or {},
-                "source_user": metadata.get("source_user") or {},
-                "identity_type": str(metadata.get("identity_type") or "").strip(),
-                "sessions": metadata.get("sessions") or {},
-                "reports": metadata.get("reports") or {},
-                "custom_scenarios": metadata.get("custom_scenarios") or {},
-                "solution_shares": metadata.get("solution_shares") or {},
-                "licenses": metadata.get("licenses") or {},
-                "db_snapshot": metadata.get("db_snapshot") or {},
-                "rolled_back": bool(rollback_payload),
-                "rolled_back_at": str((rollback_payload or {}).get("rolled_back_at") or "").strip(),
-                "archive_backend": "object_storage",
-            }
-        )
-    items.sort(
-        key=lambda item: (
-            str(item.get("generated_at") or ""),
-            str(item.get("backup_id") or ""),
-        ),
-        reverse=True,
-    )
-    return items[: max(1, int(limit or 50))]
-
-
-def migrate_ops_archives_to_object_storage_if_needed(*, force: bool = False) -> dict:
-    global OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED
-    summary = {
-        "enabled": bool(is_object_storage_enabled()),
-        "roots": [],
-        "uploaded": 0,
-        "already_migrated": bool(OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED),
-    }
-    if not is_object_storage_enabled():
-        return summary
-    if OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED and not force:
-        return summary
-    available, error_message = ensure_object_storage_sdk_available()
-    if not available:
-        summary["error"] = error_message or "当前环境未安装 boto3，请先安装 boto3"
-        if ENABLE_DEBUG_LOG:
-            _safe_log(f"⚠️ 运维归档上传已跳过: {error_message}")
-        return summary
-    with OBJECT_STORAGE_OPS_ARCHIVE_LOCK:
-        if OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED and not force:
-            summary["already_migrated"] = True
-            return summary
-        total_synced = 0
-        for root_dir in (
-            DATA_DIR / "operations",
-            get_restore_backups_root(),
-            get_session_backups_root(),
-        ):
-            synced = sync_ops_archive_directory_to_object_storage(root_dir)
-            summary["roots"].append({
-                "path": str(root_dir),
-                "uploaded": int(synced or 0),
-            })
-            total_synced += synced
-        OBJECT_STORAGE_OPS_ARCHIVE_MIGRATED = True
-        summary["uploaded"] = int(total_synced or 0)
-        summary["already_migrated"] = True
-        if ENABLE_DEBUG_LOG and total_synced > 0:
-            _safe_log(f"✅ 已归档运维备份与回滚产物到对象存储: {total_synced} 个文件")
-        return summary
+admin_ownership_migration_service = AdminOwnershipMigrationService(
+    ownership_service=ownership_admin_service,
+    get_auth_db_path=lambda: AUTH_DB_PATH,
+    get_license_db_path=lambda: LICENSE_DB_PATH,
+    get_sessions_dir=lambda: SESSIONS_DIR,
+    get_reports_dir=lambda: REPORTS_DIR,
+    get_report_owners_file=lambda: REPORT_OWNERS_FILE,
+    get_report_solution_shares_file=lambda: REPORT_SOLUTION_SHARES_FILE,
+    get_custom_scenarios_dir=lambda: Path(
+        getattr(scenario_loader, "custom_dir", DATA_DIR / "scenarios" / "custom")
+    ),
+    get_meta_index_db_target=_get_admin_meta_index_db_target,
+    get_backup_root=get_admin_ownership_backup_root,
+    session_store_getter=lambda: session,
+    preview_session_key=ADMIN_OWNERSHIP_PREVIEW_SESSION_KEY,
+    preview_ttl_seconds=ADMIN_OWNERSHIP_PREVIEW_TTL_SECONDS,
+    is_object_storage_enabled=is_object_storage_enabled,
+    list_archived_ownership_migrations=list_archived_ownership_migrations,
+    materialize_ownership_backup_from_object_storage=materialize_ownership_backup_from_object_storage,
+    sync_ops_archive_directory_to_object_storage=sync_ops_archive_directory_to_object_storage,
+    sync_materialized_ownership_backup_to_object_storage=sync_materialized_ownership_backup_to_object_storage,
+    refresh_runtime_state=_refresh_account_merge_runtime_state,
+    debug_enabled=ENABLE_DEBUG_LOG,
+    debug_log=_safe_log,
+)
+_build_admin_ownership_request_payload = admin_ownership_migration_service.build_request_payload
+_serialize_admin_ownership_request_payload = admin_ownership_migration_service.serialize_request_payload
+_store_admin_ownership_preview = admin_ownership_migration_service.store_preview
+_pop_admin_ownership_preview = admin_ownership_migration_service.pop_preview
+_get_admin_ownership_preview = admin_ownership_migration_service.get_preview
+_audit_admin_ownership = admin_ownership_migration_service.audit_ownership
+_finalize_admin_ownership_apply = admin_ownership_migration_service.finalize_apply
+_list_admin_ownership_migrations = admin_ownership_migration_service.list_migrations
+_rollback_admin_ownership_migration = admin_ownership_migration_service.rollback_migration
 
 
 def update_thinking_status(session_id: str, stage: str, has_search: bool = True):
@@ -46946,59 +46281,6 @@ def get_report_generation_status(session_id):
     return jsonify({"active": False, "processing": False})
 
 
-def _build_admin_ownership_request_payload(data: Optional[dict]) -> dict:
-    payload = data if isinstance(data, dict) else {}
-    kinds = ownership_admin_service.parse_kinds(payload.get("kinds") or "sessions,reports")
-    return {
-        "to_user_id": int(payload["to_user_id"]) if payload.get("to_user_id") not in (None, "") else None,
-        "to_account": str(payload.get("to_account") or "").strip(),
-        "scope": str(payload.get("scope") or "unowned").strip(),
-        "from_user_id": int(payload["from_user_id"]) if payload.get("from_user_id") not in (None, "") else None,
-        "kinds": sorted(list(kinds)),
-        "max_examples": max(1, min(int(payload.get("max_examples") or 20), 50)),
-    }
-
-
-def _serialize_admin_ownership_request_payload(payload: dict) -> str:
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
-
-
-def _store_admin_ownership_preview(payload: dict) -> dict:
-    token = secrets.token_urlsafe(18)
-    target_label = str(payload.get("to_account") or payload.get("to_user_id") or "").strip() or "目标用户"
-    confirm_phrase = f"确认迁移到 {target_label}"
-    session[ADMIN_OWNERSHIP_PREVIEW_SESSION_KEY] = {
-        "token": token,
-        "issued_at": int(_time.time()),
-        "payload": payload,
-        "confirm_phrase": confirm_phrase,
-    }
-    session.modified = True
-    return {
-        "preview_token": token,
-        "confirm_phrase": confirm_phrase,
-        "expires_in_seconds": ADMIN_OWNERSHIP_PREVIEW_TTL_SECONDS,
-    }
-
-
-def _pop_admin_ownership_preview() -> Optional[dict]:
-    preview = session.pop(ADMIN_OWNERSHIP_PREVIEW_SESSION_KEY, None)
-    session.modified = True
-    return preview if isinstance(preview, dict) else None
-
-
-def _get_admin_ownership_preview() -> Optional[dict]:
-    preview = session.get(ADMIN_OWNERSHIP_PREVIEW_SESSION_KEY)
-    if not isinstance(preview, dict):
-        return None
-    issued_at = int(preview.get("issued_at") or 0)
-    if issued_at <= 0 or (int(_time.time()) - issued_at) > ADMIN_OWNERSHIP_PREVIEW_TTL_SECONDS:
-        session.pop(ADMIN_OWNERSHIP_PREVIEW_SESSION_KEY, None)
-        session.modified = True
-        return None
-    return preview
-
-
 @app.route('/api/admin/licenses/batch', methods=['POST'])
 @require_admin
 @require_valid_license
@@ -47314,12 +46596,7 @@ def admin_search_users():
 def admin_audit_ownership():
     data = request.get_json(silent=True) or {}
     try:
-        payload = ownership_admin_service.audit_ownership(
-            auth_db_path=AUTH_DB_PATH,
-            sessions_dir=SESSIONS_DIR,
-            reports_dir=REPORTS_DIR,
-            report_owners_file=REPORT_OWNERS_FILE,
-            meta_index_db_path=_get_admin_meta_index_db_target(),
+        payload = _audit_admin_ownership(
             user_id=int(data["user_id"]) if data.get("user_id") not in (None, "") else None,
             user_account=str(data.get("user_account") or "").strip(),
             kinds=data.get("kinds") or "sessions,reports",
@@ -47400,52 +46677,15 @@ def admin_apply_ownership_migration():
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
 
-    backup_dir = str((summary or {}).get("backup_dir") or "").strip()
-    if backup_dir and is_object_storage_enabled():
-        try:
-            sync_ops_archive_directory_to_object_storage(Path(backup_dir))
-        except Exception as exc:
-            if ENABLE_DEBUG_LOG:
-                _safe_log(f"⚠️ ownership migration 备份归档失败: backup_dir={backup_dir}, error={exc}")
-
-    _pop_admin_ownership_preview()
-    _refresh_account_merge_runtime_state()
-    return jsonify({"success": True, "summary": summary})
+    return jsonify(_finalize_admin_ownership_apply(summary))
 
 
 @app.route('/api/admin/ownership-migrations', methods=['GET'])
 @require_admin
 def admin_list_ownership_migrations():
-    local_items = ownership_admin_service.list_ownership_migrations(
-        get_admin_ownership_backup_root(),
-        limit=request.args.get("limit", 50, type=int),
+    return jsonify(
+        _list_admin_ownership_migrations(limit=request.args.get("limit", 50, type=int))
     )
-    items_by_backup_id = {
-        str(item.get("backup_id") or "").strip(): item
-        for item in local_items
-        if str(item.get("backup_id") or "").strip()
-    }
-    if is_object_storage_enabled():
-        try:
-            archived_items = list_archived_ownership_migrations(limit=request.args.get("limit", 50, type=int))
-            for item in archived_items:
-                backup_id = str(item.get("backup_id") or "").strip()
-                if backup_id and backup_id not in items_by_backup_id:
-                    items_by_backup_id[backup_id] = item
-        except Exception as exc:
-            if ENABLE_DEBUG_LOG:
-                _safe_log(f"⚠️ 读取对象存储 ownership migration 历史失败: {exc}")
-    items = list(items_by_backup_id.values())
-    items.sort(
-        key=lambda item: (
-            str(item.get("generated_at") or ""),
-            str(item.get("backup_id") or ""),
-        ),
-        reverse=True,
-    )
-    limit = max(1, int(request.args.get("limit", 50, type=int) or 50))
-    items = items[:limit]
-    return jsonify({"items": items, "count": len(items)})
 
 
 @app.route('/api/admin/ownership-migrations/rollback', methods=['POST'])
@@ -47455,42 +46695,11 @@ def admin_rollback_ownership_migration():
     backup_id = str(data.get("backup_id") or "").strip()
     if not backup_id:
         return jsonify({"error": "backup_id 不能为空"}), 400
-    rollback_backup_dir = None
-    local_backup_dir = (get_admin_ownership_backup_root() / backup_id).resolve()
-    if local_backup_dir.exists() and local_backup_dir.is_dir():
-        rollback_backup_dir = local_backup_dir
-    elif is_object_storage_enabled():
-        try:
-            rollback_backup_dir = materialize_ownership_backup_from_object_storage(backup_id)
-        except Exception as exc:
-            return jsonify({"error": str(exc)}), 400
     try:
-        payload = ownership_admin_service.rollback_ownership_migration(
-            backup_root=get_admin_ownership_backup_root(),
-            sessions_dir=SESSIONS_DIR,
-            reports_dir=REPORTS_DIR,
-            report_owners_file=REPORT_OWNERS_FILE,
-            auth_db_path=AUTH_DB_PATH,
-            license_db_path=LICENSE_DB_PATH,
-            meta_index_db_path=_get_admin_meta_index_db_target(),
-            custom_scenarios_dir=Path(getattr(scenario_loader, "custom_dir", DATA_DIR / "scenarios" / "custom")),
-            report_solution_shares_file=REPORT_SOLUTION_SHARES_FILE,
-            backup_id=None if rollback_backup_dir is not None else backup_id,
-            backup_dir=rollback_backup_dir,
-        )
+        payload = _rollback_admin_ownership_migration(backup_id=backup_id)
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
-    if rollback_backup_dir is not None and is_object_storage_enabled():
-        try:
-            if rollback_backup_dir == local_backup_dir:
-                sync_ops_archive_directory_to_object_storage(rollback_backup_dir)
-            else:
-                sync_materialized_ownership_backup_to_object_storage(rollback_backup_dir, backup_id)
-        except Exception as exc:
-            if ENABLE_DEBUG_LOG:
-                _safe_log(f"⚠️ ownership migration 回滚结果归档失败: backup_id={backup_id}, error={exc}")
-    _refresh_account_merge_runtime_state()
-    return jsonify({"success": True, **payload})
+    return jsonify(payload)
 
 
 @app.route('/api/admin/config-center', methods=['GET'])

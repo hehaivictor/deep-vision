@@ -45,7 +45,7 @@
 
 - 配置与部署边界：先读 [docs/instance-scope.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/instance-scope.md)
 - 迁移顺序与执行命令：先读 [docs/full-data-migration-runbook.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/full-data-migration-runbook.md)
-- 导入参数细节：补读 [docs/external-local-data-cloud-import-guide.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/external-local-data-cloud-import-guide.md)
+- 迁移类型快速判断：补读 [docs/external-local-data-cloud-import-guide.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/external-local-data-cloud-import-guide.md)
 
 ## 常见失误
 

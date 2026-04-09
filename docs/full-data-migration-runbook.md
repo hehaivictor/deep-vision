@@ -207,7 +207,7 @@ export DEEPVISION_ENV_FILE="web/.env.cloud"
 
 ## 5. 第一步：业务迁移
 
-详细导入参数说明可参考：
+如果你只是想先判断自己属于哪类迁移，可参考：
 
 - [docs/external-local-data-cloud-import-guide.md](./external-local-data-cloud-import-guide.md)
 
