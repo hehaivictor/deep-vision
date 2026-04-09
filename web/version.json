@@ -1,7 +1,18 @@
 {
-  "version": "8.1.1",
-  "releaseDate": "2026-04-08",
+  "version": "8.1.2",
+  "releaseDate": "2026-04-09",
   "changelog": [
+    {
+      "version": "8.1.2",
+      "date": "2026-04-09",
+      "type": "patch",
+      "title": "补充 graphify 相关仓库约定",
+      "changes": [
+        "配置：新增 .graphifyignore，排除缓存、构建产物与 graphify 输出目录",
+        "文档：在 AGENTS.md 中补充 graphify 图谱读取与更新约定",
+        "忽略规则：在 .gitignore 中加入 graphify-out/，避免生成物进入版本库"
+      ]
+    },
     {
       "version": "8.1.1",
       "date": "2026-04-08",
