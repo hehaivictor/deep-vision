@@ -36,6 +36,8 @@ from scripts import agent_static_guardrails
 from scripts import agent_artifacts
 from scripts import agent_observe
 from scripts import agent_profiles
+from scripts import agent_plans
+from scripts import agent_contracts
 from scripts import agent_workflow
 from scripts.agent_test_runner import SuiteExecution
 from scripts.agent_test_runner import SuiteCase
@@ -527,12 +529,19 @@ def build_workflow_stage(
         continue_on_failure=continue_on_failure,
     )
     workflow = dict(workflow_payload.get("workflow") or {})
+    contract = workflow_payload.get("contract") if isinstance(workflow_payload.get("contract"), dict) else None
     governance = dict(workflow_payload.get("governance") or {}) if isinstance(workflow_payload.get("governance"), dict) else {}
     precondition_results = [item for item in list(workflow_payload.get("precondition_results", []) or []) if isinstance(item, dict)]
     step_results = [item for item in list(workflow_payload.get("step_results", []) or []) if isinstance(item, dict)]
     highlights: list[str] = []
     if workflow.get("missing_vars"):
         highlights.append("缺少 task 变量: " + ", ".join(list(workflow.get("missing_vars", []) or [])))
+    if contract:
+        highlights.append(
+            "Sprint Contract: "
+            f"{str(contract.get('title') or contract.get('name') or '-').strip()} "
+            f"source={str(contract.get('source_file') or '-').strip() or '-'}"
+        )
     if governance.get("fields"):
         missing_governance = [str(item).strip() for item in list(governance.get("missing_fields", []) or []) if str(item).strip()]
         present_governance = [
@@ -569,6 +578,8 @@ def build_workflow_stage(
         f"mode={workflow['workflow_mode']} execute={execute_mode} "
         f"preconditions={len(precondition_results)} steps={len(list(workflow.get('steps', []) or []))}"
     )
+    if contract:
+        detail += f" contract={str(contract.get('name') or '-').strip() or '-'}"
     if governance.get("fields"):
         detail += (
             f" governance={len([item for item in list(governance.get('fields', []) or []) if isinstance(item, dict) and str(item.get('value') or '').strip()])}"
@@ -637,6 +648,8 @@ def main(argv: list[str] | None = None) -> int:
 
     task_payload = None
     if task_profile:
+        task_contract = agent_contracts.get_contract_for_profile(task_profile)
+        task_plan = agent_plans.get_plan_for_profile(task_profile)
         task_payload = {
             "name": task_profile["name"],
             "description": task_profile.get("description", ""),
@@ -644,6 +657,8 @@ def main(argv: list[str] | None = None) -> int:
             "workflow_mode": task_profile.get("workflow", {}).get("mode", "preview_first"),
             "docs": list(task_profile.get("docs", []) or []),
             "task_vars": task_vars,
+            "contract": task_contract,
+            "plan": task_plan,
         }
 
     def finalize() -> int:

@@ -9,6 +9,27 @@
   "docs": [
     "docs/agent/report-solution.md"
   ],
+  "planner": {
+    "summary": "先把报告生成、方案页 payload、公开分享边界和旧报告 fallback 的影响面收口成结构化计划，再进入专项回归与 workflow 预演。",
+    "scope_focus": [
+      "先确认问题在报告生成、方案页 payload、分享边界还是旧报告 fallback",
+      "优先围绕最终快照、公开只读分享与旧报告兼容链路做范围界定",
+      "先定义要验证的用户可见结果，不在规划阶段锁死底层实现方案"
+    ],
+    "acceptance_focus": [
+      "方案页继续消费已绑定报告的最终快照，不回退成不受控的旧结构",
+      "公开分享保持匿名只读，owner 校验和 token 边界不被削弱",
+      "旧报告 fallback 仍可用，但不引入新的内部实现词或 payload 泄露"
+    ],
+    "non_goals": [
+      "不要在本次计划里重写完整访谈链路或无关管理后台逻辑",
+      "不要在没有证据前假定是前端渲染问题或 AI 输出问题"
+    ],
+    "risks": [
+      "方案页标题、卡片和指标文案存在后处理逻辑，测试应优先校验稳定语义而不是逐字文案",
+      "公开分享链路同时涉及 owner、token 与旧报告兼容，局部修复容易破坏其他边界"
+    ]
+  },
   "playbook": {
     "output": "docs/agent/playbooks/report-debug.md",
     "title": "报告与方案页问题排查",

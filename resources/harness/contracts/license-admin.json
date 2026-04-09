@@ -1,0 +1,26 @@
+{
+  "name": "license-admin",
+  "title": "License 管理 Sprint Contract",
+  "task": "license-admin",
+  "summary": "License 管理任务只有在管理员会话、当前状态读取、专项回归和治理字段都准备完毕后，才允许进入批量写操作决策。",
+  "docs": [
+    "docs/agent/admin-ops.md",
+    "docs/agent/playbooks/license-admin.md"
+  ],
+  "done_when": [
+    "已确认 enforcement 状态、活跃批次和当前管理员会话边界",
+    "专项回归证明管理员 License 路由、批量动作和 bootstrap 首批 License 仍然可用",
+    "正式写操作前，latest artifact、治理字段和目标范围已记录完整"
+  ],
+  "hard_failures": [
+    "管理员 License 路由被普通管理员会话绕过",
+    "批量生成、延期、撤销或 enforcement 变更缺少治理字段或回滚入口",
+    "bootstrap 首批种子 License 或批量动作专项回归失败"
+  ],
+  "evidence_required": [
+    "artifacts/harness-runs/latest.json",
+    "workflow.json",
+    "guardrails.json",
+    "License 管理专项回归输出"
+  ]
+}

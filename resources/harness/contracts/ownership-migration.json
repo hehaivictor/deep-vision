@@ -1,0 +1,27 @@
+{
+  "name": "ownership-migration",
+  "title": "归属迁移 Sprint Contract",
+  "task": "ownership-migration",
+  "summary": "归属迁移只能沿着审计、preview、专项验证、治理记录和备份回滚链路推进，不能直接跳过 dry-run 与证据收集。",
+  "docs": [
+    "docs/agent/migration.md",
+    "docs/agent/admin-ops.md",
+    "docs/agent/playbooks/migration-preview.md"
+  ],
+  "done_when": [
+    "目标账号、scope、kind 和迁移数量已通过审计与 preview 核实",
+    "专项回归证明管理员权限、preview/apply/rollback 和 owner 边界未被破坏",
+    "正式执行前，确认词、治理字段、backup_dir 和回滚入口均已准备"
+  ],
+  "hard_failures": [
+    "在没有 preview 证据的情况下直接进入 apply",
+    "迁移执行缺少治理字段、确认词或真实备份目录",
+    "归属迁移专项回归或管理员权限边界回归失败"
+  ],
+  "evidence_required": [
+    "artifacts/harness-runs/latest.json",
+    "workflow.json",
+    "artifacts/harness-runs/ownership-migration-preview.json",
+    "data/operations/ownership-migrations/<backup-id>/metadata.json"
+  ]
+}

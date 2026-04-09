@@ -10,6 +10,7 @@
   "budgets": {
     "max_duration_ms": 180000
   },
+  "contract": "license-admin",
   "executor": {
     "type": "workflow",
     "task": "license-admin",

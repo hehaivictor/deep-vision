@@ -9,13 +9,17 @@ from unittest.mock import patch
 
 from scripts import agent_doctor
 from scripts import agent_browser_smoke
+from scripts import agent_calibration
 from scripts import agent_ci_summary
+from scripts import agent_contracts
 from scripts import agent_eval
 from scripts import agent_guardrails
 from scripts import agent_harness
 from scripts import agent_history
 from scripts import agent_observe
 from scripts import agent_playbook_sync
+from scripts import agent_planner
+from scripts import agent_plans
 from scripts import agent_profiles
 from scripts import agent_scenario_scaffold
 from scripts import agent_smoke
@@ -674,7 +678,25 @@ class ComprehensiveScriptTests(unittest.TestCase):
         profile = agent_profiles.get_task_profile("ownership-migration")
         self.assertEqual("high", profile["risk_level"])
         self.assertEqual("extended", profile["guardrails_suite"])
+        self.assertEqual("ownership-migration", profile["contract"])
         self.assertTrue(profile["workflow"]["steps"])
+
+    def test_agent_contracts_load_expected_high_risk_contracts(self):
+        contracts = agent_contracts.load_contracts()
+        self.assertIn("license-admin", contracts)
+        self.assertIn("ownership-migration", contracts)
+        self.assertIn("done_when", contracts["license-admin"])
+        self.assertIn("evidence_required", contracts["ownership-migration"])
+        self.assertTrue(contracts["license-admin"]["source_file"].endswith("resources/harness/contracts/license-admin.json"))
+
+    def test_agent_calibration_loads_report_solution_wording_sample(self):
+        samples = agent_calibration.load_calibration_samples()
+        sample_names = {item["name"] for item in samples}
+        self.assertIn("report-solution-wording-drift", sample_names)
+        target = next(item for item in samples if item["name"] == "report-solution-wording-drift")
+        self.assertEqual("WARN", target["expected_decision"])
+        self.assertIn("report-solution-preview", target["applies_to"]["scenarios"])
+        self.assertTrue(target["source_file"].endswith("tests/harness_calibration/report-solution-wording-drift.json"))
 
     def test_agent_eval_loads_expected_repo_scenarios(self):
         scenarios = agent_eval.load_scenarios()
@@ -722,9 +744,19 @@ class ComprehensiveScriptTests(unittest.TestCase):
         workflow_target = next(item for item in scenarios if item.name == "report-solution-preview")
         self.assertEqual("workflow", workflow_target.executor)
         self.assertEqual("report-solution", workflow_target.executor_config["task"])
+        self.assertIsNotNone(workflow_target.plan)
+        self.assertEqual("report-solution", workflow_target.plan["task"])
+        self.assertTrue(any(sample["name"] == "report-solution-wording-drift" for sample in workflow_target.calibration_samples))
         license_admin_target = next(item for item in scenarios if item.name == "license-admin-preview")
         self.assertEqual("workflow", license_admin_target.executor)
         self.assertEqual("license-admin", license_admin_target.executor_config["task"])
+        self.assertIsNotNone(license_admin_target.contract)
+        self.assertEqual("license-admin", license_admin_target.contract["name"])
+        self.assertIsNotNone(license_admin_target.plan)
+        self.assertEqual("license-admin", license_admin_target.plan["task"])
+        governance_target = next(item for item in scenarios if item.name == "ownership-migration-governance")
+        self.assertIsNotNone(governance_target.contract)
+        self.assertEqual("ownership-migration", governance_target.contract["name"])
         env_target = next(item for item in scenarios if item.name == "env-overlay-resolution")
         self.assertEqual("ops", env_target.category)
         self.assertTrue(
@@ -980,15 +1012,15 @@ class ComprehensiveScriptTests(unittest.TestCase):
 
     def test_agent_eval_reports_flaky_scenarios_and_writes_artifacts(self):
         scenario_root = self.sandbox_root / "eval-scenarios"
-        scenario_dir = scenario_root / "ops"
+        scenario_dir = scenario_root / "workflow"
         scenario_dir.mkdir(parents=True, exist_ok=True)
-        (scenario_dir / "eval-smoke.json").write_text(
+        (scenario_dir / "report-solution-preview.json").write_text(
             json.dumps(
                 {
-                    "name": "eval-smoke",
-                    "category": "ops",
-                    "description": "验证 evaluator 聚合输出",
-                    "tags": ["nightly", "ops"],
+                    "name": "report-solution-preview",
+                    "category": "workflow",
+                    "description": "验证 evaluator 聚合输出与校准样本引用",
+                    "tags": ["nightly", "report", "workflow"],
                     "budgets": {"max_duration_ms": 5000},
                     "cases": [
                         {
@@ -1029,11 +1061,13 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertEqual(0, exit_code)
         self.assertEqual("DEGRADED", payload["overall"])
         self.assertEqual(1, payload["summary"]["FLAKY"])
-        self.assertEqual("eval-smoke", payload["results"][0]["name"])
+        self.assertEqual("report-solution-preview", payload["results"][0]["name"])
+        self.assertTrue(payload["results"][0]["calibration_samples"])
+        self.assertEqual("report-solution-wording-drift", payload["results"][0]["calibration_samples"][0]["name"])
         self.assertEqual("tests.fake.Class.test_case", payload["failure_hotspots"][0]["test_id"])
         self.assertIsNotNone(artifact_paths)
         self.assertTrue(Path(artifact_paths["run_dir"]).exists())
-        self.assertTrue((Path(artifact_paths["run_dir"]) / "eval-smoke.json").exists())
+        self.assertTrue((Path(artifact_paths["run_dir"]) / "report-solution-preview.json").exists())
         self.assertTrue((Path(artifact_paths["run_dir"]) / "progress.md").exists())
         self.assertTrue((Path(artifact_paths["run_dir"]) / "failure-summary.md").exists())
         self.assertTrue((Path(artifact_paths["run_dir"]) / "handoff.json").exists())
@@ -1042,25 +1076,29 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertTrue((Path(artifact_paths["base_dir"]) / "latest-handoff.json").exists())
         progress_md = (Path(artifact_paths["run_dir"]) / "progress.md").read_text(encoding="utf-8")
         self.assertIn("Evaluator Progress", progress_md)
-        self.assertIn("`ops/eval-smoke`: FLAKY", progress_md)
+        self.assertIn("`workflow/report-solution-preview`: FLAKY", progress_md)
+        self.assertIn("calibration=1", progress_md)
         failure_summary_md = (Path(artifact_paths["run_dir"]) / "failure-summary.md").read_text(encoding="utf-8")
         self.assertIn("Evaluator Failure Summary", failure_summary_md)
         self.assertIn("tests.fake.Class.test_case", failure_summary_md)
+        self.assertIn("方案页文案漂移应按语义校验，不按逐字文案误判", failure_summary_md)
         self.assertIn("python3 scripts/agent_scenario_scaffold.py --source eval --run-dir", failure_summary_md)
-        self.assertIn("--category ops", failure_summary_md)
+        self.assertIn("--category workflow", failure_summary_md)
         self.assertIn("--tag incident", failure_summary_md)
-        self.assertIn("--output tests/harness_scenarios/ops/", failure_summary_md)
+        self.assertIn("--output tests/harness_scenarios/workflow/", failure_summary_md)
         handoff_payload = json.loads((Path(artifact_paths["run_dir"]) / "handoff.json").read_text(encoding="utf-8"))
         self.assertEqual("evaluator", handoff_payload["kind"])
-        self.assertTrue(any("eval-smoke" in item for item in handoff_payload["todo"]))
-        self.assertIn("python3 scripts/agent_eval.py --scenario eval-smoke --repeat 2", handoff_payload["resume_commands"])
+        self.assertTrue(any("report-solution-preview" in item for item in handoff_payload["todo"]))
+        self.assertIn("python3 scripts/agent_eval.py --scenario report-solution-preview --repeat 2", handoff_payload["resume_commands"])
+        self.assertTrue(any("tests/harness_calibration/report-solution-wording-drift.json" == item for item in handoff_payload["docs"]))
+        self.assertEqual("report-solution-wording-drift", handoff_payload["calibration_samples"][0]["name"])
         self.assertTrue(
             any(
                 item.startswith("python3 scripts/agent_scenario_scaffold.py --source eval --run-dir ")
                 for item in handoff_payload["resume_commands"]
             )
         )
-        self.assertEqual("ops", handoff_payload["scaffold_recommendation"]["category"])
+        self.assertEqual("workflow", handoff_payload["scaffold_recommendation"]["category"])
         self.assertEqual(5000, handoff_payload["scaffold_recommendation"]["budget_ms"])
         latest_payload = json.loads((Path(artifact_paths["base_dir"]) / "latest.json").read_text(encoding="utf-8"))
         self.assertEqual(str(Path(artifact_paths["run_dir"]) / "handoff.json"), latest_payload["handoff_file"])
@@ -1071,6 +1109,69 @@ class ComprehensiveScriptTests(unittest.TestCase):
             exit_code = agent_playbook_sync.main(["--check"])
         self.assertEqual(0, exit_code)
         self.assertIn("task-backed playbook 均已同步", stdout.getvalue())
+
+    def test_agent_workflow_attaches_contract_for_high_risk_profile(self):
+        workflow_root = self.sandbox_root / "workflow-contract-license-admin"
+        (workflow_root / "web").mkdir(parents=True, exist_ok=True)
+        (workflow_root / "web" / ".env.local").write_text("ADMIN_PHONE_NUMBERS=13900000000\n", encoding="utf-8")
+        profile = agent_profiles.get_task_profile("license-admin")
+
+        payload, exit_code = agent_workflow.run_task_workflow(
+            profile=profile,
+            task_vars={},
+            allow_apply=False,
+            execute_mode="plan",
+            root_dir=workflow_root,
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual("license-admin", payload["contract"]["name"])
+        self.assertIn("done_when", payload["contract"])
+        self.assertTrue(payload["contract"]["source_file"].endswith("resources/harness/contracts/license-admin.json"))
+        self.assertEqual("license-admin", payload["plan"]["task"])
+        self.assertIn("python3 scripts/agent_planner.py --task license-admin", payload["plan"]["generate_command"])
+
+    def test_agent_planner_writes_markdown_and_json_artifacts(self):
+        planner_dir = self.sandbox_root / "planner-output"
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            exit_code = agent_planner.main(
+                [
+                    "--task",
+                    "report-solution",
+                    "--goal",
+                    "修复方案页分享异常并保留旧报告兼容",
+                    "--context-line",
+                    "用户反馈公开分享页偶发空白",
+                    "--context-line",
+                    "需要先确认是 payload 回退还是分享边界问题",
+                    "--plan-name",
+                    "report-solution-share-fix",
+                    "--artifact-dir",
+                    str(planner_dir),
+                ]
+            )
+
+        self.assertEqual(0, exit_code)
+        markdown_path = planner_dir / "report-solution-share-fix.md"
+        json_path = planner_dir / "report-solution-share-fix.json"
+        pointer_path = ROOT_DIR / "artifacts" / "planner" / "by-task" / "report-solution" / "latest.json"
+        self.assertTrue(markdown_path.exists())
+        self.assertTrue(json_path.exists())
+        self.assertTrue(pointer_path.exists())
+        markdown = markdown_path.read_text(encoding="utf-8")
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        self.assertIn("Planner Artifact", markdown)
+        self.assertIn("修复方案页分享异常并保留旧报告兼容", markdown)
+        self.assertIn("方案页继续消费已绑定报告的最终快照", markdown)
+        self.assertEqual("planner", payload["kind"])
+        self.assertEqual("report-solution", payload["task"])
+        self.assertEqual("report-solution", pointer["task"])
+        self.assertEqual(str(markdown_path.resolve()), pointer["markdown_file"])
+        self.assertEqual(str(json_path.resolve()), pointer["json_file"])
+        self.assertIn("公开分享保持匿名只读", "\n".join(payload["acceptance_focus"]))
+        self.assertIn("[WRITE]", stdout.getvalue())
 
     def test_agent_eval_single_case_pass_does_not_emit_false_hotspot(self):
         scenario_root = self.sandbox_root / "eval-scenarios-pass"
@@ -1776,6 +1877,11 @@ class ComprehensiveScriptTests(unittest.TestCase):
                     "def require_valid_license(func):",
                     "    return func",
                     "",
+                    "@app.route('/api/admin/config-center', methods=['GET'])",
+                    "@require_admin",
+                    "def admin_get_config_center():",
+                    "    return jsonify({'groups': []})",
+                    "",
                     "@app.route('/api/admin/config-center/save', methods=['POST'])",
                     "def admin_save_config_center_group():",
                     "    return jsonify({'ok': True})",
@@ -1836,6 +1942,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertEqual("FAIL", result_map["solution_view_guard"]["status"])
         self.assertEqual("FAIL", result_map["solution_share_guard"]["status"])
         self.assertEqual("FAIL", result_map["public_solution_readonly"]["status"])
+        self.assertEqual("FAIL", result_map["config_center_routes_delegate_helpers"]["status"])
         self.assertEqual("FAIL", result_map["ownership_preview_dry_run"]["status"])
         self.assertEqual("FAIL", result_map["ownership_apply_confirmation"]["status"])
         self.assertEqual("FAIL", result_map["ownership_rollback_requires_backup"]["status"])
@@ -1844,14 +1951,15 @@ class ComprehensiveScriptTests(unittest.TestCase):
         payload, exit_code = agent_static_guardrails.run_static_guardrails()
         self.assertEqual(0, exit_code)
         self.assertEqual("READY", payload["overall"])
-        self.assertGreaterEqual(payload["summary"]["PASS"], 8)
+        self.assertGreaterEqual(payload["summary"]["PASS"], 9)
 
     def test_agent_harness_static_guardrails_stage_uses_static_payload(self):
         fake_payload = {
             "overall": "READY",
-            "summary": {"PASS": 8, "FAIL": 0},
+            "summary": {"PASS": 9, "FAIL": 0},
             "results": [
                 {"name": "admin_routes_require_admin", "status": "PASS", "detail": "checked=24 routes missing=0", "highlights": ["所有高风险管理/运维路由都带 require_admin。"]},
+                {"name": "config_center_routes_delegate_helpers", "status": "PASS", "detail": "get=admin_get_config_center save=admin_save_config_center_group", "highlights": ["配置中心路由已委托 build_admin_config_center_payload/save_admin_config_group，未在路由层直接写配置文件。"]},
                 {"name": "solution_view_guard", "status": "PASS", "detail": "function=get_report_solution", "highlights": ["已检测到登录、能力校验和 owner 约束。"]},
             ],
         }
@@ -1859,7 +1967,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
             execution = agent_harness.run_static_guardrails_stage()
         self.assertEqual("static_guardrails", execution.result.name)
         self.assertEqual("PASS", execution.result.status)
-        self.assertIn("rules=8", execution.result.detail)
+        self.assertIn("rules=9", execution.result.detail)
         self.assertTrue(any("require_admin" in line for line in execution.result.highlights))
 
     def test_agent_browser_smoke_missing_dependency_returns_fail_payload(self):
@@ -2574,6 +2682,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertIn("governance=operator=ops-bot approver=alice ticket=OPS-42", ready_payload["step_results"][1]["detail"])
 
     def test_agent_artifacts_handoff_includes_workflow_governance(self):
+        plan_payload = agent_plans.get_plan("ownership-migration")
         summary_payload = {
             "overall": "READY_WITH_WARNINGS",
             "task": {
@@ -2581,6 +2690,8 @@ class ComprehensiveScriptTests(unittest.TestCase):
                 "risk_level": "high",
                 "workflow_mode": "preview_first",
                 "docs": ["docs/agent/migration.md"],
+                "plan": plan_payload,
+                "contract": agent_contracts.get_contract("ownership-migration"),
             },
             "results": [
                 {
@@ -2593,6 +2704,8 @@ class ComprehensiveScriptTests(unittest.TestCase):
             ],
         }
         workflow_payload = {
+            "plan": plan_payload,
+            "contract": agent_contracts.get_contract("ownership-migration"),
             "workflow": {
                 "docs": ["docs/agent/admin-ops.md"],
                 "missing_vars": [],
@@ -2664,8 +2777,13 @@ class ComprehensiveScriptTests(unittest.TestCase):
             base_path=base_dir,
         )
         self.assertTrue(handoff["governance"]["ready"])
+        self.assertEqual("ownership-migration", handoff["plan"]["task"])
+        self.assertEqual("ownership-migration", handoff["contract"]["name"])
+        self.assertTrue(any("docs/agent/plans/README.md" == item for item in handoff["docs"]))
+        self.assertTrue(any("resources/harness/contracts/ownership-migration.json" == item for item in handoff["docs"]))
         self.assertEqual("OPS-42", handoff["governance"]["values"]["ticket"])
         self.assertTrue(any("治理记录已准备" in item for item in handoff["next_steps"]))
+        self.assertTrue(any("python3 scripts/agent_planner.py --task ownership-migration" in item for item in handoff["resume_commands"]))
 
     def test_agent_workflow_fails_when_declared_artifact_missing(self):
         workflow_root = self.sandbox_root / "workflow-artifact-missing"
@@ -2983,6 +3101,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
             ["python3", "scripts/agent_history.py", "--help"],
             ["python3", "scripts/agent_observe.py", "--help"],
             ["python3", "scripts/agent_playbook_sync.py", "--help"],
+            ["python3", "scripts/agent_planner.py", "--help"],
             ["python3", "scripts/agent_scenario_scaffold.py", "--help"],
             ["python3", "scripts/agent_smoke.py", "--help"],
             ["python3", "scripts/agent_static_guardrails.py", "--help"],
@@ -3066,6 +3185,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertEqual(static_listed.returncode, 0)
         self.assertIn("admin_routes_require_admin", static_listed.stdout)
         self.assertIn("public_solution_readonly", static_listed.stdout)
+        self.assertIn("config_center_routes_delegate_helpers", static_listed.stdout)
 
         harness_observe_listed = subprocess.run(
             ["python3", "scripts/agent_harness.py", "--observe", "--list-stages"],

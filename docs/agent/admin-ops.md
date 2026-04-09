@@ -31,6 +31,7 @@
 - 运行时开关与批量操作要有明确边界，不能用前端显示配置代替真实服务端权限判断。
 - 归属迁移、批量撤销、批量延期等操作默认应可 preview、可审计、可回滚。
 - `mock` 短信、固定测试码、演示管理员手机号这类配置只适合调试或演示环境。
+- 配置中心路由只负责参数收口与 helper 委托，不要在 `/api/admin/config-center*` 路由层直接拼装配置源或写 `.env / config.py / site-config.js`。
 
 ## 推荐验证
 
@@ -47,6 +48,7 @@ python3 scripts/loadtest_list_endpoints.py --base-url http://127.0.0.1:5001
 
 - 归属迁移优先 `list-users`、`audit`、`migrate` 的 dry-run，再决定是否 `--apply`。
 - 配置中心写入前，先确认目标是 `.env`、`config.py` 还是 `site-config.js`，不要混淆层次。
+- 调整配置中心接口时，优先复用 `build_admin_config_center_payload()` 与 `save_admin_config_group()`，不要把文件写入逻辑重新塞回 Flask 路由。
 - 管理后台相关变更如果影响部署行为，务必同时检查 [README.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/README.md) 和对应 runbook 是否需要更新。
 
 ## 常见失误

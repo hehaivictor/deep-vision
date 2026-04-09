@@ -33,6 +33,8 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from scripts import agent_profiles
+from scripts import agent_plans
+from scripts import agent_contracts
 from scripts import agent_doctor
 from scripts import agent_browser_smoke
 from scripts import admin_ownership_service
@@ -115,6 +117,26 @@ def determine_overall(
     if execute_mode == "plan":
         return "PLANNED"
     return "READY"
+
+
+def _contract_summary(contract: dict[str, Any] | None) -> str:
+    if not isinstance(contract, dict):
+        return ""
+    done_when = [str(item).strip() for item in list(contract.get("done_when", []) or []) if str(item).strip()]
+    evidence_required = [str(item).strip() for item in list(contract.get("evidence_required", []) or []) if str(item).strip()]
+    return (
+        f"{str(contract.get('title') or contract.get('name') or '').strip() or '-'} "
+        f"done_when={len(done_when)} evidence={len(evidence_required)}"
+    ).strip()
+
+
+def _plan_summary(plan: dict[str, Any] | None) -> str:
+    if not isinstance(plan, dict):
+        return ""
+    title = str(plan.get("title") or plan.get("task") or "").strip() or "-"
+    status = str(plan.get("status") or "").strip() or "recommended"
+    source = str(plan.get("source_file") or "-").strip() or "-"
+    return f"{title} status={status} source={source}".strip()
 
 
 def _run_command(command: str, *, root_dir: Path) -> dict[str, Any]:
@@ -584,6 +606,8 @@ def run_task_workflow(
     continue_on_failure: bool = False,
     root_dir: Path = ROOT_DIR,
 ) -> tuple[dict[str, Any], int]:
+    contract = agent_contracts.get_contract_for_profile(profile)
+    plan = agent_plans.get_plan_for_profile(profile)
     workflow = agent_profiles.render_task_workflow(
         profile,
         task_vars=task_vars,
@@ -780,6 +804,8 @@ def run_task_workflow(
         "task": profile["name"],
         "description": str(profile.get("description") or "").strip(),
         "risk_level": str(profile.get("risk_level") or "medium").strip(),
+        "contract": contract,
+        "plan": plan,
         "execute_mode": normalized_execute_mode,
         "allow_apply": bool(allow_apply),
         "continue_on_failure": bool(continue_on_failure),
@@ -806,6 +832,15 @@ def render_text(payload: dict[str, Any]) -> None:
         f"任务画像: {payload['task']} | risk={payload['risk_level']} | "
         f"execute={payload['execute_mode']} | overall={payload['overall']}"
     )
+    contract = payload.get("contract") if isinstance(payload.get("contract"), dict) else None
+    if contract:
+        print(
+            "Sprint Contract: "
+            f"{_contract_summary(contract)} | source={str(contract.get('source_file') or '-').strip() or '-'}"
+        )
+    plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else None
+    if plan:
+        print(f"Planner Artifact: {_plan_summary(plan)}")
     governance = payload.get("governance") if isinstance(payload.get("governance"), dict) else {}
     fields = [item for item in list(governance.get("fields", []) or []) if isinstance(item, dict)]
     if fields:
