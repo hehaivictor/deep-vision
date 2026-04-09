@@ -16,6 +16,11 @@
    - Harness 二阶段执行台账：[harness-progress.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress.md)
    - Harness 三阶段计划：[harness-iteration-plan-phase3.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-iteration-plan-phase3.md)
    - Harness 三阶段进度台账：[harness-progress-phase3.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress-phase3.md)
+   - Harness 四阶段计划：[harness-iteration-plan-phase4.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-iteration-plan-phase4.md)
+   - Harness 四阶段进度台账：[harness-progress-phase4.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress-phase4.md)
+   - Planner artifact 目录：[plans/README.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/plans/README.md)
+   - Sprint Contract 目录：`resources/harness/contracts/*.json`
+   - Evaluator 校准样本：[evaluator-calibration.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/evaluator-calibration.md)
    - 高频任务标准流程：[playbooks/README.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/playbooks/README.md)
    - 实例隔离、导入迁移与历史补齐：[migration.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/migration.md)
 3. 真正编辑前，再补读对应测试与 runbook。
@@ -40,6 +45,12 @@
 - 查看二阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress.md`
 - 查看三阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan-phase3.md`
 - 查看三阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase3.md`
+- 查看四阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan-phase4.md`
+- 查看四阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase4.md`
+- 生成 Planner artifact：`python3 scripts/agent_planner.py --task report-solution --goal "..." --context-line "..." --artifact-dir artifacts/planner`
+- 查看某个 task 最近一次 Planner artifact：`cat artifacts/planner/by-task/report-solution/latest.json`
+- 查看高风险 Sprint Contract：`ls resources/harness/contracts`
+- 查看 evaluator 校准样本：`ls tests/harness_calibration`
 - 从 artifact 生成场景脚手架：`python3 scripts/agent_scenario_scaffold.py --source latest --dry-run`
 - 从 latest.json 生成 CI 摘要：`python3 scripts/agent_ci_summary.py --latest-json artifacts/ci/browser-smoke/latest.json --title "Browser Smoke Summary"`
 - 检查 task-backed playbook 是否与任务画像同步：`python3 scripts/agent_playbook_sync.py --check`
@@ -54,7 +65,7 @@
 - 执行 nightly evaluator：`python3 scripts/agent_eval.py --tag nightly`
 - 落盘 evaluator 工件：`python3 scripts/agent_eval.py --tag nightly --artifact-dir artifacts/harness-eval`
 - evaluator 现在已支持 `unittest`、`browser_smoke`、`workflow` 和 `harness` 多执行器场景
-- 场景语料库当前共 14 条，已扩到扩展 UI、账号合并回滚、License 管理预演、环境文件叠加解析和演示稿 sidecar 并发完整性
+- 场景语料库当前共 16 条，已扩到扩展 UI、账号合并回滚、License 管理预演、环境文件叠加解析、租户隔离与演示稿 sidecar 并发完整性
 - 列出 task 画像：`python3 scripts/agent_harness.py --list-tasks`
 - 任务画像执行示例：`python3 scripts/agent_harness.py --task ownership-migration --task-var target_account=13700000000`
 - 单独预演 workflow：`python3 scripts/agent_workflow.py --task ownership-migration --task-var target_account=13700000000 --execute plan`
@@ -64,7 +75,11 @@
 - 高风险 workflow 的 apply/rollback 现在还会强制校验治理字段；执行前补齐 `change_reason / operator / approver / ticket`
 - 内置高风险 task 还会先执行前置条件检查，例如目标账号存在、源目录存在、活跃 License 存在、管理员白名单是否就绪
 - workflow DSL 现已支持 `requires_admin_session`、`requires_browser_env`、`requires_live_backend` 三类环境语义，可用于把管理员会话、浏览器依赖和 live backend 条件机器化
+- `ownership-migration` 与 `license-admin` 已接入 Sprint Contract；workflow、evaluator 和 handoff 工件会带上共享的完成标准与证据要求
+- `agent_planner.py` 现在会额外写 `artifacts/planner/by-task/<task>/latest.json`；workflow、harness、evaluator 和 handoff 会共同引用这份 plan 指针，而不是只给一条命令入口
+- evaluator 现在已支持 `tests/harness_calibration/*.json` 校准样本；命中样本时，progress / failure-summary / handoff 会直接带出评分依据
 - `agent_harness` 默认会先执行 `static_guardrails`，用于补源码级路由权限与确认链路回归
+- `agent_static_guardrails.py` 现在还会额外校验配置中心路由是否委托 `build_admin_config_center_payload()` / `save_admin_config_group()`，防止路由层重新出现直写配置文件的架构回退
 - browser smoke 用于补帮助页、方案页分享、公开分享只读边界、登录前端视图、License 门禁前端视图、License 绑定成功切换、报告详情链路和管理员配置中心入口的浏览器级回归；首次执行前先运行 `npm install` 和 `npx playwright install chromium chromium-headless-shell`
 - `live-minimal` 会在隔离 `DATA_DIR` 下启动真实后端，执行“验证码登录 -> License 绑定 -> 进入访谈会话”的手动深回归
 - `live-extended` 会在 `live-minimal` 基础上继续验证真实报告详情、方案页和公开分享只读链路
@@ -128,4 +143,4 @@
 - 优先使用仓库内现有脚本和测试，把文档、代码、验证路径保持在同一个仓库里。
 - 大文件不等于无边界。即使实际实现还在 [web/server.py](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/server.py) 里，也要先按领域定位，再读取局部。
 - 改动前先决定验证范围。DeepVision 当前 CI 已通过 `pr-harness.yml` 运行 `pr-smoke`、`agent-smoke` 与 `guardrails`；nightly evaluator 则负责更重的场景语料回归。
-- 执行二阶段事项时，继续维护 [harness-progress.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress.md)；执行三阶段事项时，改维护 [harness-progress-phase3.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress-phase3.md)。
+- 执行二阶段事项时，继续维护 [harness-progress.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress.md)；执行三阶段事项时，改维护 [harness-progress-phase3.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress-phase3.md)；执行四阶段事项时，改维护 [harness-progress-phase4.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress-phase4.md)。

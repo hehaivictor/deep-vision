@@ -346,6 +346,69 @@ def _check_ownership_rollback_route(handlers: list[RouteHandler]) -> StaticGuard
     )
 
 
+def _check_config_center_routes_delegate_helpers(handlers: list[RouteHandler]) -> StaticGuardrailResult:
+    get_handler = _find_handler(handlers, "/api/admin/config-center", "GET")
+    save_handler = _find_handler(handlers, "/api/admin/config-center/save", "POST")
+    highlights: list[str] = []
+    ok = True
+
+    if not get_handler:
+        return _build_result(
+            "config_center_routes_delegate_helpers",
+            False,
+            "route missing",
+            ["缺少 /api/admin/config-center GET 路由"],
+        )
+    if not save_handler:
+        return _build_result(
+            "config_center_routes_delegate_helpers",
+            False,
+            "route missing",
+            ["缺少 /api/admin/config-center/save POST 路由"],
+        )
+
+    get_required = ["build_admin_config_center_payload("]
+    get_forbidden = [
+        "_build_admin_settings_source_payload(",
+        "_write_admin_env_updates(",
+        "_write_admin_config_updates(",
+        "_write_admin_site_config_updates(",
+    ]
+    save_required = [
+        "save_admin_config_group(",
+        'source=str(data.get("source") or "").strip()',
+        'group_id=str(data.get("group_id") or "").strip()',
+        "values=data.get(\"values\")",
+    ]
+    save_forbidden = [
+        "_write_admin_env_updates(",
+        "_write_admin_config_updates(",
+        "_write_admin_site_config_updates(",
+        "write_text(",
+    ]
+
+    has_required, missing = _contains_all(get_handler.source, get_required)
+    has_no_forbidden, found = _contains_none(get_handler.source, get_forbidden)
+    ok = ok and has_required and has_no_forbidden
+    highlights.extend([f"config-center GET 缺少源码信号: {item}" for item in missing])
+    highlights.extend([f"config-center GET 不应直接调用: {item}" for item in found])
+
+    has_required, missing = _contains_all(save_handler.source, save_required)
+    has_no_forbidden, found = _contains_none(save_handler.source, save_forbidden)
+    ok = ok and has_required and has_no_forbidden
+    highlights.extend([f"config-center SAVE 缺少源码信号: {item}" for item in missing])
+    highlights.extend([f"config-center SAVE 不应直接调用: {item}" for item in found])
+
+    if not highlights:
+        highlights.append("配置中心路由已委托 build_admin_config_center_payload/save_admin_config_group，未在路由层直接写配置文件。")
+    return _build_result(
+        "config_center_routes_delegate_helpers",
+        ok,
+        f"get={get_handler.function_name} save={save_handler.function_name}",
+        highlights,
+    )
+
+
 def run_static_guardrails(*, server_file: Path = DEFAULT_SERVER_FILE) -> tuple[dict[str, Any], int]:
     handlers = collect_route_handlers(server_file)
     results = [
@@ -354,6 +417,7 @@ def run_static_guardrails(*, server_file: Path = DEFAULT_SERVER_FILE) -> tuple[d
         _check_solution_view_route(handlers),
         _check_solution_share_route(handlers),
         _check_public_solution_route(handlers),
+        _check_config_center_routes_delegate_helpers(handlers),
         _check_ownership_preview_route(handlers),
         _check_ownership_apply_route(handlers),
         _check_ownership_rollback_route(handlers),
@@ -404,6 +468,7 @@ def list_rules() -> int:
         "solution_view_guard",
         "solution_share_guard",
         "public_solution_readonly",
+        "config_center_routes_delegate_helpers",
         "ownership_preview_dry_run",
         "ownership_apply_confirmation",
         "ownership_rollback_requires_backup",

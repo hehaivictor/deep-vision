@@ -135,6 +135,21 @@ def build_harness_progress_markdown(summary_payload: dict[str, Any], metadata: d
     results = list(summary_payload.get("results", []) or [])
     summary = summary_payload.get("summary", {}) if isinstance(summary_payload.get("summary", {}), dict) else {}
     task_payload = summary_payload.get("task") if isinstance(summary_payload.get("task"), dict) else None
+    task_contract = (
+        task_payload.get("contract")
+        if isinstance(task_payload, dict) and isinstance(task_payload.get("contract"), dict)
+        else None
+    )
+    task_plan = (
+        task_payload.get("plan")
+        if isinstance(task_payload, dict) and isinstance(task_payload.get("plan"), dict)
+        else None
+    )
+    task_plan = (
+        task_payload.get("plan")
+        if isinstance(task_payload, dict) and isinstance(task_payload.get("plan"), dict)
+        else None
+    )
     lines = [
         "# Harness Progress",
         "",
@@ -146,6 +161,14 @@ def build_harness_progress_markdown(summary_payload: dict[str, Any], metadata: d
     if task_payload:
         lines.append(
             f"- 任务画像: {task_payload.get('name', '')} | risk={task_payload.get('risk_level', '')} | mode={task_payload.get('workflow_mode', '')}"
+        )
+    if task_contract:
+        lines.append(
+            f"- Sprint Contract: {task_contract.get('title', '')} | source={task_contract.get('source_file', '') or '-'}"
+        )
+    if task_plan:
+        lines.append(
+            f"- Planner Artifact: {task_plan.get('title', '')} | status={task_plan.get('status', '') or '-'} | source={task_plan.get('source_file', '') or '-'}"
         )
     lines.extend(
         [
@@ -184,6 +207,17 @@ def build_harness_progress_markdown(summary_payload: dict[str, Any], metadata: d
 
 def build_harness_failure_summary_markdown(summary_payload: dict[str, Any], metadata: dict[str, Any]) -> str:
     results = list(summary_payload.get("results", []) or [])
+    task_payload = summary_payload.get("task") if isinstance(summary_payload.get("task"), dict) else None
+    task_contract = (
+        task_payload.get("contract")
+        if isinstance(task_payload, dict) and isinstance(task_payload.get("contract"), dict)
+        else None
+    )
+    task_plan = (
+        task_payload.get("plan")
+        if isinstance(task_payload, dict) and isinstance(task_payload.get("plan"), dict)
+        else None
+    )
     actionable = [
         item
         for item in results
@@ -196,6 +230,26 @@ def build_harness_failure_summary_markdown(summary_payload: dict[str, Any], meta
         f"- 总体状态: {summary_payload.get('overall', '')}",
         "",
     ]
+    if task_contract:
+        lines.append(f"- Sprint Contract: `{task_contract.get('title', '')}`")
+        lines.append(f"- Contract 文件: `{task_contract.get('source_file', '') or '-'}`")
+        evidence_required = [
+            str(item).strip()
+            for item in list(task_contract.get("evidence_required", []) or [])
+            if str(item).strip()
+        ]
+        if evidence_required:
+            lines.append(f"- Contract 证据: `{', '.join(evidence_required[:4])}`")
+        lines.append("")
+    if task_plan:
+        lines.append(f"- Planner Artifact: `{task_plan.get('title', '')}`")
+        lines.append(f"- Planner 状态: `{task_plan.get('status', '') or '-'}`")
+        lines.append(f"- Planner 入口: `{task_plan.get('source_file', '') or '-'}`")
+        if str(task_plan.get("markdown_file") or "").strip():
+            lines.append(f"- Planner Markdown: `{task_plan.get('markdown_file', '')}`")
+        if str(task_plan.get("generate_command") or "").strip() and str(task_plan.get("status") or "").strip() != "materialized":
+            lines.append(f"- 生成 Planner: `{task_plan.get('generate_command', '')}`")
+        lines.append("")
     scaffold_recommendation = None
     run_dir = str(metadata.get("run_dir") or "").strip()
     if run_dir:
@@ -284,7 +338,21 @@ def build_eval_progress_markdown(summary_payload: dict[str, Any], metadata: dict
     for item in results:
         if not isinstance(item, dict):
             continue
-        lines.append(f"- `{item.get('category', '')}/{item.get('name', '')}`: {item.get('status', '')} | {item.get('detail', '')}")
+        contract = item.get("contract") if isinstance(item.get("contract"), dict) else None
+        contract_suffix = ""
+        if contract:
+            contract_suffix = f" | contract={str(contract.get('name') or '-').strip() or '-'}"
+        plan = item.get("plan") if isinstance(item.get("plan"), dict) else None
+        plan_suffix = ""
+        if plan:
+            plan_suffix = f" | plan={str(plan.get('task') or '-').strip() or '-'}:{str(plan.get('status') or '-').strip() or '-'}"
+        calibration_samples = [sample for sample in list(item.get("calibration_samples", []) or []) if isinstance(sample, dict)]
+        calibration_suffix = ""
+        if calibration_samples:
+            calibration_suffix = f" | calibration={len(calibration_samples)}"
+        lines.append(
+            f"- `{item.get('category', '')}/{item.get('name', '')}`: {item.get('status', '')} | {item.get('detail', '')}{contract_suffix}{plan_suffix}{calibration_suffix}"
+        )
 
     lines.extend(["", "## 下一步建议", ""])
     if str(summary_payload.get("overall") or "").strip() == "BLOCKED":
@@ -350,6 +418,22 @@ def build_eval_failure_summary_markdown(summary_payload: dict[str, Any], metadat
                 f"- budget_exceeded: {'yes' if bool(stats.get('budget_exceeded', False)) else 'no'}",
             ]
         )
+        contract = item.get("contract") if isinstance(item.get("contract"), dict) else None
+        if contract:
+            lines.append(f"- Sprint Contract: `{contract.get('title', '')}`")
+            lines.append(f"- Contract 文件: `{contract.get('source_file', '') or '-'}`")
+        plan = item.get("plan") if isinstance(item.get("plan"), dict) else None
+        if plan:
+            lines.append(f"- Planner Artifact: `{plan.get('title', '')}`")
+            lines.append(f"- Planner 状态: `{plan.get('status', '') or '-'}`")
+            lines.append(f"- Planner 入口: `{plan.get('source_file', '') or '-'}`")
+        calibration_samples = [sample for sample in list(item.get("calibration_samples", []) or []) if isinstance(sample, dict)]
+        if calibration_samples:
+            lines.append("- 校准样本:")
+            for sample in calibration_samples[:3]:
+                lines.append(
+                    f"  - `{sample.get('title', '')}` | expected={sample.get('expected_decision', '')} | source={sample.get('source_file', '') or '-'}"
+                )
         for hotspot in item.get("failure_hotspots", []) if isinstance(item.get("failure_hotspots", []), list) else []:
             if not isinstance(hotspot, dict):
                 continue
@@ -409,6 +493,24 @@ def build_harness_handoff_payload(
         if isinstance(workflow_payload, dict)
         else {}
     )
+    contract_payload = (
+        workflow_payload.get("contract")
+        if isinstance(workflow_payload, dict) and isinstance(workflow_payload.get("contract"), dict)
+        else (
+            task_payload.get("contract")
+            if isinstance(task_payload, dict) and isinstance(task_payload.get("contract"), dict)
+            else None
+        )
+    )
+    plan_payload = (
+        workflow_payload.get("plan")
+        if isinstance(workflow_payload, dict) and isinstance(workflow_payload.get("plan"), dict)
+        else (
+            task_payload.get("plan")
+            if isinstance(task_payload, dict) and isinstance(task_payload.get("plan"), dict)
+            else None
+        )
+    )
     workflow_step_results = [
         item for item in list((workflow_payload or {}).get("step_results", []) or []) if isinstance(item, dict)
     ] if isinstance(workflow_payload, dict) else []
@@ -427,6 +529,15 @@ def build_harness_handoff_payload(
         _append_unique(docs, item)
     for item in list((rendered_workflow or {}).get("docs", []) or []):
         _append_unique(docs, item)
+    if contract_payload:
+        _append_unique(docs, contract_payload.get("source_file"))
+        for item in list(contract_payload.get("docs", []) or []):
+            _append_unique(docs, item)
+    if plan_payload:
+        _append_unique(docs, plan_payload.get("source_file"))
+        _append_unique(docs, plan_payload.get("recommended_markdown"))
+        for item in list(plan_payload.get("docs", []) or []):
+            _append_unique(docs, item)
 
     for item in results:
         status = str(item.get("status") or "").strip()
@@ -457,6 +568,30 @@ def build_harness_handoff_payload(
         if governance_values:
             governance_summary = ", ".join(f"{key}={value}" for key, value in governance_values.items())
             _append_unique(next_steps, "治理记录已准备: " + governance_summary)
+        if contract_payload:
+            evidence_required = [
+                str(item).strip()
+                for item in list(contract_payload.get("evidence_required", []) or [])
+                if str(item).strip()
+            ]
+            if evidence_required:
+                _append_unique(next_steps, "Sprint Contract 证据优先核对: " + ", ".join(evidence_required[:4]))
+        if plan_payload:
+            if str(plan_payload.get("status") or "").strip() == "materialized":
+                planner_entry = str(
+                    plan_payload.get("markdown_file")
+                    or plan_payload.get("json_file")
+                    or plan_payload.get("source_file")
+                    or ""
+                ).strip()
+                if planner_entry:
+                    _append_unique(next_steps, f"优先回看 Planner Artifact: {planner_entry}")
+            else:
+                _append_unique(todo, "先补 Planner Artifact，把目标、范围、完成定义和风险收口到固定工件。")
+                planner_command = str(plan_payload.get("generate_command") or "").strip()
+                if planner_command:
+                    _append_unique(next_steps, f"先生成 Planner Artifact：{planner_command}")
+                    _append_unique(resume_commands, planner_command)
         hidden_apply_steps = list(rendered_workflow.get("hidden_apply_steps", []) or [])
         if hidden_apply_steps:
             _append_unique(todo, f"如需正式 apply/rollback，人工确认后使用 --allow-apply，目前已隐藏 {len(hidden_apply_steps)} 个高风险步骤。")
@@ -554,6 +689,8 @@ def build_harness_handoff_payload(
             ),
             "ready": bool((governance_payload or {}).get("ready", True)),
         },
+        "plan": plan_payload,
+        "contract": contract_payload,
         "scaffold_recommendation": scaffold_recommendation,
         "pointers": {
             "run_dir": str(run_dir),
@@ -579,10 +716,34 @@ def build_eval_handoff_payload(
     blockers: list[str] = []
     next_steps: list[str] = []
     resume_commands: list[str] = []
+    docs: list[str] = []
+    contract_index: dict[str, dict[str, Any]] = {}
+    plan_index: dict[str, dict[str, Any]] = {}
+    calibration_index: dict[str, dict[str, Any]] = {}
     scaffold_recommendation = _build_scenario_scaffold_recommendation(source="eval", run_dir=run_dir)
 
     repeat = int(summary_payload.get("repeat", 1) or 1)
     for item in results:
+        contract = item.get("contract") if isinstance(item.get("contract"), dict) else None
+        if contract and str(contract.get("name") or "").strip():
+            contract_index[str(contract.get("name")).strip()] = contract
+            _append_unique(docs, contract.get("source_file"))
+            for doc in list(contract.get("docs", []) or []):
+                _append_unique(docs, doc)
+        plan = item.get("plan") if isinstance(item.get("plan"), dict) else None
+        if plan and str(plan.get("task") or "").strip():
+            plan_index[str(plan.get("task")).strip()] = plan
+            _append_unique(docs, plan.get("source_file"))
+            _append_unique(docs, plan.get("recommended_markdown"))
+            for doc in list(plan.get("docs", []) or []):
+                _append_unique(docs, doc)
+        for sample in [sample for sample in list(item.get("calibration_samples", []) or []) if isinstance(sample, dict)]:
+            sample_name = str(sample.get("name") or "").strip()
+            if sample_name:
+                calibration_index[sample_name] = sample
+            _append_unique(docs, sample.get("source_file"))
+            for doc in list(sample.get("source_refs", []) or []):
+                _append_unique(docs, doc)
         status = str(item.get("status") or "").strip()
         category = str(item.get("category") or "").strip()
         name = str(item.get("name") or "").strip()
@@ -616,6 +777,21 @@ def build_eval_handoff_payload(
         else:
             _append_unique(next_steps, "当前 evaluator 健康，可继续补充新的事故场景或扩大覆盖。")
 
+    for task_name in sorted(plan_index.keys()):
+        plan = plan_index[task_name]
+        if str(plan.get("status") or "").strip() == "materialized":
+            planner_entry = str(
+                plan.get("markdown_file") or plan.get("json_file") or plan.get("source_file") or ""
+            ).strip()
+            if planner_entry:
+                _append_unique(next_steps, f"优先回看 Planner Artifact: {planner_entry}")
+        else:
+            _append_unique(todo, f"{task_name}: 尚未物化 Planner Artifact，可先补计划工件再判断是否扩写场景。")
+            planner_command = str(plan.get("generate_command") or "").strip()
+            if planner_command:
+                _append_unique(next_steps, f"{task_name}: 先生成 Planner Artifact：{planner_command}")
+                _append_unique(resume_commands, planner_command)
+
     if blockers or todo:
         preview_command = str(scaffold_recommendation.get("preview_command") or "").strip()
         write_command = str(scaffold_recommendation.get("write_command") or "").strip()
@@ -647,8 +823,13 @@ def build_eval_handoff_payload(
         "resume_commands": resume_commands,
         "docs": [
             "docs/agent/evaluator.md",
+            "docs/agent/evaluator-calibration.md",
             "docs/agent/playbooks/README.md",
+            *docs,
         ],
+        "plans": [plan_index[name] for name in sorted(plan_index.keys())],
+        "contracts": [contract_index[name] for name in sorted(contract_index.keys())],
+        "calibration_samples": [calibration_index[name] for name in sorted(calibration_index.keys())],
         "scaffold_recommendation": scaffold_recommendation,
         "pointers": {
             "run_dir": str(run_dir),

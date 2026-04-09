@@ -9,6 +9,28 @@
   "docs": [
     "docs/agent/admin-ops.md"
   ],
+  "contract": "license-admin",
+  "planner": {
+    "summary": "先把 License 管理动作拆成只读确认、专项回归和高风险写操作三个层次，再决定是否进入正式执行。",
+    "scope_focus": [
+      "先确认 enforcement、活跃批次、管理员白名单与 bootstrap 条件",
+      "把批量生成、延期、撤销和运行时开关变更拆成独立动作，避免一份计划混在一起",
+      "先明确受影响账号范围和回滚条件，再讨论正式写操作"
+    ],
+    "acceptance_focus": [
+      "管理员 License 路由仍要求有效 License，不被普通管理员会话绕过",
+      "批量动作前有明确的目标范围、治理字段和最新 artifact 证据",
+      "运行时 enforcement 变更不会破坏当前环境的查询、详情和批量接口一致性"
+    ],
+    "non_goals": [
+      "不要在 Planner 阶段直接决定真实批量写入数量或生产账号范围",
+      "不要绕开现有 License 管理脚本和专项回归，直接在 Web 层做一次性操作"
+    ],
+    "risks": [
+      "License 管理同时受管理员白名单、有效 License 和运行时 enforcement 影响，容易因前置条件不足误判",
+      "批量生成、延期、撤销与 bootstrap 场景共享同一组高风险接口，需要单独记录治理字段和回滚入口"
+    ]
+  },
   "playbook": {
     "output": "docs/agent/playbooks/license-admin.md",
     "title": "License 管理与批量操作核对",

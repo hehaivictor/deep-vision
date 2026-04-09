@@ -10,6 +10,7 @@
   "budgets": {
     "max_duration_ms": 180000
   },
+  "contract": "ownership-migration",
   "cases": [
     {
       "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_ownership_migration_endpoints_cover_search_preview_apply_and_rollback",

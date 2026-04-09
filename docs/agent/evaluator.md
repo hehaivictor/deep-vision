@@ -19,6 +19,7 @@
 - 只跑单个场景：`python3 scripts/agent_eval.py --scenario observability-and-config`
 - 从最新 artifact 生成新场景模板：`python3 scripts/agent_scenario_scaffold.py --source latest --dry-run`
 - 只从 evaluator 指定场景生成模板：`python3 scripts/agent_scenario_scaffold.py --source eval --scenario access-boundaries --dry-run`
+- 查看评分校准样本：`sed -n '1,240p' docs/agent/evaluator-calibration.md`
 
 ## 当前场景库
 
@@ -50,13 +51,27 @@ tag 约定：
 
 三阶段开始新增了 `tenant` 主题场景，用来单独跟踪 `INSTANCE_SCOPE_KEY`、资产归属、分享 owner 和对象存储元数据边界；其中 `instance-scope-boundaries` 已进入 nightly，`asset-ownership-boundaries` 先作为 manual 深回归保留。
 
-当前场景库已扩到 14 条，除原有的核心链路外，还新增了：
+当前场景库已扩到 16 条，除原有的核心链路外，还新增了：
 
 - `browser-smoke-extended`：更完整的 UI 状态机浏览器回归
+- `browser-smoke-live-extended`：真实后端下的报告详情、方案页与公开分享真链路
 - `account-merge-rollback`：账号合并与管理员回滚链路
 - `license-admin-preview`：License 管理 workflow 预演
 - `env-overlay-resolution`：运行时环境文件叠加解析
+- `instance-scope-boundaries` / `asset-ownership-boundaries`：实例隔离、分享 owner 与资产归属边界
 - `presentation-map-concurrency`：演示稿 sidecar 并发完整性
+
+## 校准样本
+
+校准样本位于 `tests/harness_calibration/*.json`，用于记录“哪些应该判 FAIL，哪些只是 WARN”的真实尺度。
+
+当前第一条样本是 [`report-solution-wording-drift.json`](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/harness_calibration/report-solution-wording-drift.json)，对应 `report-solution-preview` 的真实误判案例：方案页标题文案轻微变化时，不应继续使用逐字比较导致 nightly 误红。
+
+当前约定：
+
+- 语义、权限边界、内部实现词泄露属于硬失败
+- 轻微措辞变化但稳定语义成立，优先判 `WARN`
+- evaluator 工件命中校准样本后，`progress.md`、`failure-summary.md` 与 `handoff.json` 都会直接带出样本引用
 
 ## 当前输出
 

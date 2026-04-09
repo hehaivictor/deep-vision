@@ -10,6 +10,27 @@
     "docs/agent/admin-ops.md",
     "web/CONFIG.md"
   ],
+  "planner": {
+    "summary": "先把配置来源、运行态生效边界、重启要求和专项回归收口成正式计划，再决定是否进入配置写入。",
+    "scope_focus": [
+      "先确认当前问题属于 .env、config.py 还是 site-config.js，不要混淆展示配置和服务端配置",
+      "先定义要验证的运行态结果、重启边界和 latest artifact，而不是直接写配置",
+      "先把配置中心读链路、写链路和专项回归拆开，避免一份计划混多个动作"
+    ],
+    "acceptance_focus": [
+      "配置中心仍通过统一 helper 读写配置，而不是在路由层直接拼装或写文件",
+      "修改后能通过配置中心专项回归，并保留运行态来源与重启要求的证据",
+      "高风险配置变更继续要求治理字段、管理员会话与活跃 License 前置条件"
+    ],
+    "non_goals": [
+      "不要在 Planner 阶段直接改真实 .env 或 config.py",
+      "不要把前端展示配置误当成后端运行配置问题处理"
+    ],
+    "risks": [
+      "配置中心同时涉及文件值、运行值和重启边界，单看其中一层很容易误判",
+      "管理员白名单、实例隔离、短信和微信接入属于高风险配置，写入前必须保留证据"
+    ]
+  },
   "playbook": {
     "output": "docs/agent/playbooks/config-center-verify.md",
     "title": "配置中心核对",

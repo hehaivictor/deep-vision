@@ -26,6 +26,11 @@
 - Harness 二阶段进度台账：[docs/agent/harness-progress.md](docs/agent/harness-progress.md)
 - Harness 三阶段计划：[docs/agent/harness-iteration-plan-phase3.md](docs/agent/harness-iteration-plan-phase3.md)
 - Harness 三阶段进度台账：[docs/agent/harness-progress-phase3.md](docs/agent/harness-progress-phase3.md)
+- Harness 四阶段计划：[docs/agent/harness-iteration-plan-phase4.md](docs/agent/harness-iteration-plan-phase4.md)
+- Harness 四阶段进度台账：[docs/agent/harness-progress-phase4.md](docs/agent/harness-progress-phase4.md)
+- Planner artifact 目录：[docs/agent/plans/README.md](docs/agent/plans/README.md)
+- Sprint Contract 目录：`resources/harness/contracts/*.json`
+- Evaluator 校准样本：[docs/agent/evaluator-calibration.md](docs/agent/evaluator-calibration.md)
 - 高频任务标准流程：[docs/agent/playbooks/README.md](docs/agent/playbooks/README.md)
 - 数据迁移与实例隔离：[docs/agent/migration.md](docs/agent/migration.md)
 - 多 worktree 交付约定：[docs/worktree-shipping.md](docs/worktree-shipping.md)
@@ -43,6 +48,12 @@
 - 查看二阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress.md`
 - 查看三阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan-phase3.md`
 - 查看三阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase3.md`
+- 查看四阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan-phase4.md`
+- 查看四阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase4.md`
+- 生成 Planner artifact：`python3 scripts/agent_planner.py --task report-solution --goal "..." --context-line "..." --artifact-dir artifacts/planner`
+- 查看某个 task 最近一次 Planner artifact：`cat artifacts/planner/by-task/report-solution/latest.json`
+- 查看高风险 Sprint Contract：`ls resources/harness/contracts`
+- 查看 evaluator 校准样本：`ls tests/harness_calibration`
 - 从最新 artifact 生成场景脚手架：`python3 scripts/agent_scenario_scaffold.py --source latest --dry-run`
 - 从 latest.json 生成 CI 摘要：`python3 scripts/agent_ci_summary.py --latest-json artifacts/ci/browser-smoke/latest.json --title "Browser Smoke Summary"`
 - 检查 task-backed playbook 是否与任务画像同步：`python3 scripts/agent_playbook_sync.py --check`
@@ -80,8 +91,12 @@
 - 高风险 workflow 步骤现在会额外校验 `confirmation_token`、`backup_dir` 和 `produces_artifact`；不要只看命令返回码
 - 高风险 workflow 的 apply/rollback 现在还会强制校验治理字段；执行前补齐 `change_reason / operator / approver / ticket`
 - task workflow 现在支持前置条件检查；已内置 `account_exists`、`user_exists`、`active_license_exists`、`path_exists`、`requires_admin_session`、`requires_browser_env`、`requires_live_backend`
+- `ownership-migration` 与 `license-admin` 现在已接入 Sprint Contract，workflow、evaluator 和 handoff 会共享完成标准、硬失败条件与证据要求
+- `agent_planner.py` 现在会同步维护 `artifacts/planner/by-task/<task>/latest.json`；workflow、harness、evaluator、failure-summary 与 handoff 会共同引用这份 Planner 指针
+- evaluator 现在已接入 `tests/harness_calibration/*.json` 校准样本；命中样本后，progress / failure-summary / handoff 会直接带出评分依据与 source refs
 - `ownership-migration`、`config-center`、`license-admin` 现在会先验证管理员白名单是否就绪；`cloud-import` 仍会先验证源目录和目标用户
 - `agent_harness` 默认会先执行 `static_guardrails`，用于扫描高风险路由的源码级权限与确认链路
+- `agent_static_guardrails.py` 现在还会检查配置中心路由是否委托 `build_admin_config_center_payload()` / `save_admin_config_group()`，避免路由层重新直写 `.env`、`config.py` 或 `site-config.js`
 - browser smoke 为显式 opt-in 阶段；首次执行前先运行 `npm install`，再执行 `npx playwright install chromium chromium-headless-shell`
 - PR 基础检查已收口到 `.github/workflows/pr-harness.yml`，其中 `pr-smoke` 负责脚本回归与 `static_guardrails`，`agent-smoke` 只跑 runtime smoke，`guardrails` 只跑 runtime guardrails
 - 浏览器回归已提供独立 workflow：`.github/workflows/browser-smoke.yml`，当前会在前端相关 PR 改动时自动触发 `extended` 套件，并保留手动与周跑入口
@@ -99,7 +114,7 @@
 - 固定 smoke 入口：`python3 scripts/agent_smoke.py`
 - 场景 evaluator：`python3 scripts/agent_eval.py --tag nightly`
 - evaluator 场景已支持 `unittest`、`browser_smoke`、`workflow` 和 `harness` 多执行器
-- evaluator 场景库当前共 14 条，已补到扩展 UI、账号合并回滚、License 管理预演、环境文件叠加解析和演示稿 sidecar 并发完整性
+- evaluator 场景库当前共 16 条，已补到扩展 UI、账号合并回滚、License 管理预演、环境文件叠加解析、租户隔离和演示稿 sidecar 并发完整性
 - 新事故优先用 `python3 scripts/agent_scenario_scaffold.py` 生成 `tests/harness_scenarios` 模板，再人工补充背景与 tags
 - `failure-summary.md` / `handoff.json` 现在会直接给出带 `name/category/tag/budget/output` 的场景脚手架预览/写入命令；`browser_smoke`、`workflow`、`harness` 失败也能自动生成对应 executor 模板
 - 最小脚本冒烟：`python3 -m unittest tests.test_version_manager tests.test_scripts_comprehensive`
@@ -121,6 +136,7 @@
 - 场景语料文件位于 `tests/harness_scenarios/**/*.json`，新增线上事故回归时优先补对应 `unittest`，再挂入场景文件。
 - 高频操作 playbook 位于 `docs/agent/playbooks/*.md`，默认先按 playbook 收集证据，再决定是否进入高风险步骤。
 - 执行 `docs/agent/harness-iteration-plan.md` 中的优化项后，必须同步更新 `docs/agent/harness-progress.md`。
+- 执行 `docs/agent/harness-iteration-plan-phase4.md` 中的优化项后，必须同步更新 `docs/agent/harness-progress-phase4.md`。
 
 ## 关键不变量
 

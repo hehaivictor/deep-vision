@@ -11,6 +11,28 @@
     "docs/agent/migration.md",
     "docs/full-data-migration-runbook.md"
   ],
+  "contract": "ownership-migration",
+  "planner": {
+    "summary": "先把目标账号、迁移范围、apply 条件、备份与 rollback 证据收口成正式计划，再进入 preview/apply 预演。",
+    "scope_focus": [
+      "先确认目标账号、scope、kind 与预期影响范围，不要把多个迁移目标混成一份计划",
+      "先区分 audit、preview、apply、rollback 四类动作的进入条件和证据要求",
+      "先定义 latest artifact、summary-json 和 backup 目录这些必留证据，再讨论正式写操作"
+    ],
+    "acceptance_focus": [
+      "preview 能稳定给出命中数量、确认词、summary-json 与 rollback 入口",
+      "apply 前有明确治理字段、目标账号和备份目录，不会跳过 dry-run 直接落盘",
+      "rollback 入口和 owner/scope 边界在专项回归里保持成立"
+    ],
+    "non_goals": [
+      "不要在 Planner 阶段直接决定真实生产账号或扩大迁移 scope",
+      "不要绕开现有迁移脚本和 harness 工件，直接在数据库里手工改归属"
+    ],
+    "risks": [
+      "迁移同时涉及账号归属、实例隔离和回滚备份，局部修复很容易放大影响面",
+      "apply/rollback 属于高风险动作，缺失治理字段或 backup 目录时必须先阻断"
+    ]
+  },
   "playbook": {
     "output": "docs/agent/playbooks/migration-preview.md",
     "title": "归属迁移预演",

@@ -1,0 +1,35 @@
+{
+  "name": "report-solution-wording-drift",
+  "title": "方案页文案漂移应按语义校验，不按逐字文案误判",
+  "category": "report-solution",
+  "expected_decision": "WARN",
+  "rule": "当方案页标题、卡片或指标文案只发生轻微措辞调整时，Evaluator 不应仅因逐字差异判 FAIL；应优先校验稳定语义、权限边界和内部实现词是否泄露。",
+  "incident": "nightly 的 report-solution-preview 曾因固定标题断言过死而误红，后续已改成稳定语义断言。",
+  "signals": [
+    "优先检查 AI工程底座、分层架构、系统闭环、试点决策阶段 等稳定语义",
+    "禁止回流 MLOps、LLMOps、proposal_brief、结构化素材 等内部实现词",
+    "公开分享只读、owner 校验和旧报告 fallback 仍然是硬失败条件"
+  ],
+  "source_refs": [
+    "tests/test_solution_payload.py",
+    "docs/agent/report-solution.md"
+  ],
+  "applies_to": {
+    "scenarios": [
+      "report-solution-preview",
+      "report-solution-core"
+    ],
+    "categories": [
+      "report-solution",
+      "workflow"
+    ],
+    "tags": [
+      "report",
+      "workflow"
+    ],
+    "executors": [
+      "workflow",
+      "unittest"
+    ]
+  }
+}

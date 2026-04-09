@@ -38,6 +38,9 @@ if str(ROOT_DIR) not in sys.path:
 
 from scripts import agent_artifacts
 from scripts import agent_browser_smoke
+from scripts import agent_calibration
+from scripts import agent_contracts
+from scripts import agent_plans
 from scripts import agent_profiles
 from scripts import agent_workflow
 from scripts.agent_test_runner import SuiteCase
@@ -59,6 +62,9 @@ class EvalScenario:
     cases: tuple[SuiteCase, ...]
     executor: str = "unittest"
     executor_config: dict[str, Any] = field(default_factory=dict)
+    contract: dict[str, Any] | None = None
+    plan: dict[str, Any] | None = None
+    calibration_samples: tuple[dict[str, Any], ...] = ()
 
 
 def utc_now_iso() -> str:
@@ -315,6 +321,10 @@ def build_workflow_attempt(scenario: EvalScenario) -> dict[str, Any]:
         "summary": payload.get("summary", {}),
         "precondition_summary": payload.get("precondition_summary", {}),
     }
+    if isinstance(payload.get("contract"), dict):
+        stdout_payload["contract"] = payload.get("contract")
+    if isinstance(payload.get("plan"), dict):
+        stdout_payload["plan"] = payload.get("plan")
     return {
         "status": "PASS" if passed else "FAIL",
         "returncode": 0 if passed else int(exit_code or 2),
@@ -422,6 +432,19 @@ def load_scenarios(*, scenarios_root: Path = SCENARIOS_DIR) -> list[EvalScenario
             path=path,
             cases=cases,
         )
+        task_profile = None
+        task_name = str(executor_config.get("task") or "").strip()
+        if executor_type == "workflow" and task_name:
+            try:
+                task_profile = agent_profiles.get_task_profile(task_name)
+            except KeyError:
+                task_profile = None
+        contract_payload = agent_contracts.resolve_contract_reference(
+            payload.get("contract", executor_config.get("contract"))
+        )
+        if contract_payload is None and task_profile is not None:
+            contract_payload = agent_contracts.get_contract_for_profile(task_profile)
+        plan_payload = agent_plans.get_plan_for_profile(task_profile) if task_profile is not None else None
         raw_tags = payload.get("tags", [])
         tags = tuple(
             sorted(
@@ -448,6 +471,16 @@ def load_scenarios(*, scenarios_root: Path = SCENARIOS_DIR) -> list[EvalScenario
                 cases=tuple(cases),
                 executor=executor_type,
                 executor_config=executor_config,
+                contract=contract_payload,
+                plan=plan_payload,
+                calibration_samples=tuple(
+                    agent_calibration.match_calibration_samples(
+                        scenario_name=str(payload.get("name") or path.stem).strip() or path.stem,
+                        category=str(payload.get("category") or path.parent.name).strip() or path.parent.name,
+                        tags=tags,
+                        executor=executor_type,
+                    )
+                ),
             )
         )
     return scenarios
@@ -515,6 +548,9 @@ def evaluate_scenario(
         "tags": list(scenario.tags),
         "executor": scenario.executor,
         "executor_config": scenario.executor_config,
+        "contract": scenario.contract,
+        "plan": scenario.plan,
+        "calibration_samples": list(scenario.calibration_samples),
         "target": scenario_target_summary(scenario),
         "status": status,
         "cases": [asdict(case) for case in scenario.cases],
@@ -757,6 +793,14 @@ def run_eval(
         "failure_hotspots": build_failure_hotspots(results),
         "slowest_scenarios": build_slowest_scenarios(results),
         "flake_scenarios": [item["name"] for item in results if item.get("status") == "FLAKY"],
+        "calibration_matches": sorted(
+            {
+                str(sample.get("name") or "").strip()
+                for item in results
+                for sample in list(item.get("calibration_samples", []) or [])
+                if isinstance(sample, dict) and str(sample.get("name") or "").strip()
+            }
+        ),
     }
 
     artifact_paths = None
@@ -786,6 +830,12 @@ def render_text(payload: dict[str, Any]) -> None:
             f"[{item['status']}] {item['category']}/{item['name']}: "
             f"{item['detail']}"
         )
+        calibration_samples = [sample for sample in list(item.get("calibration_samples", []) or []) if isinstance(sample, dict)]
+        if calibration_samples:
+            print(
+                "        calibration: "
+                + ", ".join(str(sample.get("name") or "-").strip() for sample in calibration_samples[:3])
+            )
     print("")
     print(
         "Summary: "
