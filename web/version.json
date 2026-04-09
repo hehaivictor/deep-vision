@@ -1,7 +1,19 @@
 {
-  "version": "8.1.2",
+  "version": "8.2.0",
   "releaseDate": "2026-04-09",
   "changelog": [
+    {
+      "version": "8.2.0",
+      "date": "2026-04-09",
+      "type": "minor",
+      "title": "完善 harness 四阶段规划与契约闭环",
+      "changes": [
+        "新增 Planner、Contract 与 Calibration 脚本及样本，支持按 task 生成 latest plan 指针",
+        "增强 workflow、harness、evaluator 与 artifact 工件，贯通 plan、contract、calibration 引用",
+        "强化 static guardrails，新增配置中心路由委托规则并补齐高风险 task 的 planner 元数据",
+        "更新阶段计划、领域文档与脚本回归，完成 phase4 台账同步"
+      ]
+    },
     {
       "version": "8.1.2",
       "date": "2026-04-09",
