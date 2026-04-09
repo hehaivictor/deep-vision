@@ -75,7 +75,6 @@ read_ppt_size.py
 .gemini-clipboard/
 
 # Graphify output
-graphify-out/
 
 # Local harness evaluator artifacts
 artifacts/harness-eval-local/
