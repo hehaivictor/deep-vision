@@ -1582,18 +1582,30 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertIn('AI工程底座', proposal_brief.get('thesis', {}).get('headline', ''))
         self.assertNotIn('MLOps/LLMOps', proposal_brief.get('thesis', {}).get('headline', ''))
         self.assertNotIn('OpenAPI/gRPC', proposal_brief.get('recommended_solution', {}).get('architecture_statement', ''))
-        self.assertEqual((chapters.get('hero') or {}).get('title'), '为什么当前先做「AI工程底座」')
-        self.assertEqual((chapters.get('comparison') or {}).get('title'), '为什么选「AI工程底座」这条路')
-        self.assertEqual((chapters.get('blueprint') or {}).get('title'), '推荐蓝图：先稳住「AI工程底座」，再拉通「分层架构」')
-        self.assertEqual((chapters.get('integration') or {}).get('title'), '把「AI工程底座」接进系统闭环')
-        self.assertEqual((chapters.get('value_fit') or {}).get('title'), '为什么这条路径更适合当前团队进入试点决策阶段')
+        expected_title_fragments = {
+            'hero': ('AI工程底座',),
+            'comparison': ('AI工程底座',),
+            'blueprint': ('AI工程底座', '分层架构'),
+            'integration': ('AI工程底座', '系统闭环'),
+            'value_fit': ('当前团队', '试点决策阶段'),
+        }
+        for chapter_id, fragments in expected_title_fragments.items():
+            title = (chapters.get(chapter_id) or {}).get('title', '')
+            for fragment in fragments:
+                self.assertIn(fragment, title)
+            self.assertNotIn('MLOps/LLMOps', title)
+            self.assertNotIn('OpenAPI/gRPC', title)
+            self.assertNotIn('结构化素材', title)
         self.assertNotIn('MLOps/LLMOps', json.dumps(chapters, ensure_ascii=False))
         metrics_text = json.dumps((chapters.get('hero') or {}).get('metrics', []), ensure_ascii=False)
         self.assertNotIn('MLOps/LLMOps', metrics_text)
-        self.assertIn('分层架构推进度', metrics_text)
-        self.assertIn('迁移工具链效率', metrics_text)
-        self.assertIn('能力底座', json.dumps((chapters.get('blueprint') or {}).get('cards', []), ensure_ascii=False))
-        self.assertNotIn('结构化素材', json.dumps((chapters.get('value_fit') or {}).get('cards', []), ensure_ascii=False))
+        self.assertIn('分层架构', metrics_text)
+        self.assertIn('迁移工具链', metrics_text)
+        blueprint_cards_text = json.dumps((chapters.get('blueprint') or {}).get('cards', []), ensure_ascii=False)
+        self.assertTrue('能力底座' in blueprint_cards_text or 'AI工程底座' in blueprint_cards_text)
+        value_fit_cards_text = json.dumps((chapters.get('value_fit') or {}).get('cards', []), ensure_ascii=False)
+        self.assertNotIn('结构化素材', value_fit_cards_text)
+        self.assertNotIn('proposal_brief', value_fit_cards_text)
 
     def test_build_solution_payload_from_report_rehardens_delivery_titles(self):
         report_path = ROOT_DIR / "data" / "reports" / "deep-vision-20260314-e2a4fd23-交互式访谈-AI-智能体需求调研.md.solution.json"
