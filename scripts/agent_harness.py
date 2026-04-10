@@ -45,6 +45,30 @@ from scripts.agent_test_runner import SuiteCase
 from scripts.agent_test_runner import run_suite_process
 
 
+HARNESS_PROFILE_PRESETS = {
+    "auto": {"doctor_profile": "auto"},
+    "local": {"doctor_profile": "local"},
+    "cloud": {"doctor_profile": "cloud"},
+    "production": {"doctor_profile": "production"},
+    "stability-local-core": {
+        "doctor_profile": "auto",
+        "observe": True,
+        "guardrails_suite": "extended",
+        "smoke_suite": "extended",
+        "browser_smoke": True,
+        "browser_smoke_suite": "extended",
+    },
+    "stability-local-release": {
+        "doctor_profile": "auto",
+        "observe": True,
+        "guardrails_suite": "extended",
+        "smoke_suite": "extended",
+        "browser_smoke": True,
+        "browser_smoke_suite": "live-minimal",
+    },
+}
+
+
 @dataclass
 class HarnessStageResult:
     name: str
@@ -341,7 +365,12 @@ def run_browser_smoke_stage(*, suite_name: str, install_browser: bool) -> Harnes
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="DeepVision agent 单入口检查")
-    parser.add_argument("--profile", default="local", choices=["auto", "local", "cloud", "production"], help="doctor 使用的环境场景")
+    parser.add_argument(
+        "--profile",
+        default="local",
+        choices=sorted(HARNESS_PROFILE_PRESETS.keys()),
+        help="harness 运行画像；基础画像会映射到 doctor 环境，稳定性画像会自动补 observe/browser/extended suites",
+    )
     parser.add_argument("--env-file", default="", help="显式指定 doctor 使用的环境文件")
     parser.add_argument("--task", default="", choices=["", *agent_profiles.list_task_names()], help="按任务画像自动选择 doctor / suite / workflow")
     parser.add_argument("--task-var", action="append", default=[], help="为任务画像提供变量，格式 key=value，可重复传入")
@@ -380,8 +409,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def list_stages(args: argparse.Namespace) -> int:
+    doctor_profile = resolve_doctor_profile(args.profile)
     print("DeepVision agent harness stages")
-    print(f"1. doctor: profile={args.profile}")
+    print(f"1. doctor: profile={doctor_profile}")
     stage_index = 2
     if args.observe:
         print(f"{stage_index}. observe: recent={args.observe_recent}")
@@ -649,10 +679,32 @@ def collect_explicit_flags(raw_argv: list[str]) -> set[str]:
     return flags
 
 
+def resolve_doctor_profile(profile_name: str) -> str:
+    preset = HARNESS_PROFILE_PRESETS.get(str(profile_name or "").strip(), {})
+    return str(preset.get("doctor_profile") or "local").strip() or "local"
+
+
+def apply_harness_profile_preset(args: argparse.Namespace, explicit_flags: set[str]) -> str:
+    preset = HARNESS_PROFILE_PRESETS.get(str(args.profile or "").strip(), {})
+    doctor_profile = str(preset.get("doctor_profile") or "local").strip() or "local"
+    if "--observe" not in explicit_flags and "--observe=" not in explicit_flags and "observe" in preset:
+        args.observe = bool(preset["observe"])
+    if "--guardrails-suite" not in explicit_flags and "--guardrails-suite=" not in explicit_flags and preset.get("guardrails_suite"):
+        args.guardrails_suite = str(preset["guardrails_suite"]).strip() or args.guardrails_suite
+    if "--smoke-suite" not in explicit_flags and "--smoke-suite=" not in explicit_flags and preset.get("smoke_suite"):
+        args.smoke_suite = str(preset["smoke_suite"]).strip() or args.smoke_suite
+    if "--browser-smoke" not in explicit_flags and "--browser-smoke=" not in explicit_flags and "browser_smoke" in preset:
+        args.browser_smoke = bool(preset["browser_smoke"])
+    if "--browser-smoke-suite" not in explicit_flags and "--browser-smoke-suite=" not in explicit_flags and preset.get("browser_smoke_suite"):
+        args.browser_smoke_suite = str(preset["browser_smoke_suite"]).strip() or args.browser_smoke_suite
+    return doctor_profile
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     args = build_parser().parse_args(raw_argv)
     explicit_flags = collect_explicit_flags(raw_argv)
+    doctor_profile = apply_harness_profile_preset(args, explicit_flags)
     task_profile = None
     task_vars: dict[str, str] = {}
 
@@ -720,7 +772,7 @@ def main(argv: list[str] | None = None) -> int:
         results.append(HarnessStageResult(name="doctor", status="SKIP", exit_code=0, detail="手动跳过"))
     else:
         doctor_execution = run_doctor_stage(
-            profile=args.profile,
+            profile=doctor_profile,
             env_file=args.env_file,
             strict_doctor=args.strict_doctor,
         )
@@ -731,7 +783,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.observe:
         observe_execution = run_observe_stage(
-            profile=args.profile,
+            profile=doctor_profile,
             env_file=args.env_file,
             recent=max(1, int(args.observe_recent or 5)),
         )

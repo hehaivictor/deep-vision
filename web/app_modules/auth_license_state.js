@@ -336,17 +336,32 @@
             const params = new URLSearchParams(window.location.search || '');
             const targetView = String(params.get('view') || '').trim();
             const targetReport = String(params.get('report') || '').trim();
+            const targetSession = String(params.get('session') || '').trim();
 
-            if (!targetView && !targetReport) return;
-            if (targetView && targetView !== 'reports' && !targetReport) return;
-
-            this.currentView = 'reports';
+            if (!targetView && !targetReport && !targetSession) return;
             if (targetReport) {
-                await this.viewReport(targetReport);
+                this.currentView = 'reports';
+                this.appShellRestoreTarget = {
+                    view: 'reports',
+                    sessionId: '',
+                    reportName: targetReport,
+                };
+            } else if (targetView === 'interview' && targetSession) {
+                this.currentView = 'interview';
+                this.appShellRestoreTarget = {
+                    view: 'interview',
+                    sessionId: targetSession,
+                    reportName: '',
+                };
+            } else if (targetView !== 'reports') {
+                return;
+            } else {
+                this.currentView = 'reports';
             }
 
             params.delete('view');
             params.delete('report');
+            params.delete('session');
             const nextQuery = params.toString();
             const nextUrl = `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash || ''}`;
             window.history.replaceState({}, '', nextUrl);
@@ -493,8 +508,15 @@
             this.initGuide();
             await this.loadScenarios();
             await this.consumeInitialEntryRoute();
+            const pendingAppShellRestore = this.consumeAppShellRestoreTarget();
             if (this.currentView === 'reports') {
                 await this.refreshReportsView();
+                const restoreReportName = !this.selectedReport
+                    ? String(pendingAppShellRestore?.reportName || '').trim()
+                    : '';
+                if (restoreReportName) {
+                    await this.viewReport(restoreReportName, { forceReload: false });
+                }
                 if (!this.sessionsLoaded) {
                     this.refreshSessionsView({
                         silent: true,
@@ -504,6 +526,21 @@
                         console.warn('静默刷新会话列表失败:', error);
                     });
                 }
+                return;
+            }
+            if (this.currentView === 'interview') {
+                const restoreSessionId = String(pendingAppShellRestore?.sessionId || '').trim();
+                if (!restoreSessionId) {
+                    this.currentView = 'sessions';
+                    await this.refreshSessionsView();
+                    return;
+                }
+                await this.refreshSessionsView({
+                    silent: true,
+                    preserveListState: true,
+                    suppressErrorToast: true
+                });
+                await this.openSession(restoreSessionId);
                 return;
             }
             if (this.currentView === 'admin' && this.canViewAdminCenter()) {

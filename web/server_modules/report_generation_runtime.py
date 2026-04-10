@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 import re
 import time as _time
 from datetime import datetime
@@ -1299,6 +1300,15 @@ def run_report_generation_job(
         )
 
     try:
+        test_delay_raw = str(os.environ.get("DEEPVISION_TEST_REPORT_GENERATION_DELAY_SECONDS", "") or "").strip()
+        if test_delay_raw:
+            try:
+                test_delay_seconds = max(0.0, min(float(test_delay_raw), 15.0))
+            except (TypeError, ValueError):
+                test_delay_seconds = 0.0
+            if test_delay_seconds > 0:
+                _time.sleep(test_delay_seconds)
+
         requested_action = "regenerate" if str(action or "").strip() == "regenerate" else "generate"
         selected_report_profile = normalize_report_profile_choice(report_profile, fallback=REPORT_V3_PROFILE)
         normalized_source_report_name = normalize_solution_report_filename(source_report_name)

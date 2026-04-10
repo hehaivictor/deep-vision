@@ -1,12 +1,12 @@
 # DeepVision 稳定性提升测试计划 v2
 
-这份计划用于承接当前一轮“完整细致全面测试”的执行，目标是在现有 `harness / smoke / guardrails / browser smoke / evaluator / observe` 能力之上，建立一套可重复、可量化、可阻断发布的稳定性测试方案。计划默认以本地隔离环境为主，云端联调只作为补充，不作为主 gate。
+这份计划用于承接当前一轮“完整细致全面测试”的执行，目标是在现有 `harness / smoke / static_guardrails / browser smoke / evaluator / observe / heartbeat / ops / doc gardener` 能力之上，建立一套可重复、可量化、可阻断发布的稳定性测试方案。计划默认以本地隔离环境为主，云端联调只作为补充，不作为主 gate。
 
 ## 目标
 
 - 从“功能能跑通”升级为“长链路稳定、失败可恢复、状态不污染、性能不过线、问题可定位”
 - 不新增第三套测试框架，所有能力优先复用现有 harness 体系
-- 形成一条专用的 `stability-local` 稳定性专项 lane，作为合并前专项或发布前专项
+- 形成 `stability-local-core` 与 `stability-local-release` 两档稳定性专项 lane，分别用于专项回归和发布前深回归
 - 每个新发现的问题都必须沉淀为自动回归资产，而不是停留在一次性排查结论
 
 ## 默认假设
@@ -15,6 +15,19 @@
 - 执行环境：`本地隔离环境为主`
 - 云端联调：`只做补充验证，不作为主 gate`
 - 本轮不启动第三批系统性模块拆分；测试中发现新的脆弱热点后再单独立项
+
+## 与当前 harness 基线对齐
+
+当前计划默认建立在 phase6 之后的 harness 基线上，执行时优先复用以下能力：
+
+- `python3 scripts/agent_heartbeat.py`：刷新当前阶段、稳定入口和 latest pointer
+- `python3 scripts/agent_ops.py status`：统一查看 phase、覆盖率、latest run、漂移和 blocker
+- `python3 scripts/agent_doc_gardener.py`：确认 mission / planner / calibration / 文档导航一致性
+- `python3 scripts/agent_harness.py`：统一编排 `observe + static_guardrails + guardrails + smoke`
+- `python3 scripts/agent_eval.py`：执行多执行器 evaluator 场景
+- `tests/harness_calibration/*.json`：沉淀 evaluator 误判、放水和稳定性例外样本
+
+稳定性测试不再视为独立于 heartbeat/ops 的旁路计划，而是作为下一条专项执行线接入现有主观察面。
 
 ## 五层测试模型
 
@@ -92,30 +105,49 @@
 - `scripts/agent_eval.py`
 - 相关 harness artifact 摘要
 
-## 稳定性专项 lane：stability-local
+## 稳定性专项 lane
 
-### 定位
+### stability-local-core
 
-- 用途：合并前专项 / 发布前专项
-- 不替代当前 PR 轻量 gate
+定位：
+
+- 用途：日常稳定性专项 / 合并前专项
 - 默认由本地隔离环境驱动
+- 不包含 `live-minimal` 和 10 轮重复执行
 
-### 固定执行顺序
+固定执行顺序：
 
-1. `python3 scripts/agent_observe.py --profile auto`
-2. `python3 scripts/agent_guardrails.py --suite extended`
-3. `python3 scripts/agent_smoke.py --suite extended`
-4. `python3 scripts/agent_browser_smoke.py --suite extended`
-5. `python3 scripts/agent_browser_smoke.py --suite live-minimal`
-6. `python3 scripts/agent_eval.py --tag stability-local`
-7. 连续执行 `stability-local` 共 10 轮
-8. 再次执行 `python3 scripts/agent_observe.py --profile auto`
+1. `python3 scripts/agent_ops.py status`
+2. `python3 scripts/agent_doc_gardener.py`
+3. `python3 scripts/agent_harness.py --profile stability-local-core`
+4. `python3 scripts/agent_eval.py --tag stability-local`
+5. `python3 scripts/agent_observe.py --profile auto`
+6. `python3 scripts/agent_history.py --kind harness --diff`
+
+工件输出：
+
+- `artifacts/harness-runs/stability-local/core`
+
+### stability-local-release
+
+定位：
+
+- 用途：发布前深回归
+- 在 `stability-local-core` 基础上追加真实后端和长稳验证
+
+固定执行顺序：
+
+1. 完整执行 `stability-local-core`
+2. `python3 scripts/agent_harness.py --profile stability-local-release`
+3. 连续执行 `stability-local-release` 共 10 轮
+4. 再次执行 `python3 scripts/agent_ops.py status`
+5. 再次执行 `python3 scripts/agent_observe.py --profile auto`
+
+工件输出：
+
+- `artifacts/harness-runs/stability-local/release`
 
 ### 工件要求
-
-统一输出到：
-
-- `artifacts/harness-runs/stability-local`
 
 必须保留：
 
@@ -123,7 +155,9 @@
 - `progress.md`
 - `failure-summary.md`
 - `handoff.json`
+- `latest.json`
 - 逐轮执行记录
+- `ops` / `observe` / `history diff` 摘要
 
 ## 四个稳定性专项
 
@@ -145,6 +179,7 @@
 - 前端有明确可理解反馈
 - 后端有结构化失败摘要
 - 用户可继续下一步，或明确知道必须重试 / 回退
+- 如果属于 evaluator 判定偏差，也要补 `tests/harness_calibration/*.json` 样本，而不是只补测试场景
 
 ### B. 状态一致性
 
@@ -213,6 +248,7 @@
 - 报告生成与回退链路
 - 登录 / License / 账号状态切换
 - owner / scope / 分享只读边界
+- 对应优先 task：`report-solution`、`presentation-export`、`license-audit`、`license-admin`
 
 ### 第二梯队：专项补充
 
@@ -220,6 +256,7 @@
 - ownership migration / rollback
 - cloud import 预览与治理边界
 - 演示稿 / sidecar / 对象存储元数据一致性
+- 对应优先 task：`ownership-migration`、`config-center`、`cloud-import`
 
 ### 第三梯队：轻量维持
 
@@ -231,10 +268,10 @@
 
 ### 内部入口扩展
 
-- 新增或扩展 harness profile：`stability-local`
-- 新增 evaluator tag：`stability-local`
+- 新增或扩展 harness profile：`stability-local-core`、`stability-local-release`
+- 新增 evaluator tag：`stability-local`，由场景 tag 与内置 alias 共同承接
 - 新增重复执行入口：固定连续运行 10 轮并输出 flaky 汇总
-- 新增观测摘要字段：
+- 新增或扩展现有观测摘要字段，优先挂到 `agent_observe.py` 或 `agent_ops.py` 的 payload 中：
   - `key_latencies`
   - `flaky_summary`
   - `repeat_failures`
@@ -245,16 +282,19 @@
 - L1 / L2：优先补到现有 unittest / regression 文件
 - L3：补到现有 `browser smoke` 套件
 - L4 / L5：补到 `tests/harness_scenarios` 和 `agent_eval`
+- evaluator 判定误差优先补到 `tests/harness_calibration`
 - 不允许新增平行测试脚本绕开现有 harness
 
 ## 验收标准
 
 ### 功能与稳定性
 
+- `agent_doc_gardener.py` 结果保持 `HEALTHY`
+- `agent_ops.py status` 在执行前后都能输出一致的总体健康态
 - `guardrails extended` 全通过
 - `smoke extended` 全通过
 - `browser smoke extended` 全通过
-- `browser smoke live-minimal` 全通过
+- `browser smoke live-minimal` 全通过（仅 release）
 - `evaluator tag=stability-local` 无 FAIL
 
 ### 长稳
@@ -268,22 +308,25 @@
 ### 交付要求
 
 - 每个新发现的真实缺陷，至少沉淀为一个自动回归用例
+- 每个 evaluator 误判或放水问题，至少沉淀为一个 calibration 样本
 - 输出稳定性测试摘要，至少包含：
   - 新增场景
   - 发现缺陷
   - flaky 统计
   - 时延基线
   - 待后续优化项
-- 将 `stability-local` 明确定位为“发布前专项”，不压入默认 PR 轻量 lane
+- 将 `stability-local-core` 定位为“日常专项 / 合并前专项”
+- 将 `stability-local-release` 定位为“发布前专项”，不压入默认 PR 轻量 lane
 
 ## 建议执行顺序
 
-1. 先跑现有入口形成基线缺口清单
+1. 先跑 `heartbeat / ops / doc_gardener / harness / browser / evaluator` 形成基线缺口清单
 2. 补失败注入与降级
 3. 补状态一致性与恢复能力
 4. 补幂等与状态污染
-5. 接入 `stability-local` 与 10 轮重复执行
-6. 收口观测摘要和验收口径
+5. 接入 `stability-local-core`
+6. 接入 `stability-local-release` 与 10 轮重复执行
+7. 收口观测摘要、校准样本和验收口径
 
 ## 进度记录要求
 

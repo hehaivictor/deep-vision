@@ -1,0 +1,48 @@
+{
+  "name": "stability-failure-degrade",
+  "category": "ops",
+  "description": "覆盖配置缺失、视觉异常、对象存储失败、演示稿下载失败，以及问题/报告链路的关键降级行为。",
+  "tags": [
+    "stability-local",
+    "stability-local-core",
+    "ops",
+    "degrade"
+  ],
+  "budgets": {
+    "max_duration_ms": 240000
+  },
+  "cases": [
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_wechat_start_returns_503_when_config_incomplete",
+      "label": "微信配置缺失返回明确 503"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_document_upload_image_degrades_when_vision_disabled",
+      "label": "视觉禁用时图片上传降级"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_document_upload_image_degrades_when_vision_api_times_out",
+      "label": "视觉接口超时时图片上传降级"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_document_upload_succeeds_when_object_storage_archive_fails",
+      "label": "对象存储归档失败时保留解析结果"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_refly_generation_keeps_pdf_link_when_download_fails",
+      "label": "演示稿下载失败时保留 PDF 链接"
+    },
+    {
+      "test_id": "tests.test_question_fast_strategy.QuestionFastStrategyTests.test_ai_search_decision_degrades_on_rate_limit_without_retry",
+      "label": "联网搜索决策限流降级"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_generate_report_v3_pipeline_falls_back_to_alternate_draft_lane_once",
+      "label": "报告 draft lane 失败回退"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_generate_report_v3_pipeline_recovers_from_review_parse_failure_via_repair",
+      "label": "报告 review parse 失败恢复"
+    }
+  ]
+}

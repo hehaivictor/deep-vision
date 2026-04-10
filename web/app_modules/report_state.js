@@ -409,6 +409,7 @@
             if (this.reportDetailModel) {
                 this.reportDetailModel.mobileNavOpen = false;
             }
+            this.replaceAppEntryRoute({ view: 'reports' });
         },
 
         resetSelectedReportDetail() {
@@ -421,6 +422,9 @@
             this.presentationLocalUrl = '';
             this.stopPresentationPolling();
             this.resetPresentationProgressFeedback();
+            if (this.currentView === 'reports') {
+                this.replaceAppEntryRoute({ view: 'reports' });
+            }
         },
 
         scheduleReportDetailEnhancement(options = {}) {

@@ -627,10 +627,17 @@ class ComprehensiveScriptTests(unittest.TestCase):
                 "solution-share",
                 "admin-config-entry",
                 "solution-public-readonly",
+                "solution-public-readonly-refresh",
                 "login-view",
+                "login-sms-only-view",
+                "login-wechat-only-view",
                 "license-gate-view",
                 "license-activate-success",
+                "license-activate-refresh",
                 "report-detail-flow",
+                "report-detail-refresh",
+                "interview-refresh",
+                "report-generation-refresh",
                 "admin-config-tab",
             ],
             extended_ids,
@@ -644,6 +651,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertEqual(
             [
                 "live-login-license-flow",
+                "live-report-generation-refresh",
                 "live-report-solution-flow",
                 "live-solution-public-share-flow",
             ],
@@ -746,9 +754,12 @@ class ComprehensiveScriptTests(unittest.TestCase):
         extended_browser_target = next(item for item in scenarios if item.name == "browser-smoke-extended")
         self.assertEqual("browser_smoke", extended_browser_target.executor)
         self.assertEqual("extended", extended_browser_target.executor_config["suite"])
+        self.assertIn("stability-local", extended_browser_target.tags)
+        self.assertIn("stability-local-core", extended_browser_target.tags)
         live_browser_target = next(item for item in scenarios if item.name == "browser-smoke-live-minimal")
         self.assertEqual("browser_smoke", live_browser_target.executor)
         self.assertEqual("live-minimal", live_browser_target.executor_config["suite"])
+        self.assertIn("stability-local-release", live_browser_target.tags)
         live_extended_browser_target = next(item for item in scenarios if item.name == "browser-smoke-live-extended")
         self.assertEqual("browser_smoke", live_extended_browser_target.executor)
         self.assertEqual("live-extended", live_extended_browser_target.executor_config["suite"])
@@ -780,6 +791,14 @@ class ComprehensiveScriptTests(unittest.TestCase):
                 for case in env_target.cases
             )
         )
+        stability_targets = agent_eval.filter_scenarios(scenarios, tags=["stability-local"])
+        stability_names = {item.name for item in stability_targets}
+        self.assertIn("stability-failure-degrade", stability_names)
+        self.assertIn("browser-smoke-extended", stability_names)
+        self.assertIn("report-solution-core", stability_names)
+        self.assertIn("access-boundaries", stability_names)
+        self.assertIn("asset-ownership-boundaries", stability_names)
+        self.assertNotIn("browser-smoke-live-minimal", stability_names)
         tenant_target = next(item for item in scenarios if item.name == "instance-scope-boundaries")
         self.assertTrue(any(sample["name"] == "tenant-leak-must-fail" for sample in tenant_target.calibration_samples))
         asset_target = next(item for item in scenarios if item.name == "asset-ownership-boundaries")
@@ -2902,6 +2921,104 @@ class ComprehensiveScriptTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         browser_result = next(item for item in payload["results"] if item["name"] == "browser_smoke")
         self.assertEqual("PASS", browser_result["status"])
+
+    def test_agent_harness_stability_local_core_profile_applies_lane_defaults(self):
+        observed_doctor_profiles = []
+        observed_observe_profiles = []
+        observed_guardrails_suites = []
+        observed_browser_suites = []
+
+        def fake_doctor_stage(**kwargs):
+            observed_doctor_profiles.append(kwargs["profile"])
+            return self._make_harness_execution(name="doctor", status="PASS", exit_code=0, detail="doctor ok")
+
+        def fake_observe_stage(**kwargs):
+            observed_observe_profiles.append(kwargs["profile"])
+            return self._make_harness_execution(name="observe", status="PASS", exit_code=0, detail="observe ok")
+
+        def fake_suite_stage(**kwargs):
+            observed_guardrails_suites.append((kwargs["stage_name"], kwargs["suite_name"]))
+            return self._make_harness_execution(name=kwargs["stage_name"], status="PASS", exit_code=0, detail=f"{kwargs['stage_name']} ok")
+
+        def fake_browser_stage(**kwargs):
+            observed_browser_suites.append(kwargs["suite_name"])
+            return self._make_harness_execution(name="browser_smoke", status="PASS", exit_code=0, detail="browser ok")
+
+        with patch.object(agent_harness, "run_doctor_stage", side_effect=fake_doctor_stage), patch.object(
+            agent_harness,
+            "run_observe_stage",
+            side_effect=fake_observe_stage,
+        ), patch.object(
+            agent_harness,
+            "run_static_guardrails_stage",
+            return_value=self._make_harness_execution(name="static_guardrails", status="PASS", exit_code=0, detail="static ok"),
+        ), patch.object(
+            agent_harness,
+            "run_suite_stage",
+            side_effect=fake_suite_stage,
+        ), patch.object(
+            agent_harness,
+            "run_browser_smoke_stage",
+            side_effect=fake_browser_stage,
+        ):
+            stdout = io.StringIO()
+            with patch("sys.stdout", stdout):
+                exit_code = agent_harness.main(["--profile", "stability-local-core", "--json"])
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(["auto"], observed_doctor_profiles)
+        self.assertEqual(["auto"], observed_observe_profiles)
+        self.assertEqual(
+            [("guardrails", "extended"), ("smoke", "extended")],
+            observed_guardrails_suites,
+        )
+        self.assertEqual(["extended"], observed_browser_suites)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual("READY", payload["overall"])
+        stage_names = [item["name"] for item in payload["results"]]
+        self.assertIn("observe", stage_names)
+        self.assertIn("browser_smoke", stage_names)
+
+    def test_agent_harness_stability_local_release_profile_uses_live_minimal_browser_suite(self):
+        observed_browser_suites = []
+
+        with patch.object(
+            agent_harness,
+            "run_doctor_stage",
+            return_value=self._make_harness_execution(name="doctor", status="PASS", exit_code=0, detail="doctor ok"),
+        ), patch.object(
+            agent_harness,
+            "run_observe_stage",
+            return_value=self._make_harness_execution(name="observe", status="PASS", exit_code=0, detail="observe ok"),
+        ), patch.object(
+            agent_harness,
+            "run_static_guardrails_stage",
+            return_value=self._make_harness_execution(name="static_guardrails", status="PASS", exit_code=0, detail="static ok"),
+        ), patch.object(
+            agent_harness,
+            "run_suite_stage",
+            side_effect=[
+                self._make_harness_execution(name="guardrails", status="PASS", exit_code=0, detail="guardrails ok"),
+                self._make_harness_execution(name="smoke", status="PASS", exit_code=0, detail="smoke ok"),
+            ],
+        ), patch.object(
+            agent_harness,
+            "run_browser_smoke_stage",
+            side_effect=lambda **kwargs: observed_browser_suites.append(kwargs["suite_name"]) or self._make_harness_execution(
+                name="browser_smoke",
+                status="PASS",
+                exit_code=0,
+                detail="browser ok",
+            ),
+        ):
+            stdout = io.StringIO()
+            with patch("sys.stdout", stdout):
+                exit_code = agent_harness.main(["--profile", "stability-local-release", "--json"])
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual(["live-minimal"], observed_browser_suites)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual("READY", payload["overall"])
 
     def test_agent_workflow_preview_executes_safe_steps_and_skips_apply(self):
         profile = agent_profiles.get_task_profile("ownership-migration")

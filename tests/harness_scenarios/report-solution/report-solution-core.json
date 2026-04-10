@@ -5,7 +5,9 @@
   "tags": [
     "nightly",
     "core",
-    "report"
+    "report",
+    "stability-local",
+    "stability-local-core"
   ],
   "budgets": {
     "max_duration_ms": 180000

@@ -1622,6 +1622,27 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.server.exchange_wechat_code_for_token = old_exchange
             self.server.fetch_wechat_user_profile = old_profile
 
+    def test_wechat_start_returns_503_when_config_incomplete(self):
+        old_enabled = self.server.WECHAT_LOGIN_ENABLED
+        old_app_id = self.server.WECHAT_APP_ID
+        old_secret = self.server.WECHAT_APP_SECRET
+        old_redirect = self.server.WECHAT_REDIRECT_URI
+        try:
+            self.server.WECHAT_LOGIN_ENABLED = True
+            self.server.WECHAT_APP_ID = ""
+            self.server.WECHAT_APP_SECRET = ""
+            self.server.WECHAT_REDIRECT_URI = "http://localhost:5001/api/auth/wechat/callback"
+
+            response = self.client.get("/api/auth/wechat/start?return_to=/index.html")
+            self.assertEqual(response.status_code, 503, response.get_data(as_text=True))
+            payload = response.get_json() or {}
+            self.assertIn("配置不完整", payload.get("error", ""))
+        finally:
+            self.server.WECHAT_LOGIN_ENABLED = old_enabled
+            self.server.WECHAT_APP_ID = old_app_id
+            self.server.WECHAT_APP_SECRET = old_secret
+            self.server.WECHAT_REDIRECT_URI = old_redirect
+
     def test_wechat_auth_normalizes_nickname_and_prefers_nickname_account(self):
         old_enabled = self.server.WECHAT_LOGIN_ENABLED
         old_app_id = self.server.WECHAT_APP_ID
@@ -2904,6 +2925,158 @@ class ComprehensiveApiTests(unittest.TestCase):
 
         invalid_name = self.client.delete(f"/api/sessions/{session_id}/documents/../hack.md")
         self.assertEqual(invalid_name.status_code, 400)
+
+    def test_document_upload_image_degrades_when_vision_disabled(self):
+        self._register()
+        license_code = self._generate_license_batch(note="图片上传降级测试")["licenses"][0]["code"]
+        self._activate_license(license_code)
+        session_id = self._create_session(topic="图片上传降级测试")["session_id"]
+        old_enable_vision = self.server.ENABLE_VISION
+        try:
+            self.server.ENABLE_VISION = False
+            upload_resp = self.client.post(
+                f"/api/sessions/{session_id}/documents",
+                data={"file": (io.BytesIO(b"\x89PNG\r\nfake-image"), "diagram.png")},
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(upload_resp.status_code, 200, upload_resp.get_data(as_text=True))
+            payload = upload_resp.get_json() or {}
+            uploaded_document = payload.get("uploaded_document") or {}
+            self.assertEqual(uploaded_document.get("name"), "diagram.png")
+            self.assertIn("视觉功能已禁用", uploaded_document.get("content", ""))
+        finally:
+            self.server.ENABLE_VISION = old_enable_vision
+
+    def test_document_upload_image_degrades_when_vision_api_times_out(self):
+        self._register()
+        license_code = self._generate_license_batch(note="视觉超时降级测试")["licenses"][0]["code"]
+        self._activate_license(license_code)
+        session_id = self._create_session(topic="视觉超时降级测试")["session_id"]
+        old_enable_vision = self.server.ENABLE_VISION
+        old_api_key = self.server.ZHIPU_API_KEY
+        old_vision_url = self.server.VISION_API_URL
+        old_requests_post = self.server.requests.post
+        try:
+            self.server.ENABLE_VISION = True
+            self.server.ZHIPU_API_KEY = "mock-zhipu-key"
+            self.server.VISION_API_URL = "https://vision.mock.local/api"
+
+            def _raise_timeout(*_args, **_kwargs):
+                raise self.server.requests.exceptions.Timeout("simulated vision timeout")
+
+            self.server.requests.post = _raise_timeout
+            upload_resp = self.client.post(
+                f"/api/sessions/{session_id}/documents",
+                data={"file": (io.BytesIO(b"\x89PNG\r\nfake-image"), "timeout.png")},
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(upload_resp.status_code, 200, upload_resp.get_data(as_text=True))
+            payload = upload_resp.get_json() or {}
+            uploaded_document = payload.get("uploaded_document") or {}
+            self.assertEqual(uploaded_document.get("name"), "timeout.png")
+            self.assertIn("API 超时", uploaded_document.get("content", ""))
+        finally:
+            self.server.ENABLE_VISION = old_enable_vision
+            self.server.ZHIPU_API_KEY = old_api_key
+            self.server.VISION_API_URL = old_vision_url
+            self.server.requests.post = old_requests_post
+
+    def test_document_upload_succeeds_when_object_storage_archive_fails(self):
+        self._register()
+        license_code = self._generate_license_batch(note="对象存储降级测试")["licenses"][0]["code"]
+        self._activate_license(license_code)
+        session_id = self._create_session(topic="对象存储降级测试")["session_id"]
+        original_is_enabled = self.server.is_object_storage_enabled
+        original_upload = self.server.upload_file_to_object_storage
+        self.server.is_object_storage_enabled = lambda: True
+
+        def _raise_upload_failure(*_args, **_kwargs):
+            raise RuntimeError("simulated object storage outage")
+
+        self.server.upload_file_to_object_storage = _raise_upload_failure
+        self.addCleanup(setattr, self.server, "is_object_storage_enabled", original_is_enabled)
+        self.addCleanup(setattr, self.server, "upload_file_to_object_storage", original_upload)
+
+        upload_resp = self.client.post(
+            f"/api/sessions/{session_id}/documents",
+            data={"file": (io.BytesIO(b"# archive fallback\ncontent"), "note.md")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(upload_resp.status_code, 200, upload_resp.get_data(as_text=True))
+        payload = upload_resp.get_json() or {}
+        self.assertTrue(payload.get("success"))
+        self.assertIn("对象存储失败", payload.get("archive_warning", ""))
+        uploaded_document = payload.get("uploaded_document") or {}
+        self.assertEqual(uploaded_document.get("name"), "note.md")
+        self.assertIn("对象存储失败", uploaded_document.get("archive_warning", ""))
+        self.assertFalse(uploaded_document.get("object_key"))
+
+        get_session_resp = self.client.get(f"/api/sessions/{session_id}")
+        self.assertEqual(get_session_resp.status_code, 200, get_session_resp.get_data(as_text=True))
+        materials = get_session_resp.get_json().get("reference_materials", [])
+        self.assertEqual(len(materials), 1)
+        self.assertIn("对象存储失败", materials[0].get("archive_warning", ""))
+
+    def test_refly_generation_keeps_pdf_link_when_download_fails(self):
+        user = self._register()
+        professional_code = self._generate_license_batch(level_key="professional", note="演示稿下载降级测试")["licenses"][0]["code"]
+        self._activate_license(professional_code)
+        report_name = self._create_owned_report(int(user["id"]), topic="演示稿下载失败保留链接")
+
+        original_is_refly_configured = self.server.is_refly_configured
+        original_upload_refly_file = self.server.upload_refly_file
+        original_run_refly_workflow = self.server.run_refly_workflow
+        original_get_execution_owner_report = self.server.get_execution_owner_report
+        original_poll_refly_execution = self.server.poll_refly_execution
+        original_wait_for_refly_output_ready = self.server.wait_for_refly_output_ready
+        original_extract_pdf_url_from_output = self.server.extract_pdf_url_from_output
+        original_select_best_refly_candidate = self.server.select_best_refly_candidate
+        original_download_presentation_file = self.server.download_presentation_file
+        try:
+            self.server.is_refly_configured = lambda: True
+            self.server.upload_refly_file = lambda _path: {"data": {"files": [{"key": "mock-file-key"}]}}
+            self.server.run_refly_workflow = lambda _report, file_keys=None: {"data": {"executionId": "exec-stability"}}
+            self.server.get_execution_owner_report = lambda _execution_id: ""
+            self.server.poll_refly_execution = lambda _execution_id: {"status": "SUCCEEDED"}
+            self.server.wait_for_refly_output_ready = lambda _execution_id: {"status": "ready"}
+            self.server.extract_pdf_url_from_output = lambda _payload: "https://example.com/presentation.pdf"
+            self.server.select_best_refly_candidate = lambda _payload, _presentation_url: {
+                "url": "https://example.com/presentation.pdf",
+                "name": "presentation.pdf",
+            }
+
+            def _raise_download_failure(*_args, **_kwargs):
+                raise RuntimeError("simulated presentation download failure")
+
+            self.server.download_presentation_file = _raise_download_failure
+
+            presentation_resp = self.client.post(f"/api/reports/{report_name}/refly")
+            self.assertEqual(presentation_resp.status_code, 200, presentation_resp.get_data(as_text=True))
+            payload = presentation_resp.get_json() or {}
+            self.assertEqual("https://example.com/presentation.pdf", payload.get("pdf_url"))
+            self.assertEqual("https://example.com/presentation.pdf", payload.get("presentation_url"))
+            self.assertFalse(payload.get("presentation_local_url"))
+
+            status_resp = self.client.get(f"/api/reports/{report_name}/presentation/status")
+            self.assertEqual(status_resp.status_code, 200, status_resp.get_data(as_text=True))
+            status_payload = status_resp.get_json() or {}
+            self.assertTrue(status_payload.get("exists"))
+            self.assertEqual("https://example.com/presentation.pdf", status_payload.get("pdf_url"))
+            self.assertEqual("", status_payload.get("presentation_local_url"))
+
+            link_resp = self.client.get(f"/api/reports/{report_name}/presentation/link")
+            self.assertEqual(link_resp.status_code, 302)
+            self.assertEqual("https://example.com/presentation.pdf", link_resp.headers.get("Location"))
+        finally:
+            self.server.is_refly_configured = original_is_refly_configured
+            self.server.upload_refly_file = original_upload_refly_file
+            self.server.run_refly_workflow = original_run_refly_workflow
+            self.server.get_execution_owner_report = original_get_execution_owner_report
+            self.server.poll_refly_execution = original_poll_refly_execution
+            self.server.wait_for_refly_output_ready = original_wait_for_refly_output_ready
+            self.server.extract_pdf_url_from_output = original_extract_pdf_url_from_output
+            self.server.select_best_refly_candidate = original_select_best_refly_candidate
+            self.server.download_presentation_file = original_download_presentation_file
 
     def test_document_delete_by_doc_id_keeps_same_name_files(self):
         self._register()

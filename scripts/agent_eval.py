@@ -50,6 +50,10 @@ from scripts.agent_test_runner import run_suite_process
 
 
 FAILURE_PATTERN = re.compile(r"^(?:FAIL|ERROR): .*?\(([^)]+)\)$", re.MULTILINE)
+TAG_ALIASES = {
+    "stability-local": ("stability-local", "stability-local-core"),
+    "stability-local-release": ("stability-local-release",),
+}
 
 
 @dataclass(frozen=True)
@@ -501,7 +505,12 @@ def filter_scenarios(
 ) -> list[EvalScenario]:
     scenario_set = {str(item or "").strip() for item in scenario_names or [] if str(item or "").strip()}
     category_set = {str(item or "").strip() for item in categories or [] if str(item or "").strip()}
-    tag_set = {str(item or "").strip() for item in tags or [] if str(item or "").strip()}
+    tag_set: set[str] = set()
+    for raw_tag in tags or []:
+        tag = str(raw_tag or "").strip()
+        if not tag:
+            continue
+        tag_set.update(TAG_ALIASES.get(tag, (tag,)))
 
     selected: list[EvalScenario] = []
     for scenario in scenarios:

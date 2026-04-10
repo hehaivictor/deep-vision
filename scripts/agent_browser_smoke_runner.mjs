@@ -37,6 +37,7 @@ const LIVE_UV_WITH_ARGS = [
   'boto3',
 ];
 const LIVE_REPORT_TITLE = '真实浏览器方案验证报告';
+const LIVE_REPORT_GENERATION_SESSION_TITLE = '真实浏览器报告生成恢复会话';
 const LIVE_HELPER_SCRIPT = String.raw`#!/usr/bin/env python3
 import argparse
 import importlib.util
@@ -120,6 +121,125 @@ def run_lookup_user(args):
     }, ensure_ascii=False))
 
 
+def run_seed_session(args):
+    server = load_server()
+    owner_user_id = int(args.owner_user_id)
+    title = str(args.title or "").strip() or "真实浏览器报告生成恢复会话"
+    now = server.get_utc_now()
+    session_id = server.generate_session_id()
+    dimensions = {
+        "customer_needs": {
+            "coverage": 100,
+            "items": [{"name": "刷新后继续跟踪报告生成"}],
+            "score": None,
+        },
+        "business_process": {
+            "coverage": 100,
+            "items": [{"name": "生成中切页后仍保留会话上下文"}],
+            "score": None,
+        },
+        "tech_constraints": {
+            "coverage": 100,
+            "items": [{"name": "依赖状态接口轮询恢复生成进度"}],
+            "score": None,
+        },
+        "project_constraints": {
+            "coverage": 100,
+            "items": [{"name": "不要求用户手动重新触发生成"}],
+            "score": None,
+        },
+    }
+    interview_log = [
+        {
+            "question": "这轮真链路恢复的目标是什么？",
+            "answer": "刷新页面后仍要保留正在生成的报告进度。",
+            "dimension": "customer_needs",
+            "is_follow_up": False,
+            "answer_mode": "pick_with_reason",
+            "requires_rationale": True,
+            "evidence_intent": "high",
+            "answer_evidence_class": "explicit",
+            "quality_score": 0.92,
+            "needs_follow_up": False,
+            "user_skip_follow_up": False,
+        },
+        {
+            "question": "业务上最关键的恢复行为是什么？",
+            "answer": "切页或刷新后仍回到当前会话，而不是退回列表。",
+            "dimension": "business_process",
+            "is_follow_up": False,
+            "answer_mode": "pick_with_reason",
+            "requires_rationale": True,
+            "evidence_intent": "high",
+            "answer_evidence_class": "explicit",
+            "quality_score": 0.9,
+            "needs_follow_up": False,
+            "user_skip_follow_up": False,
+        },
+        {
+            "question": "技术上依赖什么来恢复生成状态？",
+            "answer": "依赖报告生成状态接口和 app shell 恢复目标协同工作。",
+            "dimension": "tech_constraints",
+            "is_follow_up": False,
+            "answer_mode": "pick_with_reason",
+            "requires_rationale": True,
+            "evidence_intent": "high",
+            "answer_evidence_class": "explicit",
+            "quality_score": 0.91,
+            "needs_follow_up": False,
+            "user_skip_follow_up": False,
+        },
+        {
+            "question": "这轮验证最重要的约束是什么？",
+            "answer": "用户刷新后不需要重新发起报告生成。",
+            "dimension": "project_constraints",
+            "is_follow_up": False,
+            "answer_mode": "pick_with_reason",
+            "requires_rationale": True,
+            "evidence_intent": "high",
+            "answer_evidence_class": "explicit",
+            "quality_score": 0.9,
+            "needs_follow_up": False,
+            "user_skip_follow_up": False,
+        },
+    ]
+    session = {
+        "session_id": session_id,
+        "owner_user_id": owner_user_id,
+        server.INSTANCE_SCOPE_FIELD: server.get_active_instance_scope_key(),
+        "topic": title,
+        "description": "真实浏览器 smoke 报告生成恢复验证夹具",
+        "interview_mode": "standard",
+        "created_at": now,
+        "updated_at": now,
+        "status": "in_progress",
+        "scenario_id": "",
+        "scenario_config": {"name": title},
+        "dimensions": dimensions,
+        "reference_materials": [],
+        "interview_log": interview_log,
+        "requirements": [],
+        "summary": None,
+        "depth_v2": {
+            "enabled": True,
+            "mode": "standard",
+            "skip_followup_confirm": False,
+        },
+    }
+    if hasattr(server, "refresh_session_evidence_ledger"):
+        try:
+            server.refresh_session_evidence_ledger(session)
+        except Exception:
+            pass
+    session_path = server.SESSIONS_DIR / f"{session_id}.json"
+    server.save_session_json_and_sync(session_path, session)
+    print(json.dumps({
+        "session_id": session_id,
+        "title": title,
+        "session_path": str(session_path),
+    }, ensure_ascii=False))
+
+
 def main():
     parser = argparse.ArgumentParser(description="DeepVision browser live helper")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -139,6 +259,11 @@ def main():
     p_lookup = subparsers.add_parser("lookup-user")
     p_lookup.add_argument("--account", required=True)
     p_lookup.set_defaults(func=run_lookup_user)
+
+    p_seed_session = subparsers.add_parser("seed-session")
+    p_seed_session.add_argument("--owner-user-id", required=True, type=int)
+    p_seed_session.add_argument("--title", default="")
+    p_seed_session.set_defaults(func=run_seed_session)
 
     args = parser.parse_args()
     args.func(args)
@@ -184,8 +309,18 @@ function safeText(value, fallback = '') {
   return text || fallback;
 }
 
+function cloneJsonValue(value) {
+  if (value === undefined) return undefined;
+  return JSON.parse(JSON.stringify(value));
+}
+
 function json(body) {
   return JSON.stringify(body);
+}
+
+function isIgnorableConsoleError(text) {
+  const normalized = safeText(text);
+  return normalized.includes('net::ERR_CONNECTION_CLOSED');
 }
 
 function buildSolutionPayload() {
@@ -243,6 +378,145 @@ function buildReportsPayload() {
       report_profile: 'balanced',
     },
   ];
+}
+
+function buildSessionsPayload() {
+  return [
+    {
+      session_id: 'session-demo-001',
+      topic: '售后回访试点会话',
+      description: '验证访谈刷新恢复与当前问题保持一致。',
+      created_at: '2026-04-01T08:00:00Z',
+      updated_at: '2026-04-01T08:05:00Z',
+      status: 'in_progress',
+      interview_count: 1,
+      scenario_config: {
+        name: '售后回访试点',
+      },
+      dimensions: {
+        customer_needs: {
+          coverage: 45,
+          items: [{ name: '缩短回访闭环时长' }],
+        },
+        business_process: {
+          coverage: 20,
+          items: [{ name: '统一分发入口' }],
+        },
+        tech_constraints: {
+          coverage: 0,
+          items: [],
+        },
+        project_constraints: {
+          coverage: 0,
+          items: [],
+        },
+      },
+      interview_log: [
+        {
+          question: '目前试点阶段最主要的目标是什么？',
+          answer: '先验证售后回访闭环的归因和分发效率。',
+          dimension: 'customer_needs',
+        },
+      ],
+    },
+    {
+      session_id: 'session-report-001',
+      topic: '报告生成恢复验证会话',
+      description: '验证报告生成中刷新页面后仍能恢复进度。',
+      created_at: '2026-04-01T09:00:00Z',
+      updated_at: '2026-04-01T09:06:00Z',
+      status: 'in_progress',
+      interview_count: 4,
+      scenario_config: {
+        name: '报告生成恢复验证',
+      },
+      dimensions: {
+        customer_needs: {
+          coverage: 100,
+          items: [{ name: '确保刷新后生成进度不丢失' }],
+        },
+        business_process: {
+          coverage: 100,
+          items: [{ name: '生成中切页后可继续跟踪' }],
+        },
+        tech_constraints: {
+          coverage: 100,
+          items: [{ name: '前端通过状态接口恢复' }],
+        },
+        project_constraints: {
+          coverage: 100,
+          items: [{ name: '不要求用户手动重新发起生成' }],
+        },
+      },
+      interview_log: [
+        {
+          question: '这次恢复链路最关键的目标是什么？',
+          answer: '刷新页面后不要丢失报告生成进度。',
+          dimension: 'customer_needs',
+        },
+      ],
+    },
+  ];
+}
+
+function buildSessionDetailPayload() {
+  return {
+    ...buildSessionsPayload()[0],
+    reference_materials: [
+      {
+        name: '售后回访试点纪要.md',
+        source: 'upload',
+      },
+    ],
+    documents: [
+      {
+        name: '售后回访试点纪要.md',
+        type: 'markdown',
+      },
+    ],
+  };
+}
+
+function buildReportGenerationSessionDetailPayload() {
+  const summary = buildSessionsPayload().find((item) => item.session_id === 'session-report-001') || {};
+  return {
+    ...summary,
+    reference_materials: [
+      {
+        name: '报告恢复专项纪要.md',
+        source: 'upload',
+      },
+    ],
+    documents: [
+      {
+        name: '报告恢复专项纪要.md',
+        type: 'markdown',
+      },
+    ],
+  };
+}
+
+function buildNextQuestionPayload() {
+  return {
+    question: '目前最影响售后回访闭环效率的环节是什么？',
+    options: [
+      '问题归因不统一',
+      '线索分发过慢',
+      '复盘节奏不稳定',
+      '系统记录不完整',
+    ],
+    multiSelect: false,
+    ai_generated: true,
+    question_generation_tier: 'primary',
+    question_selected_lane: 'primary',
+    question_runtime_profile: 'balanced',
+    question_hedge_triggered: false,
+    question_fallback_triggered: false,
+    decision_meta: {
+      lane: 'primary',
+      planner_mode: 'standard',
+    },
+  };
 }
 
 function buildReportDetailPayload() {
@@ -601,6 +875,7 @@ function buildLiveEnvFile(port) {
     'SMS_PROVIDER=mock',
     `SMS_TEST_CODE=${LIVE_SMS_CODE}`,
     'LICENSE_ENFORCEMENT_ENABLED=true',
+    'DEEPVISION_TEST_REPORT_GENERATION_DELAY_SECONDS=5',
     'SERVER_HOST=127.0.0.1',
     `SERVER_PORT=${port}`,
   ].join('\n') + '\n';
@@ -707,10 +982,21 @@ async function startLiveBackend() {
 function buildApiHandler(baseUrl, options = {}) {
   const solutionPayload = options.solutionPayload || buildSolutionPayload();
   const reportsPayload = options.reportsPayload || buildReportsPayload();
+  const sessionsPayload = options.sessionsPayload || buildSessionsPayload();
+  const sessionDetailPayload = options.sessionDetailPayload || buildSessionDetailPayload();
+  const reportGenerationSessionDetailPayload = options.reportGenerationSessionDetailPayload || buildReportGenerationSessionDetailPayload();
+  const nextQuestionPayload = options.nextQuestionPayload || buildNextQuestionPayload();
   const reportDetailPayload = options.reportDetailPayload || buildReportDetailPayload();
-  const statusPayload = options.statusPayload || buildStatusPayload();
-  const licenseCurrentPayload = options.licenseCurrentPayload || buildLicenseCurrentPayload(statusPayload);
-  const licenseActivatePayload = options.licenseActivatePayload || null;
+  let reportGenerationStatusBySession = {
+    'session-demo-001': { active: false, state: 'idle' },
+    'session-report-001': { active: false, state: 'idle' },
+  };
+  const initialStatusPayload = cloneJsonValue(options.statusPayload || buildStatusPayload());
+  let currentStatusPayload = cloneJsonValue(initialStatusPayload);
+  let currentLicenseCurrentPayload = cloneJsonValue(
+    options.licenseCurrentPayload || buildLicenseCurrentPayload(currentStatusPayload),
+  );
+  const licenseActivatePayload = cloneJsonValue(options.licenseActivatePayload || null);
   const configPayload = buildConfigPayload();
   return async (route) => {
     const url = new URL(route.request().url());
@@ -723,18 +1009,38 @@ function buildApiHandler(baseUrl, options = {}) {
     const method = route.request().method().toUpperCase();
 
     if (method === 'GET' && pathname === '/api/status') {
-      await route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: json(statusPayload) });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: json(currentStatusPayload),
+      });
       return;
     }
     if (method === 'GET' && pathname === '/api/licenses/current') {
       await route.fulfill({
         status: 200,
         contentType: 'application/json; charset=utf-8',
-        body: json(licenseCurrentPayload),
+        body: json(currentLicenseCurrentPayload),
       });
       return;
     }
     if (method === 'POST' && pathname === '/api/licenses/activate' && licenseActivatePayload) {
+      const nextLicenseCurrentPayload = cloneJsonValue(licenseActivatePayload);
+      currentLicenseCurrentPayload = nextLicenseCurrentPayload;
+      currentStatusPayload = {
+        ...currentStatusPayload,
+        authenticated: true,
+        has_valid_license: Boolean(nextLicenseCurrentPayload?.has_valid_license),
+        status: safeText(nextLicenseCurrentPayload?.status, currentStatusPayload?.status || 'active'),
+        license_enforcement_enabled: Boolean(
+          nextLicenseCurrentPayload?.enforcement_enabled ?? currentStatusPayload?.license_enforcement_enabled,
+        ),
+        license: {
+          has_valid_license: Boolean(nextLicenseCurrentPayload?.has_valid_license),
+          status: safeText(nextLicenseCurrentPayload?.status, currentStatusPayload?.status || 'active'),
+          license: cloneJsonValue(nextLicenseCurrentPayload?.license || null),
+        },
+      };
       await route.fulfill({
         status: 200,
         contentType: 'application/json; charset=utf-8',
@@ -747,7 +1053,75 @@ function buildApiHandler(baseUrl, options = {}) {
       return;
     }
     if (method === 'GET' && pathname === '/api/sessions') {
-      await route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: json([]) });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: json(sessionsPayload),
+      });
+      return;
+    }
+    if (method === 'GET' && pathname === '/api/sessions/session-demo-001') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: json(sessionDetailPayload),
+      });
+      return;
+    }
+    if (method === 'GET' && pathname === '/api/sessions/session-report-001') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: json(reportGenerationSessionDetailPayload),
+      });
+      return;
+    }
+    if (method === 'POST' && pathname === '/api/sessions/session-demo-001/next-question') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: json(nextQuestionPayload),
+      });
+      return;
+    }
+    if (method === 'POST' && pathname === '/api/sessions/session-report-001/generate-report') {
+      const now = nowIso();
+      reportGenerationStatusBySession['session-report-001'] = {
+        active: true,
+        state: 'generating',
+        action: 'generate',
+        progress: 42,
+        stage_index: 3,
+        total_stages: 6,
+        started_at: '2026-04-01T09:06:00Z',
+        updated_at: now,
+        message: '正在生成访谈报告',
+        report_profile: 'balanced',
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: json(reportGenerationStatusBySession['session-report-001']),
+      });
+      return;
+    }
+    if (method === 'GET' && pathname === '/api/status/report-generation/session-demo-001') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: json({
+          active: false,
+          state: 'idle',
+        }),
+      });
+      return;
+    }
+    if (method === 'GET' && pathname === '/api/status/report-generation/session-report-001') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: json(reportGenerationStatusBySession['session-report-001'] || { active: false, state: 'idle' }),
+      });
       return;
     }
     if (method === 'GET' && pathname === '/api/reports') {
@@ -850,7 +1224,11 @@ async function runWithPage(browser, baseUrl, initScript, callback, initArg = und
   });
   page.on('console', (message) => {
     if (message.type() === 'error') {
-      errors.push(`console.error: ${safeText(message.text())}`);
+      const text = safeText(message.text());
+      if (isIgnorableConsoleError(text)) {
+        return;
+      }
+      errors.push(`console.error: ${text}`);
     }
   });
   if (apiMode === 'mock') {
@@ -1079,6 +1457,48 @@ async function ensureLiveReportFixture(page, liveContext) {
   return liveContext.reportFixture;
 }
 
+async function ensureLiveReportGenerationSessionFixture(page, liveContext) {
+  if (liveContext.reportGenerationSessionFixture) {
+    return liveContext.reportGenerationSessionFixture;
+  }
+  let currentUser = liveContext.userRecord || null;
+  if (!currentUser?.id) {
+    await performLiveLoginAndLicense(page, liveContext.baseUrl, liveContext);
+    currentUser = await lookupLiveUserRecord(liveContext);
+  }
+  const result = await runLiveHelper(
+    liveContext,
+    [
+      'seed-session',
+      '--owner-user-id',
+      String(currentUser.id),
+      '--title',
+      LIVE_REPORT_GENERATION_SESSION_TITLE,
+    ],
+    { timeoutMs: 120000 },
+  );
+  if (result.code !== 0) {
+    throw new Error(
+      [
+        'seed live report generation session 失败',
+        safeText(result.stderr),
+        safeText(result.stdout),
+      ].filter(Boolean).join('\n'),
+    );
+  }
+  const payload = parseCommandJson(result, 'live report generation session fixture');
+  const sessionId = safeText(payload?.session_id);
+  if (!sessionId) {
+    throw new Error('live report generation session fixture 缺少 session_id');
+  }
+  liveContext.reportGenerationSessionFixture = {
+    session_id: sessionId,
+    title: safeText(payload?.title, LIVE_REPORT_GENERATION_SESSION_TITLE),
+    session_path: safeText(payload?.session_path),
+  };
+  return liveContext.reportGenerationSessionFixture;
+}
+
 async function lookupLiveUserRecord(liveContext) {
   if (liveContext.userRecord?.id) {
     return liveContext.userRecord;
@@ -1169,6 +1589,26 @@ async function scenarioSolutionPublicReadonly(browser, baseUrl) {
   return '公开分享模式可渲染，并保持只读边界';
 }
 
+async function scenarioSolutionPublicReadonlyRefresh(browser, baseUrl) {
+  await runWithPage(browser, baseUrl, null, async (page) => {
+    await page.goto(`${baseUrl}/solution.html?share=demo-public-token`, { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#solution-shell:not([hidden])', { timeout: 10000 });
+    await page.waitForSelector('text=外部分享 · 只读方案', { timeout: 10000 });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#solution-shell:not([hidden])', { timeout: 10000 });
+    await page.waitForSelector('text=外部分享 · 只读方案', { timeout: 10000 });
+    const actionBarHidden = await page.locator('#solution-action-bar').evaluate((element) => element.hidden);
+    if (!actionBarHidden) {
+      throw new Error('公开分享页刷新后不应显示分享动作栏');
+    }
+    const shareButtonCount = await page.locator('#btn-share:visible').count();
+    if (shareButtonCount > 0) {
+      throw new Error('公开分享页刷新后不应暴露分享按钮');
+    }
+  });
+  return '公开分享页刷新后仍保持只读方案边界';
+}
+
 async function scenarioLoginView(browser, baseUrl) {
   await runWithPage(
     browser,
@@ -1217,6 +1657,92 @@ async function scenarioLoginView(browser, baseUrl) {
     },
   );
   return '未登录状态会隐藏短信登录表单，并提示当前未启用可用登录方式';
+}
+
+async function scenarioLoginSmsOnlyView(browser, baseUrl) {
+  await runWithPage(
+    browser,
+    baseUrl,
+    () => {
+      localStorage.setItem('deepvision_intro_seen', 'true');
+    },
+    async (page) => {
+      await page.goto(`${baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('h2:has-text("欢迎回来")', { timeout: 15000 });
+      await page.waitForSelector('#auth-account', { timeout: 15000 });
+      await page.waitForSelector('#auth-code', { timeout: 15000 });
+      await page.getByRole('button', { name: '登录', exact: true }).waitFor({ timeout: 15000 });
+      const wechatButtonVisible = await page.getByRole('button', { name: '微信扫码登录', exact: true }).isVisible().catch(() => false);
+      if (wechatButtonVisible) {
+        throw new Error('微信 provider 缺失或关闭时，不应展示微信登录入口');
+      }
+    },
+    undefined,
+    {
+      statusPayload: {
+        ...buildStatusPayload(),
+        authenticated: false,
+        user: null,
+        has_valid_license: false,
+        status: 'missing',
+        license: null,
+        sms_login_enabled: true,
+        wechat_login_enabled: false,
+      },
+      licenseCurrentPayload: {
+        enforcement_enabled: true,
+        has_valid_license: false,
+        status: 'missing',
+        license: null,
+      },
+    },
+  );
+  return '微信 provider 关闭或缺失时，前端仍展示短信登录表单并隐藏微信入口';
+}
+
+async function scenarioLoginWechatOnlyView(browser, baseUrl) {
+  await runWithPage(
+    browser,
+    baseUrl,
+    () => {
+      localStorage.setItem('deepvision_intro_seen', 'true');
+    },
+    async (page) => {
+      await page.goto(`${baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('h2:has-text("欢迎回来")', { timeout: 15000 });
+      await page.getByRole('button', { name: '微信扫码登录', exact: true }).waitFor({ timeout: 15000 });
+      if (await page.locator('#auth-account').isVisible().catch(() => false)) {
+        throw new Error('短信 provider 关闭时，不应展示手机号输入框');
+      }
+      if (await page.locator('#auth-code').isVisible().catch(() => false)) {
+        throw new Error('短信 provider 关闭时，不应展示验证码输入框');
+      }
+      const loginButtonVisible = await page.getByRole('button', { name: '登录', exact: true }).isVisible().catch(() => false);
+      if (loginButtonVisible) {
+        throw new Error('短信 provider 关闭时，不应展示短信登录按钮');
+      }
+    },
+    undefined,
+    {
+      statusPayload: {
+        ...buildStatusPayload(),
+        authenticated: false,
+        user: null,
+        has_valid_license: false,
+        status: 'missing',
+        license: null,
+        sms_login_enabled: false,
+        wechat_login_enabled: true,
+      },
+      licenseCurrentPayload: {
+        enforcement_enabled: true,
+        has_valid_license: false,
+        status: 'missing',
+        license: null,
+      },
+    },
+  );
+  return '短信 provider 关闭时，前端仍展示微信登录入口并隐藏短信表单';
 }
 
 async function scenarioLicenseGateView(browser, baseUrl) {
@@ -1317,6 +1843,63 @@ async function scenarioLicenseActivateSuccess(browser, baseUrl) {
   return 'License 绑定成功后会退出门禁，并回到访谈会话主页';
 }
 
+async function scenarioLicenseActivateRefresh(browser, baseUrl) {
+  const activatedPayload = {
+    enforcement_enabled: true,
+    has_valid_license: true,
+    status: 'active',
+    license: {
+      code: 'LIC-ACTIVATED-REFRESH-001',
+      masked_code: 'LIC-****-9001',
+      level: 'professional',
+      expires_at: '2030-12-31T00:00:00Z',
+      not_before_at: '2026-01-01T00:00:00Z',
+    },
+    message: 'License 绑定成功',
+  };
+  await runWithPage(
+    browser,
+    baseUrl,
+    () => {
+      localStorage.setItem('deepvision_intro_seen', 'true');
+    },
+    async (page) => {
+      await page.goto(`${baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('#license-code-input', { timeout: 15000 });
+      await page.fill('#license-code-input', 'LIC-ACTIVATED-REFRESH-001');
+      await page.getByRole('button', { name: '绑定 License', exact: true }).click({ timeout: 15000 });
+      await page.waitForSelector('h2:has-text("访谈会话")', { timeout: 15000 });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('h2:has-text("访谈会话")', { timeout: 15000 });
+      const gateStillVisible = await page.locator('h2:has-text("请输入 License 继续使用")').count();
+      if (gateStillVisible > 0) {
+        throw new Error('License 绑定成功后刷新不应重新回到 License gate');
+      }
+    },
+    undefined,
+    {
+      statusPayload: {
+        ...buildStatusPayload(),
+        has_valid_license: false,
+        status: 'missing',
+        license: {
+          has_valid_license: false,
+          status: 'missing',
+          license: null,
+        },
+      },
+      licenseCurrentPayload: {
+        enforcement_enabled: true,
+        has_valid_license: false,
+        status: 'missing',
+        license: null,
+      },
+      licenseActivatePayload: activatedPayload,
+    },
+  );
+  return 'License 绑定成功后刷新首页仍停留在业务壳，而不会回到门禁页';
+}
+
 async function scenarioReportDetailFlow(browser, baseUrl) {
   await runWithPage(
     browser,
@@ -1340,6 +1923,123 @@ async function scenarioReportDetailFlow(browser, baseUrl) {
     },
   );
   return '可从报告列表进入报告详情，并看到方案入口按钮与核心报告内容';
+}
+
+async function scenarioReportDetailRefresh(browser, baseUrl) {
+  await runWithPage(
+    browser,
+    baseUrl,
+    () => {
+      localStorage.setItem('deepvision_intro_seen', 'true');
+    },
+    async (page) => {
+      await page.goto(`${baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
+      await page.getByRole('button', { name: '报告', exact: true }).click({ timeout: 15000 });
+      await page.waitForSelector('[data-report-key="demo-report"]', { timeout: 15000 });
+      await page.locator('[data-report-key="demo-report"]').click({ timeout: 15000 });
+      await page.waitForSelector('.dv-report-title', { timeout: 15000 });
+      await page.waitForSelector('text=核心判断', { timeout: 15000 });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.dv-report-title', { timeout: 15000 });
+      const titleText = await page.locator('.dv-report-title').first().textContent();
+      if (!safeText(titleText).includes('售后回访闭环试点报告')) {
+        throw new Error(`刷新后报告详情标题异常: ${safeText(titleText, '<empty>')}`);
+      }
+      await page.waitForSelector('text=核心判断', { timeout: 15000 });
+      const listCardVisibleCount = await page.locator('[data-report-key="demo-report"]:visible').count();
+      if (listCardVisibleCount > 0) {
+        throw new Error('刷新后不应退回报告列表态');
+      }
+    },
+  );
+  return '报告详情刷新后仍恢复到同一份报告详情';
+}
+
+async function scenarioInterviewRefresh(browser, baseUrl) {
+  await runWithPage(
+    browser,
+    baseUrl,
+    () => {
+      localStorage.setItem('deepvision_intro_seen', 'true');
+    },
+    async (page) => {
+      await page.goto(`${baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
+      const sessionCard = page.locator('.session-card-glow', { hasText: '售后回访试点会话' }).first();
+      await sessionCard.waitFor({ timeout: 15000 });
+      await sessionCard.click({ timeout: 15000 });
+      await page.waitForSelector('text=目前最影响售后回访闭环效率的环节是什么？', { timeout: 15000 });
+      await page.getByRole('button', { name: '下一题', exact: true }).waitFor({ timeout: 15000 });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('text=目前最影响售后回访闭环效率的环节是什么？', { timeout: 15000 });
+      await page.getByRole('button', { name: '下一题', exact: true }).waitFor({ timeout: 15000 });
+      const startInterviewButtonCount = await page.getByRole('button', { name: '开始访谈', exact: true }).count();
+      if (startInterviewButtonCount > 0) {
+        throw new Error('访谈进行中刷新后不应退回到开始访谈步骤');
+      }
+      const sessionCardVisibleCount = await page.locator('.session-card-glow:visible').count();
+      if (sessionCardVisibleCount > 0) {
+        throw new Error('访谈进行中刷新后不应退回会话列表');
+      }
+    },
+  );
+  return '访谈进行中刷新后仍恢复到同一会话与当前问题';
+}
+
+async function scenarioReportGenerationRefresh(browser, baseUrl) {
+  await runWithPage(
+    browser,
+    baseUrl,
+    () => {
+      localStorage.setItem('deepvision_intro_seen', 'true');
+    },
+    async (page) => {
+      await page.goto(`${baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
+      const sessionCard = page.locator('.session-card-glow', { hasText: '报告生成恢复验证会话' }).first();
+      await sessionCard.waitFor({ timeout: 15000 });
+      await sessionCard.click({ timeout: 15000 });
+      try {
+        await page.waitForSelector('text=需求摘要确认', { timeout: 15000 });
+      } catch (error) {
+        const stepZeroVisible = await page.getByRole('button', { name: '开始访谈', exact: true }).count();
+        const currentQuestionVisible = await page.locator('text=下一题').count();
+        const answeredLogVisible = await page.locator('text=已收集的回答').count();
+        const currentUrl = page.url();
+        throw new Error(
+          `未进入需求摘要确认；url=${currentUrl}; step0=${stepZeroVisible}; step1=${currentQuestionVisible}; answeredLog=${answeredLogVisible}`
+        );
+      }
+      const generateButton = page.getByRole('button', { name: '生成访谈报告', exact: true });
+      await generateButton.waitFor({ timeout: 15000 });
+      await generateButton.click({ timeout: 15000 });
+      await page.waitForSelector('text=正在生成...', { timeout: 15000 });
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      try {
+        await page.waitForSelector('text=需求摘要确认', { timeout: 15000 });
+      } catch (error) {
+        const currentUrl = page.url();
+        const interviewHeaderVisible = await page.locator('h2:has-text("访谈会话")').count();
+        const reportsHeaderVisible = await page.locator('h2:has-text("访谈报告")').count();
+        const stepZeroVisible = await page.getByRole('button', { name: '开始访谈', exact: true }).count();
+        const generatingVisible = await page.locator('text=正在生成...').count();
+        const generateButtonVisible = await page.getByRole('button', { name: '生成访谈报告', exact: true }).count();
+        const nextButtonVisible = await page.getByRole('button', { name: '下一题', exact: true }).count();
+        const answeredLogVisible = await page.locator('text=已收集的回答').count();
+        throw new Error(
+          `刷新后未恢复到需求摘要确认；url=${currentUrl}; interviewHeader=${interviewHeaderVisible}; reportsHeader=${reportsHeaderVisible}; step0=${stepZeroVisible}; generating=${generatingVisible}; generateBtn=${generateButtonVisible}; nextBtn=${nextButtonVisible}; answeredLog=${answeredLogVisible}`
+        );
+      }
+      await page.waitForSelector('text=正在生成...', { timeout: 15000 });
+      const sessionCardVisibleCount = await page.locator('.session-card-glow:visible').count();
+      if (sessionCardVisibleCount > 0) {
+        throw new Error('报告生成中刷新后不应退回会话列表');
+      }
+      const reportListVisibleCount = await page.locator('[data-report-key="demo-report"]:visible').count();
+      if (reportListVisibleCount > 0) {
+        throw new Error('报告生成中刷新后不应切到报告列表');
+      }
+    },
+  );
+  return '报告生成中刷新后仍恢复到需求确认态，并继续显示生成进度';
 }
 
 async function scenarioAdminConfigTab(browser, baseUrl) {
@@ -1376,6 +2076,12 @@ async function scenarioLiveLoginLicenseFlow(browser, baseUrl, liveContext) {
       const gateVisible = await page.locator('h2:has-text("请输入 License 继续使用")').count();
       if (gateVisible > 0) {
         throw new Error('live 链路绑定 License 后仍停留在门禁页');
+      }
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await waitForLiveHomeReady(page, 25000);
+      const gateAfterReload = await page.locator('h2:has-text("请输入 License 继续使用")').count();
+      if (gateAfterReload > 0) {
+        throw new Error('live 链路刷新后重新回到了 License gate');
       }
     },
     undefined,
@@ -1494,6 +2200,60 @@ async function scenarioLiveSolutionPublicShareFlow(browser, baseUrl, liveContext
   return '真实后端下已完成方案分享创建，并以匿名态访问只读公开分享页';
 }
 
+async function scenarioLiveReportGenerationRefreshFlow(browser, baseUrl, liveContext) {
+  await runWithPage(
+    browser,
+    baseUrl,
+    () => {
+      localStorage.setItem('deepvision_intro_seen', 'true');
+    },
+    async (page) => {
+      await performLiveLoginAndLicense(page, baseUrl, liveContext);
+      const fixture = await ensureLiveReportGenerationSessionFixture(page, liveContext);
+      const interviewUrl = `${baseUrl}/index.html?view=interview&session=${encodeURIComponent(fixture.session_id)}`;
+      await page.goto(interviewUrl, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('text=需求摘要确认', { timeout: 25000 });
+
+      const generateResponsePromise = page.waitForResponse(
+        (response) => response.request().method() === 'POST'
+          && response.url().includes(`/api/sessions/${encodeURIComponent(fixture.session_id)}/generate-report`),
+        { timeout: 25000 },
+      );
+      const generateButton = page.getByRole('button', { name: '生成访谈报告', exact: true });
+      await generateButton.waitFor({ timeout: 20000 });
+      await generateButton.click({ timeout: 15000 });
+      const generateResponse = await generateResponsePromise;
+      if (![200, 202].includes(generateResponse.status())) {
+        throw new Error(`真实报告生成请求异常: status=${generateResponse.status()}`);
+      }
+      await page.waitForSelector('text=正在生成...', { timeout: 25000 });
+
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('text=需求摘要确认', { timeout: 25000 });
+      await page.waitForSelector('text=正在生成...', { timeout: 25000 });
+
+      const sessionCardVisibleCount = await page.locator('.session-card-glow:visible').count();
+      if (sessionCardVisibleCount > 0) {
+        throw new Error('真实报告生成中刷新后不应退回会话列表');
+      }
+      const reportListVisibleCount = await page.locator('[data-report-key]:visible').count();
+      if (reportListVisibleCount > 0) {
+        throw new Error('真实报告生成中刷新后不应切到报告列表');
+      }
+
+      const statusPayload = await fetchPageJson(page, `/api/status/report-generation/${encodeURIComponent(fixture.session_id)}`);
+      if (!statusPayload.ok || !statusPayload.payload?.active) {
+        throw new Error(`真实报告生成状态未保持 active: status=${statusPayload.status} payload=${statusPayload.text}`);
+      }
+    },
+    undefined,
+    undefined,
+    'live',
+    liveContext.storageState ? { storageState: liveContext.storageState } : undefined,
+  );
+  return '真实后端下报告生成中刷新后仍恢复到同一会话，并保持生成进度';
+}
+
 async function executeScenario(browser, baseUrl, scenario, runtimeContext = {}) {
   const startedAt = Date.now();
   try {
@@ -1506,20 +2266,36 @@ async function executeScenario(browser, baseUrl, scenario, runtimeContext = {}) 
       detail = await scenarioAdminConfigEntry(browser, baseUrl);
     } else if (scenario.id === 'solution-public-readonly') {
       detail = await scenarioSolutionPublicReadonly(browser, baseUrl);
+    } else if (scenario.id === 'solution-public-readonly-refresh') {
+      detail = await scenarioSolutionPublicReadonlyRefresh(browser, baseUrl);
     } else if (scenario.id === 'login-view') {
       detail = await scenarioLoginView(browser, baseUrl);
+    } else if (scenario.id === 'login-sms-only-view') {
+      detail = await scenarioLoginSmsOnlyView(browser, baseUrl);
+    } else if (scenario.id === 'login-wechat-only-view') {
+      detail = await scenarioLoginWechatOnlyView(browser, baseUrl);
     } else if (scenario.id === 'license-gate-view') {
       detail = await scenarioLicenseGateView(browser, baseUrl);
     } else if (scenario.id === 'license-activate-success') {
       detail = await scenarioLicenseActivateSuccess(browser, baseUrl);
+    } else if (scenario.id === 'license-activate-refresh') {
+      detail = await scenarioLicenseActivateRefresh(browser, baseUrl);
     } else if (scenario.id === 'report-detail-flow') {
       detail = await scenarioReportDetailFlow(browser, baseUrl);
+    } else if (scenario.id === 'report-detail-refresh') {
+      detail = await scenarioReportDetailRefresh(browser, baseUrl);
+    } else if (scenario.id === 'interview-refresh') {
+      detail = await scenarioInterviewRefresh(browser, baseUrl);
+    } else if (scenario.id === 'report-generation-refresh') {
+      detail = await scenarioReportGenerationRefresh(browser, baseUrl);
     } else if (scenario.id === 'admin-config-tab') {
       detail = await scenarioAdminConfigTab(browser, baseUrl);
     } else if (scenario.id === 'live-login-license-flow') {
       detail = await scenarioLiveLoginLicenseFlow(browser, baseUrl, runtimeContext);
     } else if (scenario.id === 'live-report-solution-flow') {
       detail = await scenarioLiveReportSolutionFlow(browser, baseUrl, runtimeContext);
+    } else if (scenario.id === 'live-report-generation-refresh') {
+      detail = await scenarioLiveReportGenerationRefreshFlow(browser, baseUrl, runtimeContext);
     } else if (scenario.id === 'live-solution-public-share-flow') {
       detail = await scenarioLiveSolutionPublicShareFlow(browser, baseUrl, runtimeContext);
     } else {
@@ -1562,16 +2338,23 @@ function resolveSuite(name) {
     return {
       name: 'extended',
       mode: 'mock',
-      description: '在 minimal 基础上补公开分享只读、登录视图、License 门禁前端视图、License 绑定成功切换、报告详情链路与配置中心页签切换',
+      description: '在 minimal 基础上补公开分享只读、登录 provider 可见反馈、License 门禁前端视图、License 绑定成功切换、访谈与报告刷新恢复，以及配置中心页签切换',
       scenarios: [
         { id: 'help-docs', label: '帮助文档静态页' },
         { id: 'solution-share', label: '方案页分享面板' },
         { id: 'admin-config-entry', label: '管理员中心入口' },
         { id: 'solution-public-readonly', label: '方案页公开分享只读' },
+        { id: 'solution-public-readonly-refresh', label: '方案页公开分享刷新保持只读' },
         { id: 'login-view', label: '登录前端视图' },
+        { id: 'login-sms-only-view', label: '登录视图仅短信 provider' },
+        { id: 'login-wechat-only-view', label: '登录视图仅微信 provider' },
         { id: 'license-gate-view', label: 'License 门禁前端视图' },
         { id: 'license-activate-success', label: 'License 绑定成功后切回业务壳' },
+        { id: 'license-activate-refresh', label: 'License 绑定后刷新保持业务壳' },
         { id: 'report-detail-flow', label: '报告详情与方案入口' },
+        { id: 'report-detail-refresh', label: '报告详情刷新后保持详情态' },
+        { id: 'interview-refresh', label: '访谈进行中刷新后保持当前会话' },
+        { id: 'report-generation-refresh', label: '报告生成中刷新后保持进度' },
         { id: 'admin-config-tab', label: '管理员配置中心页签' },
       ],
     };
@@ -1580,7 +2363,7 @@ function resolveSuite(name) {
     return {
       name: 'live-minimal',
       mode: 'live',
-      description: '隔离数据目录下启动真实后端，执行验证码登录与 License 绑定真链路',
+      description: '隔离数据目录下启动真实后端，执行验证码登录、License 绑定以及刷新恢复真链路',
       scenarios: [
         { id: 'live-login-license-flow', label: '真实后端登录与 License 绑定' },
       ],
@@ -1590,9 +2373,10 @@ function resolveSuite(name) {
     return {
       name: 'live-extended',
       mode: 'live',
-      description: '在 live-minimal 基础上补真实报告详情、真实方案页和公开分享只读链路',
+      description: '在 live-minimal 基础上补真实报告生成恢复、真实报告详情、真实方案页和公开分享只读链路',
       scenarios: [
         { id: 'live-login-license-flow', label: '真实后端登录与 License 绑定' },
+        { id: 'live-report-generation-refresh', label: '真实后端报告生成中刷新恢复' },
         { id: 'live-report-solution-flow', label: '真实后端报告详情与方案页' },
         { id: 'live-solution-public-share-flow', label: '真实后端公开分享只读链路' },
       ],

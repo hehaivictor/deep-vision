@@ -610,6 +610,11 @@
             if (canReuseCurrentDetail) {
                 this.selectedReport = targetFilename;
                 this.selectedReportMeta = nextMeta;
+                this.replaceAppEntryRoute({
+                    view: 'reports',
+                    report: targetFilename,
+                });
+                this.persistAppShellSnapshot();
                 await this.fetchPresentationStatus();
                 return;
             }
@@ -628,6 +633,11 @@
                     this.reportDetailModel = this.cloneReportDetailModel(cachedReport.detailModel);
                     this.reportContent = cachedReport.content;
                     this.reportDetailEnhancing = false;
+                    this.replaceAppEntryRoute({
+                        view: 'reports',
+                        report: targetFilename,
+                    });
+                    this.persistAppShellSnapshot();
                     this.$nextTick(() => this.scheduleReportDetailEnhancement({ silent: true }));
                     await this.fetchPresentationStatus();
                     return;
@@ -649,6 +659,11 @@
                     ).trim(),
                 });
                 this.reportContent = data.content;
+                this.replaceAppEntryRoute({
+                    view: 'reports',
+                    report: targetFilename,
+                });
+                this.persistAppShellSnapshot();
                 this.$nextTick(() => this.scheduleReportDetailEnhancement());
                 await this.fetchPresentationStatus();
             } catch (error) {

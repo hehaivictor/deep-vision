@@ -64,9 +64,24 @@ EXTENDED_EXTRA_SCENARIOS = [
         "确认公开分享模式可渲染，且不会暴露分享动作按钮。",
     ),
     BrowserScenario(
+        "solution-public-readonly-refresh",
+        "方案页公开分享刷新保持只读",
+        "确认公开分享页刷新后仍保持只读模式，不会泄露分享动作按钮或动作栏。",
+    ),
+    BrowserScenario(
         "login-view",
         "登录前端视图",
         "确认未登录状态会展示登录表单，并提示当前登录方式的可用性。",
+    ),
+    BrowserScenario(
+        "login-sms-only-view",
+        "登录视图仅短信 provider",
+        "确认微信 provider 关闭或缺失时，前端仍展示短信登录表单，并隐藏微信入口与无 provider 告警。",
+    ),
+    BrowserScenario(
+        "login-wechat-only-view",
+        "登录视图仅微信 provider",
+        "确认短信 provider 关闭时，前端仍展示微信登录入口，并隐藏短信表单与无 provider 告警。",
     ),
     BrowserScenario(
         "license-gate-view",
@@ -79,9 +94,29 @@ EXTENDED_EXTRA_SCENARIOS = [
         "确认在 License gate 中提交有效 License 后，前端会退出门禁并回到访谈会话主页。",
     ),
     BrowserScenario(
+        "license-activate-refresh",
+        "License 绑定后刷新保持业务壳",
+        "确认绑定成功后刷新首页，前端仍保持已登录且不回到 License gate。",
+    ),
+    BrowserScenario(
         "report-detail-flow",
         "报告详情与方案入口",
         "确认可从报告列表进入报告详情，并看到方案入口按钮与核心报告内容。",
+    ),
+    BrowserScenario(
+        "report-detail-refresh",
+        "报告详情刷新后保持详情态",
+        "确认报告详情页刷新后仍恢复到同一份报告详情，而不是退回报告列表。",
+    ),
+    BrowserScenario(
+        "interview-refresh",
+        "访谈进行中刷新后保持当前会话",
+        "确认访谈进行中刷新页面后，前端仍恢复到同一会话与当前问题，而不是退回会话列表或文档准备步骤。",
+    ),
+    BrowserScenario(
+        "report-generation-refresh",
+        "报告生成中刷新后保持进度",
+        "确认需求摘要确认页触发报告生成后刷新页面，前端仍恢复到当前会话，并继续显示报告生成进度。",
     ),
     BrowserScenario(
         "admin-config-tab",
@@ -95,6 +130,11 @@ LIVE_EXTENDED_SCENARIOS = [
         "live-login-license-flow",
         "真实后端登录与 License 绑定",
         "确认隔离运行态下可完成短信验证码登录、License 绑定，并切回访谈会话主页。",
+    ),
+    BrowserScenario(
+        "live-report-generation-refresh",
+        "真实后端报告生成中刷新恢复",
+        "确认隔离运行态下触发报告生成后刷新页面，前端仍恢复到同一会话并继续显示生成进度。",
     ),
     BrowserScenario(
         "live-report-solution-flow",
@@ -114,7 +154,7 @@ SUITES = {
         "scenarios": MINIMAL_SCENARIOS,
     },
     "extended": {
-        "description": "在 minimal 基础上补公开分享只读、登录视图、License 门禁前端视图、License 绑定成功切换、报告详情链路与配置中心页签切换",
+        "description": "在 minimal 基础上补公开分享只读及刷新恢复、登录 provider 可见反馈、License 门禁视图、License 绑定成功与刷新恢复、访谈/报告详情恢复链路和配置中心页签切换",
         "scenarios": [*MINIMAL_SCENARIOS, *EXTENDED_EXTRA_SCENARIOS],
     },
     "live-minimal": {
@@ -123,12 +163,12 @@ SUITES = {
             BrowserScenario(
                 "live-login-license-flow",
                 "真实后端登录与 License 绑定",
-                "确认隔离运行态下可完成短信验证码登录、License 绑定，并切回访谈会话主页。",
+                "确认隔离运行态下可完成短信验证码登录、License 绑定，并在刷新后仍留在访谈会话主页。",
             ),
         ],
     },
     "live-extended": {
-        "description": "在 live-minimal 基础上补真实报告详情、真实方案页和公开分享只读链路",
+        "description": "在 live-minimal 基础上补真实报告生成恢复、真实报告详情、真实方案页和公开分享只读链路",
         "scenarios": LIVE_EXTENDED_SCENARIOS,
     },
 }

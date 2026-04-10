@@ -12,7 +12,7 @@ class AdminConfigCenterService:
         groups_by_source: dict[str, list[dict[str, Any]]],
         group_index: dict[str, dict[str, dict[str, Any]]],
         field_index: dict[str, dict[str, dict[str, Any]]],
-        runtime_config: Any,
+        get_runtime_config: Callable[[], Any],
         get_admin_env_file_path: Callable[[], Path],
         get_admin_config_file_path: Callable[[], Path],
         get_admin_site_config_file_path: Callable[[], Path],
@@ -28,7 +28,7 @@ class AdminConfigCenterService:
         write_admin_config_updates: Callable[[dict[str, Any]], Path],
         write_admin_site_config_updates: Callable[[dict[str, Any]], Path],
         runtime_source_label_getter: Callable[[str, str], str],
-        runtime_setting_value_getter: Callable[[str, str, Optional[dict[str, Any]]], Any],
+        runtime_setting_value_getter: Callable[..., Any],
     ) -> None:
         self._config_resolution_mode = str(config_resolution_mode or "").strip() or "auto"
         self._loaded_env_files = list(loaded_env_files or [])
@@ -36,7 +36,7 @@ class AdminConfigCenterService:
         self._groups_by_source = groups_by_source
         self._group_index = group_index
         self._field_index = field_index
-        self._runtime_config = runtime_config
+        self._get_runtime_config = get_runtime_config
         self._get_admin_env_file_path = get_admin_env_file_path
         self._get_admin_config_file_path = get_admin_config_file_path
         self._get_admin_site_config_file_path = get_admin_site_config_file_path
@@ -81,10 +81,11 @@ class AdminConfigCenterService:
         if source == "site":
             return self._get_nested_setting_value(site_values, key)
 
+        runtime_config = self._get_runtime_config()
         if key in config_managed_values:
             return config_managed_values.get(key)
-        if self._runtime_config and hasattr(self._runtime_config, key):
-            return getattr(self._runtime_config, key)
+        if runtime_config and hasattr(runtime_config, key):
+            return getattr(runtime_config, key)
         return None
 
     def _build_setting_payload(
@@ -104,7 +105,7 @@ class AdminConfigCenterService:
             config_managed_values=config_managed_values,
             site_values=site_values,
         )
-        runtime_value = self._runtime_setting_value_getter(source, key, site_values)
+        runtime_value = self._runtime_setting_value_getter(source, key, site_values=site_values)
         return {
             **setting_meta,
             "value": self._format_admin_setting_form_value(setting_meta, file_value),
@@ -152,10 +153,11 @@ class AdminConfigCenterService:
                 "override_existing": bool(self._env_load_metadata.get("override_existing")),
             }
         elif source == "config":
+            runtime_config = self._get_runtime_config()
             file_meta = {
                 "path": str(config_path),
                 "exists": config_path.exists(),
-                "has_runtime_config": bool(self._runtime_config),
+                "has_runtime_config": bool(runtime_config),
                 "managed_block_keys": sorted(config_managed_values.keys()),
             }
         else:

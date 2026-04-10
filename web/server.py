@@ -3651,10 +3651,10 @@ admin_config_center_service = AdminConfigCenterService(
     groups_by_source=ADMIN_SETTINGS_GROUPS_BY_SOURCE,
     group_index=ADMIN_SETTINGS_GROUP_INDEX,
     field_index=ADMIN_SETTINGS_FIELD_INDEX,
-    runtime_config=runtime_config,
-    get_admin_env_file_path=get_admin_env_file_path,
-    get_admin_config_file_path=get_admin_config_file_path,
-    get_admin_site_config_file_path=get_admin_site_config_file_path,
+    get_runtime_config=lambda: runtime_config,
+    get_admin_env_file_path=lambda: get_admin_env_file_path(),
+    get_admin_config_file_path=lambda: get_admin_config_file_path(),
+    get_admin_site_config_file_path=lambda: get_admin_site_config_file_path(),
     get_meta_index_db_target=lambda: get_meta_index_db_target(),
     read_env_file_map=_read_env_file_map,
     read_admin_managed_config_values=_read_admin_managed_config_values,
@@ -30398,6 +30398,7 @@ def upload_document(session_id):
         return jsonify({"error": "文件解析后内容为空"}), 400
 
     upload_archive = {}
+    upload_archive_warning = ""
     if is_object_storage_enabled():
         try:
             upload_archive = upload_file_to_object_storage(
@@ -30416,7 +30417,9 @@ def upload_document(session_id):
                 },
             )
         except Exception as exc:
-            return jsonify({"error": f"文件归档到对象存储失败: {exc}"}), 500
+            upload_archive_warning = f"文件归档到对象存储失败，已保留解析结果: {exc}"
+            if ENABLE_DEBUG_LOG:
+                print(f"⚠️ {upload_archive_warning}")
 
     # 读取内容完成后再短暂加锁写回，避免文档转换阻塞整个会话。
     with locked_session_for_user(session_id, user_id) as latest_loaded:
@@ -30441,6 +30444,8 @@ def upload_document(session_id):
                 "bucket": upload_archive.get("bucket"),
                 "content_type": upload_archive.get("content_type"),
             })
+        if upload_archive_warning:
+            uploaded_document["archive_warning"] = upload_archive_warning
         uploaded_document["doc_id"] = build_reference_material_doc_id(
             uploaded_document,
             index=len(latest_session["reference_materials"]),
@@ -30454,6 +30459,7 @@ def upload_document(session_id):
         "filename": filename,
         "content_length": len(content),
         "uploaded_document": copy.deepcopy(uploaded_document),
+        "archive_warning": upload_archive_warning,
     })
 
 

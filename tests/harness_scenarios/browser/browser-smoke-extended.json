@@ -1,11 +1,13 @@
 {
   "name": "browser-smoke-extended",
   "category": "browser",
-  "description": "覆盖登录视图、License 门禁、绑定成功切换、报告详情链路和配置中心页签切换的扩展浏览器回归。",
+  "description": "覆盖登录视图、License 门禁、绑定成功与刷新恢复、公开分享只读刷新保持、访谈进行中刷新恢复、报告生成中刷新恢复、报告详情打开与刷新恢复，以及配置中心页签切换的扩展浏览器回归。",
   "tags": [
     "browser",
     "manual",
-    "ui"
+    "ui",
+    "stability-local",
+    "stability-local-core"
   ],
   "budgets": {
     "max_duration_ms": 240000

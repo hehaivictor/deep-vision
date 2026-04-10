@@ -105,8 +105,13 @@ function deepVision() {
         quoteRotationInterval: null,  // 诗句轮播定时器
         themeStorageKey: 'deepvision_theme_mode',
         appShellSnapshotStorageKey: 'deepvision_app_shell_snapshot',
-        appShellSnapshotVersion: 1,
+        appShellSnapshotVersion: 2,
         appShellSnapshotPersistTimer: null,
+        appShellRestoreTarget: {
+            view: 'sessions',
+            sessionId: '',
+            reportName: '',
+        },
         themeMode: 'system',
         effectiveTheme: 'light',
         visualPreset: (typeof SITE_CONFIG !== 'undefined' && SITE_CONFIG?.visualPresets?.default) || 'rational',
@@ -446,6 +451,7 @@ function deepVision() {
             const normalized = String(view || '').trim().toLowerCase();
             if (normalized === 'admin') return 'admin';
             if (normalized === 'reports') return 'reports';
+            if (normalized === 'interview') return 'interview';
             return 'sessions';
         },
 
@@ -466,6 +472,11 @@ function deepVision() {
                 clearTimeout(this.appShellSnapshotPersistTimer);
                 this.appShellSnapshotPersistTimer = null;
             }
+            this.appShellRestoreTarget = {
+                view: 'sessions',
+                sessionId: '',
+                reportName: '',
+            };
             if (!this.canUseSessionStorage()) return;
             try {
                 sessionStorage.removeItem(this.appShellSnapshotStorageKey);
@@ -496,6 +507,12 @@ function deepVision() {
                 userKey: this.getAppShellSnapshotUserKey(),
                 updatedAt: Date.now(),
                 currentView: this.normalizePersistedAppShellView(this.currentView),
+                activeSessionId: this.currentView === 'interview'
+                    ? String(this.currentSession?.session_id || '').trim()
+                    : '',
+                activeReportName: this.currentView === 'reports'
+                    ? String(this.selectedReport || this.selectedReportMeta?.name || '').trim()
+                    : '',
                 sessionSearchQuery: String(this.sessionSearchQuery || ''),
                 sessionStatusFilter: String(this.sessionStatusFilter || 'all'),
                 sessionSortOrder: String(this.sessionSortOrder || 'newest'),
@@ -547,9 +564,16 @@ function deepVision() {
             }
 
             const restoredView = this.normalizePersistedAppShellView(payload.currentView);
+            const restoredSessionId = String(payload.activeSessionId || '').trim();
+            const restoredReportName = String(payload.activeReportName || '').trim();
             this.currentView = restoredView === 'admin' && !this.canViewAdminCenter()
                 ? 'sessions'
-                : restoredView;
+                : (restoredView === 'interview' && !restoredSessionId ? 'sessions' : restoredView);
+            this.appShellRestoreTarget = {
+                view: this.currentView,
+                sessionId: this.currentView === 'interview' ? restoredSessionId : '',
+                reportName: this.currentView === 'reports' ? restoredReportName : '',
+            };
             this.sessionSearchQuery = String(payload.sessionSearchQuery || '');
             this.sessionStatusFilter = String(payload.sessionStatusFilter || 'all') || 'all';
             this.sessionSortOrder = String(payload.sessionSortOrder || 'newest') || 'newest';
@@ -584,6 +608,55 @@ function deepVision() {
             }
 
             return restored;
+        },
+
+        consumeAppShellRestoreTarget() {
+            const payload = this.appShellRestoreTarget && typeof this.appShellRestoreTarget === 'object'
+                ? this.appShellRestoreTarget
+                : {};
+            this.appShellRestoreTarget = {
+                view: 'sessions',
+                sessionId: '',
+                reportName: '',
+            };
+            return {
+                view: this.normalizePersistedAppShellView(payload.view || 'sessions'),
+                sessionId: String(payload.sessionId || '').trim(),
+                reportName: String(payload.reportName || '').trim(),
+            };
+        },
+
+        buildAppEntryRoute(params = {}) {
+            if (typeof window === 'undefined') return '';
+            const query = new URLSearchParams(window.location.search || '');
+            query.delete('view');
+            query.delete('report');
+            query.delete('session');
+
+            const targetView = this.normalizePersistedAppShellView(params.view || '');
+            const targetReport = String(params.report || '').trim();
+            const targetSession = String(params.session || '').trim();
+
+            if (targetView === 'reports') {
+                query.set('view', 'reports');
+                if (targetReport) {
+                    query.set('report', targetReport);
+                }
+            } else if (targetView === 'interview' && targetSession) {
+                query.set('view', 'interview');
+                query.set('session', targetSession);
+            }
+
+            const nextQuery = query.toString();
+            return `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}${window.location.hash || ''}`;
+        },
+
+        replaceAppEntryRoute(params = {}) {
+            if (typeof window === 'undefined' || !window.history?.replaceState) return;
+            const nextUrl = this.buildAppEntryRoute(params);
+            if (nextUrl) {
+                window.history.replaceState({}, '', nextUrl);
+            }
         },
 
         normalizeReportProfile(profile, fallback = 'balanced') {
@@ -5499,10 +5572,13 @@ function deepVision() {
             this.exitReportBatchMode();
             if (view === 'sessions') {
                 this.resetReportGenerationFeedback();
+                this.replaceAppEntryRoute();
                 this.refreshSessionsView();
             } else if (view === 'reports') {
+                this.replaceAppEntryRoute({ view: 'reports' });
                 this.refreshReportsView();
             } else if (view === 'admin') {
+                this.replaceAppEntryRoute();
                 void this.ensureAdminDataForTab(this.adminTab || 'overview');
             }
             this.scheduleAppShellSnapshotPersist();
@@ -5523,6 +5599,7 @@ function deepVision() {
 
             this.currentView = 'sessions';
             this.currentSession = null;
+            this.replaceAppEntryRoute();
             this.refreshSessionsView();
         },
 

@@ -5,7 +5,9 @@
   "tags": [
     "manual",
     "tenant",
-    "ownership"
+    "ownership",
+    "stability-local",
+    "stability-local-core"
   ],
   "budgets": {
     "max_duration_ms": 240000

@@ -541,9 +541,24 @@
 
         buildInterviewSessionPlaceholder(sessionId) {
             const sessionSummary = this.findSessionSummaryById(sessionId) || {};
-            const dimensions = (sessionSummary?.dimensions && typeof sessionSummary.dimensions === 'object')
+            const rawDimensions = (sessionSummary?.dimensions && typeof sessionSummary.dimensions === 'object')
                 ? JSON.parse(JSON.stringify(sessionSummary.dimensions))
                 : {};
+            const placeholderDimensionKeys = Array.isArray(sessionSummary?.scenario_config?.dimensions)
+                ? sessionSummary.scenario_config.dimensions
+                    .map((item) => String(item?.id || '').trim())
+                    .filter(Boolean)
+                : [...this.dimensionOrder];
+            const dimensions = { ...rawDimensions };
+            placeholderDimensionKeys.forEach((dimKey) => {
+                if (!dimensions[dimKey] || typeof dimensions[dimKey] !== 'object') {
+                    dimensions[dimKey] = {
+                        coverage: 0,
+                        items: [],
+                        score: null,
+                    };
+                }
+            });
             const documents = Array.isArray(sessionSummary?.documents) ? [...sessionSummary.documents] : [];
             const interviewLog = Array.isArray(sessionSummary?.interview_log) ? [...sessionSummary.interview_log] : [];
             return {
@@ -595,6 +610,10 @@
                 this.updateDimensionsFromSession(this.currentSession);
                 this.stopSessionsAutoRefresh();
                 this.currentView = 'interview';
+                this.replaceAppEntryRoute({
+                    view: 'interview',
+                    session: sessionId,
+                });
                 this.selectedAnswers = [];
                 this.rationaleText = '';
                 this.otherAnswerText = '';
@@ -625,6 +644,10 @@
                 this.updateDimensionsFromSession(this.currentSession);
                 this.stopSessionsAutoRefresh();
                 this.currentView = 'interview';
+                this.replaceAppEntryRoute({
+                    view: 'interview',
+                    session: sessionId,
+                });
 
                 const nextDim = this.getNextIncompleteDimension();
                 if (!nextDim && this.currentSession.interview_log.length > 0) {
@@ -654,6 +677,7 @@
                 this.clearInterviewLoadingState();
                 this.currentView = 'sessions';
                 this.currentSession = null;
+                this.replaceAppEntryRoute();
                 this.refreshSessionsView();
                 this.showToast('加载会话失败', 'error');
             }
