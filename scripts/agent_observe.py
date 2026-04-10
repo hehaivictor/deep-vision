@@ -44,6 +44,8 @@ DEFAULT_OPERATIONS_DIR = ROOT_DIR / "data" / "operations"
 DEFAULT_HARNESS_RUNS_DIR = ROOT_DIR / "artifacts" / "harness-runs"
 HISTORY_SIGNAL_KINDS = (
     "harness",
+    "harness-stability-core",
+    "harness-stability-release",
     "evaluator",
     "ci-agent-smoke",
     "ci-guardrails",
@@ -55,6 +57,8 @@ FREQUENT_BLOCKER_ALERT_THRESHOLD = 2
 SLOW_REGRESSION_DELTA_ALERT_MS = 150.0
 SLOW_REGRESSION_DELTA_FAIL_MS = 500.0
 SLOW_REGRESSION_RATIO_ALERT = 1.2
+STABILITY_RELEASE_WARN_MS = 20 * 60 * 1000.0
+STABILITY_RELEASE_FAIL_MS = STABILITY_RELEASE_WARN_MS * 1.2
 
 
 @dataclass
@@ -522,12 +526,8 @@ def summarize_harness_runs(root_dir: Path, recent: int) -> ObservationItem:
     runs_root = root_dir / "artifacts" / "harness-runs"
     runs: list[dict[str, Any]] = []
     if runs_root.exists():
-        for run_dir in runs_root.iterdir():
-            if not run_dir.is_dir():
-                continue
-            summary_file = run_dir / "summary.json"
-            if not summary_file.exists():
-                continue
+        for summary_file in runs_root.rglob("summary.json"):
+            run_dir = summary_file.parent
             try:
                 payload = json.loads(summary_file.read_text(encoding="utf-8"))
             except Exception:
@@ -542,6 +542,7 @@ def summarize_harness_runs(root_dir: Path, recent: int) -> ObservationItem:
                     "run_name": run_dir.name,
                     "generated_at": format_dt(payload.get("generated_at")),
                     "overall": str(payload.get("overall") or "").strip(),
+                    "duration_ms": round(float(payload.get("duration_ms", 0) or 0), 2),
                     "summary": payload.get("summary") or {},
                     "failed_stages": failed_stages,
                     "task": ((payload.get("task") or {}).get("name") if isinstance(payload.get("task"), dict) else ""),
@@ -556,9 +557,12 @@ def summarize_harness_runs(root_dir: Path, recent: int) -> ObservationItem:
         except Exception:
             latest_pointer = {}
     blocked_runs = [item for item in runs if str(item.get("overall") or "").strip() == "BLOCKED"][:recent]
+    latest_duration_ms = 0.0
+    if runs:
+        latest_duration_ms = float(runs[0].get("duration_ms", 0) or 0)
     detail = (
         f"runs={len(runs)} latest={str(latest_pointer.get('overall') or '').strip() or 'none'} "
-        f"blocked={len(blocked_runs)}"
+        f"blocked={len(blocked_runs)} latest_ms={latest_duration_ms:.2f}"
     )
     return ObservationItem(
         name="harness_runs",
@@ -947,6 +951,7 @@ def summarize_diagnostic_panel(root_dir: Path, recent: int, history_data: dict[s
     consecutive_problems = list(history_data.get("consecutive_problems", []) or [])
     frequent_blockers = list(history_data.get("frequent_blockers", []) or [])
     slow_regressions = list(history_data.get("slow_regressions", []) or [])
+    stability_gates = list(history_data.get("stability_gates", []) or [])
     latest_items = list(history_data.get("latest", []) or [])
     warning_kinds = list(history_data.get("warning_kinds", []) or [])
     problem_kinds = list(history_data.get("problem_kinds", []) or [])
@@ -957,6 +962,7 @@ def summarize_diagnostic_panel(root_dir: Path, recent: int, history_data: dict[s
     top_problem_streak = consecutive_problems[0] if consecutive_problems else {}
     top_repeat_blocker = frequent_blockers[0] if frequent_blockers else {}
     top_regression = slow_regressions[0] if slow_regressions else {}
+    top_stability_gate = next((item for item in stability_gates if str(item.get("status") or "").strip() in {"WARN", "FAIL"}), stability_gates[0] if stability_gates else {})
 
     recommendations: list[dict[str, Any]] = []
 
@@ -1121,6 +1127,16 @@ def summarize_diagnostic_panel(root_dir: Path, recent: int, history_data: dict[s
             subject=regression_name,
         )
 
+    gate_status = str(top_stability_gate.get("status") or "").strip()
+    if gate_status in {"WARN", "FAIL"}:
+        _append_unique_command(
+            recommendations,
+            reason="release 稳定性门槛复跑",
+            command="python3 scripts/agent_harness.py --profile stability-local-release --artifact-dir artifacts/harness-runs/stability-local/release-baseline",
+            source="heuristic",
+            subject="stability-local-release",
+        )
+
     for item in latest_items:
         kind = str(item.get("kind") or "").strip()
         bucket = str(item.get("bucket") or "").strip()
@@ -1161,18 +1177,25 @@ def summarize_diagnostic_panel(root_dir: Path, recent: int, history_data: dict[s
         else "none"
     )
     regression_hint = regression_name or "none"
+    release_gate_hint = "none"
+    if top_stability_gate:
+        release_gate_hint = (
+            f"{str(top_stability_gate.get('status') or '').strip()}:"
+            f"{float(top_stability_gate.get('duration_ms', 0) or 0):.2f}"
+        )
     replay_hint = _shorten_text(recommendations[0]["command"], limit=68) if recommendations else "none"
     detail = (
         f"task={top_task_name} blocker={short_blocker} slow={top_slow_name} "
         f"problem_kinds={len(problem_kinds)} warning_kinds={len(warning_kinds)} "
         f"streak={streak_hint} blocker_repeat={blocker_repeat_hint} regression={regression_hint} "
-        f"replay={replay_hint}"
+        f"release_gate={release_gate_hint} replay={replay_hint}"
     )
 
     severe_alert = (
         int(top_problem_streak.get("streak", 0) or 0) >= CONSECUTIVE_PROBLEM_FAIL_THRESHOLD
         or bool(top_regression.get("budget_exceeded", False))
         or float(top_regression.get("delta_ms", 0) or 0) >= SLOW_REGRESSION_DELTA_FAIL_MS
+        or gate_status == "FAIL"
     )
     status = "FAIL" if severe_alert else (
         "WARN"
@@ -1186,6 +1209,7 @@ def summarize_diagnostic_panel(root_dir: Path, recent: int, history_data: dict[s
             or consecutive_problems
             or frequent_blockers
             or slow_regressions
+            or gate_status in {"WARN", "FAIL"}
         )
         else "PASS"
     )
@@ -1202,9 +1226,11 @@ def summarize_diagnostic_panel(root_dir: Path, recent: int, history_data: dict[s
             "top_consecutive_problem": top_problem_streak,
             "top_frequent_blocker": top_repeat_blocker,
             "top_slow_regression": top_regression,
+            "top_stability_gate": top_stability_gate,
             "consecutive_problems": consecutive_problems,
             "frequent_blockers": frequent_blockers,
             "slow_regressions": slow_regressions,
+            "stability_gates": stability_gates,
             "alert_thresholds": {
                 "consecutive_problem_warn": CONSECUTIVE_PROBLEM_ALERT_THRESHOLD,
                 "consecutive_problem_fail": CONSECUTIVE_PROBLEM_FAIL_THRESHOLD,
@@ -1212,6 +1238,8 @@ def summarize_diagnostic_panel(root_dir: Path, recent: int, history_data: dict[s
                 "slow_regression_delta_warn_ms": SLOW_REGRESSION_DELTA_ALERT_MS,
                 "slow_regression_delta_fail_ms": SLOW_REGRESSION_DELTA_FAIL_MS,
                 "slow_regression_ratio_warn": SLOW_REGRESSION_RATIO_ALERT,
+                "stability_release_warn_ms": STABILITY_RELEASE_WARN_MS,
+                "stability_release_fail_ms": STABILITY_RELEASE_FAIL_MS,
             },
             "recommended_commands": recommendations[:6],
         },
@@ -1273,6 +1301,30 @@ def summarize_history_trends(root_dir: Path, recent: int) -> ObservationItem:
     consecutive_problems = _aggregate_consecutive_problem_runs(root_dir, recent)
     frequent_blockers = _aggregate_frequent_blockers(top_blockers)
     slow_regressions = _aggregate_slow_regressions(root_dir, recent)
+    stability_gates: list[dict[str, Any]] = []
+    collections = index_payload.get("collections", {}) if isinstance(index_payload.get("collections", {}), dict) else {}
+    release_collection = collections.get("harness-stability-release", {}) if isinstance(collections.get("harness-stability-release"), dict) else {}
+    release_latest = release_collection.get("latest") if isinstance(release_collection.get("latest"), dict) else {}
+    if release_latest:
+        release_duration_ms = round(float(release_latest.get("duration_ms", 0) or 0), 2)
+        gate_status = "PASS"
+        if release_duration_ms > STABILITY_RELEASE_FAIL_MS:
+            gate_status = "FAIL"
+            problem_kinds.append("harness-stability-release-duration")
+        elif release_duration_ms > STABILITY_RELEASE_WARN_MS:
+            gate_status = "WARN"
+            warning_kinds.append("harness-stability-release-duration")
+        stability_gates.append(
+            {
+                "kind": "harness-stability-release",
+                "status": gate_status,
+                "duration_ms": release_duration_ms,
+                "warn_ms": STABILITY_RELEASE_WARN_MS,
+                "fail_ms": STABILITY_RELEASE_FAIL_MS,
+                "generated_at": str(release_latest.get("generated_at") or "").strip(),
+                "overall": str(release_latest.get("overall") or "").strip(),
+            }
+        )
 
     top_task = problem_tasks[0]["subject"] if problem_tasks else "none"
     top_blocker = _shorten_text(top_blockers[0]["text"], limit=36) if top_blockers else "none"
@@ -1288,13 +1340,16 @@ def summarize_history_trends(root_dir: Path, recent: int) -> ObservationItem:
         else "none"
     )
     top_regression = slow_regressions[0]["name"] if slow_regressions else "none"
+    release_gate_status = str(stability_gates[0]["status"]) if stability_gates else "none"
+    release_gate_ms = float(stability_gates[0].get("duration_ms", 0) or 0) if stability_gates else 0.0
 
     detail = (
         f"latest={len(latest_items)} problem={len(problem_kinds)} warning={len(warning_kinds)} "
         f"harness_diff={str(diff_payloads['harness'].get('overall') or '').strip() or 'EMPTY'} "
         f"evaluator_diff={str(diff_payloads['evaluator'].get('overall') or '').strip() or 'EMPTY'} "
         f"task={top_task} blocker={top_blocker} slow={top_slow} "
-        f"streak={top_streak} blocker_repeat={top_repeat} regression={top_regression}"
+        f"streak={top_streak} blocker_repeat={top_repeat} regression={top_regression} "
+        f"release_gate={release_gate_status}:{release_gate_ms:.2f}"
     )
     if latest_items:
         status = "WARN" if problem_kinds or warning_kinds else "PASS"
@@ -1316,6 +1371,7 @@ def summarize_history_trends(root_dir: Path, recent: int) -> ObservationItem:
             "consecutive_problems": consecutive_problems,
             "frequent_blockers": frequent_blockers,
             "slow_regressions": slow_regressions,
+            "stability_gates": stability_gates,
         },
     )
 

@@ -27,6 +27,9 @@
    - Harness 五阶段进度台账：[harness-progress-phase5.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress-phase5.md)
    - Harness 六阶段计划：[harness-iteration-plan-phase6.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-iteration-plan-phase6.md)
    - Harness 六阶段进度台账：[harness-progress-phase6.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress-phase6.md)
+   - 稳定性测试计划：[harness-stability-plan.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-stability-plan.md)
+   - 稳定性测试进度台账：[harness-stability-progress.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-stability-progress.md)
+   - 稳定性测试结果总表：[harness-stability-summary.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-stability-summary.md)
    - 全局稳定经验摘要：[memory-notes.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/memory-notes.md)
    - Planner artifact 目录：[plans/README.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/plans/README.md)
    - 第二阶段模块化拆分计划：[plans/module-split-phase2.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/plans/module-split-phase2.md)
@@ -65,6 +68,9 @@
 - 查看五阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase5.md`
 - 查看六阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan-phase6.md`
 - 查看六阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase6.md`
+- 查看稳定性测试计划：`sed -n '1,260p' docs/agent/harness-stability-plan.md`
+- 查看稳定性测试进度台账：`sed -n '1,260p' docs/agent/harness-stability-progress.md`
+- 查看稳定性测试结果总表：`sed -n '1,260p' docs/agent/harness-stability-summary.md`
 - 刷新全局 heartbeat：`python3 scripts/agent_heartbeat.py`
 - 运行 AutoDream Lite 巡检：`python3 scripts/agent_autodream.py`
 - 查看最近稳定经验摘要：`cat docs/agent/memory-notes.md`

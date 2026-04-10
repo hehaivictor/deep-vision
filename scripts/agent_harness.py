@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from datetime import datetime
 from datetime import timezone
 from dataclasses import asdict
@@ -467,6 +468,7 @@ def build_output_payload(
     summary: dict[str, int],
     overall: str,
     *,
+    duration_ms: float | None = None,
     artifact_paths: dict[str, str] | None = None,
     task_payload: dict | None = None,
 ) -> dict:
@@ -477,6 +479,8 @@ def build_output_payload(
         "summary": summary,
         "overall": overall,
     }
+    if duration_ms is not None:
+        payload["duration_ms"] = round(float(duration_ms), 2)
     if task_payload:
         payload["task"] = task_payload
     if artifact_paths:
@@ -532,6 +536,7 @@ def persist_artifacts(
     results: list[HarnessStageResult],
     summary: dict[str, int],
     overall: str,
+    duration_ms: float | None,
     executions: list[HarnessStageExecution],
     task_payload: dict | None = None,
 ) -> dict[str, str]:
@@ -541,7 +546,13 @@ def persist_artifacts(
     for item in executions:
         if item.artifact_payload:
             stage_artifacts[item.result.name] = item.artifact_payload
-    summary_payload = build_output_payload(results, summary, overall, task_payload=task_payload)
+    summary_payload = build_output_payload(
+        results,
+        summary,
+        overall,
+        duration_ms=duration_ms,
+        task_payload=task_payload,
+    )
     return agent_artifacts.write_harness_artifacts(
         base_dir=artifact_dir,
         summary_payload=summary_payload,
@@ -701,6 +712,7 @@ def apply_harness_profile_preset(args: argparse.Namespace, explicit_flags: set[s
 
 
 def main(argv: list[str] | None = None) -> int:
+    started_at = time.perf_counter()
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     args = build_parser().parse_args(raw_argv)
     explicit_flags = collect_explicit_flags(raw_argv)
@@ -741,11 +753,13 @@ def main(argv: list[str] | None = None) -> int:
     def finalize() -> int:
         summary = summarize_results(results)
         overall = determine_overall_status(summary)
+        duration_ms = round((time.perf_counter() - started_at) * 1000.0, 2)
         artifact_paths = persist_artifacts(
             artifact_dir=args.artifact_dir,
             results=results,
             summary=summary,
             overall=overall,
+            duration_ms=duration_ms,
             executions=executions,
             task_payload=task_payload,
         )
@@ -753,6 +767,7 @@ def main(argv: list[str] | None = None) -> int:
             results,
             summary,
             overall,
+            duration_ms=duration_ms,
             artifact_paths=artifact_paths or None,
             task_payload=task_payload,
         )

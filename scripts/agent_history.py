@@ -28,10 +28,17 @@ if str(ROOT_DIR) not in sys.path:
 
 TARGETS = {
     "harness": "artifacts/harness-runs",
+    "harness-stability-core": "artifacts/harness-runs",
+    "harness-stability-release": "artifacts/harness-runs",
     "evaluator": "artifacts/harness-eval",
     "ci-agent-smoke": "artifacts/ci/agent-smoke",
     "ci-guardrails": "artifacts/ci/guardrails",
     "ci-browser-smoke": "artifacts/ci/browser-smoke",
+}
+
+STABILITY_KIND_PREFIXES = {
+    "harness-stability-core": "core",
+    "harness-stability-release": "release",
 }
 
 
@@ -98,6 +105,7 @@ def _read_run_record(kind: str, run_dir: Path) -> dict[str, Any] | None:
         "run_dir": str(run_dir),
         "generated_at": str(metadata.get("generated_at") or summary_payload.get("generated_at") or "").strip(),
         "overall": str(summary_payload.get("overall") or "").strip(),
+        "duration_ms": float(summary_payload.get("duration_ms", 0) or 0),
         "summary": summary_counts,
         "subject": _extract_subject(kind, summary_payload),
         "results_count": len(list(summary_payload.get("results", []) or [])),
@@ -108,6 +116,17 @@ def _read_run_record(kind: str, run_dir: Path) -> dict[str, Any] | None:
             "handoff_file": str(run_dir / "handoff.json") if (run_dir / "handoff.json").exists() else "",
         },
     }
+
+
+def _matches_kind_filter(kind: str, base_dir: Path, run_dir: Path) -> bool:
+    prefix = STABILITY_KIND_PREFIXES.get(kind, "")
+    if not prefix:
+        return True
+    try:
+        rel_parts = run_dir.resolve().relative_to(base_dir.resolve()).parts
+    except Exception:
+        return False
+    return len(rel_parts) >= 2 and rel_parts[0] == "stability-local" and str(rel_parts[1] or "").startswith(prefix)
 
 
 def list_history_runs(
@@ -123,12 +142,23 @@ def list_history_runs(
     if not base_dir.exists():
         return []
     runs: list[dict[str, Any]] = []
-    for child in sorted(base_dir.iterdir(), key=lambda path: path.name, reverse=True):
-        if not child.is_dir():
+    candidates: list[dict[str, Any]] = []
+    for summary_path in base_dir.rglob("summary.json"):
+        run_dir = summary_path.parent
+        if not _matches_kind_filter(target_kind, base_dir, run_dir):
             continue
-        record = _read_run_record(target_kind, child)
+        record = _read_run_record(target_kind, run_dir)
         if record:
-            runs.append(record)
+            candidates.append(record)
+    candidates.sort(
+        key=lambda item: (
+            str(item.get("generated_at") or ""),
+            str(item.get("run_name") or ""),
+        ),
+        reverse=True,
+    )
+    for record in candidates:
+        runs.append(record)
         if len(runs) >= max(1, int(limit or 5)):
             break
     return runs
@@ -261,14 +291,14 @@ def render_index(payload: dict[str, Any]) -> None:
             continue
         print(
             f"  - latest: {latest['run_name']} | overall={latest['overall']} | "
-            f"generated_at={latest['generated_at'] or '-'}"
+            f"generated_at={latest['generated_at'] or '-'} | duration_ms={float(latest.get('duration_ms', 0) or 0):.2f}"
         )
         if latest.get("subject"):
             print(f"  - subject: {latest['subject']}")
         for item in list(collection.get("runs", []) or [])[: payload["limit"]]:
             print(
                 f"    * {item['run_name']} | overall={item['overall']} | "
-                f"results={item['results_count']} | subject={item.get('subject') or '-'}"
+                f"results={item['results_count']} | duration_ms={float(item.get('duration_ms', 0) or 0):.2f} | subject={item.get('subject') or '-'}"
             )
         print("")
 

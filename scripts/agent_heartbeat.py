@@ -27,6 +27,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from scripts import agent_profiles
+from scripts import agent_history
 
 
 PHASE_FILES = (
@@ -43,6 +44,11 @@ RUN_POINTERS = (
     ("ci-guardrails", "artifacts/ci/guardrails/latest.json"),
     ("ci-browser-smoke", "artifacts/ci/browser-smoke/latest.json"),
 )
+
+STABILITY_LANE_KIND_MAP = {
+    "core": "harness-stability-core",
+    "release": "harness-stability-release",
+}
 
 
 def utc_now_iso() -> str:
@@ -155,8 +161,41 @@ def _collect_run_pointers(root_dir: Path) -> list[dict[str, Any]]:
                 "generated_at": str((payload.get("metadata") or {}).get("generated_at") or payload.get("generated_at") or "").strip(),
                 "handoff_file": str(payload.get("handoff_file") or "").strip(),
                 "progress_file": str(payload.get("progress_file") or "").strip(),
+                "duration_ms": float(payload.get("duration_ms", 0) or 0),
             }
         )
+    stability_latest: dict[str, dict[str, Any]] = {}
+    for record in agent_history.list_history_runs("harness", root_dir=root_dir, limit=200):
+        run_dir = Path(str(record.get("run_dir") or "").strip())
+        try:
+            rel_parts = run_dir.resolve().relative_to(root_dir.resolve()).parts
+        except Exception:
+            continue
+        if len(rel_parts) < 4 or rel_parts[:3] != ("artifacts", "harness-runs", "stability-local"):
+            continue
+        lane_dir = str(rel_parts[3] or "").strip()
+        lane_key = "release" if lane_dir.startswith("release") else ("core" if lane_dir.startswith("core") else "")
+        if not lane_key:
+            continue
+        kind = STABILITY_LANE_KIND_MAP[lane_key]
+        current = stability_latest.get(kind)
+        generated_at = str(record.get("generated_at") or "").strip()
+        if current and generated_at <= str(current.get("generated_at") or ""):
+            continue
+        latest_json_path = run_dir.parent / "latest.json"
+        pointers_payload = {
+            "kind": kind,
+            "latest_json": _relative_path(root_dir, latest_json_path if latest_json_path.exists() else run_dir / "summary.json"),
+            "overall": str(record.get("overall") or "").strip(),
+            "generated_at": generated_at,
+            "handoff_file": str((record.get("files") or {}).get("handoff_file") or "").strip(),
+            "progress_file": str((record.get("files") or {}).get("progress_file") or "").strip(),
+            "duration_ms": float(record.get("duration_ms", 0) or 0),
+        }
+        stability_latest[kind] = pointers_payload
+    for kind in ("harness-stability-core", "harness-stability-release"):
+        if kind in stability_latest:
+            pointers.append(stability_latest[kind])
     return pointers
 
 

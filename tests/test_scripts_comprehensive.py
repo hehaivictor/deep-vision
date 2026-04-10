@@ -1363,6 +1363,51 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertIn("H5-3 Global Heartbeat Memory", markdown)
         self.assertIn("report-solution-share-fix-mission", markdown)
 
+    def test_agent_heartbeat_collects_nested_stability_release_latest(self):
+        sandbox_root = self.sandbox_root / "heartbeat-stability-release"
+        sandbox_root.mkdir(parents=True, exist_ok=True)
+        release_base = sandbox_root / "artifacts" / "harness-runs" / "stability-local" / "release-repeat"
+        release_base.mkdir(parents=True, exist_ok=True)
+        self._write_history_run(
+            root_dir=sandbox_root,
+            rel_base="artifacts/harness-runs/stability-local/release-repeat",
+            run_name="20260411T170000Z-pid70001",
+            summary_payload={
+                "overall": "READY_WITH_WARNINGS",
+                "duration_ms": 44506.25,
+                "summary": {"PASS": 5, "WARN": 1, "FAIL": 0},
+                "results": [
+                    {"name": "browser_smoke", "status": "WARN"},
+                ],
+            },
+            generated_at="2026-04-11T17:00:00Z",
+        )
+        (release_base / "latest.json").write_text(
+            json.dumps(
+                {
+                    "overall": "READY_WITH_WARNINGS",
+                    "generated_at": "2026-04-11T17:00:00Z",
+                    "duration_ms": 44506.25,
+                    "progress_file": str((release_base / "latest-progress.md").resolve()),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        payload = agent_heartbeat.build_heartbeat_payload(root_dir=sandbox_root)
+        run_map = {item["kind"]: item for item in payload["latest_runs"]}
+        self.assertIn("harness-stability-release", run_map)
+        self.assertEqual("READY_WITH_WARNINGS", run_map["harness-stability-release"]["overall"])
+        self.assertEqual(44506.25, run_map["harness-stability-release"]["duration_ms"])
+        self.assertTrue(
+            str(run_map["harness-stability-release"]["latest_json"]).endswith(
+                "artifacts/harness-runs/stability-local/release-repeat/latest.json"
+            )
+        )
+
     def test_agent_autodream_builds_best_practices_payload(self):
         heartbeat_payload = {
             "active_phase": {
@@ -1892,6 +1937,25 @@ class ComprehensiveScriptTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        nested_run_dir = observe_root / "artifacts" / "harness-runs" / "stability-local" / "release-repeat" / "run-003"
+        nested_run_dir.mkdir(parents=True, exist_ok=True)
+        (nested_run_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-04-07T03:25:00Z",
+                    "overall": "BLOCKED",
+                    "duration_ms": 12345.67,
+                    "summary": {"PASS": 3, "WARN": 0, "FAIL": 1, "SKIP": 0},
+                    "results": [
+                        {"name": "doctor", "status": "PASS", "detail": "ok"},
+                        {"name": "browser_smoke", "status": "FAIL", "detail": "interrupted"},
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         (observe_root / "artifacts" / "harness-eval" / "run-101" / "summary.json").write_text(
             json.dumps(
                 {
@@ -1960,7 +2024,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
             root_dir=observe_root,
         )
         self.assertEqual(0, exit_code)
-        self.assertEqual("DEGRADED", payload["overall"])
+        self.assertEqual("BLOCKED", payload["overall"])
         item_map = {item["name"]: item for item in payload["items"]}
         self.assertEqual("PASS", item_map["startup_snapshot"]["status"])
         self.assertEqual("operations/runtime-startup", item_map["startup_snapshot"]["data"]["source"])
@@ -1968,35 +2032,44 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertEqual(2, item_map["db_health"]["data"]["auth_db"]["users"])
         self.assertEqual(2, item_map["ownership_history"]["data"]["items"][0]["reports_updated"])
         self.assertEqual("BLOCKED", item_map["harness_runs"]["data"]["latest_pointer"]["overall"])
+        self.assertEqual("BLOCKED", item_map["harness_runs"]["data"]["recent_runs"][0]["overall"])
+        self.assertEqual(12345.67, item_map["harness_runs"]["data"]["recent_runs"][0]["duration_ms"])
+        self.assertIn("latest_ms=12345.67", item_map["harness_runs"]["detail"])
         self.assertEqual("WARN", item_map["history_trends"]["status"])
         self.assertEqual("CHANGED", item_map["history_trends"]["data"]["diffs"]["harness"]["overall"])
         self.assertTrue(any(item["kind"] == "harness" for item in item_map["history_trends"]["data"]["drift_items"]))
+        self.assertTrue(any(item["kind"] == "harness-stability-release" for item in item_map["history_trends"]["data"]["latest"]))
+        self.assertEqual("PASS", item_map["history_trends"]["data"]["stability_gates"][0]["status"])
+        self.assertEqual(12345.67, item_map["history_trends"]["data"]["stability_gates"][0]["duration_ms"])
         self.assertEqual("config-center", item_map["history_trends"]["data"]["problem_tasks"][0]["subject"])
         self.assertEqual("smoke: smoke failed", item_map["history_trends"]["data"]["top_blockers"][0]["text"])
         self.assertEqual("access-boundaries", item_map["history_trends"]["data"]["slow_scenarios"][0]["name"])
         self.assertEqual("harness", item_map["history_trends"]["data"]["consecutive_problems"][0]["kind"])
-        self.assertEqual(2, item_map["history_trends"]["data"]["consecutive_problems"][0]["streak"])
+        self.assertEqual(3, item_map["history_trends"]["data"]["consecutive_problems"][0]["streak"])
         self.assertEqual(2, item_map["history_trends"]["data"]["frequent_blockers"][0]["count"])
         self.assertEqual("access-boundaries", item_map["history_trends"]["data"]["slow_regressions"][0]["name"])
         self.assertGreater(item_map["history_trends"]["data"]["slow_regressions"][0]["delta_ms"], 150)
         self.assertIn("task=config-center", item_map["history_trends"]["detail"])
         self.assertIn("slow=access-boundaries", item_map["history_trends"]["detail"])
-        self.assertIn("streak=harness:2", item_map["history_trends"]["detail"])
+        self.assertIn("streak=harness:3", item_map["history_trends"]["detail"])
         self.assertIn("regression=access-boundaries", item_map["history_trends"]["detail"])
-        self.assertEqual("WARN", item_map["diagnostic_panel"]["status"])
+        self.assertIn("release_gate=PASS:12345.67", item_map["history_trends"]["detail"])
+        self.assertEqual("FAIL", item_map["diagnostic_panel"]["status"])
         self.assertEqual("config-center", item_map["diagnostic_panel"]["data"]["top_problem_task"]["subject"])
         self.assertEqual("smoke: smoke failed", item_map["diagnostic_panel"]["data"]["top_blocker"]["text"])
         self.assertEqual("access-boundaries", item_map["diagnostic_panel"]["data"]["top_slow_scenario"]["name"])
-        self.assertEqual(2, item_map["diagnostic_panel"]["data"]["top_consecutive_problem"]["streak"])
+        self.assertEqual(3, item_map["diagnostic_panel"]["data"]["top_consecutive_problem"]["streak"])
         self.assertEqual(2, item_map["diagnostic_panel"]["data"]["top_frequent_blocker"]["count"])
         self.assertEqual("access-boundaries", item_map["diagnostic_panel"]["data"]["top_slow_regression"]["name"])
+        self.assertEqual("PASS", item_map["diagnostic_panel"]["data"]["top_stability_gate"]["status"])
         commands = [item["command"] for item in item_map["diagnostic_panel"]["data"]["recommended_commands"]]
         self.assertTrue(any("config-center" in command for command in commands))
         self.assertTrue(any("access-boundaries" in command for command in commands))
         self.assertIn("task=config-center", item_map["diagnostic_panel"]["detail"])
         self.assertIn("slow=access-boundaries", item_map["diagnostic_panel"]["detail"])
-        self.assertIn("streak=harness:2", item_map["diagnostic_panel"]["detail"])
+        self.assertIn("streak=harness:3", item_map["diagnostic_panel"]["detail"])
         self.assertIn("regression=access-boundaries", item_map["diagnostic_panel"]["detail"])
+        self.assertIn("release_gate=PASS:12345.67", item_map["diagnostic_panel"]["detail"])
         self.assertIn("replay=", item_map["diagnostic_panel"]["detail"])
 
     def test_agent_history_indexes_runs_and_builds_diff(self):
@@ -2008,6 +2081,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
             generated_at="2026-04-07T01:00:00Z",
             summary_payload={
                 "overall": "BLOCKED",
+                "duration_ms": 1800.0,
                 "summary": {"PASS": 1, "WARN": 0, "FAIL": 1, "SKIP": 0},
                 "results": [
                     {"name": "doctor", "status": "PASS", "detail": "ok"},
@@ -2017,11 +2091,12 @@ class ComprehensiveScriptTests(unittest.TestCase):
         )
         self._write_history_run(
             root_dir=history_root,
-            rel_base="artifacts/harness-runs",
+            rel_base="artifacts/harness-runs/stability-local/release-repeat",
             run_name="20260407T020000Z-pid200",
             generated_at="2026-04-07T02:00:00Z",
             summary_payload={
                 "overall": "READY_WITH_WARNINGS",
+                "duration_ms": 950.0,
                 "task": {"name": "report-solution"},
                 "summary": {"PASS": 2, "WARN": 1, "FAIL": 0, "SKIP": 0},
                 "results": [
@@ -2047,7 +2122,10 @@ class ComprehensiveScriptTests(unittest.TestCase):
 
         index_payload = agent_history.build_history_index(kind="all", root_dir=history_root, limit=3)
         self.assertEqual("READY_WITH_WARNINGS", index_payload["collections"]["harness"]["latest"]["overall"])
+        self.assertEqual(950.0, index_payload["collections"]["harness"]["latest"]["duration_ms"])
         self.assertEqual("report-solution", index_payload["collections"]["harness"]["latest"]["subject"])
+        self.assertEqual("READY_WITH_WARNINGS", index_payload["collections"]["harness-stability-release"]["latest"]["overall"])
+        self.assertEqual(950.0, index_payload["collections"]["harness-stability-release"]["latest"]["duration_ms"])
         self.assertEqual("HEALTHY", index_payload["collections"]["evaluator"]["latest"]["overall"])
 
         diff_payload = agent_history.build_history_diff(kind="harness", root_dir=history_root)
@@ -2652,6 +2730,93 @@ class ComprehensiveScriptTests(unittest.TestCase):
         saved_payload = json.loads(latest_json.read_text(encoding="utf-8"))
         self.assertEqual("ops_status", saved_payload["kind"])
 
+    def test_agent_ops_includes_stability_release_lane_and_duration_gate(self):
+        heartbeat_payload = {
+            "active_phase": {
+                "name": "phase6",
+                "current_priority": "S6 非功能质量门与可诊断性",
+                "progress_file": "docs/agent/harness-stability-progress.md",
+                "plan_file": "docs/agent/harness-stability-plan.md",
+            },
+            "capabilities": {"agent_entrypoint_count": 12, "scenario_count": 21},
+            "stable_entrypoints": {"commands": ["python3 scripts/agent_ops.py status"]},
+            "latest_runs": [
+                {
+                    "kind": "harness",
+                    "overall": "READY",
+                    "generated_at": "2026-04-11T17:05:00Z",
+                    "latest_json": "artifacts/harness-runs/latest.json",
+                    "duration_ms": 61000.0,
+                },
+                {
+                    "kind": "harness-stability-release",
+                    "overall": "READY_WITH_WARNINGS",
+                    "generated_at": "2026-04-11T17:10:00Z",
+                    "latest_json": "artifacts/harness-runs/stability-local/release-repeat/latest.json",
+                    "duration_ms": agent_ops.STABILITY_RELEASE_FAIL_MS + 5000.0,
+                },
+            ],
+        }
+        with (
+            patch.object(agent_heartbeat, "build_heartbeat_payload", return_value=heartbeat_payload),
+            patch.object(
+                agent_doc_gardener,
+                "build_doc_gardening_report",
+                return_value={"overall": "HEALTHY", "summary": {"PASS": 6, "WARN": 0, "FAIL": 0}, "checks": []},
+            ),
+            patch.object(
+                agent_ops,
+                "_build_task_gap_payload",
+                return_value={
+                    "overall": "HEALTHY",
+                    "task_count": 8,
+                    "planner_meta": 8,
+                    "planner_materialized": 8,
+                    "mission_meta": 8,
+                    "mission_materialized": 8,
+                    "high_risk_contracts": 4,
+                    "high_risk_total": 4,
+                    "missing": {
+                        "planner_meta": [],
+                        "mission_meta": [],
+                        "planner_materialized": [],
+                        "mission_materialized": [],
+                        "contracts": [],
+                    },
+                    "tasks": [],
+                },
+            ),
+            patch.object(agent_calibration, "load_calibration_samples", return_value=[{"id": "c1"}] * 6),
+            patch.object(
+                agent_history,
+                "build_history_diff",
+                side_effect=[
+                    {"overall": "UNCHANGED", "changed_results": []},
+                    {"overall": "UNCHANGED", "changed_results": []},
+                    {"overall": "UNCHANGED", "changed_results": []},
+                ],
+            ),
+        ):
+            payload = agent_ops.build_ops_payload(root_dir=self.sandbox_root)
+
+        latest_run_map = {item["kind"]: item for item in payload["latest_runs"]["latest_runs"]}
+        self.assertIn("harness-stability-release", latest_run_map)
+        self.assertEqual(
+            agent_ops.STABILITY_RELEASE_WARN_MS,
+            payload["latest_runs"]["stability_gates"]["release_max_duration_warn_ms"],
+        )
+        self.assertEqual(
+            agent_ops.STABILITY_RELEASE_FAIL_MS,
+            payload["latest_runs"]["stability_gates"]["release_max_duration_fail_ms"],
+        )
+        blocker_text = "\n".join(payload["latest_runs"]["blockers"])
+        self.assertIn("stability-local-release", blocker_text)
+        self.assertIn("duration_ms", blocker_text)
+        markdown = agent_ops.render_status_markdown(payload)
+        self.assertIn("stability-local-release", markdown)
+        self.assertIn("duration_ms=", markdown)
+        self.assertIn("稳定性门槛", markdown)
+
     def test_agent_doc_gardener_reports_blocked_when_playbooks_drift(self):
         with patch.object(agent_playbook_sync, "check_task_playbooks", return_value=["report-solution: playbook 内容已漂移"]):
             payload = agent_doc_gardener.build_doc_gardening_report()
@@ -2804,6 +2969,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual("READY_WITH_WARNINGS", payload["overall"])
         self.assertEqual({"PASS": 3, "WARN": 1, "FAIL": 0, "SKIP": 0}, payload["summary"])
+        self.assertGreaterEqual(float(payload.get("duration_ms", 0) or 0), 0.0)
         self.assertEqual("doctor", payload["results"][0]["name"])
         self.assertEqual("SMS_PROVIDER: mock", payload["results"][0]["highlights"][0])
         self.assertEqual(2, run_suite_stage.call_count)
@@ -3851,15 +4017,18 @@ class ComprehensiveScriptTests(unittest.TestCase):
         latest_payload = json.loads((artifact_root / "latest.json").read_text(encoding="utf-8"))
         self.assertEqual(str(run_dir), latest_payload["run_dir"])
         self.assertEqual("BLOCKED", latest_payload["overall"])
+        self.assertGreaterEqual(float(latest_payload.get("duration_ms", 0) or 0), 0.0)
         self.assertEqual(str(run_dir / "progress.md"), latest_payload["progress_file"])
         self.assertEqual(str(run_dir / "failure-summary.md"), latest_payload["failure_summary_file"])
         self.assertEqual(str(run_dir / "handoff.json"), latest_payload["handoff_file"])
 
         summary_payload = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
         self.assertEqual("BLOCKED", summary_payload["overall"])
+        self.assertGreaterEqual(float(summary_payload.get("duration_ms", 0) or 0), 0.0)
         self.assertEqual("abc123", summary_payload["metadata"]["git"]["commit"])
         progress_md = (run_dir / "progress.md").read_text(encoding="utf-8")
         self.assertIn("Harness Progress", progress_md)
+        self.assertIn("总耗时(ms)", progress_md)
         self.assertIn("`smoke`: FAIL", progress_md)
         failure_summary_md = (run_dir / "failure-summary.md").read_text(encoding="utf-8")
         self.assertIn("Harness Failure Summary", failure_summary_md)

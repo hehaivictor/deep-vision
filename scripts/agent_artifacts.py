@@ -160,6 +160,7 @@ def build_harness_progress_markdown(summary_payload: dict[str, Any], metadata: d
         "",
         f"- 生成时间: {metadata.get('generated_at', '')}",
         f"- 总体状态: {summary_payload.get('overall', '')}",
+        f"- 总耗时(ms): {float(summary_payload.get('duration_ms', 0) or 0):.2f}",
         f"- Git 分支: {((metadata.get('git') or {}).get('branch') or '').strip() or '-'}",
         f"- Git 提交: {((metadata.get('git') or {}).get('short_commit') or '').strip() or '-'}",
     ]
@@ -980,6 +981,7 @@ def write_harness_artifacts(
         "failure_summary_file": str(run_dir / "failure-summary.md"),
         "handoff_file": str(run_dir / "handoff.json"),
         "overall": summary_payload.get("overall", ""),
+        "duration_ms": round(float(summary_payload.get("duration_ms", 0) or 0), 2),
     }
     write_json_file(base_path / "latest.json", latest_payload)
     write_text_file(base_path / "latest.txt", str(run_dir))

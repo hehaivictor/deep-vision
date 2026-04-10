@@ -40,6 +40,9 @@ from scripts import agent_missions
 from scripts import agent_plans
 from scripts import agent_profiles
 
+STABILITY_RELEASE_WARN_MS = 20 * 60 * 1000.0
+STABILITY_RELEASE_FAIL_MS = STABILITY_RELEASE_WARN_MS * 1.2
+
 
 @dataclass
 class OpsArtifactPaths:
@@ -182,12 +185,23 @@ def _build_latest_runs_payload(root_dir: Path) -> dict[str, Any]:
     blockers: list[str] = []
     warnings: list[str] = []
     for item in latest_runs:
-        label = f"{item.get('kind', '-')}: overall={item.get('overall', '-')}"
+        duration_ms = float(item.get("duration_ms", 0) or 0)
+        duration_text = f" duration_ms={duration_ms:.2f}" if duration_ms > 0 else ""
+        label = f"{item.get('kind', '-')}: overall={item.get('overall', '-')}{duration_text}"
         overall = str(item.get("overall") or "").strip()
         if overall == "BLOCKED":
             blockers.append(label)
         elif overall in {"READY_WITH_WARNINGS", "ATTENTION_REQUIRED"}:
             warnings.append(label)
+        if str(item.get("kind") or "").strip() == "harness-stability-release" and duration_ms > 0:
+            if duration_ms > STABILITY_RELEASE_FAIL_MS:
+                blockers.append(
+                    f"stability-local-release: duration_ms={duration_ms:.2f} 超过 FAIL 阈值 {STABILITY_RELEASE_FAIL_MS:.2f}"
+                )
+            elif duration_ms > STABILITY_RELEASE_WARN_MS:
+                warnings.append(
+                    f"stability-local-release: duration_ms={duration_ms:.2f} 超过 WARN 阈值 {STABILITY_RELEASE_WARN_MS:.2f}"
+                )
 
     harness_diff = agent_history.build_history_diff(kind="harness", root_dir=root_dir)
     evaluator_diff = agent_history.build_history_diff(kind="evaluator", root_dir=root_dir)
@@ -197,6 +211,10 @@ def _build_latest_runs_payload(root_dir: Path) -> dict[str, Any]:
         "latest_runs": latest_runs,
         "blockers": blockers,
         "warnings": warnings,
+        "stability_gates": {
+            "release_max_duration_warn_ms": STABILITY_RELEASE_WARN_MS,
+            "release_max_duration_fail_ms": STABILITY_RELEASE_FAIL_MS,
+        },
         "diffs": {
             "harness": {
                 "overall": str(harness_diff.get("overall") or "").strip(),
@@ -319,7 +337,7 @@ def render_status_markdown(payload: dict[str, Any]) -> str:
         if not isinstance(item, dict):
             continue
         lines.append(
-            f"- `{item.get('kind', '-')}`: overall=`{item.get('overall', '-')}` | generated_at=`{item.get('generated_at', '-')}` | latest=`{item.get('latest_json', '-')}`"
+            f"- `{item.get('kind', '-')}`: overall=`{item.get('overall', '-')}` | generated_at=`{item.get('generated_at', '-')}` | duration_ms=`{float(item.get('duration_ms', 0) or 0):.2f}` | latest=`{item.get('latest_json', '-')}`"
         )
     if not list(latest_runs.get("latest_runs", []) or []):
         lines.append("- 暂无 latest 指针。")
@@ -345,6 +363,16 @@ def render_status_markdown(payload: dict[str, Any]) -> str:
             lines.append(f"- WARN: {item}")
     if not blockers and not warnings and task_gap.get("overall") == "HEALTHY":
         lines.append("- 当前没有额外 blocker；覆盖率与最新指针均处于健康状态。")
+    lines.append("")
+
+    stability_gates = latest_runs.get("stability_gates", {}) if isinstance(latest_runs.get("stability_gates"), dict) else {}
+    lines.extend(["## 稳定性门槛", ""])
+    lines.append(
+        f"- `stability-local-release` WARN：`{float(stability_gates.get('release_max_duration_warn_ms', 0) or 0):.2f}ms`"
+    )
+    lines.append(
+        f"- `stability-local-release` FAIL：`{float(stability_gates.get('release_max_duration_fail_ms', 0) or 0):.2f}ms`"
+    )
     lines.append("")
 
     missing = task_gap.get("missing", {}) if isinstance(task_gap.get("missing"), dict) else {}
@@ -431,7 +459,7 @@ def render_latest_runs(payload: dict[str, Any]) -> None:
         if not isinstance(item, dict):
             continue
         print(
-            f"- {item.get('kind', '-')}: overall={item.get('overall', '-')} generated_at={item.get('generated_at', '-')} latest={item.get('latest_json', '-')}"
+            f"- {item.get('kind', '-')}: overall={item.get('overall', '-')} generated_at={item.get('generated_at', '-')} duration_ms={float(item.get('duration_ms', 0) or 0):.2f} latest={item.get('latest_json', '-')}"
         )
     for item in list(latest_runs.get("blockers", []) or []):
         print(f"BLOCKER: {item}")
