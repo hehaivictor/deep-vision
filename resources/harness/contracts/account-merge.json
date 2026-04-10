@@ -1,0 +1,27 @@
+{
+  "name": "account-merge",
+  "title": "账号合并 Sprint Contract",
+  "task": "account-merge",
+  "summary": "账号合并任务只能沿着 merge preview、candidate context、apply 确认和管理员 rollback 链路推进，不能绕过 preview 直接合并历史账号。",
+  "docs": [
+    "docs/agent/auth-identity.md",
+    "docs/agent/admin-ops.md",
+    "docs/agent/playbooks/account-merge-verify.md"
+  ],
+  "done_when": [
+    "已确认手机号或微信冲突的 candidate context、preview token 和 merge_required / takeover 分支仍成立",
+    "专项回归证明 merge preview、merge apply 与管理员 rollback 链路可用",
+    "正式执行前，latest artifact、确认短语和受影响账号范围已记录完整"
+  ],
+  "hard_failures": [
+    "在没有有效 preview 或 candidate context 的情况下直接执行 merge apply",
+    "普通用户会话能够触发管理员 rollback 或越过 takeover / merge_required 边界",
+    "绑定冲突专项回归失败，导致 preview token、确认短语或 rollback 入口失效"
+  ],
+  "evidence_required": [
+    "artifacts/harness-runs/latest.json",
+    "workflow.json",
+    "guardrails.json",
+    "账号合并专项回归输出"
+  ]
+}

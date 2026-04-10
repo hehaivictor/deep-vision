@@ -9,6 +9,33 @@
   "docs": [
     "docs/agent/report-solution.md"
   ],
+  "mission": {
+    "summary": "把用户的一句话诉求先收口成“方案页/分享/旧报告兼容”的用户可见目标定义，再进入专项回归与 workflow 预演。",
+    "desired_outcomes": [
+      "先明确用户真正受影响的是报告生成、方案页渲染、公开分享还是旧报告 fallback",
+      "先把用户可见结果写清楚，例如页面可打开、内容不泄露、旧报告仍可回退",
+      "先约束证据入口和复跑路径，再决定是否深入专项实现"
+    ],
+    "acceptance_criteria": [
+      "方案页仍消费已绑定报告的最终快照，不绕回不受控旧结构",
+      "公开分享保持匿名只读，owner 校验与 token 边界不被削弱",
+      "旧报告 fallback 仍可用，但不会把内部实现词、结构字段或错误文案泄露给用户"
+    ],
+    "non_goals": [
+      "不要把 mission 扩大成整条访谈链路或管理后台的泛化改造",
+      "不要在尚未有证据前把问题直接归因给 AI 输出或前端实现"
+    ],
+    "risks": [
+      "方案页存在后处理和文案压缩逻辑，验收应优先看稳定语义而不是逐字文案",
+      "分享、owner 和旧报告兼容链路耦合较高，局部修复容易引入边界回退"
+    ],
+    "evidence_expectations": [
+      "artifacts/harness-runs/latest.json",
+      "artifacts/harness-runs/latest-failure-summary.md",
+      "artifacts/harness-eval/latest.json",
+      "tests/test_solution_payload.py"
+    ]
+  },
   "planner": {
     "summary": "先把报告生成、方案页 payload、公开分享边界和旧报告 fallback 的影响面收口成结构化计划，再进入专项回归与 workflow 预演。",
     "scope_focus": [

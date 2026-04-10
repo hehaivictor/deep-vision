@@ -19,6 +19,7 @@ import ast
 import json
 from dataclasses import asdict
 from dataclasses import dataclass
+from dataclasses import field
 from datetime import datetime
 from datetime import timezone
 from pathlib import Path
@@ -27,6 +28,7 @@ from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_SERVER_FILE = ROOT_DIR / "web" / "server.py"
+DEFAULT_WEB_ROOT = ROOT_DIR / "web"
 
 LICENSE_GATED_ADMIN_ROUTES = {
     "/api/admin/licenses/batch",
@@ -67,6 +69,9 @@ class StaticGuardrailResult:
     status: str
     detail: str
     highlights: list[str]
+    repair_layer: str = ""
+    recommended_actions: list[str] = field(default_factory=list)
+    rerun_commands: list[str] = field(default_factory=list)
 
 
 def _decorator_name(node: ast.AST) -> str:
@@ -142,6 +147,35 @@ def collect_route_handlers(server_file: Path = DEFAULT_SERVER_FILE) -> list[Rout
     return handlers
 
 
+def collect_python_files(base_dir: Path) -> list[Path]:
+    if not base_dir.exists():
+        return []
+    return sorted(path for path in base_dir.rglob("*.py") if "__pycache__" not in path.parts)
+
+
+def _import_targets(node: ast.AST) -> list[str]:
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names if alias.name]
+    if isinstance(node, ast.ImportFrom):
+        module = str(node.module or "").strip()
+        targets: list[str] = []
+        if module:
+            targets.append(module)
+            if module == "scripts":
+                targets.extend(f"scripts.{alias.name}" for alias in node.names if alias.name)
+        return targets
+    return []
+
+
+def _display_path(path: Path, base_dir: Path) -> str:
+    for root in (ROOT_DIR, base_dir):
+        try:
+            return str(path.relative_to(root))
+        except ValueError:
+            continue
+    return str(path)
+
+
 def _find_handler(handlers: list[RouteHandler], path: str, method: str) -> RouteHandler | None:
     normalized_method = str(method or "GET").upper()
     for handler in handlers:
@@ -162,12 +196,24 @@ def _contains_none(source: str, forbidden: list[str]) -> tuple[bool, list[str]]:
     return not found, found
 
 
-def _build_result(name: str, ok: bool, detail: str, highlights: list[str]) -> StaticGuardrailResult:
+def _build_result(
+    name: str,
+    ok: bool,
+    detail: str,
+    highlights: list[str],
+    *,
+    repair_layer: str = "",
+    recommended_actions: list[str] | None = None,
+    rerun_commands: list[str] | None = None,
+) -> StaticGuardrailResult:
     return StaticGuardrailResult(
         name=name,
         status="PASS" if ok else "FAIL",
         detail=detail,
         highlights=highlights[:8],
+        repair_layer=repair_layer if not ok else "",
+        recommended_actions=list(recommended_actions or [])[:5] if not ok else [],
+        rerun_commands=list(rerun_commands or [])[:3] if not ok else [],
     )
 
 
@@ -187,6 +233,15 @@ def _check_admin_routes_require_admin(handlers: list[RouteHandler]) -> StaticGua
         not missing,
         f"checked={len(admin_routes)} routes missing={len(missing)}",
         missing or ["所有高风险管理/运维路由都带 require_admin。"],
+        repair_layer="Flask 管理/运维路由装饰器层",
+        recommended_actions=[
+            "为缺失的高风险管理/运维路由补回 @require_admin，避免匿名或普通用户直接进入写接口。",
+            "如果路由只是薄封装，优先在路由层补装饰器，不要把管理员校验下沉到业务分支里兜底。",
+        ],
+        rerun_commands=[
+            "python3 scripts/agent_static_guardrails.py",
+            "python3 scripts/agent_harness.py --skip-doctor --skip-smoke --guardrails-suite minimal --artifact-dir artifacts/ci/guardrails",
+        ],
     )
 
 
@@ -202,6 +257,15 @@ def _check_license_routes_require_valid_license(handlers: list[RouteHandler]) ->
         not missing,
         f"checked={len(targets)} routes missing={len(missing)}",
         missing or ["所有 License 管理路由都带 require_valid_license。"],
+        repair_layer="License 管理路由装饰器层",
+        recommended_actions=[
+            "为 License 管理和功能开关路由补回 @require_valid_license，保持管理员能力仍受有效 License 门禁约束。",
+            "如果路由已委托 helper，仍应把 License 门禁放在路由入口，而不是依赖 helper 内部兜底。",
+        ],
+        rerun_commands=[
+            "python3 scripts/agent_static_guardrails.py",
+            "python3 scripts/agent_harness.py --task license-admin --workflow-execute preview",
+        ],
     )
 
 
@@ -221,6 +285,15 @@ def _check_solution_view_route(handlers: list[RouteHandler]) -> StaticGuardrailR
         ok,
         f"function={handler.function_name}",
         [f"缺少源码信号: {item}" for item in missing] if missing else ["已检测到登录、能力校验和 owner 约束。"],
+        repair_layer="方案页查看路由层",
+        recommended_actions=[
+            "在方案页查看路由补回 get_current_user()、solution.view 能力校验和 enforce_report_owner_or_404() 三段式约束。",
+            "不要只在 payload 构造阶段做 owner 判断，必须在路由入口先收敛登录态和 owner 边界。",
+        ],
+        rerun_commands=[
+            "python3 scripts/agent_static_guardrails.py",
+            "python3 scripts/agent_harness.py --task report-solution --workflow-execute preview",
+        ],
     )
 
 
@@ -241,6 +314,15 @@ def _check_solution_share_route(handlers: list[RouteHandler]) -> StaticGuardrail
         ok,
         f"function={handler.function_name}",
         [f"缺少源码信号: {item}" for item in missing] if missing else ["已检测到登录、分享能力校验和 owner 约束。"],
+        repair_layer="方案页分享路由层",
+        recommended_actions=[
+            "在方案页分享路由补回 get_current_user()、solution.share 能力校验和 enforce_report_owner_or_404()，再调用 create_or_get_solution_share()。",
+            "分享链接的创建必须在 owner 校验之后，避免通过分享接口绕过报告归属判断。",
+        ],
+        rerun_commands=[
+            "python3 scripts/agent_static_guardrails.py",
+            "python3 scripts/agent_harness.py --task report-solution --workflow-execute preview",
+        ],
     )
 
 
@@ -270,6 +352,15 @@ def _check_public_solution_route(handlers: list[RouteHandler]) -> StaticGuardrai
         ok,
         f"function={handler.function_name}",
         highlights,
+        repair_layer="公开分享只读载荷收敛层",
+        recommended_actions=[
+            "公开分享路由保留匿名只读模式，不要重新引入登录依赖、写权限或泄露 report_name。",
+            "补回 share_mode=public、viewer_capabilities.solution_share=False、report_name 置空与 noindex header 约束。",
+        ],
+        rerun_commands=[
+            "python3 scripts/agent_static_guardrails.py",
+            "python3 scripts/agent_harness.py --task report-solution --workflow-execute preview",
+        ],
     )
 
 
@@ -292,6 +383,15 @@ def _check_ownership_preview_route(handlers: list[RouteHandler]) -> StaticGuardr
         ok,
         f"function={handler.function_name}",
         highlights,
+        repair_layer="ownership preview 路由层",
+        recommended_actions=[
+            "preview 路由必须保留 @require_admin、apply_mode=False 和 preview 持久化，确保管理员先看到 dry-run 结果再进入 apply。",
+            "不要把 preview 实现退化成直接 apply；preview token 和审计证据要在 preview 阶段先落盘。",
+        ],
+        rerun_commands=[
+            "python3 scripts/agent_static_guardrails.py",
+            "python3 scripts/agent_harness.py --task ownership-migration --task-var target_account=13700000000 --workflow-execute preview",
+        ],
     )
 
 
@@ -321,6 +421,15 @@ def _check_ownership_apply_route(handlers: list[RouteHandler]) -> StaticGuardrai
         ok,
         f"function={handler.function_name}",
         highlights,
+        repair_layer="ownership apply 路由层",
+        recommended_actions=[
+            "apply 路由补回 preview_token、confirm_phrase/confirm_text 与 apply_mode=True，保持 preview -> confirm -> apply 的确认链。",
+            "正式 apply 前不要跳过 _get_admin_ownership_preview() 与请求 payload 序列化，避免脱离 preview 直接写数据。",
+        ],
+        rerun_commands=[
+            "python3 scripts/agent_static_guardrails.py",
+            "python3 scripts/agent_harness.py --task ownership-migration --task-var target_account=13700000000 --allow-apply",
+        ],
     )
 
 
@@ -343,6 +452,15 @@ def _check_ownership_rollback_route(handlers: list[RouteHandler]) -> StaticGuard
         ok,
         f"function={handler.function_name}",
         highlights,
+        repair_layer="ownership rollback 路由层",
+        recommended_actions=[
+            "rollback 路由补回 @require_admin 和 backup_id 前置校验，确保回滚动作只能基于已有备份执行。",
+            "不要在 rollback 路由里推导默认 backup；没有显式 backup_id 时必须阻断。",
+        ],
+        rerun_commands=[
+            "python3 scripts/agent_static_guardrails.py",
+            "python3 scripts/agent_harness.py --task ownership-migration --task-var target_account=13700000000 --workflow-execute preview",
+        ],
     )
 
 
@@ -406,11 +524,54 @@ def _check_config_center_routes_delegate_helpers(handlers: list[RouteHandler]) -
         ok,
         f"get={get_handler.function_name} save={save_handler.function_name}",
         highlights,
+        repair_layer="配置中心路由委托层",
+        recommended_actions=[
+            "配置中心 GET/POST 路由应继续委托 build_admin_config_center_payload() 和 save_admin_config_group()，不要在路由层直接写 .env、config.py 或 site-config.js。",
+            "如果需要新增配置源处理，优先扩展 helper/service，而不是把文件写入逻辑塞回 Flask 路由。",
+        ],
+        rerun_commands=[
+            "python3 scripts/agent_static_guardrails.py",
+            "python3 scripts/agent_harness.py --task config-center --workflow-execute preview",
+        ],
+    )
+
+
+def _check_business_python_does_not_import_harness(web_root: Path) -> StaticGuardrailResult:
+    violations: list[str] = []
+    checked = 0
+    base_dir = web_root.parent if web_root.name == "web" else web_root
+    for python_file in collect_python_files(web_root):
+        checked += 1
+        try:
+            source = python_file.read_text(encoding="utf-8")
+            module = ast.parse(source, filename=str(python_file))
+        except Exception as exc:
+            violations.append(f"{_display_path(python_file, base_dir)} 解析失败: {exc}")
+            continue
+        for node in ast.walk(module):
+            for target in _import_targets(node):
+                if target.startswith("scripts.agent_"):
+                    violations.append(f"{_display_path(python_file, base_dir)} -> {target}")
+    return _build_result(
+        "business_python_does_not_import_harness",
+        not violations,
+        f"checked={checked} python files violations={len(violations)}",
+        violations or ["web/ 下 Python 业务代码未反向依赖 scripts.agent_* harness 脚本。"],
+        repair_layer="Python 业务模块 import 边界",
+        recommended_actions=[
+            "不要在 web/server.py 或 web/server_modules/* 中直接 import scripts.agent_*；把共享逻辑下沉到业务 helper / service，再由 harness 侧读取结果。",
+            "如果只是想复用校验或报告格式，优先抽到 web/server_modules/* 或通用模块，避免业务代码反向依赖 harness 脚本。",
+        ],
+        rerun_commands=[
+            "python3 scripts/agent_static_guardrails.py",
+            "python3 scripts/agent_harness.py --profile auto",
+        ],
     )
 
 
 def run_static_guardrails(*, server_file: Path = DEFAULT_SERVER_FILE) -> tuple[dict[str, Any], int]:
     handlers = collect_route_handlers(server_file)
+    web_root = server_file.parent if server_file.parent.exists() else DEFAULT_WEB_ROOT
     results = [
         _check_admin_routes_require_admin(handlers),
         _check_license_routes_require_valid_license(handlers),
@@ -418,6 +579,7 @@ def run_static_guardrails(*, server_file: Path = DEFAULT_SERVER_FILE) -> tuple[d
         _check_solution_share_route(handlers),
         _check_public_solution_route(handlers),
         _check_config_center_routes_delegate_helpers(handlers),
+        _check_business_python_does_not_import_harness(web_root),
         _check_ownership_preview_route(handlers),
         _check_ownership_apply_route(handlers),
         _check_ownership_rollback_route(handlers),
@@ -447,6 +609,18 @@ def render_text_output(payload: dict[str, Any]) -> None:
         print(f"[{item.get('status', '')}] {item.get('name', '')}: {item.get('detail', '')}")
         for line in list(item.get("highlights", []) or []):
             print(f"        - {line}")
+        if str(item.get("status") or "").strip() == "FAIL":
+            repair_layer = str(item.get("repair_layer") or "").strip()
+            recommended_actions = [str(line or "").strip() for line in list(item.get("recommended_actions", []) or []) if str(line or "").strip()]
+            rerun_commands = [str(line or "").strip() for line in list(item.get("rerun_commands", []) or []) if str(line or "").strip()]
+            if repair_layer or recommended_actions or rerun_commands:
+                print("        Action for Agent:")
+                if repair_layer:
+                    print(f"        - 修复层级: {repair_layer}")
+                for line in recommended_actions:
+                    print(f"        - 建议动作: {line}")
+                for line in rerun_commands:
+                    print(f"        - 推荐复跑: {line}")
     summary = payload.get("summary", {}) if isinstance(payload.get("summary", {}), dict) else {}
     print("")
     print(f"Summary: PASS={int(summary.get('PASS', 0) or 0)} FAIL={int(summary.get('FAIL', 0) or 0)}")
@@ -469,6 +643,7 @@ def list_rules() -> int:
         "solution_share_guard",
         "public_solution_readonly",
         "config_center_routes_delegate_helpers",
+        "business_python_does_not_import_harness",
         "ownership_preview_dry_run",
         "ownership_apply_confirmation",
         "ownership_rollback_requires_backup",

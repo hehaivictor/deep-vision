@@ -12,10 +12,13 @@ from scripts import agent_browser_smoke
 from scripts import agent_calibration
 from scripts import agent_ci_summary
 from scripts import agent_contracts
+from scripts import agent_doc_gardener
 from scripts import agent_eval
 from scripts import agent_guardrails
 from scripts import agent_harness
+from scripts import agent_heartbeat
 from scripts import agent_history
+from scripts import agent_missions
 from scripts import agent_observe
 from scripts import agent_playbook_sync
 from scripts import agent_planner
@@ -1131,6 +1134,27 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertEqual("license-admin", payload["plan"]["task"])
         self.assertIn("python3 scripts/agent_planner.py --task license-admin", payload["plan"]["generate_command"])
 
+    def test_agent_missions_load_expected_task_mission(self):
+        mission = agent_missions.get_mission("ownership-migration")
+        self.assertIsNotNone(mission)
+        self.assertEqual("ownership-migration", mission["task"])
+        self.assertIn("python3 scripts/agent_planner.py --task ownership-migration", mission["generate_command"])
+
+    def test_agent_workflow_attaches_mission_for_profile(self):
+        profile = agent_profiles.get_task_profile("report-solution")
+
+        payload, exit_code = agent_workflow.run_task_workflow(
+            profile=profile,
+            task_vars={},
+            allow_apply=False,
+            execute_mode="plan",
+            root_dir=self.sandbox_root / "workflow-report-solution",
+        )
+
+        self.assertEqual(0, exit_code)
+        self.assertEqual("report-solution", payload["mission"]["task"])
+        self.assertIn("Mission Contract", payload["mission"]["title"])
+
     def test_agent_planner_writes_markdown_and_json_artifacts(self):
         planner_dir = self.sandbox_root / "planner-output"
         stdout = io.StringIO()
@@ -1153,25 +1177,149 @@ class ComprehensiveScriptTests(unittest.TestCase):
             )
 
         self.assertEqual(0, exit_code)
+        mission_markdown_path = planner_dir / "report-solution-share-fix.mission.md"
+        mission_json_path = planner_dir / "report-solution-share-fix.mission.json"
         markdown_path = planner_dir / "report-solution-share-fix.md"
         json_path = planner_dir / "report-solution-share-fix.json"
+        mission_pointer_path = ROOT_DIR / "artifacts" / "planner" / "missions" / "by-task" / "report-solution" / "latest.json"
         pointer_path = ROOT_DIR / "artifacts" / "planner" / "by-task" / "report-solution" / "latest.json"
+        self.assertTrue(mission_markdown_path.exists())
+        self.assertTrue(mission_json_path.exists())
         self.assertTrue(markdown_path.exists())
         self.assertTrue(json_path.exists())
+        self.assertTrue(mission_pointer_path.exists())
         self.assertTrue(pointer_path.exists())
+        mission_markdown = mission_markdown_path.read_text(encoding="utf-8")
+        mission_payload = json.loads(mission_json_path.read_text(encoding="utf-8"))
+        mission_pointer = json.loads(mission_pointer_path.read_text(encoding="utf-8"))
         markdown = markdown_path.read_text(encoding="utf-8")
         payload = json.loads(json_path.read_text(encoding="utf-8"))
         pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        self.assertIn("Mission Contract", mission_markdown)
+        self.assertEqual("mission", mission_payload["kind"])
+        self.assertEqual("report-solution", mission_payload["task"])
+        self.assertEqual(str(mission_markdown_path.resolve()), mission_pointer["markdown_file"])
         self.assertIn("Planner Artifact", markdown)
         self.assertIn("修复方案页分享异常并保留旧报告兼容", markdown)
+        self.assertIn("上游 Mission", markdown)
         self.assertIn("方案页继续消费已绑定报告的最终快照", markdown)
         self.assertEqual("planner", payload["kind"])
         self.assertEqual("report-solution", payload["task"])
         self.assertEqual("report-solution", pointer["task"])
         self.assertEqual(str(markdown_path.resolve()), pointer["markdown_file"])
         self.assertEqual(str(json_path.resolve()), pointer["json_file"])
+        self.assertEqual("report-solution", payload["mission"]["task"])
         self.assertIn("公开分享保持匿名只读", "\n".join(payload["acceptance_focus"]))
         self.assertIn("[WRITE]", stdout.getvalue())
+
+    def test_agent_heartbeat_writes_markdown_and_json_artifacts(self):
+        sandbox_root = self.sandbox_root / "heartbeat-root"
+        progress_dir = sandbox_root / "docs" / "agent"
+        progress_dir.mkdir(parents=True, exist_ok=True)
+        (progress_dir / "harness-progress-phase5.md").write_text(
+            "\n".join(
+                [
+                    "# progress",
+                    "",
+                    "- 当前阶段：`active`",
+                    "- 当前优先项：`H5-3 Global Heartbeat Memory`",
+                    "- 对应计划：[harness-iteration-plan-phase5.md](docs/agent/harness-iteration-plan-phase5.md)",
+                    "",
+                    "| 日期 | 编号 | 状态 | 事项 | 证据 | 下一步 |",
+                    "| --- | --- | --- | --- | --- | --- |",
+                    "| 2026-04-10 | H5-2 | done | 已完成 mission | x | 启动 H5-3 |",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (progress_dir / "harness-iteration-plan-phase5.md").write_text("# plan\n", encoding="utf-8")
+        mission_pointer = sandbox_root / "artifacts" / "planner" / "missions" / "by-task" / "report-solution" / "latest.json"
+        mission_pointer.parent.mkdir(parents=True, exist_ok=True)
+        mission_pointer.write_text(
+            json.dumps(
+                {
+                    "task": "report-solution",
+                    "mission_name": "report-solution-share-fix-mission",
+                    "goal": "修复方案页分享异常",
+                    "generated_at": "2026-04-10T00:00:00Z",
+                    "markdown_file": str((sandbox_root / "artifacts" / "planner" / "report-solution-share-fix.mission.md").resolve()),
+                    "json_file": str((sandbox_root / "artifacts" / "planner" / "report-solution-share-fix.mission.json").resolve()),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        plan_pointer = sandbox_root / "artifacts" / "planner" / "by-task" / "report-solution" / "latest.json"
+        plan_pointer.parent.mkdir(parents=True, exist_ok=True)
+        plan_pointer.write_text(
+            json.dumps(
+                {
+                    "task": "report-solution",
+                    "plan_name": "report-solution-share-fix",
+                    "goal": "修复方案页分享异常",
+                    "generated_at": "2026-04-10T00:00:00Z",
+                    "markdown_file": str((sandbox_root / "artifacts" / "planner" / "report-solution-share-fix.md").resolve()),
+                    "json_file": str((sandbox_root / "artifacts" / "planner" / "report-solution-share-fix.json").resolve()),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        harness_latest = sandbox_root / "artifacts" / "harness-runs" / "latest.json"
+        harness_latest.parent.mkdir(parents=True, exist_ok=True)
+        harness_latest.write_text(
+            json.dumps(
+                {
+                    "overall": "READY",
+                    "metadata": {"generated_at": "2026-04-10T00:00:00Z"},
+                    "handoff_file": str((sandbox_root / "artifacts" / "harness-runs" / "latest-handoff.json").resolve()),
+                    "progress_file": str((sandbox_root / "artifacts" / "harness-runs" / "latest-progress.md").resolve()),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        evaluator_latest = sandbox_root / "artifacts" / "harness-eval" / "latest.json"
+        evaluator_latest.parent.mkdir(parents=True, exist_ok=True)
+        evaluator_latest.write_text(
+            json.dumps(
+                {
+                    "overall": "HEALTHY",
+                    "metadata": {"generated_at": "2026-04-10T00:05:00Z"},
+                    "handoff_file": str((sandbox_root / "artifacts" / "harness-eval" / "latest-handoff.json").resolve()),
+                    "progress_file": str((sandbox_root / "artifacts" / "harness-eval" / "latest-progress.md").resolve()),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        payload = agent_heartbeat.build_heartbeat_payload(root_dir=sandbox_root)
+        outputs = agent_heartbeat.write_heartbeat_artifacts(
+            payload,
+            root_dir=sandbox_root,
+            artifact_dir="artifacts/memory",
+            output_markdown="docs/agent/heartbeat.md",
+        )
+
+        markdown = Path(outputs["markdown_file"]).read_text(encoding="utf-8")
+        json_payload = json.loads(Path(outputs["json_file"]).read_text(encoding="utf-8"))
+        self.assertEqual("heartbeat", json_payload["kind"])
+        self.assertEqual("H5-3 Global Heartbeat Memory", json_payload["active_phase"]["current_priority"])
+        self.assertTrue(any(item["task"] == "report-solution" for item in json_payload["missions"]))
+        self.assertTrue(any(item["kind"] == "evaluator" for item in json_payload["latest_runs"]))
+        self.assertIn("DeepVision Heartbeat", markdown)
+        self.assertIn("H5-3 Global Heartbeat Memory", markdown)
+        self.assertIn("report-solution-share-fix-mission", markdown)
 
     def test_agent_eval_single_case_pass_does_not_emit_false_hotspot(self):
         scenario_root = self.sandbox_root / "eval-scenarios-pass"
@@ -1943,23 +2091,166 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertEqual("FAIL", result_map["solution_share_guard"]["status"])
         self.assertEqual("FAIL", result_map["public_solution_readonly"]["status"])
         self.assertEqual("FAIL", result_map["config_center_routes_delegate_helpers"]["status"])
+        self.assertEqual("PASS", result_map["business_python_does_not_import_harness"]["status"])
         self.assertEqual("FAIL", result_map["ownership_preview_dry_run"]["status"])
         self.assertEqual("FAIL", result_map["ownership_apply_confirmation"]["status"])
         self.assertEqual("FAIL", result_map["ownership_rollback_requires_backup"]["status"])
+        self.assertEqual("方案页查看路由层", result_map["solution_view_guard"]["repair_layer"])
+        self.assertTrue(any("get_current_user()" in line for line in result_map["solution_view_guard"]["recommended_actions"]))
+        self.assertIn(
+            "python3 scripts/agent_harness.py --task report-solution --workflow-execute preview",
+            result_map["solution_view_guard"]["rerun_commands"],
+        )
+
+    def test_agent_static_guardrails_render_output_includes_action_for_agent(self):
+        payload = {
+            "server_file": str(ROOT_DIR / "web" / "server.py"),
+            "route_count": 42,
+            "results": [
+                {
+                    "name": "solution_view_guard",
+                    "status": "FAIL",
+                    "detail": "function=get_report_solution",
+                    "highlights": ["缺少源码信号: enforce_report_owner_or_404("],
+                    "repair_layer": "方案页查看路由层",
+                    "recommended_actions": ["在方案页查看路由补回 get_current_user()、solution.view 能力校验和 enforce_report_owner_or_404() 三段式约束。"],
+                    "rerun_commands": ["python3 scripts/agent_harness.py --task report-solution --workflow-execute preview"],
+                }
+            ],
+            "summary": {"PASS": 0, "FAIL": 1},
+            "overall": "BLOCKED",
+        }
+        stdout = io.StringIO()
+        with patch("sys.stdout", stdout):
+            agent_static_guardrails.render_text_output(payload)
+        text = stdout.getvalue()
+        self.assertIn("Action for Agent:", text)
+        self.assertIn("修复层级: 方案页查看路由层", text)
+        self.assertIn("建议动作:", text)
+        self.assertIn("推荐复跑:", text)
+
+    def test_agent_static_guardrails_detect_business_importing_harness(self):
+        server_file = self.sandbox_root / "static-guardrails-imports" / "web" / "server.py"
+        server_file.parent.mkdir(parents=True, exist_ok=True)
+        (server_file.parent / "server_modules").mkdir(parents=True, exist_ok=True)
+        server_file.write_text(
+            "\n".join(
+                [
+                    "from flask import Flask, jsonify",
+                    "app = Flask(__name__)",
+                    "",
+                    "def require_admin(func):",
+                    "    return func",
+                    "",
+                    "def require_valid_license(func):",
+                    "    return func",
+                    "",
+                    "@app.route('/api/admin/config-center', methods=['GET'])",
+                    "@require_admin",
+                    "def admin_get_config_center():",
+                    "    return jsonify(build_admin_config_center_payload())",
+                    "",
+                    "@app.route('/api/admin/config-center/save', methods=['POST'])",
+                    "@require_admin",
+                    "def admin_save_config_center_group():",
+                    "    return jsonify(save_admin_config_group(source='env', group_id='base', values={}))",
+                    "",
+                    "@app.route('/api/reports/<path:filename>/solution', methods=['GET'])",
+                    "def get_report_solution(filename):",
+                    "    user_row = get_current_user()",
+                    "    if not user_has_level_capability(user_row, 'solution.view'):",
+                    "        return jsonify({'error': 'denied'}), 403",
+                    "    return enforce_report_owner_or_404(filename, 1)",
+                    "",
+                    "@app.route('/api/reports/<path:filename>/solution/share', methods=['POST'])",
+                    "def create_report_solution_share(filename):",
+                    "    user_row = get_current_user()",
+                    "    if not user_has_level_capability(user_row, 'solution.share'):",
+                    "        return jsonify({'error': 'denied'}), 403",
+                    "    share_record = create_or_get_solution_share(filename, 1)",
+                    "    return jsonify(share_record)",
+                    "",
+                    "@app.route('/api/public/solutions/<share_token>', methods=['GET'])",
+                    "def get_public_solution_by_share_token(share_token):",
+                    "    record = get_solution_share_record(share_token)",
+                    "    owner_user_id = record.get('owner_user_id')",
+                    "    report_name = record.get('report_name')",
+                    "    if get_report_owner_id(report_name) != owner_user_id:",
+                    "        return jsonify({'error': 'denied'}), 404",
+                    "    payload = {'share_mode': 'public', 'report_name': '', 'viewer_capabilities': {'solution_share': False}}",
+                    "    response = jsonify(payload)",
+                    "    response.headers['X-Robots-Tag'] = 'noindex, nofollow'",
+                    "    return response",
+                    "",
+                    "@app.route('/api/admin/ownership-migrations/preview', methods=['POST'])",
+                    "@require_admin",
+                    "def admin_preview_ownership_migration():",
+                    "    _store_admin_ownership_preview({'ok': True})",
+                    "    return jsonify(run_ownership_migration(apply_mode=False))",
+                    "",
+                    "@app.route('/api/admin/ownership-migrations/apply', methods=['POST'])",
+                    "@require_admin",
+                    "def admin_apply_ownership_migration():",
+                    "    preview = _get_admin_ownership_preview()",
+                    "    preview_token = preview.get('token')",
+                    "    payload = _serialize_admin_ownership_request_payload({})",
+                    "    confirm_phrase = preview.get('confirm_phrase')",
+                    "    confirm_text = confirm_phrase",
+                    "    return jsonify(run_ownership_migration(apply_mode=True))",
+                    "",
+                    "@app.route('/api/admin/ownership-migrations/rollback', methods=['POST'])",
+                    "@require_admin",
+                    "def admin_rollback_ownership_migration():",
+                    "    backup_id = 'backup-001'",
+                    "    if not backup_id:",
+                    "        return jsonify({'error': 'missing'}), 400",
+                    "    return jsonify({'ok': True})",
+                    "",
+                    "@app.route('/api/admin/licenses/batch', methods=['POST'])",
+                    "@require_admin",
+                    "@require_valid_license",
+                    "def admin_generate_licenses():",
+                    "    return jsonify({'ok': True})",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (server_file.parent / "server_modules" / "bad_import.py").write_text(
+            "\n".join(
+                [
+                    "from scripts import agent_harness",
+                    "",
+                    "def use_harness():",
+                    "    return agent_harness.determine_overall_status({'PASS': 1})",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        payload, exit_code = agent_static_guardrails.run_static_guardrails(server_file=server_file)
+        self.assertEqual(2, exit_code)
+        result_map = {item["name"]: item for item in payload["results"]}
+        self.assertEqual("FAIL", result_map["business_python_does_not_import_harness"]["status"])
+        self.assertEqual("Python 业务模块 import 边界", result_map["business_python_does_not_import_harness"]["repair_layer"])
+        self.assertTrue(any("scripts.agent_" in line for line in result_map["business_python_does_not_import_harness"]["highlights"]))
+        self.assertIn("python3 scripts/agent_harness.py --profile auto", result_map["business_python_does_not_import_harness"]["rerun_commands"])
 
     def test_agent_static_guardrails_repo_server_passes(self):
         payload, exit_code = agent_static_guardrails.run_static_guardrails()
         self.assertEqual(0, exit_code)
         self.assertEqual("READY", payload["overall"])
-        self.assertGreaterEqual(payload["summary"]["PASS"], 9)
+        self.assertGreaterEqual(payload["summary"]["PASS"], 10)
 
     def test_agent_harness_static_guardrails_stage_uses_static_payload(self):
         fake_payload = {
             "overall": "READY",
-            "summary": {"PASS": 9, "FAIL": 0},
+            "summary": {"PASS": 10, "FAIL": 0},
             "results": [
                 {"name": "admin_routes_require_admin", "status": "PASS", "detail": "checked=24 routes missing=0", "highlights": ["所有高风险管理/运维路由都带 require_admin。"]},
                 {"name": "config_center_routes_delegate_helpers", "status": "PASS", "detail": "get=admin_get_config_center save=admin_save_config_center_group", "highlights": ["配置中心路由已委托 build_admin_config_center_payload/save_admin_config_group，未在路由层直接写配置文件。"]},
+                {"name": "business_python_does_not_import_harness", "status": "PASS", "detail": "checked=12 python files violations=0", "highlights": ["web/ 下 Python 业务代码未反向依赖 scripts.agent_* harness 脚本。"]},
                 {"name": "solution_view_guard", "status": "PASS", "detail": "function=get_report_solution", "highlights": ["已检测到登录、能力校验和 owner 约束。"]},
             ],
         }
@@ -1967,8 +2258,59 @@ class ComprehensiveScriptTests(unittest.TestCase):
             execution = agent_harness.run_static_guardrails_stage()
         self.assertEqual("static_guardrails", execution.result.name)
         self.assertEqual("PASS", execution.result.status)
-        self.assertIn("rules=9", execution.result.detail)
+        self.assertIn("rules=10", execution.result.detail)
         self.assertTrue(any("require_admin" in line for line in execution.result.highlights))
+
+    def test_agent_harness_static_guardrails_stage_highlights_action_for_agent_on_fail(self):
+        fake_payload = {
+            "overall": "BLOCKED",
+            "summary": {"PASS": 8, "FAIL": 1},
+            "results": [
+                {
+                    "name": "solution_view_guard",
+                    "status": "FAIL",
+                    "detail": "function=get_report_solution",
+                    "highlights": ["缺少源码信号: enforce_report_owner_or_404("],
+                    "repair_layer": "方案页查看路由层",
+                    "recommended_actions": ["在方案页查看路由补回 get_current_user()、solution.view 能力校验和 enforce_report_owner_or_404() 三段式约束。"],
+                    "rerun_commands": ["python3 scripts/agent_harness.py --task report-solution --workflow-execute preview"],
+                }
+            ],
+        }
+        with patch.object(agent_static_guardrails, "run_static_guardrails", return_value=(fake_payload, 2)):
+            execution = agent_harness.run_static_guardrails_stage()
+        self.assertEqual("FAIL", execution.result.status)
+        self.assertTrue(any("修复层级" in line for line in execution.result.highlights))
+        self.assertTrue(any("建议:" in line for line in execution.result.highlights))
+        self.assertTrue(any("复跑:" in line for line in execution.result.highlights))
+
+    def test_agent_doc_gardener_report_contains_expected_checks(self):
+        payload = agent_doc_gardener.build_doc_gardening_report()
+        self.assertIn(payload["overall"], {"HEALTHY", "ATTENTION_REQUIRED"})
+        check_map = {item["name"]: item for item in payload["checks"]}
+        self.assertIn("task_playbooks_synced", check_map)
+        self.assertIn("doc_index_links", check_map)
+        self.assertIn("high_risk_contract_coverage", check_map)
+        self.assertIn("planner_mission_materialization", check_map)
+        self.assertIn("calibration_registry", check_map)
+
+    def test_agent_doc_gardener_writes_report_artifacts(self):
+        payload = agent_doc_gardener.build_doc_gardening_report()
+        artifact_dir = self.sandbox_root / "doc-gardening"
+        files = agent_doc_gardener.write_artifacts(payload, artifact_dir)
+        json_path = Path(files["json_file"])
+        markdown_path = Path(files["markdown_file"])
+        self.assertTrue(json_path.exists())
+        self.assertTrue(markdown_path.exists())
+        self.assertIn("# DeepVision Doc Gardening Report", markdown_path.read_text(encoding="utf-8"))
+
+    def test_agent_doc_gardener_reports_blocked_when_playbooks_drift(self):
+        with patch.object(agent_playbook_sync, "check_task_playbooks", return_value=["report-solution: playbook 内容已漂移"]):
+            payload = agent_doc_gardener.build_doc_gardening_report()
+        self.assertEqual("BLOCKED", payload["overall"])
+        check_map = {item["name"]: item for item in payload["checks"]}
+        self.assertEqual("FAIL", check_map["task_playbooks_synced"]["status"])
+        self.assertTrue(any("agent_playbook_sync.py" in line for line in check_map["task_playbooks_synced"]["recommendations"]))
 
     def test_agent_browser_smoke_missing_dependency_returns_fail_payload(self):
         with patch.object(
@@ -2783,7 +3125,10 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertTrue(any("resources/harness/contracts/ownership-migration.json" == item for item in handoff["docs"]))
         self.assertEqual("OPS-42", handoff["governance"]["values"]["ticket"])
         self.assertTrue(any("治理记录已准备" in item for item in handoff["next_steps"]))
-        self.assertTrue(any("python3 scripts/agent_planner.py --task ownership-migration" in item for item in handoff["resume_commands"]))
+        self.assertTrue(
+            any("python3 scripts/agent_planner.py --task ownership-migration" in item for item in handoff["resume_commands"])
+            or any("优先回看 Planner Artifact" in item for item in handoff["next_steps"])
+        )
 
     def test_agent_workflow_fails_when_declared_artifact_missing(self):
         workflow_root = self.sandbox_root / "workflow-artifact-missing"
@@ -3096,8 +3441,10 @@ class ComprehensiveScriptTests(unittest.TestCase):
             ["python3", "scripts/agent_eval.py", "--help"],
             ["python3", "scripts/agent_browser_smoke.py", "--help"],
             ["python3", "scripts/agent_ci_summary.py", "--help"],
+            ["python3", "scripts/agent_doc_gardener.py", "--help"],
             ["python3", "scripts/agent_guardrails.py", "--help"],
             ["python3", "scripts/agent_harness.py", "--help"],
+            ["python3", "scripts/agent_heartbeat.py", "--help"],
             ["python3", "scripts/agent_history.py", "--help"],
             ["python3", "scripts/agent_observe.py", "--help"],
             ["python3", "scripts/agent_playbook_sync.py", "--help"],

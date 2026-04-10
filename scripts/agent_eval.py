@@ -40,6 +40,7 @@ from scripts import agent_artifacts
 from scripts import agent_browser_smoke
 from scripts import agent_calibration
 from scripts import agent_contracts
+from scripts import agent_missions
 from scripts import agent_plans
 from scripts import agent_profiles
 from scripts import agent_workflow
@@ -63,6 +64,7 @@ class EvalScenario:
     executor: str = "unittest"
     executor_config: dict[str, Any] = field(default_factory=dict)
     contract: dict[str, Any] | None = None
+    mission: dict[str, Any] | None = None
     plan: dict[str, Any] | None = None
     calibration_samples: tuple[dict[str, Any], ...] = ()
 
@@ -323,6 +325,8 @@ def build_workflow_attempt(scenario: EvalScenario) -> dict[str, Any]:
     }
     if isinstance(payload.get("contract"), dict):
         stdout_payload["contract"] = payload.get("contract")
+    if isinstance(payload.get("mission"), dict):
+        stdout_payload["mission"] = payload.get("mission")
     if isinstance(payload.get("plan"), dict):
         stdout_payload["plan"] = payload.get("plan")
     return {
@@ -444,6 +448,7 @@ def load_scenarios(*, scenarios_root: Path = SCENARIOS_DIR) -> list[EvalScenario
         )
         if contract_payload is None and task_profile is not None:
             contract_payload = agent_contracts.get_contract_for_profile(task_profile)
+        mission_payload = agent_missions.get_mission_for_profile(task_profile) if task_profile is not None else None
         plan_payload = agent_plans.get_plan_for_profile(task_profile) if task_profile is not None else None
         raw_tags = payload.get("tags", [])
         tags = tuple(
@@ -472,6 +477,7 @@ def load_scenarios(*, scenarios_root: Path = SCENARIOS_DIR) -> list[EvalScenario
                 executor=executor_type,
                 executor_config=executor_config,
                 contract=contract_payload,
+                mission=mission_payload,
                 plan=plan_payload,
                 calibration_samples=tuple(
                     agent_calibration.match_calibration_samples(
@@ -549,6 +555,7 @@ def evaluate_scenario(
         "executor": scenario.executor,
         "executor_config": scenario.executor_config,
         "contract": scenario.contract,
+        "mission": scenario.mission,
         "plan": scenario.plan,
         "calibration_samples": list(scenario.calibration_samples),
         "target": scenario_target_summary(scenario),

@@ -36,6 +36,7 @@ from scripts import agent_static_guardrails
 from scripts import agent_artifacts
 from scripts import agent_observe
 from scripts import agent_profiles
+from scripts import agent_missions
 from scripts import agent_plans
 from scripts import agent_contracts
 from scripts import agent_workflow
@@ -248,15 +249,24 @@ def run_static_guardrails_stage() -> HarnessStageExecution:
     results = [item for item in list(payload.get("results", []) or []) if isinstance(item, dict)]
     failures = [item for item in results if str(item.get("status") or "").strip() == "FAIL"]
     highlights: list[str] = []
-    for item in (failures or results)[:6]:
+    for item in (failures or results)[:3]:
         name = str(item.get("name") or "").strip()
         detail = str(item.get("detail") or "").strip()
         if detail:
             highlights.append(f"{name}: {detail}")
-        for line in list(item.get("highlights", []) or [])[:2]:
+        for line in list(item.get("highlights", []) or [])[:1]:
             text = str(line or "").strip()
             if text:
                 highlights.append(text)
+        repair_layer = str(item.get("repair_layer") or "").strip()
+        if repair_layer:
+            highlights.append(f"{name} 修复层级: {repair_layer}")
+        recommended_actions = [str(line or "").strip() for line in list(item.get("recommended_actions", []) or []) if str(line or "").strip()]
+        if recommended_actions:
+            highlights.append(f"{name} 建议: {recommended_actions[0]}")
+        rerun_commands = [str(line or "").strip() for line in list(item.get("rerun_commands", []) or []) if str(line or "").strip()]
+        if rerun_commands:
+            highlights.append(f"{name} 复跑: {rerun_commands[0]}")
         if len(highlights) >= 6:
             break
     result = HarnessStageResult(
@@ -456,6 +466,12 @@ def render_text_output(
     print(f"仓库目录: {ROOT_DIR}")
     if task_payload:
         print(f"任务画像: {task_payload['name']} | risk={task_payload['risk_level']} | mode={task_payload['workflow_mode']}")
+        if isinstance(task_payload.get("mission"), dict):
+            print(
+                "Mission Contract: "
+                f"{str(task_payload['mission'].get('title') or '').strip()} "
+                f"| status={str(task_payload['mission'].get('status') or '-').strip() or '-'}"
+            )
     print("")
     for item in results:
         print(f"[{item.status}] {item.name}: {item.detail}")
@@ -530,6 +546,7 @@ def build_workflow_stage(
     )
     workflow = dict(workflow_payload.get("workflow") or {})
     contract = workflow_payload.get("contract") if isinstance(workflow_payload.get("contract"), dict) else None
+    mission = workflow_payload.get("mission") if isinstance(workflow_payload.get("mission"), dict) else None
     governance = dict(workflow_payload.get("governance") or {}) if isinstance(workflow_payload.get("governance"), dict) else {}
     precondition_results = [item for item in list(workflow_payload.get("precondition_results", []) or []) if isinstance(item, dict)]
     step_results = [item for item in list(workflow_payload.get("step_results", []) or []) if isinstance(item, dict)]
@@ -541,6 +558,12 @@ def build_workflow_stage(
             "Sprint Contract: "
             f"{str(contract.get('title') or contract.get('name') or '-').strip()} "
             f"source={str(contract.get('source_file') or '-').strip() or '-'}"
+        )
+    if mission:
+        highlights.append(
+            "Mission Contract: "
+            f"{str(mission.get('title') or mission.get('task') or '-').strip()} "
+            f"status={str(mission.get('status') or '-').strip() or '-'}"
         )
     if governance.get("fields"):
         missing_governance = [str(item).strip() for item in list(governance.get("missing_fields", []) or []) if str(item).strip()]
@@ -649,6 +672,7 @@ def main(argv: list[str] | None = None) -> int:
     task_payload = None
     if task_profile:
         task_contract = agent_contracts.get_contract_for_profile(task_profile)
+        task_mission = agent_missions.get_mission_for_profile(task_profile)
         task_plan = agent_plans.get_plan_for_profile(task_profile)
         task_payload = {
             "name": task_profile["name"],
@@ -658,6 +682,7 @@ def main(argv: list[str] | None = None) -> int:
             "docs": list(task_profile.get("docs", []) or []),
             "task_vars": task_vars,
             "contract": task_contract,
+            "mission": task_mission,
             "plan": task_plan,
         }
 

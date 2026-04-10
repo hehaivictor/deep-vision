@@ -2,6 +2,7 @@
   "name": "config-center",
   "description": "管理员配置中心改动，先读当前分组和回归，再在人工确认后写入。",
   "risk_level": "high",
+  "contract": "config-center",
   "doctor_profile": "auto",
   "guardrails_suite": "extended",
   "smoke_suite": "minimal",

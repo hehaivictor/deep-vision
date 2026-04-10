@@ -29,6 +29,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from scripts import agent_profiles
+from scripts import agent_missions
 from scripts import agent_plans
 
 
@@ -127,6 +128,7 @@ def build_plan_payload(
     context_lines: list[str],
     task_vars: dict[str, str],
     plan_name: str,
+    mission_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     planner_meta = profile.get("planner", {}) if isinstance(profile.get("planner"), dict) else {}
     docs = _string_list(profile.get("docs"))
@@ -152,6 +154,7 @@ def build_plan_payload(
         "summary": summary,
         "context": list(context_lines),
         "task_vars": dict(task_vars),
+        "mission": mission_payload,
         "scope_focus": _derive_scope_focus(profile, planner_meta),
         "acceptance_focus": _derive_acceptance(profile, planner_meta),
         "non_goals": _string_list(planner_meta.get("non_goals")) or [
@@ -187,6 +190,19 @@ def render_plan_markdown(payload: dict[str, Any]) -> str:
     summary = str(payload.get("summary") or "").strip()
     if summary:
         lines.extend(["## 规划摘要", "", summary, ""])
+
+    mission_payload = payload.get("mission") if isinstance(payload.get("mission"), dict) else None
+    if mission_payload:
+        lines.extend(
+            [
+                "## 上游 Mission",
+                "",
+                f"- Mission 状态：`materialized`",
+                f"- Mission 目标：{str(mission_payload.get('goal') or '').strip()}",
+                f"- Mission 入口：`{str(mission_payload.get('json_file') or mission_payload.get('markdown_file') or '-').strip() or '-'}`",
+                "",
+            ]
+        )
 
     context = _string_list(payload.get("context"))
     lines.extend(["## 初始上下文", ""])
@@ -249,7 +265,43 @@ def write_plan_artifact(
     *,
     output_dir: str,
     output_markdown: str = "",
+    mission_output_markdown: str = "",
 ) -> dict[str, str]:
+    mission_outputs: dict[str, str] = {}
+    mission_payload = payload.get("mission") if isinstance(payload.get("mission"), dict) else None
+    if mission_payload:
+        if mission_output_markdown:
+            mission_markdown_path = Path(mission_output_markdown).expanduser()
+            if not mission_markdown_path.is_absolute():
+                mission_markdown_path = (ROOT_DIR / mission_markdown_path).resolve()
+            mission_markdown_path.parent.mkdir(parents=True, exist_ok=True)
+        elif output_markdown:
+            plan_markdown_path = Path(output_markdown).expanduser()
+            if not plan_markdown_path.is_absolute():
+                plan_markdown_path = (ROOT_DIR / plan_markdown_path).resolve()
+            mission_markdown_path = plan_markdown_path.with_name(plan_markdown_path.stem + ".mission.md")
+            mission_markdown_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            mission_target_dir = _resolve_output_dir(output_dir)
+            mission_target_dir.mkdir(parents=True, exist_ok=True)
+            mission_markdown_path = mission_target_dir / f"{payload['plan_name']}.mission.md"
+        mission_json_path = mission_markdown_path.with_suffix(".json")
+        mission_markdown_path.write_text(agent_missions.render_mission_markdown(mission_payload), encoding="utf-8")
+        mission_json_path.write_text(json.dumps(mission_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        pointer_info = agent_missions.write_task_latest_pointer(
+            mission_payload,
+            markdown_path=mission_markdown_path,
+            json_path=mission_json_path,
+        )
+        mission_payload["markdown_file"] = str(mission_markdown_path.resolve())
+        mission_payload["json_file"] = str(mission_json_path.resolve())
+        mission_payload["pointer_file"] = str(pointer_info["pointer_file"])
+        mission_outputs = {
+            "mission_markdown_file": str(mission_markdown_path),
+            "mission_json_file": str(mission_json_path),
+            "mission_pointer_file": str(pointer_info["pointer_file"]),
+        }
+
     if output_markdown:
         markdown_path = Path(output_markdown).expanduser()
         if not markdown_path.is_absolute():
@@ -272,6 +324,7 @@ def write_plan_artifact(
         "markdown_file": str(markdown_path),
         "json_file": str(json_path),
         "pointer_file": str(pointer_info["pointer_file"]),
+        **mission_outputs,
     }
 
 
@@ -282,8 +335,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--context-line", action="append", default=[], help="补充上下文，每次传入一行")
     parser.add_argument("--task-var", action="append", default=[], help="任务变量，格式 key=value，可重复传入")
     parser.add_argument("--plan-name", default="", help="显式指定计划名；默认按 task + goal 生成")
+    parser.add_argument("--mission-name", default="", help="显式指定 mission 名；默认按 plan-name 派生")
     parser.add_argument("--artifact-dir", default=str(DEFAULT_ARTIFACT_DIR.relative_to(ROOT_DIR)), help="默认输出目录")
     parser.add_argument("--output-markdown", default="", help="显式指定 markdown 输出路径；会同时写同名 json")
+    parser.add_argument("--output-mission-markdown", default="", help="显式指定 mission markdown 输出路径；会同时写同名 json")
     parser.add_argument("--dry-run", action="store_true", help="仅打印 markdown，不写文件")
     return parser
 
@@ -295,19 +350,41 @@ def main(argv: list[str] | None = None) -> int:
     fallback_name = f"{args.task}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     default_name = f"{args.task}-{args.goal}"
     plan_name = _slugify(args.plan_name or default_name, fallback=fallback_name)
+    mission_name = _slugify(args.mission_name or f"{plan_name}-mission", fallback=f"{fallback_name}-mission")
+    mission_payload = agent_missions.build_mission_payload(
+        profile,
+        goal=str(args.goal).strip(),
+        context_lines=[str(item).strip() for item in list(args.context_line or []) if str(item).strip()],
+        task_vars=task_vars,
+        mission_name=mission_name,
+    )
     payload = build_plan_payload(
         profile,
         goal=str(args.goal).strip(),
         context_lines=[str(item).strip() for item in list(args.context_line or []) if str(item).strip()],
         task_vars=task_vars,
         plan_name=plan_name,
+        mission_payload=mission_payload,
     )
     if args.dry_run:
+        print(agent_missions.render_mission_markdown(mission_payload))
+        print("")
         print(render_plan_markdown(payload))
         return 0
 
-    outputs = write_plan_artifact(payload, output_dir=args.artifact_dir, output_markdown=args.output_markdown)
+    outputs = write_plan_artifact(
+        payload,
+        output_dir=args.artifact_dir,
+        output_markdown=args.output_markdown,
+        mission_output_markdown=args.output_mission_markdown,
+    )
     print("DeepVision agent planner")
+    if outputs.get("mission_markdown_file"):
+        print(f"[WRITE] {outputs['mission_markdown_file']}")
+    if outputs.get("mission_json_file"):
+        print(f"[WRITE] {outputs['mission_json_file']}")
+    if outputs.get("mission_pointer_file"):
+        print(f"[WRITE] {outputs['mission_pointer_file']}")
     print(f"[WRITE] {outputs['markdown_file']}")
     print(f"[WRITE] {outputs['json_file']}")
     print(f"[WRITE] {outputs['pointer_file']}")

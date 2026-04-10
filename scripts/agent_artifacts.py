@@ -140,6 +140,11 @@ def build_harness_progress_markdown(summary_payload: dict[str, Any], metadata: d
         if isinstance(task_payload, dict) and isinstance(task_payload.get("contract"), dict)
         else None
     )
+    task_mission = (
+        task_payload.get("mission")
+        if isinstance(task_payload, dict) and isinstance(task_payload.get("mission"), dict)
+        else None
+    )
     task_plan = (
         task_payload.get("plan")
         if isinstance(task_payload, dict) and isinstance(task_payload.get("plan"), dict)
@@ -165,6 +170,10 @@ def build_harness_progress_markdown(summary_payload: dict[str, Any], metadata: d
     if task_contract:
         lines.append(
             f"- Sprint Contract: {task_contract.get('title', '')} | source={task_contract.get('source_file', '') or '-'}"
+        )
+    if task_mission:
+        lines.append(
+            f"- Mission Contract: {task_mission.get('title', '')} | status={task_mission.get('status', '') or '-'} | source={task_mission.get('source_file', '') or '-'}"
         )
     if task_plan:
         lines.append(
@@ -213,6 +222,11 @@ def build_harness_failure_summary_markdown(summary_payload: dict[str, Any], meta
         if isinstance(task_payload, dict) and isinstance(task_payload.get("contract"), dict)
         else None
     )
+    task_mission = (
+        task_payload.get("mission")
+        if isinstance(task_payload, dict) and isinstance(task_payload.get("mission"), dict)
+        else None
+    )
     task_plan = (
         task_payload.get("plan")
         if isinstance(task_payload, dict) and isinstance(task_payload.get("plan"), dict)
@@ -240,6 +254,15 @@ def build_harness_failure_summary_markdown(summary_payload: dict[str, Any], meta
         ]
         if evidence_required:
             lines.append(f"- Contract 证据: `{', '.join(evidence_required[:4])}`")
+        lines.append("")
+    if task_mission:
+        lines.append(f"- Mission Contract: `{task_mission.get('title', '')}`")
+        lines.append(f"- Mission 状态: `{task_mission.get('status', '') or '-'}`")
+        lines.append(f"- Mission 入口: `{task_mission.get('source_file', '') or '-'}`")
+        if str(task_mission.get("markdown_file") or "").strip():
+            lines.append(f"- Mission Markdown: `{task_mission.get('markdown_file', '')}`")
+        if str(task_mission.get("generate_command") or "").strip() and str(task_mission.get("status") or "").strip() != "materialized":
+            lines.append(f"- 生成 Mission: `{task_mission.get('generate_command', '')}`")
         lines.append("")
     if task_plan:
         lines.append(f"- Planner Artifact: `{task_plan.get('title', '')}`")
@@ -342,6 +365,10 @@ def build_eval_progress_markdown(summary_payload: dict[str, Any], metadata: dict
         contract_suffix = ""
         if contract:
             contract_suffix = f" | contract={str(contract.get('name') or '-').strip() or '-'}"
+        mission = item.get("mission") if isinstance(item.get("mission"), dict) else None
+        mission_suffix = ""
+        if mission:
+            mission_suffix = f" | mission={str(mission.get('task') or '-').strip() or '-'}:{str(mission.get('status') or '-').strip() or '-'}"
         plan = item.get("plan") if isinstance(item.get("plan"), dict) else None
         plan_suffix = ""
         if plan:
@@ -351,7 +378,7 @@ def build_eval_progress_markdown(summary_payload: dict[str, Any], metadata: dict
         if calibration_samples:
             calibration_suffix = f" | calibration={len(calibration_samples)}"
         lines.append(
-            f"- `{item.get('category', '')}/{item.get('name', '')}`: {item.get('status', '')} | {item.get('detail', '')}{contract_suffix}{plan_suffix}{calibration_suffix}"
+            f"- `{item.get('category', '')}/{item.get('name', '')}`: {item.get('status', '')} | {item.get('detail', '')}{contract_suffix}{mission_suffix}{plan_suffix}{calibration_suffix}"
         )
 
     lines.extend(["", "## 下一步建议", ""])
@@ -502,6 +529,15 @@ def build_harness_handoff_payload(
             else None
         )
     )
+    mission_payload = (
+        workflow_payload.get("mission")
+        if isinstance(workflow_payload, dict) and isinstance(workflow_payload.get("mission"), dict)
+        else (
+            task_payload.get("mission")
+            if isinstance(task_payload, dict) and isinstance(task_payload.get("mission"), dict)
+            else None
+        )
+    )
     plan_payload = (
         workflow_payload.get("plan")
         if isinstance(workflow_payload, dict) and isinstance(workflow_payload.get("plan"), dict)
@@ -532,6 +568,11 @@ def build_harness_handoff_payload(
     if contract_payload:
         _append_unique(docs, contract_payload.get("source_file"))
         for item in list(contract_payload.get("docs", []) or []):
+            _append_unique(docs, item)
+    if mission_payload:
+        _append_unique(docs, mission_payload.get("source_file"))
+        _append_unique(docs, mission_payload.get("recommended_markdown"))
+        for item in list(mission_payload.get("docs", []) or []):
             _append_unique(docs, item)
     if plan_payload:
         _append_unique(docs, plan_payload.get("source_file"))
@@ -576,6 +617,22 @@ def build_harness_handoff_payload(
             ]
             if evidence_required:
                 _append_unique(next_steps, "Sprint Contract 证据优先核对: " + ", ".join(evidence_required[:4]))
+        if mission_payload:
+            if str(mission_payload.get("status") or "").strip() == "materialized":
+                mission_entry = str(
+                    mission_payload.get("markdown_file")
+                    or mission_payload.get("json_file")
+                    or mission_payload.get("source_file")
+                    or ""
+                ).strip()
+                if mission_entry:
+                    _append_unique(next_steps, f"优先回看 Mission Contract: {mission_entry}")
+            else:
+                _append_unique(todo, "先补 Mission Contract，把一句话需求收口成目标、非目标、验收标准和风险。")
+                mission_command = str(mission_payload.get("generate_command") or "").strip()
+                if mission_command:
+                    _append_unique(next_steps, f"先生成 Mission Contract：{mission_command}")
+                    _append_unique(resume_commands, mission_command)
         if plan_payload:
             if str(plan_payload.get("status") or "").strip() == "materialized":
                 planner_entry = str(
@@ -689,6 +746,7 @@ def build_harness_handoff_payload(
             ),
             "ready": bool((governance_payload or {}).get("ready", True)),
         },
+        "mission": mission_payload,
         "plan": plan_payload,
         "contract": contract_payload,
         "scaffold_recommendation": scaffold_recommendation,
@@ -718,6 +776,7 @@ def build_eval_handoff_payload(
     resume_commands: list[str] = []
     docs: list[str] = []
     contract_index: dict[str, dict[str, Any]] = {}
+    mission_index: dict[str, dict[str, Any]] = {}
     plan_index: dict[str, dict[str, Any]] = {}
     calibration_index: dict[str, dict[str, Any]] = {}
     scaffold_recommendation = _build_scenario_scaffold_recommendation(source="eval", run_dir=run_dir)
@@ -729,6 +788,13 @@ def build_eval_handoff_payload(
             contract_index[str(contract.get("name")).strip()] = contract
             _append_unique(docs, contract.get("source_file"))
             for doc in list(contract.get("docs", []) or []):
+                _append_unique(docs, doc)
+        mission = item.get("mission") if isinstance(item.get("mission"), dict) else None
+        if mission and str(mission.get("task") or "").strip():
+            mission_index[str(mission.get("task")).strip()] = mission
+            _append_unique(docs, mission.get("source_file"))
+            _append_unique(docs, mission.get("recommended_markdown"))
+            for doc in list(mission.get("docs", []) or []):
                 _append_unique(docs, doc)
         plan = item.get("plan") if isinstance(item.get("plan"), dict) else None
         if plan and str(plan.get("task") or "").strip():
@@ -791,6 +857,20 @@ def build_eval_handoff_payload(
             if planner_command:
                 _append_unique(next_steps, f"{task_name}: 先生成 Planner Artifact：{planner_command}")
                 _append_unique(resume_commands, planner_command)
+    for task_name in sorted(mission_index.keys()):
+        mission = mission_index[task_name]
+        if str(mission.get("status") or "").strip() == "materialized":
+            mission_entry = str(
+                mission.get("markdown_file") or mission.get("json_file") or mission.get("source_file") or ""
+            ).strip()
+            if mission_entry:
+                _append_unique(next_steps, f"优先回看 Mission Contract: {mission_entry}")
+        else:
+            _append_unique(todo, f"{task_name}: 尚未物化 Mission Contract，可先补任务使命再判断是否扩写场景。")
+            mission_command = str(mission.get("generate_command") or "").strip()
+            if mission_command:
+                _append_unique(next_steps, f"{task_name}: 先生成 Mission Contract：{mission_command}")
+                _append_unique(resume_commands, mission_command)
 
     if blockers or todo:
         preview_command = str(scaffold_recommendation.get("preview_command") or "").strip()
@@ -827,6 +907,7 @@ def build_eval_handoff_payload(
             "docs/agent/playbooks/README.md",
             *docs,
         ],
+        "missions": [mission_index[name] for name in sorted(mission_index.keys())],
         "plans": [plan_index[name] for name in sorted(plan_index.keys())],
         "contracts": [contract_index[name] for name in sorted(contract_index.keys())],
         "calibration_samples": [calibration_index[name] for name in sorted(calibration_index.keys())],

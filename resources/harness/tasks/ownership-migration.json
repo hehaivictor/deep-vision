@@ -12,6 +12,33 @@
     "docs/full-data-migration-runbook.md"
   ],
   "contract": "ownership-migration",
+  "mission": {
+    "summary": "把一句话的迁移需求先收口成“谁迁、迁什么、凭什么可以 apply、证据和回滚如何留存”的任务使命，再进入 preview/apply workflow。",
+    "desired_outcomes": [
+      "先明确目标账号、scope、kind 与影响范围，不把多个迁移目标混成一条执行链",
+      "先把 audit、preview、apply、rollback 的进入条件和退出证据写清楚",
+      "先锁定最新 artifact、summary-json、backup_dir 和 rollback 入口这些必留证据"
+    ],
+    "acceptance_criteria": [
+      "preview 能稳定给出命中数量、确认词、summary-json 与 rollback 入口",
+      "正式写操作前，治理字段、确认词、目标账号和备份目录均已准备",
+      "迁移专项回归与 owner/scope 边界回归保持通过"
+    ],
+    "non_goals": [
+      "不要在 mission 阶段直接决定真实生产账号或扩大迁移范围",
+      "不要绕开现有迁移脚本、harness 工件和 rollback 入口手工改库"
+    ],
+    "risks": [
+      "迁移同时影响账号归属、实例隔离和回滚备份，局部修复容易放大影响面",
+      "apply/rollback 属于高风险动作，缺治理字段或 backup_dir 必须先阻断"
+    ],
+    "evidence_expectations": [
+      "artifacts/harness-runs/latest.json",
+      "artifacts/harness-runs/ownership-migration-preview.json",
+      "data/operations/ownership-migrations/<backup-id>/metadata.json",
+      "data/operations/ownership-migrations/<backup-id>/rollback.json"
+    ]
+  },
   "planner": {
     "summary": "先把目标账号、迁移范围、apply 条件、备份与 rollback 证据收口成正式计划，再进入 preview/apply 预演。",
     "scope_focus": [
