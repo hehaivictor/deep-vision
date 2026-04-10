@@ -259,8 +259,9 @@ class ComprehensiveApiTests(unittest.TestCase):
     def test_runtime_startup_snapshot_persists_to_store_and_file(self):
         snapshot_file = self.server.get_runtime_startup_snapshot_file()
         snapshot_file.unlink(missing_ok=True)
-        with self.server.runtime_startup_lock:
-            self.server.runtime_startup_state.update(
+        with self.server.runtime_startup._lock:
+            self.server.runtime_startup._state.clear()
+            self.server.runtime_startup._state.update(
                 {
                     "initialized": False,
                     "reason": "",
