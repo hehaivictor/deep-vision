@@ -4342,10 +4342,14 @@ class SecurityRegressionTests(unittest.TestCase):
             "GATEWAY_CIRCUIT_FAIL_THRESHOLD",
             "GATEWAY_CIRCUIT_COOLDOWN_SECONDS",
             "GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS",
+            "REPORT_V3_RELEASE_CONSERVATIVE_MODE",
             "REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED",
             "REPORT_V3_RELEASE_SHORT_CIRCUIT_TIMEOUT_THRESHOLD",
         ]
         backup = {key: getattr(self.server, key) for key in keys}
+        env_backup = {
+            "REPORT_V3_RELEASE_CONSERVATIVE_MODE": os.environ.get("REPORT_V3_RELEASE_CONSERVATIVE_MODE"),
+        }
         fn_names = [
             "load_session_for_user",
             "resolve_ai_client",
@@ -4374,10 +4378,12 @@ class SecurityRegressionTests(unittest.TestCase):
         legacy_calls = []
 
         try:
+            os.environ["REPORT_V3_RELEASE_CONSERVATIVE_MODE"] = "true"
             self.server.GATEWAY_CIRCUIT_BREAKER_ENABLED = True
             self.server.GATEWAY_CIRCUIT_FAIL_THRESHOLD = 4
             self.server.GATEWAY_CIRCUIT_COOLDOWN_SECONDS = 120.0
             self.server.GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS = 180.0
+            self.server.REPORT_V3_RELEASE_CONSERVATIVE_MODE = True
             self.server.REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED = True
             self.server.REPORT_V3_RELEASE_SHORT_CIRCUIT_TIMEOUT_THRESHOLD = 2
             self.server.reset_gateway_circuit_state()
@@ -4461,6 +4467,11 @@ class SecurityRegressionTests(unittest.TestCase):
             self.server.reset_gateway_circuit_state()
             for key, value in backup.items():
                 setattr(self.server, key, value)
+            for key, value in env_backup.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
             for name, value in fn_backup.items():
                 setattr(self.server, name, value)
 

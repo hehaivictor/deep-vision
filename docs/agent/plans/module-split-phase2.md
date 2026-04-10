@@ -18,8 +18,8 @@
 
 当前主文件体量：
 
-- [web/server.py](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/server.py)：约 `47010` 行
-- [web/app.js](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/app.js)：约 `11355` 行
+- [web/server.py](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/server.py)：约 `43502` 行
+- [web/app.js](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/app.js)：约 `7361` 行
 
 说明：
 
@@ -330,3 +330,46 @@ python3 scripts/agent_browser_smoke.py --suite extended
 一句话总结：
 
 `第二阶段不要追求一次性把大文件拆小，而要先沿着最自然的业务边界，一块一块把高频热点剥离出去。`
+
+## 阶段结论与下一步
+
+截至 `2026-04-10`，本文档列出的第二阶段候选块已全部完成：
+
+- 后端候选 A：报告生成编排与质量门控
+- 后端候选 B：访谈问题推进与超时恢复
+- 前端候选 A：报告详情、导出与演示稿状态链路
+- 前端候选 B：访谈问答主流程
+- 前端候选 C：管理员中心页签逻辑
+
+当前不建议继续机械推进“第三批系统性拆分”。更合理的下一步是：
+
+1. 先按活跃计划完成 [web/server.py](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/server.py) 中 report / interview 两条链路的过渡残留清理
+2. 再按需收口 [web/app.js](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/app.js) 与现有 `app_modules` 的边界重复定义
+3. 只有在方案页或管理员 License 子链路重新进入高频改动时，才启动新一轮热点拆分
+
+第三批拆分决策门：
+
+1. 相关业务块在一个迭代窗口内连续发生高频改动，而不是一次性修补
+2. 现有模块边界已经无法清晰承载新改动，继续堆在主文件会显著增加理解成本
+3. 对应链路已经具备最小回归兜底，至少包含 `agent_guardrails`、`agent_smoke`，必要时再补 browser smoke
+
+若以上条件不同时满足，默认先做：
+
+- 清理旧实现与重复 helper
+- 收口主文件与现有模块边界
+- 只在文档中保留候选方向，不启动新模块
+
+任务十当前状态：
+
+- 已完成 `report_generation_runtime` / `interview_runtime` 的过渡绑定清理
+- `web/server.py` 现已保留为极薄入口，同步绑定与模块真实实现的关系更直接
+- 下一步优先级转为任务十一，而不是继续默认推进第三批系统性拆分
+
+任务十一当前状态：
+
+- 已完成 `report_detail_runtime.js` 边界收口，章节模型、章节观察器与附录导出菜单 helper 已从 `web/app.js` 收回模块
+- `interview_runtime.js` 与 `admin_center_state.js` 残留审计已完成；当前主文件仅保留跨模块共享 helper 与仍和 License 管理耦合的状态重置逻辑
+
+后续跟踪以活跃计划文档为准：
+
+- [docs/repo-cleanup-execution-plan.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/repo-cleanup-execution-plan.md)

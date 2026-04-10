@@ -19,7 +19,9 @@
 
 当前剩余重点：
 
-1. 按第二阶段模块化拆分计划选择下一块业务热点实施
+1. 清理 `web/server.py` 中 report / interview 两条链路的过渡绑定与薄包装残留
+2. 收口 `web/app.js` 与 `app_modules` 之间模块化后的重复默认状态、旧 helper 与边界注释
+3. 暂缓第三批系统性拆分，仅在后续业务热点重新升温时按需启动
 
 ## 2. 执行原则
 
@@ -29,7 +31,150 @@
 4. 不直接修改真实运行数据、真实部署环境变量或生产实例配置。
 5. 第二阶段模块化先规划、再拆分、再验证，不做一次性大手术。
 
-## 3. 任务八：收瘦 README 与 agent 命令入口
+## 3. 任务十：清理后端运行时过渡残留
+
+### 3.1 目标
+
+在不启动第三批系统性拆分的前提下，先把 `web/server.py` 中已经迁入 `report_generation_runtime` / `interview_runtime` 的过渡绑定、薄包装和重复编排语义清掉，真正降低主文件认知负担。
+
+### 3.2 当前问题
+
+- `web/server.py` 已完成报告生成与访谈运行时模块切换，但主文件仍保留一层过渡胶水
+- 这些残留包括运行时绑定函数、local name 集合和多个纯转发薄包装
+- 当前阅读体验依然是“模块已存在，但主文件还像半拆状态”，后续维护者很难一眼判断真实实现在哪
+
+### 3.3 具体动作
+
+- [x] 清点并收口 `report_generation_runtime` 相关过渡入口
+- [x] 清点并收口 `interview_runtime` 相关过渡入口
+- [x] 删除 `_ensure_*_runtime_bound()`、`*_LOCAL_NAMES` 一类仅服务迁移阶段的胶水
+- [x] 将 `web/server.py` 保持为“路由 + 极薄入口 + 必要 glue code”，不再保留纯转发包装
+- [x] 更新阶段计划文档，记录哪些过渡层已清理完成
+
+### 3.4 涉及文件
+
+- [web/server.py](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/server.py)
+- [web/server_modules/report_generation_runtime.py](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/server_modules/report_generation_runtime.py)
+- [web/server_modules/interview_runtime.py](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/server_modules/interview_runtime.py)
+- [docs/agent/plans/module-split-phase2.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/plans/module-split-phase2.md)
+
+### 3.5 验收命令
+
+```bash
+rg -n "_ensure_(report|interview)_runtime_bound|_INTERVIEW_RUNTIME_LOCAL_NAMES|generate_report_v3_pipeline|run_report_generation_job|build_interview_prompt|_select_question_generation_runtime_profile|_prepare_question_generation_runtime|_call_question_with_optional_hedge|generate_question_with_tiered_strategy" /Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/server.py
+python3 -m py_compile /Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/server.py /Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/server_modules/report_generation_runtime.py /Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/server_modules/interview_runtime.py
+python3 /Users/hehai/Documents/开目软件/Agents/project/DeepVision/scripts/agent_guardrails.py --quiet
+python3 /Users/hehai/Documents/开目软件/Agents/project/DeepVision/scripts/agent_smoke.py
+```
+
+### 3.6 完成标准
+
+- `web/server.py` 中不再保留仅用于迁移期的运行时绑定胶水
+- report / interview 相关入口只剩必要的路由和极薄编排层
+- 新维护者能直接定位真实实现所在模块
+
+当前结果：
+
+- `report_generation_runtime` / `interview_runtime` 的运行时绑定已改为显式同步入口
+- 迁移期 `_ensure_*_runtime_bound`、`*_LOCAL_NAMES` 与 report 小型 helper 残留已清掉
+- 任务十相关回归已补跑：
+  - `python3 -m py_compile web/server.py web/server_modules/report_generation_runtime.py web/server_modules/interview_runtime.py tests/test_security_regression.py`
+  - `uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' --with boto3 python3 -m unittest tests.test_security_regression.SecurityRegressionTests.test_run_report_generation_job_short_circuits_to_legacy_fallback tests.test_security_regression.SecurityRegressionTests.test_generate_report_v3_pipeline_falls_back_to_alternate_draft_lane_once tests.test_security_regression.SecurityRegressionTests.test_generate_report_v3_pipeline_recovers_from_review_parse_failure_via_repair`
+  - `uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with 'psycopg[binary]' --with boto3 python3 -m unittest tests.test_question_fast_strategy`
+  - `python3 scripts/agent_guardrails.py --quiet`
+  - `python3 scripts/agent_smoke.py`
+
+## 4. 任务十一：收口前端模块化边界重复定义
+
+### 4.1 目标
+
+在不继续新建前端业务模块的前提下，检查 `web/app.js` 与现有 `app_modules` 的边界，清掉模块化后残留的旧默认状态、重复 helper 和过时注释。
+
+### 4.2 当前问题
+
+- `web/app.js` 已从一万多行降到约七千多行，但模块化后的边界还没做完整收边
+- 报告详情、访谈主流程、管理员中心都已拆出，主文件里仍可能留有重复默认状态或只服务历史实现的辅助逻辑
+- 这类重复不会立刻出 bug，但会在下一轮需求迭代时再次拉高理解成本
+
+### 4.3 具体动作
+
+- [x] 盘点 `interview_runtime.js` 对应的旧 helper / 默认状态残留
+- [x] 盘点 `report_detail_runtime.js` 对应的旧 helper / 默认状态残留
+- [x] 盘点 `admin_center_state.js` 对应的旧 helper / 默认状态残留
+- [x] 删除已经不再被主链路消费的旧注释和重复状态说明
+- [x] 保持 `app.js` 只保留跨模块共享的稳定 helper
+
+### 4.4 涉及文件
+
+- [web/app.js](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/app.js)
+- [web/app_modules/interview_runtime.js](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/app_modules/interview_runtime.js)
+- [web/app_modules/report_detail_runtime.js](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/app_modules/report_detail_runtime.js)
+- [web/app_modules/admin_center_state.js](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/app_modules/admin_center_state.js)
+
+### 4.5 验收命令
+
+```bash
+node --check /Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/app.js
+node --check /Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/app_modules/interview_runtime.js
+node --check /Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/app_modules/report_detail_runtime.js
+node --check /Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/app_modules/admin_center_state.js
+python3 /Users/hehai/Documents/开目软件/Agents/project/DeepVision/scripts/agent_guardrails.py --quiet
+python3 /Users/hehai/Documents/开目软件/Agents/project/DeepVision/scripts/agent_smoke.py
+```
+
+### 4.6 完成标准
+
+- `web/app.js` 不再保留明显只服务旧实现的重复状态与 helper
+- `app.js` 与各 `app_modules` 的职责边界清晰可解释
+- 前端不再继续为“缩行数”而新拆模块
+
+当前结果：
+
+- 报告详情链路的章节模型、目录观察器、附录导出菜单等专用 helper 已从 `web/app.js` 收回 `web/app_modules/report_detail_runtime.js`
+- `interview_runtime.js` 残留审计已完成，`app.js` 中保留的是 `createQuestionState`、AI 推荐与“其他输入”解析等跨模块共享 helper
+- `admin_center_state.js` 残留审计已完成，`app.js` 中保留的是仍与 License 管理子链路耦合的状态重置与表单 helper，当前不再继续机械搬迁
+
+## 5. 任务十二：第三批拆分决策门
+
+### 5.1 目标
+
+把“是否继续第三批拆分”从默认动作改成明确决策门，只在某块业务重新进入高频改动、且现有模块边界不足时才启动新一轮拆分。
+
+### 5.2 当前问题
+
+- 第二阶段列出的候选块已经全部完成
+- 当前继续拆分的收益明显下降，风险上升
+- 如果没有明确的启动条件，容易重新回到“为了拆而拆”
+
+### 5.3 具体动作
+
+- [x] 约定第三批拆分只在具体业务热点触发时启动
+- [x] 将 `solution_rendering.py`、`admin_license_state.js` 等方向标记为“按需候选”，不是默认待办
+- [x] 在相关文档中明确“先清旧实现，再决定是否新拆”
+
+### 5.4 涉及文件
+
+- [docs/repo-cleanup-execution-plan.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/repo-cleanup-execution-plan.md)
+- [docs/agent/plans/module-split-phase2.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/plans/module-split-phase2.md)
+
+### 5.5 验收命令
+
+```bash
+rg -n "第三批|solution_rendering|admin_license_state|过渡残留" /Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/repo-cleanup-execution-plan.md /Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/plans/module-split-phase2.md
+```
+
+### 5.6 完成标准
+
+- 文档不再把“继续大拆”描述为默认下一步
+- 新一轮拆分必须绑定具体热点与明确收益
+
+当前结果：
+
+- 第三批拆分已从默认待办改成显式决策门
+- 只有满足“相关模块连续高频改动、现有边界明显失效、已有最小回归兜底”三项条件时，才允许新开拆分任务
+- `solution_rendering.py`、`admin_license_state.js` 现统一视为按需候选，不再作为活跃计划默认下一步
+
+## 6. 任务八：收瘦 README 与 agent 命令入口
 
 ### 3.1 目标
 
@@ -74,7 +219,7 @@ rg -n "agent_harness.py --profile auto|agent_smoke.py|agent_guardrails.py" /User
 - 详细命令入口由 `docs/agent/README.md` 和 `AGENTS.md` 承担
 - 三份入口文档的职责边界清晰可解释
 
-## 4. 任务九：规划第二阶段模块化拆分
+## 7. 任务九：规划第二阶段模块化拆分
 
 ### 4.1 目标
 
@@ -132,11 +277,12 @@ find /Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/app_modul
 - 不在同一轮里同时实施多块高耦合业务拆分
 - 保持“先规划，再拆分，再验证”的节奏
 
-## 5. 推荐推进顺序
+## 8. 推荐推进顺序
 
-1. 按 [docs/agent/plans/module-split-phase2.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/plans/module-split-phase2.md) 选择下一块业务热点
-2. 单模块推进并保留最小验证证据
+1. 先完成任务十，清理 `web/server.py` 中 report / interview 的过渡残留
+2. 视需要执行任务十一，收口前端模块化边界重复定义
+3. 仅在明确出现新热点时，才通过任务十二启动第三批拆分决策
 
 一句话总结：
 
-`先把第二阶段拆分目标讲清，再进入下一轮业务模块化。`
+`当前先做过渡残留清理，不默认继续第三批系统性拆分。`

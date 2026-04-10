@@ -23,6 +23,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
 import html
+import inspect
 import json
 import math
 import mimetypes
@@ -74,7 +75,6 @@ from web.server_modules.admin_config_center import AdminConfigCenterService
 from web.server_modules.ownership_admin_flow import AdminOwnershipMigrationService
 from web.server_modules.report_generation_runtime import (
     _classify_action_timeline_bucket_v3 as module_classify_action_timeline_bucket_v3,
-    _compute_table_row_readiness_v3 as module_compute_table_row_readiness_v3,
     _is_action_metric_measurable_v3 as module_is_action_metric_measurable_v3,
     build_report_quality_meta_fallback as module_build_report_quality_meta_fallback,
     classify_v3_pipeline_exception as module_classify_v3_pipeline_exception,
@@ -20261,7 +20261,7 @@ def build_interview_prompt(
     search_mode: str = "default",
     runtime_probe: bool = False,
 ) -> tuple[str, list, dict]:
-    _ensure_interview_runtime_bound()
+    _sync_interview_runtime_bindings()
     return module_build_interview_prompt(
         session,
         dimension,
@@ -22989,7 +22989,7 @@ def _infer_action_owner_timeline_metric_v3(
     timeline = current_timeline if _is_action_timeline_specific_v3(current_timeline) else _infer_default_action_timeline_v3(text, field=field)
     current_metric = str(item.get("metric", "") or "").strip()
     if field == "actions":
-        metric = current_metric if _is_action_metric_measurable_v3(current_metric) else _infer_default_action_metric_v3(text, inferred_dimension, field=field)
+        metric = current_metric if module_is_action_metric_measurable_v3(current_metric) else _infer_default_action_metric_v3(text, inferred_dimension, field=field)
     elif field == "solutions":
         metric = current_metric or _infer_default_action_metric_v3(text, inferred_dimension, field=field)
     else:
@@ -23039,7 +23039,7 @@ def _should_soft_pass_not_actionable_issue_v3(issue: dict, draft: dict) -> bool:
         owner_text = str(candidate.get("owner", "") or "").strip()
         metric_text = str(candidate.get("metric", "") or "").strip().lower()
         timeline_text = str(candidate.get("timeline", "") or "").strip()
-        bucket = _classify_action_timeline_bucket_v3(timeline_text)
+        bucket = module_classify_action_timeline_bucket_v3(timeline_text)
         if bucket not in {"mid", "long"} and not any(token in timeline_text for token in ("月", "季度", "半年", "年度")):
             continue
         if not (owner_text and metric_text and _is_action_timeline_specific_v3(timeline_text)):
@@ -23613,7 +23613,7 @@ def _normalize_action_metrics_v3(working: dict, evidence_pack: dict) -> tuple[di
                 continue
 
             current_metric = str(item.get("metric", "") or "").strip()
-            if field == "actions" and _is_action_metric_measurable_v3(current_metric):
+            if field == "actions" and module_is_action_metric_measurable_v3(current_metric):
                 continue
             if field == "solutions" and current_metric:
                 continue
@@ -23699,7 +23699,7 @@ def _reinforce_long_horizon_actions_v3(working: dict, evidence_pack: dict, issue
         if not isinstance(item, dict):
             continue
         timeline_text = str(item.get("timeline", "") or "").strip()
-        bucket = _classify_action_timeline_bucket_v3(timeline_text)
+        bucket = module_classify_action_timeline_bucket_v3(timeline_text)
         if bucket not in {"mid", "long"} and not any(token in timeline_text for token in ("月", "季度", "半年", "年度")):
             continue
 
@@ -24512,39 +24512,63 @@ def build_quality_gate_issues_v3(quality_meta: dict, thresholds: Optional[dict] 
     return issues
 
 
-_INTERVIEW_RUNTIME_LOCAL_NAMES = {
-    "build_interview_prompt",
-    "_select_question_generation_runtime_profile",
-    "_prepare_question_generation_runtime",
-    "_call_question_with_optional_hedge",
-    "generate_question_with_tiered_strategy",
+_INTERVIEW_RUNTIME_MODULE_OWNED_NAMES = (
     "_normalize_question_prompt_output_mode",
     "_clip_prompt_text",
     "_scale_question_lane_numeric_map",
     "configure_interview_runtime",
-}
-
-_interview_runtime_bound = False
-_report_generation_runtime_bound = False
+)
 
 
-def _ensure_interview_runtime_bound() -> None:
-    global _interview_runtime_bound
-    if _interview_runtime_bound:
-        return
+def _dispatch_runtime_patchpoint(name: str, *args, **kwargs):
+    target = globals().get(name)
+    if not callable(target):
+        raise RuntimeError(f"runtime patchpoint is not callable: {name}")
+    if not kwargs:
+        return target(*args)
+    try:
+        signature = inspect.signature(target)
+    except (TypeError, ValueError):
+        return target(*args, **kwargs)
+    accepts_var_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    if accepts_var_kwargs:
+        return target(*args, **kwargs)
+    filtered_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if key in signature.parameters
+    }
+    return target(*args, **filtered_kwargs)
 
+
+def _dispatch_build_interview_prompt(*args, **kwargs):
+    return _dispatch_runtime_patchpoint("build_interview_prompt", *args, **kwargs)
+
+
+def _dispatch_select_question_generation_runtime_profile(*args, **kwargs):
+    return _dispatch_runtime_patchpoint("_select_question_generation_runtime_profile", *args, **kwargs)
+
+
+def _dispatch_call_question_with_optional_hedge(*args, **kwargs):
+    return _dispatch_runtime_patchpoint("_call_question_with_optional_hedge", *args, **kwargs)
+
+
+def _sync_interview_runtime_bindings() -> None:
     bindings = dict(globals())
-    for name in _INTERVIEW_RUNTIME_LOCAL_NAMES:
+    for name in _INTERVIEW_RUNTIME_MODULE_OWNED_NAMES:
         bindings.pop(name, None)
+    bindings.update({
+        "build_interview_prompt": _dispatch_build_interview_prompt,
+        "_select_question_generation_runtime_profile": _dispatch_select_question_generation_runtime_profile,
+        "_call_question_with_optional_hedge": _dispatch_call_question_with_optional_hedge,
+    })
     configure_interview_runtime(bindings)
-    _interview_runtime_bound = True
 
 
-def _ensure_report_generation_runtime_bound() -> None:
-    global _report_generation_runtime_bound
-    if _report_generation_runtime_bound:
-        return
-
+def _sync_report_generation_runtime_bindings() -> None:
     configure_report_generation_runtime({
         "_collect_claim_entries_for_quality": _collect_claim_entries_for_quality,
         "_collect_report_reference_materials": _collect_report_reference_materials,
@@ -24573,8 +24597,10 @@ def _ensure_report_generation_runtime_bound() -> None:
         "build_report_draft_prompt_v3": build_report_draft_prompt_v3,
         "build_report_evidence_pack": build_report_evidence_pack,
         "build_report_prompt_with_options": build_report_prompt_with_options,
+        "build_report_review_prompt_v3": build_report_review_prompt_v3,
         "build_report_storage_reference": build_report_storage_reference,
         "build_report_variant_filename": build_report_variant_filename,
+        "build_report_quality_meta_fallback": build_report_quality_meta_fallback,
         "build_session_report_filename": build_session_report_filename,
         "build_solution_sidecar_snapshot": build_solution_sidecar_snapshot,
         "build_v3_failure_log_context": build_v3_failure_log_context,
@@ -24587,6 +24613,7 @@ def _ensure_report_generation_runtime_bound() -> None:
         "describe_v3_failure_reason": describe_v3_failure_reason,
         "ensure_session_owner": ensure_session_owner,
         "ensure_solution_payload_ready": ensure_solution_payload_ready,
+        "generate_report_v3_pipeline": generate_report_v3_pipeline,
         "generate_interview_appendix": generate_interview_appendix,
         "generate_simple_report": generate_simple_report,
         "get_release_conservative_report_short_circuit_meta": get_release_conservative_report_short_circuit_meta,
@@ -24603,6 +24630,7 @@ def _ensure_report_generation_runtime_bound() -> None:
         "normalize_solution_report_filename": normalize_solution_report_filename,
         "parse_report_review_response_v3": parse_report_review_response_v3,
         "parse_structured_json_response": parse_structured_json_response,
+        "compute_report_quality_meta_v3": compute_report_quality_meta_v3,
         "record_pipeline_stage_metric": record_pipeline_stage_metric,
         "record_report_generation_queue_event": record_report_generation_queue_event,
         "record_report_generation_runtime_sample": record_report_generation_runtime_sample,
@@ -24617,6 +24645,7 @@ def _ensure_report_generation_runtime_bound() -> None:
         "resolve_report_v3_phase_lane": resolve_report_v3_phase_lane,
         "resolve_quality_gate_soft_pass_v3": resolve_quality_gate_soft_pass_v3,
         "resolve_session_bound_report_name": resolve_session_bound_report_name,
+        "classify_v3_pipeline_exception": classify_v3_pipeline_exception,
         "safe_load_session": safe_load_session,
         "save_report_content_and_sync": save_report_content_and_sync,
         "save_session_json_and_sync": save_session_json_and_sync,
@@ -24624,6 +24653,7 @@ def _ensure_report_generation_runtime_bound() -> None:
         "set_report_owner_id": set_report_owner_id,
         "should_retry_v3_with_failover": should_retry_v3_with_failover,
         "should_retry_v3_with_failover": should_retry_v3_with_failover,
+        "is_unusable_legacy_report_content": is_unusable_legacy_report_content,
         "summarize_error_for_log": summarize_error_for_log,
         "summarize_evidence_pack_for_debug": summarize_evidence_pack_for_debug,
         "summarize_issue_types_v3": summarize_issue_types_v3,
@@ -24632,32 +24662,17 @@ def _ensure_report_generation_runtime_bound() -> None:
         "update_report_generation_status": update_report_generation_status,
         "validate_report_draft_v3": validate_report_draft_v3,
         "write_solution_sidecar": write_solution_sidecar,
+        "run_report_generation_job": run_report_generation_job,
     })
-    _report_generation_runtime_bound = True
-
-
-def _compute_table_row_readiness_v3(items: list, required_fields: list[str]) -> float:
-    _ensure_report_generation_runtime_bound()
-    return module_compute_table_row_readiness_v3(items, required_fields)
-
-
-def _is_action_metric_measurable_v3(metric_text: str) -> bool:
-    _ensure_report_generation_runtime_bound()
-    return module_is_action_metric_measurable_v3(metric_text)
-
-
-def _classify_action_timeline_bucket_v3(timeline_text: str) -> str:
-    _ensure_report_generation_runtime_bound()
-    return module_classify_action_timeline_bucket_v3(timeline_text)
 
 
 def compute_report_quality_meta_v3(draft: dict, evidence_pack: dict, issues: list) -> dict:
-    _ensure_report_generation_runtime_bound()
+    _sync_report_generation_runtime_bindings()
     return module_compute_report_quality_meta_v3(draft, evidence_pack, issues)
 
 
 def build_report_quality_meta_fallback(session: dict, mode: str, evidence_pack: Optional[dict] = None) -> dict:
-    _ensure_report_generation_runtime_bound()
+    _sync_report_generation_runtime_bindings()
     return module_build_report_quality_meta_fallback(session, mode, evidence_pack=evidence_pack)
 
 
@@ -25705,7 +25720,7 @@ def generate_report_v3_pipeline(
     report_profile: str = "",
     ) -> Optional[dict]:
     """执行 V3 报告生成流水线。失败时返回包含 reason 的调试结构。"""
-    _ensure_report_generation_runtime_bound()
+    _sync_report_generation_runtime_bindings()
     return module_generate_report_v3_pipeline(
         session,
         session_id=session_id,
@@ -28886,7 +28901,7 @@ def _select_question_generation_runtime_profile(
     allow_fast_path: bool = True,
     mode_strategy: Optional[dict] = None,
 ) -> dict:
-    _ensure_interview_runtime_bound()
+    _sync_interview_runtime_bindings()
     return module_select_question_generation_runtime_profile(
         prompt,
         truncated_docs=truncated_docs,
@@ -28906,7 +28921,7 @@ def _prepare_question_generation_runtime(
     base_call_type: str = "question",
     allow_fast_path: bool = True,
 ) -> dict:
-    _ensure_interview_runtime_bound()
+    _sync_interview_runtime_bindings()
     return module_prepare_question_generation_runtime(
         session,
         dimension,
@@ -28934,7 +28949,7 @@ def _call_question_with_optional_hedge(
     lane_runtime_overrides: Optional[dict] = None,
     lane_model_overrides: Optional[dict] = None,
 ) -> tuple[Optional[str], str, dict]:
-    _ensure_interview_runtime_bound()
+    _sync_interview_runtime_bindings()
     return module_call_question_with_optional_hedge(
         prompt,
         max_tokens,
@@ -28963,7 +28978,7 @@ def generate_question_with_tiered_strategy(
     fast_prompt: Optional[str] = None,
     runtime_profile: Optional[dict] = None,
 ) -> tuple[Optional[str], Optional[dict], str]:
-    _ensure_interview_runtime_bound()
+    _sync_interview_runtime_bindings()
     return module_generate_question_with_tiered_strategy(
         prompt,
         truncated_docs=truncated_docs,
@@ -31138,7 +31153,7 @@ def attempt_salvage_v3_review_failure(session: dict, v3_result: Optional[dict]) 
 
 def is_unusable_legacy_report_content(content: Optional[str]) -> bool:
     """检测标准回退报告是否为无效的工具确认话术。"""
-    _ensure_report_generation_runtime_bound()
+    _sync_report_generation_runtime_bindings()
     return module_is_unusable_legacy_report_content(content)
 
 
@@ -31295,7 +31310,7 @@ def can_use_v3_failover_lane() -> bool:
 
 def classify_v3_pipeline_exception(exc: Exception) -> str:
     """归类 V3 流水线异常类型，便于区分运行异常与内容门禁问题。"""
-    _ensure_report_generation_runtime_bound()
+    _sync_report_generation_runtime_bindings()
     return module_classify_v3_pipeline_exception(exc)
 
 
@@ -31308,7 +31323,7 @@ def run_report_generation_job(
     source_report_name: str = "",
 ) -> None:
     """后台生成报告任务。"""
-    _ensure_report_generation_runtime_bound()
+    _sync_report_generation_runtime_bindings()
     return module_run_report_generation_job(
         session_id,
         user_id,
