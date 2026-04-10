@@ -794,6 +794,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
         stability_targets = agent_eval.filter_scenarios(scenarios, tags=["stability-local"])
         stability_names = {item.name for item in stability_targets}
         self.assertIn("stability-failure-degrade", stability_names)
+        self.assertIn("stability-idempotency", stability_names)
         self.assertIn("browser-smoke-extended", stability_names)
         self.assertIn("report-solution-core", stability_names)
         self.assertIn("access-boundaries", stability_names)

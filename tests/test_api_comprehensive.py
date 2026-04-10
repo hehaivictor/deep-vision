@@ -8,6 +8,7 @@ import time
 import types
 import unittest
 import uuid
+from concurrent.futures import Future
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
@@ -1357,6 +1358,139 @@ class ComprehensiveApiTests(unittest.TestCase):
             rolled_back_session = json.loads(session_file.read_text(encoding="utf-8"))
             self.assertEqual(0, rolled_back_session["owner_user_id"])
             self.assertFalse(self.server.REPORT_OWNERS_FILE.exists())
+        finally:
+            self.server.ADMIN_USER_IDS = old_admin_ids
+            self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
+            self.server.SESSIONS_DIR = old_sessions_dir
+            self.server.REPORTS_DIR = old_reports_dir
+            self.server.REPORT_OWNERS_FILE = old_report_owners_file
+            self.server.REPORT_SCOPES_FILE = old_report_scopes_file
+            self.server.DELETED_REPORTS_FILE = old_deleted_reports_file
+            self.server.REPORT_SOLUTION_SHARES_FILE = old_report_solution_shares_file
+            self.server._get_admin_meta_index_db_target = old_get_admin_meta_index_db_target
+            self.server._use_postgres_shared_meta_storage = old_use_postgres_shared_meta_storage
+            self.server.report_owners_cache["signature"] = None
+            self.server.report_owners_cache["data"] = {}
+            self.server.report_scopes_cache["signature"] = None
+            self.server.report_scopes_cache["data"] = {}
+            self.server.report_solution_shares_cache["signature"] = None
+            self.server.report_solution_shares_cache["data"] = {}
+
+    def test_admin_ownership_preview_reissue_invalidates_old_token_and_apply_is_single_use(self):
+        admin_user = self._register()
+        target_client = self.server.app.test_client()
+        target_user = self._register(client=target_client)
+        old_admin_ids = set(self.server.ADMIN_USER_IDS)
+        old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
+        old_sessions_dir = self.server.SESSIONS_DIR
+        old_reports_dir = self.server.REPORTS_DIR
+        old_report_owners_file = self.server.REPORT_OWNERS_FILE
+        old_report_scopes_file = self.server.REPORT_SCOPES_FILE
+        old_deleted_reports_file = self.server.DELETED_REPORTS_FILE
+        old_report_solution_shares_file = self.server.REPORT_SOLUTION_SHARES_FILE
+        old_get_admin_meta_index_db_target = self.server._get_admin_meta_index_db_target
+        old_use_postgres_shared_meta_storage = self.server._use_postgres_shared_meta_storage
+        try:
+            self.server.ADMIN_USER_IDS = {int(admin_user["id"])}
+            self.server.ADMIN_PHONE_NUMBERS = set()
+            self.server._get_admin_meta_index_db_target = lambda: None
+            self.server._use_postgres_shared_meta_storage = lambda: False
+            activation_code = self._generate_license_batch(note="归属迁移幂等管理 License")["licenses"][0]["code"]
+            ok, status_code, payload = self.server.activate_license_for_user(activation_code, int(admin_user["id"]))
+            self.assertTrue(ok, payload)
+            self.assertEqual(200, status_code)
+
+            isolated_root = self.server.DATA_DIR / f"ownership-idempotency-{uuid.uuid4().hex}"
+            isolated_sessions_dir = isolated_root / "sessions"
+            isolated_reports_dir = isolated_root / "reports"
+            isolated_sessions_dir.mkdir(parents=True, exist_ok=True)
+            isolated_reports_dir.mkdir(parents=True, exist_ok=True)
+            self.server.SESSIONS_DIR = isolated_sessions_dir
+            self.server.REPORTS_DIR = isolated_reports_dir
+            self.server.REPORT_OWNERS_FILE = isolated_reports_dir / ".owners.json"
+            self.server.REPORT_SCOPES_FILE = isolated_reports_dir / ".scopes.json"
+            self.server.DELETED_REPORTS_FILE = isolated_reports_dir / ".deleted_reports.json"
+            self.server.REPORT_SOLUTION_SHARES_FILE = isolated_reports_dir / ".solution_shares.json"
+            self.server.report_owners_cache["signature"] = None
+            self.server.report_owners_cache["data"] = {}
+            self.server.report_scopes_cache["signature"] = None
+            self.server.report_scopes_cache["data"] = {}
+            self.server.report_solution_shares_cache["signature"] = None
+            self.server.report_solution_shares_cache["data"] = {}
+
+            session_file = self.server.SESSIONS_DIR / "ownership-idempotency-session.json"
+            session_file.write_text(
+                json.dumps(
+                    {
+                        "session_id": "ownership-idempotency-session",
+                        "topic": "迁移幂等预览会话",
+                        "owner_user_id": 0,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            report_name = "ownership-idempotency-report.md"
+            (self.server.REPORTS_DIR / report_name).write_text("# 测试报告\n", encoding="utf-8")
+
+            request_payload = {
+                "to_user_id": int(target_user["id"]),
+                "scope": "unowned",
+                "kinds": ["sessions", "reports"],
+                "max_examples": 5,
+            }
+
+            preview_resp_one = self.client.post("/api/admin/ownership-migrations/preview", json=request_payload)
+            self.assertEqual(preview_resp_one.status_code, 200, preview_resp_one.get_data(as_text=True))
+            preview_one = preview_resp_one.get_json() or {}
+
+            preview_resp_two = self.client.post("/api/admin/ownership-migrations/preview", json=request_payload)
+            self.assertEqual(preview_resp_two.status_code, 200, preview_resp_two.get_data(as_text=True))
+            preview_two = preview_resp_two.get_json() or {}
+
+            self.assertNotEqual(preview_one.get("preview_token"), preview_two.get("preview_token"))
+            self.assertEqual(preview_one.get("confirm_phrase"), preview_two.get("confirm_phrase"))
+
+            stale_apply = self.client.post(
+                "/api/admin/ownership-migrations/apply",
+                json={
+                    **request_payload,
+                    "preview_token": preview_one["preview_token"],
+                    "confirm_text": preview_one["confirm_phrase"],
+                },
+            )
+            self.assertEqual(stale_apply.status_code, 409, stale_apply.get_data(as_text=True))
+
+            apply_resp = self.client.post(
+                "/api/admin/ownership-migrations/apply",
+                json={
+                    **request_payload,
+                    "preview_token": preview_two["preview_token"],
+                    "confirm_text": preview_two["confirm_phrase"],
+                },
+            )
+            self.assertEqual(apply_resp.status_code, 200, apply_resp.get_data(as_text=True))
+            apply_payload = apply_resp.get_json() or {}
+            self.assertEqual("apply", ((apply_payload.get("summary") or {}).get("mode")))
+
+            reused_apply = self.client.post(
+                "/api/admin/ownership-migrations/apply",
+                json={
+                    **request_payload,
+                    "preview_token": preview_two["preview_token"],
+                    "confirm_text": preview_two["confirm_phrase"],
+                },
+            )
+            self.assertEqual(reused_apply.status_code, 409, reused_apply.get_data(as_text=True))
+
+            migrated_session = json.loads(session_file.read_text(encoding="utf-8"))
+            self.assertEqual(int(target_user["id"]), migrated_session["owner_user_id"])
+
+            history_resp = self.client.get("/api/admin/ownership-migrations")
+            self.assertEqual(history_resp.status_code, 200, history_resp.get_data(as_text=True))
+            history_payload = history_resp.get_json() or {}
+            self.assertEqual(1, int(history_payload.get("count") or 0))
         finally:
             self.server.ADMIN_USER_IDS = old_admin_ids
             self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
@@ -3539,6 +3673,49 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(2, len(interview_log), interview_log)
         self.assertEqual({"回答-A", "回答-B"}, {item.get("answer") for item in interview_log})
 
+    def test_submit_answer_is_idempotent_for_immediate_duplicate_payload(self):
+        self._register()
+        self._activate_license(
+            self._generate_license_batch(
+                level_key="standard",
+                note="提交幂等测试",
+                use_absolute_window=True,
+                starts_in_days=-1,
+                expires_in_days=30000,
+            )["licenses"][0]["code"]
+        )
+        payload = self._create_session(topic="提交幂等测试")
+        session_id = payload["session_id"]
+        dimension = next(iter(payload.get("dimensions", {}).keys()))
+        request_payload = {
+            "question": "当前最重要的目标是什么？",
+            "answer": "先确认核心需求",
+            "dimension": dimension,
+            "options": ["确认需求", "先做方案"],
+            "multi_select": False,
+            "question_multi_select": False,
+            "other_selected": False,
+            "is_follow_up": False,
+        }
+
+        first_resp = self.client.post(f"/api/sessions/{session_id}/submit-answer", json=request_payload)
+        self.assertEqual(first_resp.status_code, 200, first_resp.get_data(as_text=True))
+        second_resp = self.client.post(f"/api/sessions/{session_id}/submit-answer", json=request_payload)
+        self.assertEqual(second_resp.status_code, 200, second_resp.get_data(as_text=True))
+
+        first_payload = first_resp.get_json() or {}
+        second_payload = second_resp.get_json() or {}
+        self.assertFalse(first_payload.get("deduplicated"))
+        self.assertTrue(second_payload.get("deduplicated"))
+        self.assertEqual(1, len(second_payload.get("interview_log", [])))
+        self.assertEqual(1, len(((second_payload.get("dimensions", {}) or {}).get(dimension) or {}).get("items", [])))
+
+        session_detail = self.client.get(f"/api/sessions/{session_id}")
+        self.assertEqual(session_detail.status_code, 200, session_detail.get_data(as_text=True))
+        detail_payload = session_detail.get_json() or {}
+        self.assertEqual(1, len(detail_payload.get("interview_log", [])))
+        self.assertEqual("先确认核心需求", detail_payload["interview_log"][0]["answer"])
+
     def test_custom_scenario_create_with_solution_dsl(self):
         self._register()
         create_resp = self.client.post(
@@ -4767,6 +4944,41 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(int(professional_license["id"]), int(old_row["replaced_by_license_id"] or 0))
         self.assertEqual("active", str(new_row["status"]))
 
+    def test_reactivating_same_license_keeps_current_binding_stable(self):
+        self._register()
+        license_item = self._generate_license_batch(level_key="standard", note="重复激活幂等测试")["licenses"][0]
+
+        first_payload = self._activate_license(license_item["code"])
+        self.assertEqual("License 绑定成功", first_payload.get("message"))
+        current_before = self.client.get("/api/licenses/current").get_json() or {}
+        license_before = current_before.get("license") or {}
+
+        with self.server.get_license_db_connection() as conn:
+            row_before = conn.execute(
+                "SELECT status, bound_user_id, bound_at, replaced_by_license_id FROM licenses WHERE id = ?",
+                (int(license_item["id"]),),
+            ).fetchone()
+
+        second_payload = self._activate_license(license_item["code"])
+        self.assertEqual("License 已生效", second_payload.get("message"))
+        current_after = self.client.get("/api/licenses/current").get_json() or {}
+        license_after = current_after.get("license") or {}
+
+        self.assertEqual(license_before.get("id"), license_after.get("id"))
+        self.assertEqual(license_before.get("code_mask"), license_after.get("code_mask"))
+        self.assertEqual((current_before.get("level") or {}).get("key"), (current_after.get("level") or {}).get("key"))
+
+        with self.server.get_license_db_connection() as conn:
+            row_after = conn.execute(
+                "SELECT status, bound_user_id, bound_at, replaced_by_license_id FROM licenses WHERE id = ?",
+                (int(license_item["id"]),),
+            ).fetchone()
+
+        self.assertEqual("active", str(row_after["status"]))
+        self.assertEqual(int(row_before["bound_user_id"] or 0), int(row_after["bound_user_id"] or 0))
+        self.assertEqual(str(row_before["bound_at"] or ""), str(row_after["bound_at"] or ""))
+        self.assertIsNone(row_after["replaced_by_license_id"])
+
     def test_standard_user_can_generate_balanced_but_cannot_access_solution_appendix_or_presentation(self):
         user = self._register()
         standard_code = self._generate_license_batch(level_key="standard", note="标准版权限测试")["licenses"][0]["code"]
@@ -4835,6 +5047,45 @@ class ComprehensiveApiTests(unittest.TestCase):
         presentation_resp = self.client.post(f"/api/reports/{report_name}/refly")
         self.assertEqual(presentation_resp.status_code, 400, presentation_resp.get_data(as_text=True))
         self.assertNotEqual("level_capability_denied", (presentation_resp.get_json() or {}).get("error_code"))
+
+    def test_solution_share_creation_is_idempotent_for_same_owner(self):
+        user = self._register()
+        professional_code = self._generate_license_batch(level_key="professional", note="方案分享幂等测试")["licenses"][0]["code"]
+        self._activate_license(professional_code)
+        report_name = self._create_owned_report(int(user["id"]), topic="方案分享幂等")
+
+        first_resp = self.client.post(f"/api/reports/{report_name}/solution/share")
+        self.assertEqual(first_resp.status_code, 200, first_resp.get_data(as_text=True))
+        second_resp = self.client.post(f"/api/reports/{report_name}/solution/share")
+        self.assertEqual(second_resp.status_code, 200, second_resp.get_data(as_text=True))
+
+        first_payload = first_resp.get_json() or {}
+        second_payload = second_resp.get_json() or {}
+        self.assertEqual(first_payload.get("share_token"), second_payload.get("share_token"))
+        self.assertEqual(first_payload.get("share_url"), second_payload.get("share_url"))
+        self.assertEqual(first_payload.get("created_at"), second_payload.get("created_at"))
+
+        public_client = self.server.app.test_client()
+        public_first = public_client.get(f"/api/public/solutions/{quote(first_payload['share_token'])}")
+        self.assertEqual(public_first.status_code, 200, public_first.get_data(as_text=True))
+        public_second = public_client.get(f"/api/public/solutions/{quote(first_payload['share_token'])}")
+        self.assertEqual(public_second.status_code, 200, public_second.get_data(as_text=True))
+
+        first_public_payload = public_first.get_json() or {}
+        second_public_payload = public_second.get_json() or {}
+        self.assertEqual(first_public_payload.get("title"), second_public_payload.get("title"))
+        self.assertEqual("public", first_public_payload.get("share_mode"))
+        self.assertEqual("public", second_public_payload.get("share_mode"))
+
+        share_records = self.server.load_solution_share_map()
+        matching_tokens = [
+            token
+            for token, record in (share_records or {}).items()
+            if isinstance(record, dict)
+            and record.get("report_name") == report_name
+            and int(record.get("owner_user_id") or 0) == int(user["id"])
+        ]
+        self.assertEqual([first_payload.get("share_token")], matching_tokens)
 
     def test_export_asset_permission_follows_current_level(self):
         uploaded_objects = {}
@@ -5133,6 +5384,54 @@ class ComprehensiveApiTests(unittest.TestCase):
         finally:
             for _ in range(acquired):
                 self.server.release_report_generation_slot()
+
+    def test_generate_report_returns_existing_active_payload_when_retriggered(self):
+        self._register()
+        self._activate_license(
+            self._generate_license_batch(
+                level_key="standard",
+                note="报告幂等触发",
+                use_absolute_window=True,
+                starts_in_days=-1,
+                expires_in_days=30000,
+            )["licenses"][0]["code"]
+        )
+        created = self._create_session(topic="报告重复触发测试")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+        self._submit_answer(session_id, dimension, question="需求是什么？", answer="先生成报告")
+
+        original_submit = self.server.report_generation_executor.submit
+        pending_future = Future()
+        submit_calls = []
+
+        def fake_submit(fn, *args, **kwargs):
+            submit_calls.append((fn, args, kwargs))
+            return pending_future
+
+        self.server.report_generation_executor.submit = fake_submit
+        try:
+            first_resp = self.client.post(f"/api/sessions/{session_id}/generate-report", json={})
+            self.assertEqual(first_resp.status_code, 202, first_resp.get_data(as_text=True))
+            first_payload = first_resp.get_json() or {}
+            self.assertFalse(first_payload.get("already_running"))
+            first_request_id = first_payload.get("request_id")
+            self.assertTrue(first_request_id)
+
+            second_resp = self.client.post(f"/api/sessions/{session_id}/generate-report", json={})
+            self.assertEqual(second_resp.status_code, 202, second_resp.get_data(as_text=True))
+            second_payload = second_resp.get_json() or {}
+            self.assertTrue(second_payload.get("already_running"))
+            self.assertEqual(first_request_id, second_payload.get("request_id"))
+            self.assertEqual(1, len(submit_calls))
+        finally:
+            self.server.report_generation_executor.submit = original_submit
+            self.server.cleanup_report_generation_worker(session_id, pending_future)
+            self.server.clear_report_generation_status(session_id)
+            try:
+                self.server.release_report_generation_slot()
+            except ValueError:
+                pass
 
     def test_generate_report_rejects_invalid_profile(self):
         self._register()

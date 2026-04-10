@@ -2398,6 +2398,119 @@ def with_session_write_lock(func):
     return wrapper
 
 
+SUBMIT_ANSWER_IDEMPOTENCY_WINDOW_SECONDS = 8.0
+
+
+def _build_submit_answer_idempotency_payload(
+    *,
+    question: str,
+    answer: str,
+    dimension: str,
+    options: list,
+    multi_select: bool,
+    question_multi_select: bool,
+    selection_escalated_from_single: bool,
+    other_selected: bool,
+    other_answer_text: str,
+    other_resolution: dict,
+    is_follow_up: bool,
+    answer_mode: str,
+    requires_rationale: bool,
+    evidence_intent: str,
+    rationale_text: str,
+    question_generation_tier: str,
+    question_selected_lane: str,
+    question_runtime_profile: str,
+    question_hedge_triggered: bool,
+    question_fallback_triggered: bool,
+    ai_recommendation: dict,
+    preflight_intervened: bool,
+    preflight_fingerprint: str,
+    preflight_planner_mode: str,
+    preflight_probe_slots: list[str],
+) -> dict:
+    return {
+        "question": str(question or "").strip(),
+        "answer": str(answer or "").strip(),
+        "dimension": str(dimension or "").strip(),
+        "options": list(options or []),
+        "multi_select": bool(multi_select),
+        "question_multi_select": bool(question_multi_select),
+        "selection_escalated_from_single": bool(selection_escalated_from_single),
+        "other_selected": bool(other_selected),
+        "other_answer_text": str(other_answer_text or "").strip(),
+        "other_resolution": dict(other_resolution or {}),
+        "is_follow_up": bool(is_follow_up),
+        "answer_mode": str(answer_mode or "").strip(),
+        "requires_rationale": bool(requires_rationale),
+        "evidence_intent": str(evidence_intent or "").strip(),
+        "rationale_text": str(rationale_text or "").strip(),
+        "question_generation_tier": str(question_generation_tier or "").strip(),
+        "question_selected_lane": str(question_selected_lane or "").strip(),
+        "question_runtime_profile": str(question_runtime_profile or "").strip(),
+        "question_hedge_triggered": bool(question_hedge_triggered),
+        "question_fallback_triggered": bool(question_fallback_triggered),
+        "ai_recommendation": dict(ai_recommendation or {}),
+        "preflight_intervened": bool(preflight_intervened),
+        "preflight_fingerprint": str(preflight_fingerprint or "").strip(),
+        "preflight_planner_mode": str(preflight_planner_mode or "").strip(),
+        "preflight_probe_slots": [
+            str(item or "").strip()
+            for item in list(preflight_probe_slots or [])
+            if str(item or "").strip()
+        ],
+    }
+
+
+def _is_recent_duplicate_submit_answer(session: dict, request_payload: dict) -> bool:
+    if not isinstance(session, dict) or not isinstance(request_payload, dict):
+        return False
+    interview_log = list(session.get("interview_log") or [])
+    if not interview_log:
+        return False
+    last_log = interview_log[-1]
+    if not isinstance(last_log, dict):
+        return False
+
+    last_payload = _build_submit_answer_idempotency_payload(
+        question=last_log.get("question", ""),
+        answer=last_log.get("answer", ""),
+        dimension=last_log.get("dimension", ""),
+        options=last_log.get("options", []),
+        multi_select=last_log.get("multi_select", False),
+        question_multi_select=last_log.get("question_multi_select", False),
+        selection_escalated_from_single=last_log.get("selection_escalated_from_single", False),
+        other_selected=last_log.get("other_selected", False),
+        other_answer_text=last_log.get("other_answer_text", ""),
+        other_resolution=last_log.get("other_resolution", {}),
+        is_follow_up=last_log.get("is_follow_up", False),
+        answer_mode=last_log.get("answer_mode", ""),
+        requires_rationale=last_log.get("requires_rationale", False),
+        evidence_intent=last_log.get("evidence_intent", ""),
+        rationale_text=last_log.get("rationale_text", ""),
+        question_generation_tier=last_log.get("question_generation_tier", ""),
+        question_selected_lane=last_log.get("question_selected_lane", ""),
+        question_runtime_profile=last_log.get("question_runtime_profile", ""),
+        question_hedge_triggered=last_log.get("question_hedge_triggered", False),
+        question_fallback_triggered=last_log.get("question_fallback_triggered", False),
+        ai_recommendation=last_log.get("ai_recommendation", {}),
+        preflight_intervened=last_log.get("preflight_intervened", False),
+        preflight_fingerprint=last_log.get("preflight_fingerprint", ""),
+        preflight_planner_mode=last_log.get("preflight_planner_mode", ""),
+        preflight_probe_slots=last_log.get("preflight_probe_slots", []),
+    )
+    if last_payload != request_payload:
+        return False
+
+    last_timestamp = _parse_optional_datetime(last_log.get("timestamp")) or _parse_optional_datetime(session.get("updated_at"))
+    if not isinstance(last_timestamp, datetime):
+        return False
+    if last_timestamp.tzinfo is None:
+        last_timestamp = last_timestamp.replace(tzinfo=timezone.utc)
+    age_seconds = (datetime.now(timezone.utc) - last_timestamp).total_seconds()
+    return 0.0 <= age_seconds <= SUBMIT_ANSWER_IDEMPOTENCY_WINDOW_SECONDS
+
+
 def _resolve_runtime_path(raw_path: str, default_path: Path) -> Path:
     text = str(raw_path or "").strip()
     if not text:
@@ -30000,6 +30113,38 @@ def submit_answer(session_id):
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+
+    idempotent_payload = _build_submit_answer_idempotency_payload(
+        question=question,
+        answer=answer,
+        dimension=dimension,
+        options=options,
+        multi_select=multi_select,
+        question_multi_select=question_multi_select,
+        selection_escalated_from_single=selection_escalated_from_single,
+        other_selected=other_selected,
+        other_answer_text=other_answer_text,
+        other_resolution=other_resolution,
+        is_follow_up=is_follow_up,
+        answer_mode=answer_mode,
+        requires_rationale=requires_rationale,
+        evidence_intent=evidence_intent,
+        rationale_text=rationale_text,
+        question_generation_tier=question_generation_tier,
+        question_selected_lane=question_selected_lane,
+        question_runtime_profile=question_runtime_profile,
+        question_hedge_triggered=question_hedge_triggered,
+        question_fallback_triggered=question_fallback_triggered,
+        ai_recommendation=ai_recommendation,
+        preflight_intervened=preflight_intervened,
+        preflight_fingerprint=preflight_fingerprint,
+        preflight_planner_mode=preflight_planner_mode,
+        preflight_probe_slots=preflight_probe_slots,
+    )
+    if _is_recent_duplicate_submit_answer(session, idempotent_payload):
+        deduplicated_session = dict(session)
+        deduplicated_session["deduplicated"] = True
+        return jsonify(deduplicated_session)
 
     # 使用增强版评估函数判断回答是否需要追问
     eval_result = evaluate_answer_depth(

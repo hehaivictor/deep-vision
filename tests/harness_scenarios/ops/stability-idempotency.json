@@ -1,0 +1,36 @@
+{
+  "name": "stability-idempotency",
+  "category": "ops",
+  "description": "覆盖回答重复提交、报告重复触发、License 重复激活与方案分享重复创建时的幂等边界，避免重复写入、重复排队和脏 sidecar。",
+  "tags": [
+    "stability-local",
+    "stability-local-core",
+    "ops",
+    "idempotency"
+  ],
+  "budgets": {
+    "max_duration_ms": 180000
+  },
+  "cases": [
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_submit_answer_is_idempotent_for_immediate_duplicate_payload",
+      "label": "回答重复提交不重复写入"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_generate_report_returns_existing_active_payload_when_retriggered",
+      "label": "报告重复触发复用当前活跃任务"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_reactivating_same_license_keeps_current_binding_stable",
+      "label": "同一 License 重复激活不漂移绑定状态"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_solution_share_creation_is_idempotent_for_same_owner",
+      "label": "方案分享重复创建不生成脏 sidecar"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_ownership_preview_reissue_invalidates_old_token_and_apply_is_single_use",
+      "label": "归属迁移重复 preview / apply 维持单次执行边界"
+    }
+  ]
+}
