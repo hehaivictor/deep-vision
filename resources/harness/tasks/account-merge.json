@@ -2,6 +2,7 @@
   "name": "account-merge",
   "description": "手机号/微信绑定冲突与账号合并链路，优先验证 preview/apply/rollback 与权限边界。",
   "risk_level": "high",
+  "contract": "account-merge",
   "doctor_profile": "auto",
   "guardrails_suite": "extended",
   "smoke_suite": "minimal",

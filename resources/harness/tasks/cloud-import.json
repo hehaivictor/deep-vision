@@ -2,6 +2,7 @@
   "name": "cloud-import",
   "description": "外部本地 data 导入云端，默认先 dry-run 评估，再决定是否 apply。",
   "risk_level": "high",
+  "contract": "cloud-import",
   "doctor_profile": "cloud",
   "guardrails_suite": "extended",
   "smoke_suite": "minimal",

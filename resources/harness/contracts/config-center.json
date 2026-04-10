@@ -1,0 +1,28 @@
+{
+  "name": "config-center",
+  "title": "配置中心 Sprint Contract",
+  "task": "config-center",
+  "summary": "配置中心任务只有在管理员会话、活跃 License、helper 委托和专项回归都确认完成后，才允许进入真实配置写入。",
+  "docs": [
+    "docs/agent/admin-ops.md",
+    "web/CONFIG.md",
+    "docs/agent/playbooks/config-center-verify.md"
+  ],
+  "done_when": [
+    "已确认当前问题属于 env、config.py 或 site-config.js 哪一层，并保留 latest artifact 证据",
+    "专项回归证明配置中心仍通过统一 helper 读写配置，管理员权限和 License 门禁保持成立",
+    "正式写入前，治理字段、管理员会话、活跃 License 与重启边界已记录完整"
+  ],
+  "hard_failures": [
+    "配置中心路由重新在路由层直接写 .env、config.py 或 site-config.js",
+    "在缺少管理员白名单或活跃 License 的情况下直接进入写入",
+    "配置中心专项回归失败，导致目录读取、文件落盘或管理员权限边界回退"
+  ],
+  "evidence_required": [
+    "artifacts/harness-runs/latest.json",
+    "doctor.json",
+    "observe.json",
+    "workflow.json",
+    "artifacts/harness-eval/latest.json"
+  ]
+}

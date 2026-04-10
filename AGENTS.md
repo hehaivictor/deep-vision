@@ -15,6 +15,8 @@
 ## 首先阅读
 
 - 仓库总览与启动方式：[README.md](README.md)
+- 全局 heartbeat / 当前阶段指针：[docs/agent/heartbeat.md](docs/agent/heartbeat.md)
+- 仓库物理地图与边界：[ARCHITECTURE.md](ARCHITECTURE.md)
 - Agent 分层索引：[docs/agent/README.md](docs/agent/README.md)
 - 访谈链路：[docs/agent/interview.md](docs/agent/interview.md)
 - 鉴权、绑定与账号合并：[docs/agent/auth-identity.md](docs/agent/auth-identity.md)
@@ -28,6 +30,8 @@
 - Harness 三阶段进度台账：[docs/agent/harness-progress-phase3.md](docs/agent/harness-progress-phase3.md)
 - Harness 四阶段计划：[docs/agent/harness-iteration-plan-phase4.md](docs/agent/harness-iteration-plan-phase4.md)
 - Harness 四阶段进度台账：[docs/agent/harness-progress-phase4.md](docs/agent/harness-progress-phase4.md)
+- Harness 五阶段计划：[docs/agent/harness-iteration-plan-phase5.md](docs/agent/harness-iteration-plan-phase5.md)
+- Harness 五阶段进度台账：[docs/agent/harness-progress-phase5.md](docs/agent/harness-progress-phase5.md)
 - Planner artifact 目录：[docs/agent/plans/README.md](docs/agent/plans/README.md)
 - Sprint Contract 目录：`resources/harness/contracts/*.json`
 - Evaluator 校准样本：[docs/agent/evaluator-calibration.md](docs/agent/evaluator-calibration.md)
@@ -50,7 +54,12 @@
 - 查看三阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase3.md`
 - 查看四阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan-phase4.md`
 - 查看四阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase4.md`
-- 生成 Planner artifact：`python3 scripts/agent_planner.py --task report-solution --goal "..." --context-line "..." --artifact-dir artifacts/planner`
+- 查看五阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan-phase5.md`
+- 查看五阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase5.md`
+- 刷新全局 heartbeat：`python3 scripts/agent_heartbeat.py`
+- 生成文档园丁一致性报告：`python3 scripts/agent_doc_gardener.py --artifact-dir artifacts/doc-gardening`
+- 生成 Mission + Planner artifact：`python3 scripts/agent_planner.py --task report-solution --goal "..." --context-line "..." --artifact-dir artifacts/planner`
+- 查看某个 task 最近一次 Mission Contract：`cat artifacts/planner/missions/by-task/report-solution/latest.json`
 - 查看某个 task 最近一次 Planner artifact：`cat artifacts/planner/by-task/report-solution/latest.json`
 - 查看高风险 Sprint Contract：`ls resources/harness/contracts`
 - 查看 evaluator 校准样本：`ls tests/harness_calibration`
@@ -92,11 +101,15 @@
 - 高风险 workflow 的 apply/rollback 现在还会强制校验治理字段；执行前补齐 `change_reason / operator / approver / ticket`
 - task workflow 现在支持前置条件检查；已内置 `account_exists`、`user_exists`、`active_license_exists`、`path_exists`、`requires_admin_session`、`requires_browser_env`、`requires_live_backend`
 - `ownership-migration` 与 `license-admin` 现在已接入 Sprint Contract，workflow、evaluator 和 handoff 会共享完成标准、硬失败条件与证据要求
-- `agent_planner.py` 现在会同步维护 `artifacts/planner/by-task/<task>/latest.json`；workflow、harness、evaluator、failure-summary 与 handoff 会共同引用这份 Planner 指针
+- `report-solution` 与 `ownership-migration` 现在已接入 Mission Contract；一句话需求会先落成 `artifacts/planner/missions/by-task/<task>/latest.json`，再进入 Planner Artifact
+- `agent_planner.py` 现在会同步维护 `artifacts/planner/missions/by-task/<task>/latest.json` 与 `artifacts/planner/by-task/<task>/latest.json`；workflow、harness、evaluator、failure-summary 与 handoff 会共同引用 mission + plan 指针
 - evaluator 现在已接入 `tests/harness_calibration/*.json` 校准样本；命中样本后，progress / failure-summary / handoff 会直接带出评分依据与 source refs
 - `ownership-migration`、`config-center`、`license-admin` 现在会先验证管理员白名单是否就绪；`cloud-import` 仍会先验证源目录和目标用户
 - `agent_harness` 默认会先执行 `static_guardrails`，用于扫描高风险路由的源码级权限与确认链路
 - `agent_static_guardrails.py` 现在还会检查配置中心路由是否委托 `build_admin_config_center_payload()` / `save_admin_config_group()`，避免路由层重新直写 `.env`、`config.py` 或 `site-config.js`
+- `agent_static_guardrails.py` 失败时现在会直接输出 `Action for Agent`，包含修复层级、建议动作与推荐复跑命令，优先按这三项收口再看 runtime 失败
+- `agent_static_guardrails.py` 现在还会扫描 `web/` 下 Python 业务代码，阻止 `web/server.py` 或 `web/server_modules/*` 反向 import `scripts.agent_*` harness 脚本
+- `agent_doc_gardener.py` 会输出 task/playbook/contract/mission/calibration 的只读一致性报告；`WARN` 表示建议补强，`FAIL` 表示文档或索引已漂移
 - browser smoke 为显式 opt-in 阶段；首次执行前先运行 `npm install`，再执行 `npx playwright install chromium chromium-headless-shell`
 - PR 基础检查已收口到 `.github/workflows/pr-harness.yml`，其中 `pr-smoke` 负责脚本回归与 `static_guardrails`，`agent-smoke` 只跑 runtime smoke，`guardrails` 只跑 runtime guardrails
 - 浏览器回归已提供独立 workflow：`.github/workflows/browser-smoke.yml`，当前会在前端相关 PR 改动时自动触发 `extended` 套件，并保留手动与周跑入口
@@ -137,6 +150,7 @@
 - 高频操作 playbook 位于 `docs/agent/playbooks/*.md`，默认先按 playbook 收集证据，再决定是否进入高风险步骤。
 - 执行 `docs/agent/harness-iteration-plan.md` 中的优化项后，必须同步更新 `docs/agent/harness-progress.md`。
 - 执行 `docs/agent/harness-iteration-plan-phase4.md` 中的优化项后，必须同步更新 `docs/agent/harness-progress-phase4.md`。
+- 执行 `docs/agent/harness-iteration-plan-phase5.md` 中的优化项后，必须同步更新 `docs/agent/harness-progress-phase5.md`。
 
 ## 关键不变量
 

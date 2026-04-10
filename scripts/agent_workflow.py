@@ -33,6 +33,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from scripts import agent_profiles
+from scripts import agent_missions
 from scripts import agent_plans
 from scripts import agent_contracts
 from scripts import agent_doctor
@@ -136,6 +137,15 @@ def _plan_summary(plan: dict[str, Any] | None) -> str:
     title = str(plan.get("title") or plan.get("task") or "").strip() or "-"
     status = str(plan.get("status") or "").strip() or "recommended"
     source = str(plan.get("source_file") or "-").strip() or "-"
+    return f"{title} status={status} source={source}".strip()
+
+
+def _mission_summary(mission: dict[str, Any] | None) -> str:
+    if not isinstance(mission, dict):
+        return ""
+    title = str(mission.get("title") or mission.get("task") or "").strip() or "-"
+    status = str(mission.get("status") or "").strip() or "recommended"
+    source = str(mission.get("source_file") or "-").strip() or "-"
     return f"{title} status={status} source={source}".strip()
 
 
@@ -607,6 +617,7 @@ def run_task_workflow(
     root_dir: Path = ROOT_DIR,
 ) -> tuple[dict[str, Any], int]:
     contract = agent_contracts.get_contract_for_profile(profile)
+    mission = agent_missions.get_mission_for_profile(profile)
     plan = agent_plans.get_plan_for_profile(profile)
     workflow = agent_profiles.render_task_workflow(
         profile,
@@ -805,6 +816,7 @@ def run_task_workflow(
         "description": str(profile.get("description") or "").strip(),
         "risk_level": str(profile.get("risk_level") or "medium").strip(),
         "contract": contract,
+        "mission": mission,
         "plan": plan,
         "execute_mode": normalized_execute_mode,
         "allow_apply": bool(allow_apply),
@@ -838,6 +850,9 @@ def render_text(payload: dict[str, Any]) -> None:
             "Sprint Contract: "
             f"{_contract_summary(contract)} | source={str(contract.get('source_file') or '-').strip() or '-'}"
         )
+    mission = payload.get("mission") if isinstance(payload.get("mission"), dict) else None
+    if mission:
+        print(f"Mission Contract: {_mission_summary(mission)}")
     plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else None
     if plan:
         print(f"Planner Artifact: {_plan_summary(plan)}")

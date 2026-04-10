@@ -1,0 +1,28 @@
+{
+  "name": "cloud-import",
+  "title": "云端导入 Sprint Contract",
+  "task": "cloud-import",
+  "summary": "外部本地 data 导入云端时，必须先确认源目录、目标用户、dry-run 结果和 backup_dir，再决定是否进入 apply 或 rollback。",
+  "docs": [
+    "docs/agent/migration.md",
+    "docs/full-data-migration-runbook.md",
+    "docs/external-local-data-cloud-import-guide.md",
+    "docs/agent/playbooks/cloud-import-verify.md"
+  ],
+  "done_when": [
+    "已确认 source_data_dir、target_user_id 与 dry-run 命中的 sessions / reports / assets 范围",
+    "专项回归证明导入与回滚链路仍可用，且不会破坏目标实例边界",
+    "正式导入前，治理字段、backup_dir 和回滚入口已记录完整"
+  ],
+  "hard_failures": [
+    "在没有 dry-run 证据的情况下直接进入 apply",
+    "导入或回滚缺少治理字段、backup_dir 或目标用户存在性校验",
+    "导入与回滚专项回归失败，或导入结果跨实例范围泄露数据"
+  ],
+  "evidence_required": [
+    "artifacts/harness-runs/latest.json",
+    "artifacts/harness-runs/cloud-import-dry-run.json",
+    "artifacts/harness-runs/cloud-import-apply.json",
+    "artifacts/harness-runs/cloud-import-rollback.json"
+  ]
+}
