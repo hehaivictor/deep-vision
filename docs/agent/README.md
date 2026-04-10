@@ -30,6 +30,7 @@
    - 稳定性测试计划：[harness-stability-plan.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-stability-plan.md)
    - 稳定性测试进度台账：[harness-stability-progress.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-stability-progress.md)
    - 稳定性测试结果总表：[harness-stability-summary.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-stability-summary.md)
+   - 测试体系长期维护策略：[testing-maintenance-strategy.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/testing-maintenance-strategy.md)
    - 全局稳定经验摘要：[memory-notes.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/memory-notes.md)
    - Planner artifact 目录：[plans/README.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/plans/README.md)
    - 第二阶段模块化拆分计划：[plans/module-split-phase2.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/plans/module-split-phase2.md)
@@ -71,6 +72,7 @@
 - 查看稳定性测试计划：`sed -n '1,260p' docs/agent/harness-stability-plan.md`
 - 查看稳定性测试进度台账：`sed -n '1,260p' docs/agent/harness-stability-progress.md`
 - 查看稳定性测试结果总表：`sed -n '1,260p' docs/agent/harness-stability-summary.md`
+- 查看测试体系长期维护策略：`sed -n '1,260p' docs/agent/testing-maintenance-strategy.md`
 - 刷新全局 heartbeat：`python3 scripts/agent_heartbeat.py`
 - 运行 AutoDream Lite 巡检：`python3 scripts/agent_autodream.py`
 - 查看最近稳定经验摘要：`cat docs/agent/memory-notes.md`
