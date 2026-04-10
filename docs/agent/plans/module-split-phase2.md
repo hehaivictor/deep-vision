@@ -95,6 +95,7 @@
 ### 候选 B：访谈问题推进与超时恢复
 
 优先级：`高`
+状态：`已完成（2026-04-10，访谈问题推进与运行时档位链路已切到 interview_runtime）`
 
 核心函数：
 
@@ -117,6 +118,16 @@
 建议模块名：
 
 - `web/server_modules/interview_runtime.py`
+
+当前结果：
+
+- `build_interview_prompt`
+- `_select_question_generation_runtime_profile`
+- `_prepare_question_generation_runtime`
+- `_call_question_with_optional_hedge`
+- `generate_question_with_tiered_strategy`
+
+以上逻辑已迁入 `web/server_modules/interview_runtime.py`，`web/server.py` 对外保留薄包装；`get_next_question` 与 `submit_answer` 继续留在主文件中，避免本轮同时触发路由层与持久化写回的大范围回归。
 
 主要风险：
 
@@ -243,6 +254,7 @@
 ### 候选 C：管理员中心页签逻辑
 
 优先级：`中`
+状态：`已完成（2026-04-10，管理员中心页签编排与 ops/summaries/config/ownership 状态已切到 admin_center_state）`
 
 核心方法与状态：
 
@@ -262,8 +274,19 @@
 
 建议模块方向：
 
-- 先做 `admin_config_state.js`
-- 再考虑 `admin_license_state.js`
+- `web/app_modules/admin_center_state.js`
+- `admin_license_state.js` 可作为后续更细颗粒度拆分方向
+
+当前结果：
+
+- `openAdminCenter`、`switchAdminTab`、`ensureAdminDataForTab`
+- `loadAdminOverview`
+- `loadAdminSummariesInfo`、`clearAdminSummariesCache`
+- `loadOpsMetrics`、`refreshOpsMetricsIfVisible`
+- 配置中心可见分组、草稿同步与保存
+- 归属迁移搜索、审计、preview/apply/rollback 与历史列表
+
+以上逻辑已迁入 `web/app_modules/admin_center_state.js`，`web/app.js` 中保留 License 管理子链路与通用 helper；后续如需继续减主文件，可再单独抽 `admin_license_state.js`。
 
 ## 推荐执行顺序
 
