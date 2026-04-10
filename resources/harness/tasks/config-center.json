@@ -11,6 +11,33 @@
     "docs/agent/admin-ops.md",
     "web/CONFIG.md"
   ],
+  "mission": {
+    "summary": "把配置中心改动的一句话诉求先收口成“改哪一类配置、用户可见影响是什么、何时需要重启”的使命，再进入专项回归与人工写入。",
+    "desired_outcomes": [
+      "先明确问题属于 .env、config.py 还是 site-config.js，不把展示配置和服务端配置混在一起",
+      "先把运行值、文件值和重启边界说清楚，再决定是否进入真实写入",
+      "先保留当前来源、专项回归和 latest artifact 证据，再讨论高风险配置变更"
+    ],
+    "acceptance_criteria": [
+      "配置中心继续通过统一 helper 读写配置，不在路由层直接拼接或写文件",
+      "修改后能说明运行态生效边界、是否需要重启，并保留专项回归证据",
+      "管理员白名单、活跃 License 和治理字段等前置条件保持成立"
+    ],
+    "non_goals": [
+      "不要在 mission 阶段直接改真实 .env 或 config.py",
+      "不要把前端展示配置误判成后端运行配置问题处理"
+    ],
+    "risks": [
+      "配置中心同时涉及文件值、运行值和重启边界，单看一层很容易误判",
+      "实例隔离、管理员白名单、短信与微信接入属于高风险配置，写入前必须留足证据"
+    ],
+    "evidence_expectations": [
+      "artifacts/harness-runs/latest.json",
+      "artifacts/harness-runs/latest-handoff.json",
+      "artifacts/harness-eval/latest.json",
+      "tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_config_center_endpoints_cover_catalog_and_file_persistence"
+    ]
+  },
   "planner": {
     "summary": "先把配置来源、运行态生效边界、重启要求和专项回归收口成正式计划，再决定是否进入配置写入。",
     "scope_focus": [

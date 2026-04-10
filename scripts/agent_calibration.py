@@ -81,16 +81,19 @@ def match_calibration_samples(
         sample_tags = set(_normalize_string_list(applies_to.get("tags")))
         executors = set(_normalize_string_list(applies_to.get("executors")))
 
-        if scenarios and scenario_name in scenarios:
-            matched.append(dict(sample))
+        # 优先使用更具体的匹配面，避免样本规模扩大后因 category/executor/tag 过宽而互相污染。
+        if scenarios:
+            if scenario_name in scenarios:
+                matched.append(dict(sample))
             continue
-        if categories and category in categories:
-            matched.append(dict(sample))
+        if categories:
+            if category in categories:
+                matched.append(dict(sample))
             continue
-        if executors and executor in executors:
-            matched.append(dict(sample))
+        if executors:
+            if executor in executors:
+                matched.append(dict(sample))
             continue
         if sample_tags and normalized_tags.intersection(sample_tags):
             matched.append(dict(sample))
-            continue
     return matched

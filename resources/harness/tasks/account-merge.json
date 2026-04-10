@@ -11,6 +11,54 @@
     "docs/agent/auth-identity.md",
     "docs/agent/admin-ops.md"
   ],
+  "mission": {
+    "summary": "把账号绑定冲突的一句话诉求先收口成“谁和谁合并、需要什么 preview 证据、用户会看到什么”的用户可见使命，再进入 merge workflow。",
+    "desired_outcomes": [
+      "先明确冲突来自手机号、微信还是 takeover 场景，不把多种身份冲突混成一次执行",
+      "先确认 merge preview、apply 和管理员 rollback 的进入条件与用户可见结果",
+      "先保留候选上下文、preview token 和回滚证据，再讨论正式合并"
+    ],
+    "acceptance_criteria": [
+      "merge preview 和 apply 继续要求候选上下文与活动预览，不绕开预演直接合并",
+      "手机号与微信冲突继续区分 takeover 与 merge_required，不误合并无关账号",
+      "管理员 rollback 入口保持有效，绑定后历史数据与业务壳状态不丢失"
+    ],
+    "non_goals": [
+      "不要在 mission 阶段直接决定真实账号的最终合并策略或生产级清理动作",
+      "不要绕开现有 merge preview / apply / rollback 接口手工修改 auth 数据"
+    ],
+    "risks": [
+      "账号合并同时影响鉴权身份、历史归属和登录壳切换，局部修复容易放大影响面",
+      "takeover、merge preview 和管理员 rollback 共用同一组边界，错误放宽会直接带来数据归属风险"
+    ],
+    "evidence_expectations": [
+      "artifacts/harness-runs/latest.json",
+      "artifacts/harness-runs/latest-handoff.json",
+      "tests.test_api_comprehensive.ComprehensiveApiTests.test_account_merge_preview_requires_login_and_candidate_context",
+      "tests.test_api_comprehensive.ComprehensiveApiTests.test_bind_wechat_conflict_redirects_to_merge_preview_and_apply"
+    ]
+  },
+  "planner": {
+    "summary": "先把冲突账号、候选上下文、preview/apply/rollback 证据和用户可见结果收口成正式计划，再进入绑定与合并执行。",
+    "scope_focus": [
+      "先明确是手机号冲突、微信冲突还是 takeover，避免把多个身份问题混成一个修复动作",
+      "先区分 merge preview、apply、管理员 rollback 三类动作的进入条件与证据",
+      "先定义候选上下文、preview token 和回滚证据这些必留信息，再讨论正式合并"
+    ],
+    "acceptance_focus": [
+      "merge preview / apply 继续要求候选上下文与活动预览，不会绕开预演直接落盘",
+      "冲突链路仍区分 takeover 与 merge_required，绑定结果不会误吞历史数据",
+      "管理员 rollback 入口和登录态切换在专项回归里保持成立"
+    ],
+    "non_goals": [
+      "不要在 Planner 阶段直接决定真实账号的最终合并策略或清理动作",
+      "不要绕开现有 merge preview / apply / rollback 接口手工改 auth 数据"
+    ],
+    "risks": [
+      "账号合并同时影响鉴权身份、历史归属和业务壳状态，局部修复很容易放大影响面",
+      "takeover、merge preview 和管理员 rollback 共用一套高风险边界，需要一起验证"
+    ]
+  },
   "playbook": {
     "output": "docs/agent/playbooks/account-merge-verify.md",
     "title": "账号绑定与合并核对",

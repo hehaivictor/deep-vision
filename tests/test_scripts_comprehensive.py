@@ -12,6 +12,7 @@ from scripts import agent_browser_smoke
 from scripts import agent_calibration
 from scripts import agent_ci_summary
 from scripts import agent_contracts
+from scripts import agent_autodream
 from scripts import agent_doc_gardener
 from scripts import agent_eval
 from scripts import agent_guardrails
@@ -19,6 +20,7 @@ from scripts import agent_harness
 from scripts import agent_heartbeat
 from scripts import agent_history
 from scripts import agent_missions
+from scripts import agent_ops
 from scripts import agent_observe
 from scripts import agent_playbook_sync
 from scripts import agent_planner
@@ -696,6 +698,12 @@ class ComprehensiveScriptTests(unittest.TestCase):
         samples = agent_calibration.load_calibration_samples()
         sample_names = {item["name"] for item in samples}
         self.assertIn("report-solution-wording-drift", sample_names)
+        self.assertIn("tenant-leak-must-fail", sample_names)
+        self.assertIn("share-readonly-regression-must-fail", sample_names)
+        self.assertIn("license-gate-ui-wording-drift-should-warn", sample_names)
+        self.assertIn("workflow-governance-missing-must-fail", sample_names)
+        self.assertIn("presentation-sidecar-integrity-must-fail", sample_names)
+        self.assertGreaterEqual(len(samples), 6)
         target = next(item for item in samples if item["name"] == "report-solution-wording-drift")
         self.assertEqual("WARN", target["expected_decision"])
         self.assertIn("report-solution-preview", target["applies_to"]["scenarios"])
@@ -750,6 +758,8 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertIsNotNone(workflow_target.plan)
         self.assertEqual("report-solution", workflow_target.plan["task"])
         self.assertTrue(any(sample["name"] == "report-solution-wording-drift" for sample in workflow_target.calibration_samples))
+        browser_extended_target = next(item for item in scenarios if item.name == "browser-smoke-extended")
+        self.assertTrue(any(sample["name"] == "license-gate-ui-wording-drift-should-warn" for sample in browser_extended_target.calibration_samples))
         license_admin_target = next(item for item in scenarios if item.name == "license-admin-preview")
         self.assertEqual("workflow", license_admin_target.executor)
         self.assertEqual("license-admin", license_admin_target.executor_config["task"])
@@ -757,9 +767,11 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertEqual("license-admin", license_admin_target.contract["name"])
         self.assertIsNotNone(license_admin_target.plan)
         self.assertEqual("license-admin", license_admin_target.plan["task"])
+        self.assertTrue(any(sample["name"] == "workflow-governance-missing-must-fail" for sample in license_admin_target.calibration_samples))
         governance_target = next(item for item in scenarios if item.name == "ownership-migration-governance")
         self.assertIsNotNone(governance_target.contract)
         self.assertEqual("ownership-migration", governance_target.contract["name"])
+        self.assertTrue(any(sample["name"] == "workflow-governance-missing-must-fail" for sample in governance_target.calibration_samples))
         env_target = next(item for item in scenarios if item.name == "env-overlay-resolution")
         self.assertEqual("ops", env_target.category)
         self.assertTrue(
@@ -768,6 +780,14 @@ class ComprehensiveScriptTests(unittest.TestCase):
                 for case in env_target.cases
             )
         )
+        tenant_target = next(item for item in scenarios if item.name == "instance-scope-boundaries")
+        self.assertTrue(any(sample["name"] == "tenant-leak-must-fail" for sample in tenant_target.calibration_samples))
+        asset_target = next(item for item in scenarios if item.name == "asset-ownership-boundaries")
+        self.assertTrue(any(sample["name"] == "share-readonly-regression-must-fail" for sample in asset_target.calibration_samples))
+        access_target = next(item for item in scenarios if item.name == "access-boundaries")
+        self.assertTrue(any(sample["name"] == "share-readonly-regression-must-fail" for sample in access_target.calibration_samples))
+        presentation_target = next(item for item in scenarios if item.name == "presentation-map-concurrency")
+        self.assertTrue(any(sample["name"] == "presentation-sidecar-integrity-must-fail" for sample in presentation_target.calibration_samples))
         presentation_target = next(item for item in scenarios if item.name == "presentation-map-concurrency")
         self.assertEqual("security", presentation_target.category)
         self.assertTrue(
@@ -1066,7 +1086,9 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertEqual(1, payload["summary"]["FLAKY"])
         self.assertEqual("report-solution-preview", payload["results"][0]["name"])
         self.assertTrue(payload["results"][0]["calibration_samples"])
-        self.assertEqual("report-solution-wording-drift", payload["results"][0]["calibration_samples"][0]["name"])
+        self.assertTrue(
+            any(sample["name"] == "report-solution-wording-drift" for sample in payload["results"][0]["calibration_samples"])
+        )
         self.assertEqual("tests.fake.Class.test_case", payload["failure_hotspots"][0]["test_id"])
         self.assertIsNotNone(artifact_paths)
         self.assertTrue(Path(artifact_paths["run_dir"]).exists())
@@ -1320,6 +1342,123 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertIn("DeepVision Heartbeat", markdown)
         self.assertIn("H5-3 Global Heartbeat Memory", markdown)
         self.assertIn("report-solution-share-fix-mission", markdown)
+
+    def test_agent_autodream_builds_best_practices_payload(self):
+        heartbeat_payload = {
+            "active_phase": {
+                "name": "phase6",
+                "current_priority": "H6-4 AutoDream Lite",
+                "progress_file": "docs/agent/harness-progress-phase6.md",
+                "plan_file": "docs/agent/harness-iteration-plan-phase6.md",
+            },
+            "latest_runs": [
+                {"kind": "harness", "overall": "READY", "latest_json": "artifacts/harness-runs/latest.json", "generated_at": "2026-04-10T00:00:00Z"},
+                {"kind": "evaluator", "overall": "HEALTHY", "latest_json": "artifacts/harness-eval/latest.json", "generated_at": "2026-04-10T00:05:00Z"},
+                {"kind": "ci-browser-smoke", "overall": "READY", "latest_json": "artifacts/ci/browser-smoke/latest.json", "generated_at": "2026-04-10T00:10:00Z"},
+            ],
+        }
+        gardening_payload = {
+            "overall": "HEALTHY",
+            "checks": [
+                {"name": "task_playbooks_synced", "status": "PASS"},
+                {"name": "planner_mission_materialization", "status": "PASS"},
+                {"name": "high_risk_contract_coverage", "status": "PASS"},
+                {"name": "hierarchical_agents_coverage", "status": "PASS"},
+            ],
+            "recommendations": [],
+        }
+        payload = agent_autodream.build_best_practices_payload(
+            heartbeat_payload=heartbeat_payload,
+            gardening_payload=gardening_payload,
+        )
+        self.assertEqual("best_practices", payload["kind"])
+        self.assertEqual("phase6", payload["active_phase"]["name"])
+        self.assertTrue(any("agent_autodream.py" in item for item in payload["recommended_commands"]))
+        self.assertTrue(payload["stable_practices"])
+        self.assertTrue(payload["stable_run_highlights"])
+
+    def test_agent_autodream_main_writes_report_and_memory_notes(self):
+        sandbox_root = self.sandbox_root / "autodream-root"
+        sandbox_root.mkdir(parents=True, exist_ok=True)
+        gardening_payload = {
+            "kind": "doc_gardening",
+            "generated_at": "2026-04-10T00:00:00Z",
+            "overall": "HEALTHY",
+            "summary": {"PASS": 6, "WARN": 0, "FAIL": 0},
+            "checks": [
+                {"name": "task_playbooks_synced", "status": "PASS", "detail": "ok", "highlights": [], "recommendations": []},
+                {"name": "planner_mission_materialization", "status": "PASS", "detail": "tasks=8 planner=8 mission=8", "highlights": [], "recommendations": []},
+                {"name": "high_risk_contract_coverage", "status": "PASS", "detail": "high_risk=5 covered=5", "highlights": [], "recommendations": []},
+                {"name": "hierarchical_agents_coverage", "status": "PASS", "detail": "required=5 materialized=5", "highlights": [], "recommendations": []},
+            ],
+            "recommendations": [],
+        }
+        heartbeat_payload = {
+            "kind": "heartbeat",
+            "generated_at": "2026-04-10T00:01:00Z",
+            "active_phase": {
+                "name": "phase6",
+                "current_priority": "H6-4 AutoDream Lite",
+                "progress_file": "docs/agent/harness-progress-phase6.md",
+                "plan_file": "docs/agent/harness-iteration-plan-phase6.md",
+            },
+            "stable_entrypoints": {
+                "docs": ["AGENTS.md", "docs/agent/heartbeat.md", "docs/agent/memory-notes.md"],
+                "commands": ["python3 scripts/agent_autodream.py", "python3 scripts/agent_harness.py --profile auto"],
+            },
+            "capabilities": {
+                "task_count": 8,
+                "scenario_count": 17,
+                "browser_suites": ["minimal", "extended"],
+                "agent_entrypoint_count": 6,
+            },
+            "missions": [],
+            "plans": [],
+            "latest_runs": [
+                {"kind": "harness", "overall": "READY", "latest_json": "artifacts/harness-runs/latest.json", "generated_at": "2026-04-10T00:00:00Z"},
+                {"kind": "evaluator", "overall": "HEALTHY", "latest_json": "artifacts/harness-eval/latest.json", "generated_at": "2026-04-10T00:05:00Z"},
+            ],
+            "notes": ["先看 heartbeat。"],
+        }
+        doc_dir = sandbox_root / "doc-gardening"
+        heartbeat_dir = sandbox_root / "memory"
+        heartbeat_md = sandbox_root / "heartbeat.md"
+        notes_md = sandbox_root / "memory-notes.md"
+        autodream_dir = sandbox_root / "autodream"
+
+        with patch.object(agent_doc_gardener, "build_doc_gardening_report", return_value=gardening_payload), patch.object(
+            agent_heartbeat, "build_heartbeat_payload", return_value=heartbeat_payload
+        ):
+            exit_code = agent_autodream.main(
+                [
+                    "--doc-gardening-dir",
+                    str(doc_dir),
+                    "--heartbeat-artifact-dir",
+                    str(heartbeat_dir),
+                    "--heartbeat-markdown",
+                    str(heartbeat_md),
+                    "--best-practices-artifact-dir",
+                    str(heartbeat_dir),
+                    "--best-practices-markdown",
+                    str(notes_md),
+                    "--artifact-dir",
+                    str(autodream_dir),
+                ]
+            )
+
+        self.assertEqual(0, exit_code)
+        self.assertTrue((doc_dir / "latest.json").exists())
+        self.assertTrue((heartbeat_dir / "latest.json").exists())
+        self.assertTrue((heartbeat_dir / "best-practices-latest.json").exists())
+        self.assertTrue((autodream_dir / "latest.json").exists())
+        self.assertTrue(heartbeat_md.exists())
+        self.assertTrue(notes_md.exists())
+        autodream_payload = json.loads((autodream_dir / "latest.json").read_text(encoding="utf-8"))
+        self.assertEqual("autodream_lite", autodream_payload["kind"])
+        self.assertEqual("HEALTHY", autodream_payload["overall"])
+        notes_markdown = notes_md.read_text(encoding="utf-8")
+        self.assertIn("DeepVision Memory Notes", notes_markdown)
+        self.assertIn("H6-4 AutoDream Lite", notes_markdown)
 
     def test_agent_eval_single_case_pass_does_not_emit_false_hotspot(self):
         scenario_root = self.sandbox_root / "eval-scenarios-pass"
@@ -2091,6 +2230,9 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertEqual("FAIL", result_map["solution_share_guard"]["status"])
         self.assertEqual("FAIL", result_map["public_solution_readonly"]["status"])
         self.assertEqual("FAIL", result_map["config_center_routes_delegate_helpers"]["status"])
+        self.assertEqual("PASS", result_map["frontend_assets_do_not_reference_harness_paths"]["status"])
+        self.assertEqual("PASS", result_map["runtime_python_does_not_reference_test_assets"]["status"])
+        self.assertEqual("PASS", result_map["runtime_python_does_not_reference_harness_resources"]["status"])
         self.assertEqual("PASS", result_map["business_python_does_not_import_harness"]["status"])
         self.assertEqual("FAIL", result_map["ownership_preview_dry_run"]["status"])
         self.assertEqual("FAIL", result_map["ownership_apply_confirmation"]["status"])
@@ -2237,19 +2379,160 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertTrue(any("scripts.agent_" in line for line in result_map["business_python_does_not_import_harness"]["highlights"]))
         self.assertIn("python3 scripts/agent_harness.py --profile auto", result_map["business_python_does_not_import_harness"]["rerun_commands"])
 
+    def test_agent_static_guardrails_detect_dependency_chain_violations(self):
+        server_file = self.sandbox_root / "static-guardrails-deps" / "web" / "server.py"
+        server_file.parent.mkdir(parents=True, exist_ok=True)
+        (server_file.parent / "server_modules").mkdir(parents=True, exist_ok=True)
+        (server_file.parent / "app_modules").mkdir(parents=True, exist_ok=True)
+        server_file.write_text(
+            "\n".join(
+                [
+                    "from flask import Flask, jsonify",
+                    "app = Flask(__name__)",
+                    "",
+                    "def require_admin(func):",
+                    "    return func",
+                    "",
+                    "def require_valid_license(func):",
+                    "    return func",
+                    "",
+                    "@app.route('/api/admin/config-center', methods=['GET'])",
+                    "@require_admin",
+                    "def admin_get_config_center():",
+                    "    return jsonify(build_admin_config_center_payload())",
+                    "",
+                    "@app.route('/api/admin/config-center/save', methods=['POST'])",
+                    "@require_admin",
+                    "def admin_save_config_center_group():",
+                    "    return jsonify(save_admin_config_group(source='env', group_id='base', values={}))",
+                    "",
+                    "@app.route('/api/reports/<path:filename>/solution', methods=['GET'])",
+                    "def get_report_solution(filename):",
+                    "    user_row = get_current_user()",
+                    "    if not user_has_level_capability(user_row, 'solution.view'):",
+                    "        return jsonify({'error': 'denied'}), 403",
+                    "    return enforce_report_owner_or_404(filename, 1)",
+                    "",
+                    "@app.route('/api/reports/<path:filename>/solution/share', methods=['POST'])",
+                    "def create_report_solution_share(filename):",
+                    "    user_row = get_current_user()",
+                    "    if not user_has_level_capability(user_row, 'solution.share'):",
+                    "        return jsonify({'error': 'denied'}), 403",
+                    "    share_record = create_or_get_solution_share(filename, 1)",
+                    "    return jsonify(share_record)",
+                    "",
+                    "@app.route('/api/public/solutions/<share_token>', methods=['GET'])",
+                    "def get_public_solution_by_share_token(share_token):",
+                    "    record = get_solution_share_record(share_token)",
+                    "    owner_user_id = record.get('owner_user_id')",
+                    "    report_name = record.get('report_name')",
+                    "    if get_report_owner_id(report_name) != owner_user_id:",
+                    "        return jsonify({'error': 'denied'}), 404",
+                    "    payload = {'share_mode': 'public', 'report_name': '', 'viewer_capabilities': {'solution_share': False}}",
+                    "    response = jsonify(payload)",
+                    "    response.headers['X-Robots-Tag'] = 'noindex, nofollow'",
+                    "    return response",
+                    "",
+                    "@app.route('/api/admin/ownership-migrations/preview', methods=['POST'])",
+                    "@require_admin",
+                    "def admin_preview_ownership_migration():",
+                    "    _store_admin_ownership_preview({'ok': True})",
+                    "    return jsonify(run_ownership_migration(apply_mode=False))",
+                    "",
+                    "@app.route('/api/admin/ownership-migrations/apply', methods=['POST'])",
+                    "@require_admin",
+                    "def admin_apply_ownership_migration():",
+                    "    preview = _get_admin_ownership_preview()",
+                    "    preview_token = preview.get('token')",
+                    "    payload = _serialize_admin_ownership_request_payload({})",
+                    "    confirm_phrase = preview.get('confirm_phrase')",
+                    "    confirm_text = confirm_phrase",
+                    "    return jsonify(run_ownership_migration(apply_mode=True))",
+                    "",
+                    "@app.route('/api/admin/ownership-migrations/rollback', methods=['POST'])",
+                    "@require_admin",
+                    "def admin_rollback_ownership_migration():",
+                    "    backup_id = 'backup-001'",
+                    "    if not backup_id:",
+                    "        return jsonify({'error': 'missing'}), 400",
+                    "    return jsonify({'ok': True})",
+                    "",
+                    "@app.route('/api/admin/licenses/batch', methods=['POST'])",
+                    "@require_admin",
+                    "@require_valid_license",
+                    "def admin_generate_licenses():",
+                    "    return jsonify({'ok': True})",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        (server_file.parent / "app_modules" / "bad_harness_ref.js").write_text(
+            "export const DEBUG_ARTIFACT = 'artifacts/harness-runs/latest.json';\n",
+            encoding="utf-8",
+        )
+        (server_file.parent / "server_modules" / "bad_test_asset.py").write_text(
+            "SCENARIO_PATH = 'tests/harness_scenarios/browser/browser-smoke-extended.json'\n",
+            encoding="utf-8",
+        )
+        (server_file.parent / "server_modules" / "bad_harness_resource.py").write_text(
+            "MISSION_DOC = 'docs/agent/heartbeat.md'\nTASK_CONFIG = 'resources/harness/tasks/report-solution.json'\n",
+            encoding="utf-8",
+        )
+
+        payload, exit_code = agent_static_guardrails.run_static_guardrails(server_file=server_file)
+        self.assertEqual(2, exit_code)
+        result_map = {item["name"]: item for item in payload["results"]}
+        self.assertEqual("FAIL", result_map["frontend_assets_do_not_reference_harness_paths"]["status"])
+        self.assertEqual("FAIL", result_map["runtime_python_does_not_reference_test_assets"]["status"])
+        self.assertEqual("FAIL", result_map["runtime_python_does_not_reference_harness_resources"]["status"])
+        self.assertEqual("前端静态资源依赖边界", result_map["frontend_assets_do_not_reference_harness_paths"]["repair_layer"])
+        self.assertEqual("Python 运行时与测试资产边界", result_map["runtime_python_does_not_reference_test_assets"]["repair_layer"])
+        self.assertEqual("Python 运行时与 harness 资源边界", result_map["runtime_python_does_not_reference_harness_resources"]["repair_layer"])
+        self.assertTrue(
+            any(
+                "bad_harness_ref.js" in line or "artifacts/harness-" in line
+                for line in result_map["frontend_assets_do_not_reference_harness_paths"]["highlights"]
+            )
+        )
+        self.assertTrue(
+            any("tests/harness_scenarios" in line for line in result_map["runtime_python_does_not_reference_test_assets"]["highlights"])
+        )
+        self.assertTrue(
+            any(
+                "bad_harness_resource.py" in line or "resources/harness" in line or "docs/agent/" in line
+                for line in result_map["runtime_python_does_not_reference_harness_resources"]["highlights"]
+            )
+        )
+        self.assertIn(
+            "python3 scripts/agent_browser_smoke.py --suite extended",
+            result_map["frontend_assets_do_not_reference_harness_paths"]["rerun_commands"],
+        )
+        self.assertIn(
+            "python3 scripts/agent_harness.py --profile auto",
+            result_map["runtime_python_does_not_reference_test_assets"]["rerun_commands"],
+        )
+        self.assertIn(
+            "python3 scripts/agent_harness.py --profile auto",
+            result_map["runtime_python_does_not_reference_harness_resources"]["rerun_commands"],
+        )
+
     def test_agent_static_guardrails_repo_server_passes(self):
         payload, exit_code = agent_static_guardrails.run_static_guardrails()
         self.assertEqual(0, exit_code)
         self.assertEqual("READY", payload["overall"])
-        self.assertGreaterEqual(payload["summary"]["PASS"], 10)
+        self.assertGreaterEqual(payload["summary"]["PASS"], 13)
 
     def test_agent_harness_static_guardrails_stage_uses_static_payload(self):
         fake_payload = {
             "overall": "READY",
-            "summary": {"PASS": 10, "FAIL": 0},
+            "summary": {"PASS": 13, "FAIL": 0},
             "results": [
                 {"name": "admin_routes_require_admin", "status": "PASS", "detail": "checked=24 routes missing=0", "highlights": ["所有高风险管理/运维路由都带 require_admin。"]},
                 {"name": "config_center_routes_delegate_helpers", "status": "PASS", "detail": "get=admin_get_config_center save=admin_save_config_center_group", "highlights": ["配置中心路由已委托 build_admin_config_center_payload/save_admin_config_group，未在路由层直接写配置文件。"]},
+                {"name": "frontend_assets_do_not_reference_harness_paths", "status": "PASS", "detail": "checked=8 frontend files violations=0", "highlights": ["web/ 下前端静态资源未反向引用 harness 路径、工件或测试语料。"]},
+                {"name": "runtime_python_does_not_reference_test_assets", "status": "PASS", "detail": "checked=12 python files violations=0", "highlights": ["web/ 下 Python 运行时代码未反向依赖 tests/ 下的 harness 场景、校准样本或测试模块。"]},
+                {"name": "runtime_python_does_not_reference_harness_resources", "status": "PASS", "detail": "checked=12 python files violations=0", "highlights": ["web/ 下 Python 运行时代码未反向依赖 harness resources、artifact 或 agent 文档指针。"]},
                 {"name": "business_python_does_not_import_harness", "status": "PASS", "detail": "checked=12 python files violations=0", "highlights": ["web/ 下 Python 业务代码未反向依赖 scripts.agent_* harness 脚本。"]},
                 {"name": "solution_view_guard", "status": "PASS", "detail": "function=get_report_solution", "highlights": ["已检测到登录、能力校验和 owner 约束。"]},
             ],
@@ -2258,7 +2541,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
             execution = agent_harness.run_static_guardrails_stage()
         self.assertEqual("static_guardrails", execution.result.name)
         self.assertEqual("PASS", execution.result.status)
-        self.assertIn("rules=10", execution.result.detail)
+        self.assertIn("rules=13", execution.result.detail)
         self.assertTrue(any("require_admin" in line for line in execution.result.highlights))
 
     def test_agent_harness_static_guardrails_stage_highlights_action_for_agent_on_fail(self):
@@ -2290,6 +2573,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
         check_map = {item["name"]: item for item in payload["checks"]}
         self.assertIn("task_playbooks_synced", check_map)
         self.assertIn("doc_index_links", check_map)
+        self.assertIn("hierarchical_agents_coverage", check_map)
         self.assertIn("high_risk_contract_coverage", check_map)
         self.assertIn("planner_mission_materialization", check_map)
         self.assertIn("calibration_registry", check_map)
@@ -2303,6 +2587,50 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertTrue(json_path.exists())
         self.assertTrue(markdown_path.exists())
         self.assertIn("# DeepVision Doc Gardening Report", markdown_path.read_text(encoding="utf-8"))
+
+    def test_agent_ops_build_status_payload(self):
+        payload = agent_ops.build_ops_payload()
+        self.assertIn(payload["overall"], {"HEALTHY", "ATTENTION_REQUIRED", "BLOCKED"})
+        self.assertEqual("ops_status", payload["kind"])
+        self.assertEqual("phase6", payload["phase"]["name"])
+        self.assertIn(
+            payload["phase"]["current_priority"],
+            {"H6-6 Harness Ops Surface", "phase6 已完成，待新阶段计划"},
+        )
+        self.assertEqual(8, payload["coverage"]["task_count"])
+        self.assertEqual(8, payload["coverage"]["planner_meta"])
+        self.assertEqual(8, payload["coverage"]["planner_materialized"])
+        self.assertEqual(8, payload["coverage"]["mission_meta"])
+        self.assertEqual(8, payload["coverage"]["mission_materialized"])
+        self.assertGreaterEqual(payload["coverage"]["high_risk_total"], payload["coverage"]["high_risk_contracts"])
+        self.assertGreaterEqual(payload["coverage"]["calibration_samples"], 6)
+        self.assertTrue(any("agent_ops.py status" in item for item in payload["recommended_commands"]))
+        self.assertIn("overall", payload["doc_gardening"])
+
+    def test_agent_ops_task_gap_repo_is_fully_materialized(self):
+        gap = agent_ops.build_ops_payload()["task_gap"]
+        self.assertEqual("HEALTHY", gap["overall"])
+        self.assertFalse(gap["missing"]["planner_meta"])
+        self.assertFalse(gap["missing"]["mission_meta"])
+        self.assertFalse(gap["missing"]["planner_materialized"])
+        self.assertFalse(gap["missing"]["mission_materialized"])
+        self.assertFalse(gap["missing"]["contracts"])
+
+    def test_agent_ops_write_artifacts(self):
+        payload = agent_ops.build_ops_payload()
+        artifact_dir = self.sandbox_root / "ops-artifacts"
+        files = agent_ops.write_artifacts(payload, artifact_dir=artifact_dir)
+        json_path = Path(files.json_file)
+        markdown_path = Path(files.markdown_file)
+        latest_json = Path(files.latest_json)
+        latest_markdown = Path(files.latest_markdown)
+        self.assertTrue(json_path.exists())
+        self.assertTrue(markdown_path.exists())
+        self.assertTrue(latest_json.exists())
+        self.assertTrue(latest_markdown.exists())
+        self.assertIn("# DeepVision Harness Ops", markdown_path.read_text(encoding="utf-8"))
+        saved_payload = json.loads(latest_json.read_text(encoding="utf-8"))
+        self.assertEqual("ops_status", saved_payload["kind"])
 
     def test_agent_doc_gardener_reports_blocked_when_playbooks_drift(self):
         with patch.object(agent_playbook_sync, "check_task_playbooks", return_value=["report-solution: playbook 内容已漂移"]):
@@ -3441,11 +3769,13 @@ class ComprehensiveScriptTests(unittest.TestCase):
             ["python3", "scripts/agent_eval.py", "--help"],
             ["python3", "scripts/agent_browser_smoke.py", "--help"],
             ["python3", "scripts/agent_ci_summary.py", "--help"],
+            ["python3", "scripts/agent_autodream.py", "--help"],
             ["python3", "scripts/agent_doc_gardener.py", "--help"],
             ["python3", "scripts/agent_guardrails.py", "--help"],
             ["python3", "scripts/agent_harness.py", "--help"],
             ["python3", "scripts/agent_heartbeat.py", "--help"],
             ["python3", "scripts/agent_history.py", "--help"],
+            ["python3", "scripts/agent_ops.py", "--help"],
             ["python3", "scripts/agent_observe.py", "--help"],
             ["python3", "scripts/agent_playbook_sync.py", "--help"],
             ["python3", "scripts/agent_planner.py", "--help"],

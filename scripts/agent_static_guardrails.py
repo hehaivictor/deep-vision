@@ -29,6 +29,33 @@ from typing import Any
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_SERVER_FILE = ROOT_DIR / "web" / "server.py"
 DEFAULT_WEB_ROOT = ROOT_DIR / "web"
+FRONTEND_SOURCE_SUFFIXES = {".js", ".html", ".css"}
+
+FRONTEND_HARNESS_PATH_SNIPPETS = [
+    "scripts/agent_",
+    "resources/harness",
+    "tests/harness_",
+    "artifacts/harness-",
+    "artifacts/planner",
+]
+
+PYTHON_TEST_ASSET_SNIPPETS = [
+    "tests/harness_scenarios",
+    "tests/harness_calibration",
+    "tests/test_",
+    "tests.harness_scenarios",
+    "tests.harness_calibration",
+    "tests.test_",
+]
+
+PYTHON_HARNESS_RESOURCE_SNIPPETS = [
+    "resources/harness",
+    "artifacts/harness-",
+    "artifacts/planner",
+    "artifacts/memory",
+    "artifacts/doc-gardening",
+    "docs/agent/",
+]
 
 LICENSE_GATED_ADMIN_ROUTES = {
     "/api/admin/licenses/batch",
@@ -153,6 +180,16 @@ def collect_python_files(base_dir: Path) -> list[Path]:
     return sorted(path for path in base_dir.rglob("*.py") if "__pycache__" not in path.parts)
 
 
+def collect_source_files(base_dir: Path, suffixes: set[str]) -> list[Path]:
+    if not base_dir.exists():
+        return []
+    return sorted(
+        path
+        for path in base_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() in suffixes and "__pycache__" not in path.parts
+    )
+
+
 def _import_targets(node: ast.AST) -> list[str]:
     if isinstance(node, ast.Import):
         return [alias.name for alias in node.names if alias.name]
@@ -174,6 +211,27 @@ def _display_path(path: Path, base_dir: Path) -> str:
         except ValueError:
             continue
     return str(path)
+
+
+def _scan_forbidden_snippets(
+    files: list[Path],
+    *,
+    base_dir: Path,
+    forbidden_snippets: list[str],
+) -> tuple[int, list[str]]:
+    violations: list[str] = []
+    checked = 0
+    for source_file in files:
+        checked += 1
+        try:
+            source = source_file.read_text(encoding="utf-8")
+        except Exception as exc:
+            violations.append(f"{_display_path(source_file, base_dir)} 读取失败: {exc}")
+            continue
+        for snippet in forbidden_snippets:
+            if snippet in source:
+                violations.append(f"{_display_path(source_file, base_dir)} -> {snippet}")
+    return checked, violations
 
 
 def _find_handler(handlers: list[RouteHandler], path: str, method: str) -> RouteHandler | None:
@@ -569,6 +627,78 @@ def _check_business_python_does_not_import_harness(web_root: Path) -> StaticGuar
     )
 
 
+def _check_frontend_assets_do_not_reference_harness_paths(web_root: Path) -> StaticGuardrailResult:
+    base_dir = web_root.parent if web_root.name == "web" else web_root
+    checked, violations = _scan_forbidden_snippets(
+        collect_source_files(web_root, FRONTEND_SOURCE_SUFFIXES),
+        base_dir=base_dir,
+        forbidden_snippets=FRONTEND_HARNESS_PATH_SNIPPETS,
+    )
+    return _build_result(
+        "frontend_assets_do_not_reference_harness_paths",
+        not violations,
+        f"checked={checked} frontend files violations={len(violations)}",
+        violations or ["web/ 下前端静态资源未反向引用 harness 路径、工件或测试语料。"],
+        repair_layer="前端静态资源依赖边界",
+        recommended_actions=[
+            "前端静态资源不要直接引用 scripts/agent_*、resources/harness、tests/harness_* 或 artifacts/* 路径；浏览器需要的信息应通过后端 API 暴露。",
+            "如果只是调试说明或运行指引，把内容留在 AGENTS / docs / tests，不要把 harness 路径嵌进 app.js、solution.js、HTML 或 CSS。",
+        ],
+        rerun_commands=[
+            "python3 scripts/agent_static_guardrails.py",
+            "python3 scripts/agent_browser_smoke.py --suite extended",
+        ],
+    )
+
+
+def _check_runtime_python_does_not_reference_test_assets(web_root: Path) -> StaticGuardrailResult:
+    base_dir = web_root.parent if web_root.name == "web" else web_root
+    checked, violations = _scan_forbidden_snippets(
+        collect_python_files(web_root),
+        base_dir=base_dir,
+        forbidden_snippets=PYTHON_TEST_ASSET_SNIPPETS,
+    )
+    return _build_result(
+        "runtime_python_does_not_reference_test_assets",
+        not violations,
+        f"checked={checked} python files violations={len(violations)}",
+        violations or ["web/ 下 Python 运行时代码未反向依赖 tests/ 下的 harness 场景、校准样本或测试模块。"],
+        repair_layer="Python 运行时与测试资产边界",
+        recommended_actions=[
+            "业务运行时代码不要直接读取 tests/harness_scenarios、tests/harness_calibration 或 tests/test_*；这类语料只给 evaluator、guardrail 和测试进程使用。",
+            "如果运行时确实需要共享示例或默认值，优先抽到正式的业务配置/fixture 模块，再让测试与 harness 复用它，而不是反向读取 tests/。",
+        ],
+        rerun_commands=[
+            "python3 scripts/agent_static_guardrails.py",
+            "python3 scripts/agent_harness.py --profile auto",
+        ],
+    )
+
+
+def _check_runtime_python_does_not_reference_harness_resources(web_root: Path) -> StaticGuardrailResult:
+    base_dir = web_root.parent if web_root.name == "web" else web_root
+    checked, violations = _scan_forbidden_snippets(
+        collect_python_files(web_root),
+        base_dir=base_dir,
+        forbidden_snippets=PYTHON_HARNESS_RESOURCE_SNIPPETS,
+    )
+    return _build_result(
+        "runtime_python_does_not_reference_harness_resources",
+        not violations,
+        f"checked={checked} python files violations={len(violations)}",
+        violations or ["web/ 下 Python 运行时代码未反向依赖 harness resources、artifact 或 agent 文档指针。"],
+        repair_layer="Python 运行时与 harness 资源边界",
+        recommended_actions=[
+            "业务运行时代码不要直接读取 resources/harness、artifacts/* 或 docs/agent/* 作为正式依赖；这些内容只服务 planner/mission/contract/evaluator/handoff。",
+            "如果某段业务逻辑需要稳定配置，优先把配置移到业务 service/helper 或正式配置源，不要从 harness 文档、artifact 或 task 元数据里取值。",
+        ],
+        rerun_commands=[
+            "python3 scripts/agent_static_guardrails.py",
+            "python3 scripts/agent_harness.py --profile auto",
+        ],
+    )
+
+
 def run_static_guardrails(*, server_file: Path = DEFAULT_SERVER_FILE) -> tuple[dict[str, Any], int]:
     handlers = collect_route_handlers(server_file)
     web_root = server_file.parent if server_file.parent.exists() else DEFAULT_WEB_ROOT
@@ -579,6 +709,9 @@ def run_static_guardrails(*, server_file: Path = DEFAULT_SERVER_FILE) -> tuple[d
         _check_solution_share_route(handlers),
         _check_public_solution_route(handlers),
         _check_config_center_routes_delegate_helpers(handlers),
+        _check_frontend_assets_do_not_reference_harness_paths(web_root),
+        _check_runtime_python_does_not_reference_test_assets(web_root),
+        _check_runtime_python_does_not_reference_harness_resources(web_root),
         _check_business_python_does_not_import_harness(web_root),
         _check_ownership_preview_route(handlers),
         _check_ownership_apply_route(handlers),
@@ -643,6 +776,9 @@ def list_rules() -> int:
         "solution_share_guard",
         "public_solution_readonly",
         "config_center_routes_delegate_helpers",
+        "frontend_assets_do_not_reference_harness_paths",
+        "runtime_python_does_not_reference_test_assets",
+        "runtime_python_does_not_reference_harness_resources",
         "business_python_does_not_import_harness",
         "ownership_preview_dry_run",
         "ownership_apply_confirmation",
