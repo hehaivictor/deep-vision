@@ -12,6 +12,54 @@
     "docs/full-data-migration-runbook.md",
     "docs/external-local-data-cloud-import-guide.md"
   ],
+  "mission": {
+    "summary": "把外部本地数据导入云端的一句话诉求先收口成“导什么、导给谁、凭什么可以 apply、回滚证据在哪里”的任务使命，再进入 dry-run / apply。",
+    "desired_outcomes": [
+      "先明确 source_data_dir、target_user_id 和导入范围，不把多份外部数据混成一次执行",
+      "先确认 dry-run 命中的 sessions / reports / assets 是否符合预期，再决定是否正式导入",
+      "先保留 backup_dir、summary-json 和 rollback 路径这些必留证据"
+    ],
+    "acceptance_criteria": [
+      "source_data_dir 和目标用户的前置条件检查稳定成立，不会对不存在用户直接 apply",
+      "dry-run 能稳定产出 JSON 摘要，apply 后能留下可回滚的备份与执行证据",
+      "导入与回滚专项回归保持通过，不破坏实例隔离和目标账号归属"
+    ],
+    "non_goals": [
+      "不要在 mission 阶段直接决定真实生产数据的覆盖策略或跨实例导入范围",
+      "不要绕开既有导入 / 回滚脚本，手工复制 data 或直接改库"
+    ],
+    "risks": [
+      "导入同时影响历史会话、报告、导出资产和目标账号归属，误 apply 会放大影响面",
+      "回滚依赖 backup_dir 和 summary-json，缺证据时必须先阻断正式执行"
+    ],
+    "evidence_expectations": [
+      "artifacts/harness-runs/latest.json",
+      "artifacts/harness-runs/cloud-import-dry-run.json",
+      "artifacts/harness-runs/cloud-import-apply.json",
+      "artifacts/harness-runs/cloud-import-rollback.json"
+    ]
+  },
+  "planner": {
+    "summary": "先把 source_data_dir、目标用户、dry-run 命中结果、apply 条件和 rollback 证据收口成正式计划，再进入导入执行。",
+    "scope_focus": [
+      "先明确 source_data_dir、target_user_id 和导入范围，不把多份数据或多个账号混成一次执行",
+      "先区分 dry-run、verify、apply、rollback 四类动作的进入条件和证据要求",
+      "先定义 summary-json、backup_dir 和回滚入口这些必留证据，再讨论正式导入"
+    ],
+    "acceptance_focus": [
+      "dry-run 能稳定产出命中摘要并暴露异常数据范围，不直接跳过预演进入 apply",
+      "apply 前有明确治理字段、目标用户和备份目录，不会对不存在用户或空目录执行写操作",
+      "rollback 入口和导入专项回归在执行后保持有效"
+    ],
+    "non_goals": [
+      "不要在 Planner 阶段直接决定真实生产数据的覆盖策略或跨实例导入范围",
+      "不要绕开既有导入 / 回滚脚本，手工复制 data 或直接改库"
+    ],
+    "risks": [
+      "导入同时影响历史会话、报告、导出资产和目标账号归属，误 apply 容易放大影响面",
+      "backup_dir 和 summary-json 是回滚前提，缺失时必须先阻断"
+    ]
+  },
   "playbook": {
     "output": "docs/agent/playbooks/cloud-import-verify.md",
     "title": "云端导入预演",

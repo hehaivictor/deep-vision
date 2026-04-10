@@ -1,0 +1,37 @@
+{
+  "name": "workflow-governance-missing-must-fail",
+  "title": "高风险 workflow 缺失治理字段或确认链路必须判 FAIL",
+  "category": "workflow",
+  "expected_decision": "FAIL",
+  "rule": "高风险 workflow 一旦缺少治理字段、确认词、备份目录或管理员前置条件，就必须判 FAIL；不能因为 preview 能跑通或 targeted tests 通过而降级成 WARN。",
+  "incident": "高风险任务的风险在于 apply/rollback 治理链断裂，而不是某个命令本身报错，因此需要把治理缺失定义成 evaluator 的硬失败标尺。",
+  "signals": [
+    "治理字段 change_reason/operator/approver/ticket 不能缺失",
+    "confirmation_token 和 backup_dir 不能回退成可选",
+    "管理员白名单和前置条件必须先于高风险步骤通过"
+  ],
+  "source_refs": [
+    "scripts/agent_workflow.py",
+    "resources/harness/contracts/ownership-migration.json",
+    "resources/harness/contracts/license-admin.json"
+  ],
+  "applies_to": {
+    "scenarios": [
+      "ownership-migration-governance",
+      "license-admin-preview"
+    ],
+    "categories": [
+      "workflow",
+      "ops",
+      "migration"
+    ],
+    "tags": [
+      "workflow",
+      "ops",
+      "manual"
+    ],
+    "executors": [
+      "workflow"
+    ]
+  }
+}

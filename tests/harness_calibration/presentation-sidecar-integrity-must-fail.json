@@ -1,0 +1,32 @@
+{
+  "name": "presentation-sidecar-integrity-must-fail",
+  "title": "演示稿 sidecar 并发完整性回退必须直接判 FAIL",
+  "category": "security",
+  "expected_decision": "FAIL",
+  "rule": "演示稿 sidecar 映射如果在并发更新下出现索引丢失、资产错绑或对象存储元数据缺失，Evaluator 必须直接判 FAIL，不能因为导出接口仍有响应而降级。",
+  "incident": "导出/演示稿链路的风险通常来自 sidecar 映射完整性，回退后会导致后续下载或权限判断失真，因此应视为硬失败。",
+  "signals": [
+    "presentation map 不能在并发写入后丢失记录",
+    "导出资产的 owner 与 scope 元数据必须保持一致",
+    "sidecar 索引完整性优先于单次导出是否成功返回"
+  ],
+  "source_refs": [
+    "tests/test_security_regression.py",
+    "docs/agent/report-solution.md"
+  ],
+  "applies_to": {
+    "scenarios": [
+      "presentation-map-concurrency"
+    ],
+    "categories": [
+      "security"
+    ],
+    "tags": [
+      "presentation",
+      "security"
+    ],
+    "executors": [
+      "unittest"
+    ]
+  }
+}

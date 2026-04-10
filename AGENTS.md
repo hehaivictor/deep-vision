@@ -16,8 +16,10 @@
 
 - 仓库总览与启动方式：[README.md](README.md)
 - 全局 heartbeat / 当前阶段指针：[docs/agent/heartbeat.md](docs/agent/heartbeat.md)
+- 全局稳定经验摘要：[docs/agent/memory-notes.md](docs/agent/memory-notes.md)
 - 仓库物理地图与边界：[ARCHITECTURE.md](ARCHITECTURE.md)
 - Agent 分层索引：[docs/agent/README.md](docs/agent/README.md)
+- 局部目录遵循“就近 AGENTS”原则：进入 `web/`、`web/server_modules/`、`web/app_modules/`、`scripts/`、`tests/` 后先看该目录下的 `AGENTS.md`
 - 访谈链路：[docs/agent/interview.md](docs/agent/interview.md)
 - 鉴权、绑定与账号合并：[docs/agent/auth-identity.md](docs/agent/auth-identity.md)
 - 报告与方案页：[docs/agent/report-solution.md](docs/agent/report-solution.md)
@@ -32,6 +34,8 @@
 - Harness 四阶段进度台账：[docs/agent/harness-progress-phase4.md](docs/agent/harness-progress-phase4.md)
 - Harness 五阶段计划：[docs/agent/harness-iteration-plan-phase5.md](docs/agent/harness-iteration-plan-phase5.md)
 - Harness 五阶段进度台账：[docs/agent/harness-progress-phase5.md](docs/agent/harness-progress-phase5.md)
+- Harness 六阶段计划：[docs/agent/harness-iteration-plan-phase6.md](docs/agent/harness-iteration-plan-phase6.md)
+- Harness 六阶段进度台账：[docs/agent/harness-progress-phase6.md](docs/agent/harness-progress-phase6.md)
 - Planner artifact 目录：[docs/agent/plans/README.md](docs/agent/plans/README.md)
 - Sprint Contract 目录：`resources/harness/contracts/*.json`
 - Evaluator 校准样本：[docs/agent/evaluator-calibration.md](docs/agent/evaluator-calibration.md)
@@ -48,6 +52,9 @@
 - 只读运行态观察（含最近运行趋势）：`python3 scripts/agent_observe.py --profile auto`
 - 查看最近 harness / evaluator / CI 历史：`python3 scripts/agent_history.py --kind all --limit 5`
 - 对比最近两次 harness 漂移：`python3 scripts/agent_history.py --kind harness --diff`
+- 查看 harness 运营面总览：`python3 scripts/agent_ops.py status`
+- 查看 task 覆盖缺口：`python3 scripts/agent_ops.py task-gap`
+- 查看 latest 指针与 blocker 摘要：`python3 scripts/agent_ops.py latest-runs`
 - 查看二阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan.md`
 - 查看二阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress.md`
 - 查看三阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan-phase3.md`
@@ -56,7 +63,11 @@
 - 查看四阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase4.md`
 - 查看五阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan-phase5.md`
 - 查看五阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase5.md`
+- 查看六阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan-phase6.md`
+- 查看六阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase6.md`
 - 刷新全局 heartbeat：`python3 scripts/agent_heartbeat.py`
+- 运行 AutoDream Lite 巡检：`python3 scripts/agent_autodream.py`
+- 查看最近稳定经验摘要：`cat docs/agent/memory-notes.md`
 - 生成文档园丁一致性报告：`python3 scripts/agent_doc_gardener.py --artifact-dir artifacts/doc-gardening`
 - 生成 Mission + Planner artifact：`python3 scripts/agent_planner.py --task report-solution --goal "..." --context-line "..." --artifact-dir artifacts/planner`
 - 查看某个 task 最近一次 Mission Contract：`cat artifacts/planner/missions/by-task/report-solution/latest.json`
@@ -100,8 +111,8 @@
 - 高风险 workflow 步骤现在会额外校验 `confirmation_token`、`backup_dir` 和 `produces_artifact`；不要只看命令返回码
 - 高风险 workflow 的 apply/rollback 现在还会强制校验治理字段；执行前补齐 `change_reason / operator / approver / ticket`
 - task workflow 现在支持前置条件检查；已内置 `account_exists`、`user_exists`、`active_license_exists`、`path_exists`、`requires_admin_session`、`requires_browser_env`、`requires_live_backend`
-- `ownership-migration` 与 `license-admin` 现在已接入 Sprint Contract，workflow、evaluator 和 handoff 会共享完成标准、硬失败条件与证据要求
-- `report-solution` 与 `ownership-migration` 现在已接入 Mission Contract；一句话需求会先落成 `artifacts/planner/missions/by-task/<task>/latest.json`，再进入 Planner Artifact
+- 8 个内置 task 现在都带 planner / mission 元数据；一句话需求会先落成 `artifacts/planner/missions/by-task/<task>/latest.json`，再进入 Planner Artifact
+- 高风险 task 现在已全部接入 Sprint Contract，workflow、evaluator 和 handoff 会共享完成标准、硬失败条件与证据要求
 - `agent_planner.py` 现在会同步维护 `artifacts/planner/missions/by-task/<task>/latest.json` 与 `artifacts/planner/by-task/<task>/latest.json`；workflow、harness、evaluator、failure-summary 与 handoff 会共同引用 mission + plan 指针
 - evaluator 现在已接入 `tests/harness_calibration/*.json` 校准样本；命中样本后，progress / failure-summary / handoff 会直接带出评分依据与 source refs
 - `ownership-migration`、`config-center`、`license-admin` 现在会先验证管理员白名单是否就绪；`cloud-import` 仍会先验证源目录和目标用户
@@ -109,6 +120,7 @@
 - `agent_static_guardrails.py` 现在还会检查配置中心路由是否委托 `build_admin_config_center_payload()` / `save_admin_config_group()`，避免路由层重新直写 `.env`、`config.py` 或 `site-config.js`
 - `agent_static_guardrails.py` 失败时现在会直接输出 `Action for Agent`，包含修复层级、建议动作与推荐复跑命令，优先按这三项收口再看 runtime 失败
 - `agent_static_guardrails.py` 现在还会扫描 `web/` 下 Python 业务代码，阻止 `web/server.py` 或 `web/server_modules/*` 反向 import `scripts.agent_*` harness 脚本
+- `agent_static_guardrails.py` 现在还会额外阻止三类依赖回退：前端静态资源引用 harness 路径/工件、业务 Python 读取 `tests/harness_*` 语料、业务 Python 读取 `resources/harness` / `artifacts/*` / `docs/agent/*` 作为正式依赖
 - `agent_doc_gardener.py` 会输出 task/playbook/contract/mission/calibration 的只读一致性报告；`WARN` 表示建议补强，`FAIL` 表示文档或索引已漂移
 - browser smoke 为显式 opt-in 阶段；首次执行前先运行 `npm install`，再执行 `npx playwright install chromium chromium-headless-shell`
 - PR 基础检查已收口到 `.github/workflows/pr-harness.yml`，其中 `pr-smoke` 负责脚本回归与 `static_guardrails`，`agent-smoke` 只跑 runtime smoke，`guardrails` 只跑 runtime guardrails
@@ -127,7 +139,7 @@
 - 固定 smoke 入口：`python3 scripts/agent_smoke.py`
 - 场景 evaluator：`python3 scripts/agent_eval.py --tag nightly`
 - evaluator 场景已支持 `unittest`、`browser_smoke`、`workflow` 和 `harness` 多执行器
-- evaluator 场景库当前共 16 条，已补到扩展 UI、账号合并回滚、License 管理预演、环境文件叠加解析、租户隔离和演示稿 sidecar 并发完整性
+- evaluator 场景库当前共 17 条，已补到扩展 UI、账号合并回滚、License 管理预演、环境文件叠加解析、租户隔离和演示稿 sidecar 并发完整性
 - 新事故优先用 `python3 scripts/agent_scenario_scaffold.py` 生成 `tests/harness_scenarios` 模板，再人工补充背景与 tags
 - `failure-summary.md` / `handoff.json` 现在会直接给出带 `name/category/tag/budget/output` 的场景脚手架预览/写入命令；`browser_smoke`、`workflow`、`harness` 失败也能自动生成对应 executor 模板
 - 最小脚本冒烟：`python3 -m unittest tests.test_version_manager tests.test_scripts_comprehensive`
@@ -145,12 +157,14 @@
 - `--artifact-dir` 会把 `summary.json`、分阶段 JSON、stdout/stderr 和 `latest.json` 指针写到指定目录，适合交接和失败排查。
 - 开启 `--artifact-dir` 后，还会写出 `progress.md`、`failure-summary.md`、`handoff.json`、`latest-progress.md`、`latest-failure-summary.md` 和 `latest-handoff.json`。
 - 当前内置 task 画像包括 `report-solution`、`presentation-export`、`account-merge`、`license-audit`、`license-admin`、`ownership-migration`、`config-center`、`cloud-import`，配置文件位于 `resources/harness/tasks/*.json`。
+- 当前 8 个内置 task 都已具备 planner / mission 入口；高风险 task 的 Sprint Contract 覆盖率保持 100%。
 - task-backed playbook 默认由 `resources/harness/tasks/*.json` 生成，修改任务画像后优先运行 `python3 scripts/agent_playbook_sync.py` 或 `--check`。
 - 场景语料文件位于 `tests/harness_scenarios/**/*.json`，新增线上事故回归时优先补对应 `unittest`，再挂入场景文件。
 - 高频操作 playbook 位于 `docs/agent/playbooks/*.md`，默认先按 playbook 收集证据，再决定是否进入高风险步骤。
 - 执行 `docs/agent/harness-iteration-plan.md` 中的优化项后，必须同步更新 `docs/agent/harness-progress.md`。
 - 执行 `docs/agent/harness-iteration-plan-phase4.md` 中的优化项后，必须同步更新 `docs/agent/harness-progress-phase4.md`。
 - 执行 `docs/agent/harness-iteration-plan-phase5.md` 中的优化项后，必须同步更新 `docs/agent/harness-progress-phase5.md`。
+- 执行 `docs/agent/harness-iteration-plan-phase6.md` 中的优化项后，必须同步更新 `docs/agent/harness-progress-phase6.md`。
 
 ## 关键不变量
 

@@ -1,0 +1,33 @@
+{
+  "name": "license-gate-ui-wording-drift-should-warn",
+  "title": "License 门禁前端轻微文案漂移应判 WARN 而非 FAIL",
+  "category": "browser",
+  "expected_decision": "WARN",
+  "rule": "License 门禁前端如果只是标题、说明文案或按钮文案有轻微调整，但仍保持门禁阻断、绑定入口和退出登录链路，Evaluator 应判 WARN 而不是 FAIL。",
+  "incident": "浏览器扩展回归更容易因前端文案调整而波动，真正需要硬失败的是门禁失效或业务壳提前暴露，而不是措辞替换。",
+  "signals": [
+    "首页仍停留在 License gate，而不是直接进入业务壳",
+    "绑定 License 入口仍可见，退出登录入口仍可见",
+    "主业务导航不应在无有效 License 时暴露"
+  ],
+  "source_refs": [
+    "scripts/agent_browser_smoke.py",
+    "scripts/agent_browser_smoke_runner.mjs",
+    "docs/agent/admin-ops.md"
+  ],
+  "applies_to": {
+    "scenarios": [
+      "browser-smoke-extended"
+    ],
+    "categories": [
+      "browser"
+    ],
+    "tags": [
+      "browser",
+      "ui"
+    ],
+    "executors": [
+      "browser_smoke"
+    ]
+  }
+}

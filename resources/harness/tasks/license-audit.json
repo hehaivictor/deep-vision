@@ -9,6 +9,54 @@
   "docs": [
     "docs/agent/admin-ops.md"
   ],
+  "mission": {
+    "summary": "把 License 审计诉求先收口成“当前门禁状态、活跃批次和账号绑定是否异常”的只读使命，再决定是否需要进入高风险管理动作。",
+    "desired_outcomes": [
+      "先明确问题是运行时 enforcement、活跃批次、绑定账号还是即将到期状态",
+      "先完成只读审计，避免在尚未定位问题前进入批量写操作",
+      "先保留 observe、enforcement-status 和活跃 License 列表这些证据入口"
+    ],
+    "acceptance_criteria": [
+      "License 门禁、激活状态和管理员 License 接口边界在专项回归里保持成立",
+      "审计路径能区分运行时开关异常、批次异常和账号绑定异常",
+      "只读审计不会顺手放宽高风险 License 写操作边界"
+    ],
+    "non_goals": [
+      "不要在 mission 阶段直接切换 enforcement 或修改真实 License 状态",
+      "不要把演示环境 mock 配置误当成生产问题处理"
+    ],
+    "risks": [
+      "License gate、管理员 License 接口和账号绑定状态相互耦合，单看一层容易误判",
+      "如果审计链路放松成写操作，会直接提高生产风险"
+    ],
+    "evidence_expectations": [
+      "artifacts/harness-runs/latest.json",
+      "artifacts/harness-eval/latest.json",
+      "python3 scripts/license_manager.py enforcement-status --json",
+      "python3 scripts/license_manager.py list --status active --json"
+    ]
+  },
+  "planner": {
+    "summary": "先把 License 门禁、活跃批次、绑定账号和只读证据入口收口成正式计划，再决定是否需要进入高风险 License 管理动作。",
+    "scope_focus": [
+      "先明确问题是 enforcement、批次状态、绑定账号还是即将到期情况",
+      "先把 observe、enforcement-status、active list 和 access-boundaries 拆成独立证据入口",
+      "先完成只读审计，不把批量写操作混进同一份计划"
+    ],
+    "acceptance_focus": [
+      "License 门禁边界、激活状态和管理员 License 接口在专项回归里保持成立",
+      "审计结果能区分运行时开关异常、批次异常和账号绑定异常",
+      "计划输出中明确哪些后续动作仍需人工确认和治理字段"
+    ],
+    "non_goals": [
+      "不要在 Planner 阶段直接切换 enforcement 或改写真实 License 状态",
+      "不要把演示环境 mock 行为误判成生产问题"
+    ],
+    "risks": [
+      "License gate 与管理员接口、绑定状态相互耦合，单看一层容易误判",
+      "如果只读审计计划混入写操作，会直接提高误操作风险"
+    ]
+  },
   "playbook": {
     "output": "docs/agent/playbooks/license-audit.md",
     "title": "License 审计",

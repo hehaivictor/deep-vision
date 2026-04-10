@@ -5,9 +5,11 @@
 ## 推荐阅读顺序
 
 1. 先读 [AGENTS.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/AGENTS.md)，确认启动方式、测试矩阵、风险边界和关键不变量。
+   如果任务已经收敛到 `web/`、`web/server_modules/`、`web/app_modules/`、`scripts/` 或 `tests/`，再继续读取对应目录下的局部 `AGENTS.md`。
 2. 再读 [heartbeat.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/heartbeat.md)，确认当前活跃阶段、稳定入口和最近 mission/plan/run 指针。
-3. 再读 [ARCHITECTURE.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/ARCHITECTURE.md)，确认代码物理地图、层级边界和禁止依赖。
-4. 再根据任务选择一个领域文档：
+3. 再读 [memory-notes.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/memory-notes.md)，确认最近稳定经验、推荐刷新命令和当前注意事项。
+4. 再读 [ARCHITECTURE.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/ARCHITECTURE.md)，确认代码物理地图、层级边界和禁止依赖。
+5. 再根据任务选择一个领域文档：
    - 访谈与下一题逻辑：[interview.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/interview.md)
    - 登录、绑定与账号合并：[auth-identity.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/auth-identity.md)
    - 报告生成、方案页与分享：[report-solution.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/report-solution.md)
@@ -23,6 +25,9 @@
    - 全局 heartbeat / 当前阶段指针：[heartbeat.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/heartbeat.md)
    - Harness 五阶段计划：[harness-iteration-plan-phase5.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-iteration-plan-phase5.md)
    - Harness 五阶段进度台账：[harness-progress-phase5.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress-phase5.md)
+   - Harness 六阶段计划：[harness-iteration-plan-phase6.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-iteration-plan-phase6.md)
+   - Harness 六阶段进度台账：[harness-progress-phase6.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress-phase6.md)
+   - 全局稳定经验摘要：[memory-notes.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/memory-notes.md)
    - Planner artifact 目录：[plans/README.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/plans/README.md)
    - 第二阶段模块化拆分计划：[plans/module-split-phase2.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/plans/module-split-phase2.md)
    - Sprint Contract 目录：`resources/harness/contracts/*.json`
@@ -47,6 +52,9 @@
 - 只读运行态观察：`python3 scripts/agent_observe.py --profile auto`
 - 查看最近历史：`python3 scripts/agent_history.py --kind all --limit 5`
 - 对比最近两次 harness：`python3 scripts/agent_history.py --kind harness --diff`
+- 查看 harness 运营面总览：`python3 scripts/agent_ops.py status`
+- 查看 task 覆盖缺口：`python3 scripts/agent_ops.py task-gap`
+- 查看 latest 指针与 blocker：`python3 scripts/agent_ops.py latest-runs`
 - 查看二阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan.md`
 - 查看二阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress.md`
 - 查看三阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan-phase3.md`
@@ -55,7 +63,11 @@
 - 查看四阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase4.md`
 - 查看五阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan-phase5.md`
 - 查看五阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase5.md`
+- 查看六阶段优化排期：`sed -n '1,240p' docs/agent/harness-iteration-plan-phase6.md`
+- 查看六阶段执行进度台账：`sed -n '1,240p' docs/agent/harness-progress-phase6.md`
 - 刷新全局 heartbeat：`python3 scripts/agent_heartbeat.py`
+- 运行 AutoDream Lite 巡检：`python3 scripts/agent_autodream.py`
+- 查看最近稳定经验摘要：`cat docs/agent/memory-notes.md`
 - 生成文档园丁一致性报告：`python3 scripts/agent_doc_gardener.py --artifact-dir artifacts/doc-gardening`
 - 生成 Mission + Planner artifact：`python3 scripts/agent_planner.py --task report-solution --goal "..." --context-line "..." --artifact-dir artifacts/planner`
 - 查看某个 task 最近一次 Mission Contract：`cat artifacts/planner/missions/by-task/report-solution/latest.json`
@@ -76,7 +88,7 @@
 - 执行 nightly evaluator：`python3 scripts/agent_eval.py --tag nightly`
 - 落盘 evaluator 工件：`python3 scripts/agent_eval.py --tag nightly --artifact-dir artifacts/harness-eval`
 - evaluator 现在已支持 `unittest`、`browser_smoke`、`workflow` 和 `harness` 多执行器场景
-- 场景语料库当前共 16 条，已扩到扩展 UI、账号合并回滚、License 管理预演、环境文件叠加解析、租户隔离与演示稿 sidecar 并发完整性
+- 场景语料库当前共 17 条，已扩到扩展 UI、账号合并回滚、License 管理预演、环境文件叠加解析、租户隔离与演示稿 sidecar 并发完整性
 - 列出 task 画像：`python3 scripts/agent_harness.py --list-tasks`
 - 任务画像执行示例：`python3 scripts/agent_harness.py --task ownership-migration --task-var target_account=13700000000`
 - 单独预演 workflow：`python3 scripts/agent_workflow.py --task ownership-migration --task-var target_account=13700000000 --execute plan`
@@ -86,14 +98,15 @@
 - 高风险 workflow 的 apply/rollback 现在还会强制校验治理字段；执行前补齐 `change_reason / operator / approver / ticket`
 - 内置高风险 task 还会先执行前置条件检查，例如目标账号存在、源目录存在、活跃 License 存在、管理员白名单是否就绪
 - workflow DSL 现已支持 `requires_admin_session`、`requires_browser_env`、`requires_live_backend` 三类环境语义，可用于把管理员会话、浏览器依赖和 live backend 条件机器化
-- `ownership-migration` 与 `license-admin` 已接入 Sprint Contract；workflow、evaluator 和 handoff 工件会带上共享的完成标准与证据要求
-- `report-solution` 与 `ownership-migration` 现在已接入 Mission Contract；一句话需求会先落成 `artifacts/planner/missions/by-task/<task>/latest.json`，再进入 Planner Artifact
+- 8 个内置 task 现在都已接入 planner / mission 元数据；一句话需求会先落成 `artifacts/planner/missions/by-task/<task>/latest.json`，再进入 Planner Artifact
+- 高风险 task 已全部接入 Sprint Contract；workflow、evaluator 和 handoff 工件会带上共享的完成标准与证据要求
 - `agent_planner.py` 现在会额外写 `artifacts/planner/missions/by-task/<task>/latest.json` 和 `artifacts/planner/by-task/<task>/latest.json`；workflow、harness、evaluator 和 handoff 会共同引用 mission + plan 指针，而不是只给一条命令入口
 - evaluator 现在已支持 `tests/harness_calibration/*.json` 校准样本；命中样本时，progress / failure-summary / handoff 会直接带出评分依据
 - `agent_harness` 默认会先执行 `static_guardrails`，用于补源码级路由权限与确认链路回归
 - `agent_static_guardrails.py` 现在还会额外校验配置中心路由是否委托 `build_admin_config_center_payload()` / `save_admin_config_group()`，防止路由层重新出现直写配置文件的架构回退
 - `agent_static_guardrails.py` 失败时现在会额外输出 `Action for Agent`，直接给出修复层级、建议动作和推荐复跑命令，优先沿这三项收口
 - `agent_static_guardrails.py` 现在也会扫描 `web/` 下 Python 业务代码，防止 `web/server.py` 或 `web/server_modules/*` 反向 import `scripts.agent_*` harness 脚本
+- `agent_static_guardrails.py` 现在还会补 3 条依赖方向硬规则：前端静态资源不得引用 harness 路径/工件、业务 Python 不得反向读取 `tests/harness_*` 语料、业务 Python 不得把 `resources/harness` / `artifacts/*` / `docs/agent/*` 当正式依赖
 - `agent_doc_gardener.py` 只生成一致性报告，不自动改文档；当前会检查 playbook 漂移、入口索引、contract 覆盖、mission/planner latest 指针和 calibration 登记状态
 - browser smoke 用于补帮助页、方案页分享、公开分享只读边界、登录前端视图、License 门禁前端视图、License 绑定成功切换、报告详情链路和管理员配置中心入口的浏览器级回归；首次执行前先运行 `npm install` 和 `npx playwright install chromium chromium-headless-shell`
 - `live-minimal` 会在隔离 `DATA_DIR` 下启动真实后端，执行“验证码登录 -> License 绑定 -> 进入访谈会话”的手动深回归
@@ -124,6 +137,11 @@
 - `ownership-migration`：管理员归属迁移，默认先 audit / preview
 - `config-center`：配置中心修改，默认先读当前值和专项回归
 - `cloud-import`：外部本地 data 导入云端，默认先 dry-run
+
+补充说明：
+
+- 当前 8 个 task 都已具备 planner / mission 入口。
+- 高风险 task 的 Sprint Contract 覆盖率保持 `100%`。
 
 当前场景 evaluator 分类：
 

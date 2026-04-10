@@ -1,0 +1,35 @@
+{
+  "name": "share-readonly-regression-must-fail",
+  "title": "公开分享只读边界回退必须直接判 FAIL",
+  "category": "security",
+  "expected_decision": "FAIL",
+  "rule": "方案页分享如果破坏 owner 校验、公开只读边界或匿名写拦截，Evaluator 必须直接判 FAIL；不能因为页面还能打开或其它权限用例通过而放过。",
+  "incident": "分享链路经常混合 owner 访问、公开 token 和匿名路径，边界一旦回退会直接影响外部可见页面，因此应被视为硬失败项。",
+  "signals": [
+    "owner 访问必须继续校验 token 与 owner_user_id",
+    "公开分享只允许匿名只读，不能放开写接口",
+    "匿名写接口必须持续拦截"
+  ],
+  "source_refs": [
+    "tests/test_security_regression.py",
+    "docs/agent/report-solution.md"
+  ],
+  "applies_to": {
+    "scenarios": [
+      "access-boundaries",
+      "asset-ownership-boundaries"
+    ],
+    "categories": [
+      "security",
+      "tenant"
+    ],
+    "tags": [
+      "security",
+      "ownership",
+      "tenant"
+    ],
+    "executors": [
+      "unittest"
+    ]
+  }
+}

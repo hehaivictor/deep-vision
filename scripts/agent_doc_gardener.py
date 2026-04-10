@@ -9,7 +9,7 @@ DeepVision harness 文档园丁 / 一致性报告。
 目标：
 1. 只读检查 task / playbook / contract / calibration / 索引文档之间是否一致
 2. 输出可执行建议，但不自动修改业务代码或文档
-3. 为 phase5 的 doc gardening 提供独立入口与 artifact
+3. 为当前阶段的 doc gardening 提供独立入口与 artifact
 """
 
 from __future__ import annotations
@@ -33,6 +33,13 @@ AGENT_README_FILE = ROOT_DIR / "docs" / "agent" / "README.md"
 CALIBRATION_DOC_FILE = ROOT_DIR / "docs" / "agent" / "evaluator-calibration.md"
 PLANNER_TASK_INDEX_DIR = ROOT_DIR / "artifacts" / "planner" / "by-task"
 MISSION_TASK_INDEX_DIR = ROOT_DIR / "artifacts" / "planner" / "missions" / "by-task"
+LOCAL_AGENT_FILES = (
+    ROOT_DIR / "web" / "AGENTS.md",
+    ROOT_DIR / "web" / "server_modules" / "AGENTS.md",
+    ROOT_DIR / "web" / "app_modules" / "AGENTS.md",
+    ROOT_DIR / "scripts" / "AGENTS.md",
+    ROOT_DIR / "tests" / "AGENTS.md",
+)
 
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -113,22 +120,32 @@ def _check_doc_index_links() -> GardeningCheck:
     required = {
         AGENTS_FILE: [
             "docs/agent/heartbeat.md",
+            "docs/agent/memory-notes.md",
             "ARCHITECTURE.md",
-            "docs/agent/harness-iteration-plan-phase5.md",
+            "docs/agent/harness-iteration-plan-phase6.md",
+            "python3 scripts/agent_ops.py status",
             "python3 scripts/agent_heartbeat.py",
+            "python3 scripts/agent_autodream.py",
             "python3 scripts/agent_static_guardrails.py",
         ],
         AGENT_README_FILE: [
             "docs/agent/heartbeat.md",
+            "docs/agent/memory-notes.md",
             "ARCHITECTURE.md",
+            "docs/agent/harness-iteration-plan-phase6.md",
             "docs/agent/evaluator-calibration.md",
+            "python3 scripts/agent_ops.py status",
             "python3 scripts/agent_heartbeat.py",
+            "python3 scripts/agent_autodream.py",
             "python3 scripts/agent_static_guardrails.py",
         ],
         README_FILE: [
             "docs/agent/heartbeat.md",
+            "docs/agent/memory-notes.md",
             "ARCHITECTURE.md",
             "Action for Agent",
+            "python3 scripts/agent_ops.py status",
+            "python3 scripts/agent_autodream.py",
         ],
     }
     missing: list[str] = []
@@ -151,8 +168,29 @@ def _check_doc_index_links() -> GardeningCheck:
     return _build_check(
         "doc_index_links",
         "PASS",
-        "key navigation docs include heartbeat/architecture/phase5 references",
-        highlights=["入口文档已覆盖 heartbeat、ARCHITECTURE、phase5 和静态 guardrail 命令。"],
+        "key navigation docs include heartbeat/memory-notes/architecture/phase6 references",
+        highlights=["入口文档已覆盖 heartbeat、memory-notes、ARCHITECTURE、phase6，以及 agent_ops / AutoDream Lite / 静态 guardrail 命令。"],
+    )
+
+
+def _check_hierarchical_agents_coverage() -> GardeningCheck:
+    missing = [path for path in LOCAL_AGENT_FILES if not path.exists()]
+    if missing:
+        return _build_check(
+            "hierarchical_agents_coverage",
+            "WARN",
+            f"required={len(LOCAL_AGENT_FILES)} materialized={len(LOCAL_AGENT_FILES) - len(missing)} missing={len(missing)}",
+            highlights=[f"缺少局部 AGENTS: {_relative_path(path)}" for path in missing],
+            recommendations=[
+                "优先为 web/、web/server_modules/、web/app_modules/、scripts/、tests/ 补局部 AGENTS.md。",
+                "局部 AGENTS 只写职责边界、禁止事项和复跑命令，不要复制根入口全文。",
+            ],
+        )
+    return _build_check(
+        "hierarchical_agents_coverage",
+        "PASS",
+        f"required={len(LOCAL_AGENT_FILES)} materialized={len(LOCAL_AGENT_FILES)}",
+        highlights=["高频目录已具备局部 AGENTS.md，可按就近原则读取约束。"],
     )
 
 
@@ -192,39 +230,53 @@ def _check_contract_coverage() -> GardeningCheck:
 
 
 def _check_planner_mission_materialization() -> GardeningCheck:
-    planner_missing: list[str] = []
-    mission_missing: list[str] = []
+    planner_missing_pointer: list[str] = []
+    mission_missing_pointer: list[str] = []
+    planner_missing_meta: list[str] = []
+    mission_missing_meta: list[str] = []
+    task_count = 0
     planner_count = 0
     mission_count = 0
     for task_name in agent_profiles.list_task_names():
+        task_count += 1
         profile = agent_profiles.get_task_profile(task_name)
         if isinstance(profile.get("planner"), dict):
             planner_count += 1
             if not _task_pointer_exists(PLANNER_TASK_INDEX_DIR, task_name):
-                planner_missing.append(task_name)
+                planner_missing_pointer.append(task_name)
+        else:
+            planner_missing_meta.append(task_name)
         if isinstance(profile.get("mission"), dict):
             mission_count += 1
             if not _task_pointer_exists(MISSION_TASK_INDEX_DIR, task_name):
-                mission_missing.append(task_name)
-    if planner_missing or mission_missing:
+                mission_missing_pointer.append(task_name)
+        else:
+            mission_missing_meta.append(task_name)
+    if planner_missing_meta or mission_missing_meta or planner_missing_pointer or mission_missing_pointer:
         highlights: list[str] = []
-        highlights.extend([f"planner 未物化 latest 指针: {name}" for name in planner_missing])
-        highlights.extend([f"mission 未物化 latest 指针: {name}" for name in mission_missing])
+        highlights.extend([f"planner 元数据缺失: {name}" for name in planner_missing_meta])
+        highlights.extend([f"mission 元数据缺失: {name}" for name in mission_missing_meta])
+        highlights.extend([f"planner 未物化 latest 指针: {name}" for name in planner_missing_pointer])
+        highlights.extend([f"mission 未物化 latest 指针: {name}" for name in mission_missing_pointer])
         return _build_check(
             "planner_mission_materialization",
             "WARN",
-            f"planner={planner_count} planner_missing={len(planner_missing)} mission={mission_count} mission_missing={len(mission_missing)}",
+            (
+                f"tasks={task_count} planner={planner_count} planner_missing_meta={len(planner_missing_meta)} "
+                f"planner_missing_pointer={len(planner_missing_pointer)} mission={mission_count} "
+                f"mission_missing_meta={len(mission_missing_meta)} mission_missing_pointer={len(mission_missing_pointer)}"
+            ),
             highlights=highlights,
             recommendations=[
-                '对带 planner/mission 元数据的 task 先运行 python3 scripts/agent_planner.py --task <name> --goal "<补充目标>" --artifact-dir artifacts/planner。',
-                "如果任务还没进入执行期，可先保留 WARN；园丁报告只用于提醒 mission / plan latest 指针还没落盘。",
+                "先为缺失 task 补齐 planner / mission 元数据，保持一句话需求 -> plan -> workflow / evaluator 的统一入口。",
+                '再对缺失 latest 指针的 task 运行 python3 scripts/agent_planner.py --task <name> --goal "<补充目标>" --artifact-dir artifacts/planner。',
             ],
         )
     return _build_check(
         "planner_mission_materialization",
         "PASS",
-        f"planner={planner_count} mission={mission_count}",
-        highlights=["带 planner / mission 元数据的 task 已有 latest 指针。"],
+        f"tasks={task_count} planner={planner_count} mission={mission_count}",
+        highlights=["全部内置 task 都已具备 planner / mission 元数据，且 latest 指针已物化。"],
     )
 
 
@@ -255,6 +307,7 @@ def build_doc_gardening_report() -> dict[str, Any]:
     checks = [
         _check_task_playbooks_synced(),
         _check_doc_index_links(),
+        _check_hierarchical_agents_coverage(),
         _check_contract_coverage(),
         _check_planner_mission_materialization(),
         _check_calibration_registry(),

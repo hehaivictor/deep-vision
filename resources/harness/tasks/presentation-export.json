@@ -10,6 +10,54 @@
     "docs/agent/report-solution.md",
     "docs/agent/admin-ops.md"
   ],
+  "mission": {
+    "summary": "把导出与演示稿问题的一句话诉求先收口成“谁能导、谁能看、并发下是否稳”的用户可见使命，再进入专项回归。",
+    "desired_outcomes": [
+      "先明确问题在导出能力、appendix PDF、presentation feature 还是资产权限边界",
+      "先区分标准版与专业版在导出和演示稿上的用户可见差异，不把所有能力问题混成一个 bug",
+      "先保留导出链路、presentation map 和并发一致性的证据入口"
+    ],
+    "acceptance_criteria": [
+      "标准版与专业版在 appendix / presentation / export asset 上的能力边界保持成立",
+      "presentation map 在并发更新后仍保持有效，不破坏历史记录与导出入口",
+      "导出和演示稿链路不会绕开 License gate 或对象存储边界"
+    ],
+    "non_goals": [
+      "不要在 mission 阶段直接改动导出文件格式或专业版能力矩阵",
+      "不要把文案轻微变化误判成真实导出权限回退"
+    ],
+    "risks": [
+      "导出能力同时受 License 等级、报告状态、对象存储和 presentation feature 影响，局部修复容易漏边界",
+      "presentation map 一致性问题通常只在并发或历史资产场景里暴露"
+    ],
+    "evidence_expectations": [
+      "artifacts/harness-runs/latest.json",
+      "artifacts/harness-eval/latest.json",
+      "tests.test_api_comprehensive.ComprehensiveApiTests.test_professional_user_can_access_solution_share_appendix_and_presentation_endpoints",
+      "tests.test_security_regression.SecurityRegressionTests.test_presentation_map_remains_valid_under_parallel_updates"
+    ]
+  },
+  "planner": {
+    "summary": "先把导出能力、appendix PDF、presentation feature 和对象存储权限边界收口成正式计划，再进入专项回归。",
+    "scope_focus": [
+      "先明确问题在导出能力、appendix PDF、presentation feature 还是导出资产权限边界",
+      "先区分标准版与专业版在导出和演示稿上的用户可见差异",
+      "先把导出链路、presentation map 和并发一致性拆成独立证据入口"
+    ],
+    "acceptance_focus": [
+      "标准版与专业版在 appendix / presentation / export asset 上的能力边界保持成立",
+      "presentation map 并发更新后仍保持有效，不破坏历史记录与导出入口",
+      "导出和演示稿链路不会绕开 License gate 或对象存储边界"
+    ],
+    "non_goals": [
+      "不要在 Planner 阶段直接改动导出文件格式、专业版能力矩阵或 presentation feature 默认值",
+      "不要把文案轻微变化误判成真实导出权限回退"
+    ],
+    "risks": [
+      "导出能力同时受 License 等级、报告状态、对象存储和 presentation feature 影响，局部修复容易漏边界",
+      "presentation map 一致性问题通常只在并发或历史资产场景里暴露"
+    ]
+  },
   "playbook": {
     "output": "docs/agent/playbooks/presentation-export.md",
     "title": "导出与演示稿链路核对",

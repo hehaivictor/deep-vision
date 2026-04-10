@@ -1,0 +1,33 @@
+{
+  "name": "tenant-leak-must-fail",
+  "title": "跨租户实例隔离回退必须直接判 FAIL",
+  "category": "tenant",
+  "expected_decision": "FAIL",
+  "rule": "只要同一账号在不同 INSTANCE_SCOPE_KEY 之间出现会话、报告或批量删除的串租户读写，Evaluator 必须直接判 FAIL，不能因其它用例通过而降级成 WARN。",
+  "incident": "多租户链路的真实风险不在于单条接口报错，而在于跨 scope 泄露往往只会在回归组合里暴露，因此需要把 tenant 隔离定义成硬失败项。",
+  "signals": [
+    "会话不能跨 INSTANCE_SCOPE_KEY 读取或写入",
+    "报告不能跨 INSTANCE_SCOPE_KEY 泄露给同一 owner 的另一实例",
+    "批量删除不能误删其他 scope 下的报告或会话"
+  ],
+  "source_refs": [
+    "tests/test_api_comprehensive.py",
+    "docs/agent/migration.md",
+    "docs/instance-scope.md"
+  ],
+  "applies_to": {
+    "scenarios": [
+      "instance-scope-boundaries"
+    ],
+    "categories": [
+      "tenant"
+    ],
+    "tags": [
+      "tenant",
+      "core"
+    ],
+    "executors": [
+      "unittest"
+    ]
+  }
+}

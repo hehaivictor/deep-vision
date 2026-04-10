@@ -30,6 +30,7 @@ from scripts import agent_profiles
 
 
 PHASE_FILES = (
+    ("phase6", "docs/agent/harness-progress-phase6.md", "docs/agent/harness-iteration-plan-phase6.md"),
     ("phase5", "docs/agent/harness-progress-phase5.md", "docs/agent/harness-iteration-plan-phase5.md"),
     ("phase4", "docs/agent/harness-progress-phase4.md", "docs/agent/harness-iteration-plan-phase4.md"),
     ("phase3", "docs/agent/harness-progress-phase3.md", "docs/agent/harness-iteration-plan-phase3.md"),
@@ -159,6 +160,10 @@ def _collect_run_pointers(root_dir: Path) -> list[dict[str, Any]]:
     return pointers
 
 
+def _count_agent_entrypoints(root_dir: Path) -> int:
+    return sum(1 for _ in root_dir.glob("**/AGENTS.md"))
+
+
 def build_heartbeat_payload(*, root_dir: Path = ROOT_DIR) -> dict[str, Any]:
     phase_status = _collect_phase_status(root_dir)
     mission_pointers = _collect_task_pointers(
@@ -185,18 +190,22 @@ def build_heartbeat_payload(*, root_dir: Path = ROOT_DIR) -> dict[str, Any]:
                 "ARCHITECTURE.md",
                 "docs/agent/README.md",
                 "docs/agent/heartbeat.md",
+                "docs/agent/memory-notes.md",
             ],
             "commands": [
                 "python3 scripts/agent_harness.py --profile auto",
                 "python3 scripts/agent_observe.py --profile auto",
                 "python3 scripts/agent_history.py --kind harness --diff",
+                "python3 scripts/agent_ops.py status",
                 "python3 scripts/agent_heartbeat.py",
+                "python3 scripts/agent_autodream.py",
             ],
         },
         "capabilities": {
             "task_count": len(agent_profiles.list_task_names()),
             "scenario_count": scenario_count,
             "browser_suites": ["minimal", "extended", "live-minimal", "live-extended"],
+            "agent_entrypoint_count": _count_agent_entrypoints(root_dir),
         },
         "missions": mission_pointers[:6],
         "plans": plan_pointers[:6],
@@ -238,6 +247,7 @@ def render_heartbeat_markdown(payload: dict[str, Any]) -> str:
             "",
             f"- task 数量：`{int(capabilities.get('task_count', 0) or 0)}`",
             f"- evaluator 场景数：`{int(capabilities.get('scenario_count', 0) or 0)}`",
+            f"- AGENTS 入口数：`{int(capabilities.get('agent_entrypoint_count', 0) or 0)}`",
             f"- browser suites：`{', '.join(list(capabilities.get('browser_suites', []) or [])) or '-'}`",
             "",
         ]
