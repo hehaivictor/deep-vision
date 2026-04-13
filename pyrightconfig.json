@@ -1,0 +1,47 @@
+{
+  "include": [
+    "web",
+    "scripts",
+    "tests",
+    "db_compat.py"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    ".git",
+    ".github",
+    ".assistant",
+    ".codex",
+    ".codepilot",
+    ".codepilot-uploads",
+    ".pytest_cache",
+    "artifacts",
+    "changes",
+    "data",
+    "deploy",
+    "resources",
+    "web/vendor"
+  ],
+  "extraPaths": [
+    ".",
+    "web",
+    "scripts",
+    "tests"
+  ],
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "off",
+  "useLibraryCodeForTypes": true,
+  "reportMissingImports": "warning",
+  "reportMissingModuleSource": "warning",
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": [
+        ".",
+        "web",
+        "scripts",
+        "tests"
+      ]
+    }
+  ]
+}

@@ -2,6 +2,12 @@
   "name": "deepvision-browser-smoke",
   "private": true,
   "devDependencies": {
-    "playwright": "1.59.1"
+    "playwright": "1.59.1",
+    "pyright": "1.1.408",
+    "typescript": "6.0.2"
+  },
+  "scripts": {
+    "lsp:python": "pyright -p pyrightconfig.json",
+    "lsp:check": "npm run lsp:python"
   }
 }

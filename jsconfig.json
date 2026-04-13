@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "allowJs": true,
+    "checkJs": false,
+    "maxNodeModuleJsDepth": 0,
+    "baseUrl": "."
+  },
+  "include": [
+    "web/**/*.js"
+  ],
+  "exclude": [
+    "node_modules",
+    "artifacts",
+    "data",
+    "web/vendor"
+  ]
+}
