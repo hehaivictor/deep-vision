@@ -19,6 +19,7 @@
 - 全局稳定经验摘要：[docs/agent/memory-notes.md](docs/agent/memory-notes.md)
 - 仓库物理地图与边界：[ARCHITECTURE.md](ARCHITECTURE.md)
 - Agent 分层索引：[docs/agent/README.md](docs/agent/README.md)
+- 第三方 SDK / API 文档检索入口：[docs/agent/context-hub.md](docs/agent/context-hub.md)
 - 局部目录遵循“就近 AGENTS”原则：进入 `web/`、`web/server_modules/`、`web/app_modules/`、`scripts/`、`tests/` 后先看该目录下的 `AGENTS.md`
 - 访谈链路：[docs/agent/interview.md](docs/agent/interview.md)
 - 鉴权、绑定与账号合并：[docs/agent/auth-identity.md](docs/agent/auth-identity.md)
@@ -92,6 +93,9 @@
 - 在 harness 中执行安全 workflow：`python3 scripts/agent_harness.py --task report-solution --workflow-execute preview`
 - 显示高风险 apply/rollback 步骤：`python3 scripts/agent_harness.py --task ownership-migration --task-var target_account=13700000000 --allow-apply`
 - 只读环境自检：`python3 scripts/agent_doctor.py --profile local`
+- 检查 Context Hub 可用性：`python3 scripts/context_hub.py doctor`
+- 检索第三方文档：`python3 scripts/context_hub.py search openai --json`
+- 拉取第三方文档：`python3 scripts/context_hub.py get openai/chat --lang py`
 - 关键不变量 gate：`python3 scripts/agent_guardrails.py --quiet`
 - 最小主链路回归：`python3 scripts/agent_smoke.py`
 - 本地开发：`./scripts/start-local-dev.sh`
@@ -185,6 +189,7 @@
 
 - `web/server.py` 与 `web/app.js` 体量很大，改动前先读对应领域文档和相关测试，再局部定位代码。
 - 能复用现有脚本和 runbook 时，不要新造一套并行流程。
+- 涉及第三方 SDK / API 接入时，优先用 `python3 scripts/context_hub.py search|get` 拉当前文档，再写代码，不要只靠记忆猜接口。
 - 涉及发布链路时，遵循版本碎片机制与 `worktree-shipping` 约定，不要手工绕开现有流程。
 
 </INSTRUCTIONS>

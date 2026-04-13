@@ -13,6 +13,7 @@
 - `agent_*.py`：harness 主体、评估、观察、计划、契约、校准、园丁与心跳
 - `admin_*` / `license_manager.py` / `sync_object_storage_history.py`：运维与治理脚本
 - `import_*` / `rollback_*`：导入与回滚脚本
+- `context_hub.py`：第三方 SDK / API 文档检索包装脚本，服务开发/Agent 侧接入
 - `start-*.sh` / `run_gunicorn.py` / `prestart_web.py`：启动与部署辅助
 
 ## 局部边界

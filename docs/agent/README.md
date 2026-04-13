@@ -14,6 +14,7 @@
    - 登录、绑定与账号合并：[auth-identity.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/auth-identity.md)
    - 报告生成、方案页与分享：[report-solution.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/report-solution.md)
    - 管理后台、运行监控与配置治理：[admin-ops.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/admin-ops.md)
+   - 第三方 SDK / API 文档检索：[context-hub.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/context-hub.md)
    - 运行态观察、最近工件与历史回溯：[observability.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/observability.md)
    - 场景语料库、nightly evaluator 与失败热点：[evaluator.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/evaluator.md)
    - Harness 二阶段复盘：[harness-iteration-plan.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-iteration-plan.md)
@@ -131,6 +132,9 @@
 - `agent_observe.py` 的 `history_trends` 会额外聚合最近最常告警 task、blocker 和慢场景，并标出连续失败、重复 blocker、慢场景回归三类阈值信号
 - `agent_observe.py` 还会输出 `diagnostic_panel`，直接带出阈值告警摘要和推荐复跑命令，便于先复查再改代码
 - 环境自检：`python3 scripts/agent_doctor.py --profile local`
+- 检查 Context Hub：`python3 scripts/context_hub.py doctor`
+- 检索第三方文档：`python3 scripts/context_hub.py search stripe --json`
+- 拉取第三方文档：`python3 scripts/context_hub.py get stripe/api --lang py`
 - 关键不变量 gate：`python3 scripts/agent_guardrails.py --quiet`
 - 最小主链路回归：`python3 scripts/agent_smoke.py`
 - 扩展 smoke 套件：`python3 scripts/agent_smoke.py --suite extended`
@@ -182,6 +186,7 @@
 ## 共享原则
 
 - 优先使用仓库内现有脚本和测试，把文档、代码、验证路径保持在同一个仓库里。
+- 接第三方 SDK / API 时，先走 `scripts/context_hub.py` 获取当前文档，再决定实现，不要直接凭训练记忆猜接口。
 - 大文件不等于无边界。即使实际实现还在 [web/server.py](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/server.py) 里，也要先按领域定位，再读取局部。
 - 改动前先决定验证范围。DeepVision 当前 CI 已通过 `pr-harness.yml` 运行 `pr-smoke`、`agent-smoke` 与 `guardrails`；nightly evaluator 则负责更重的场景语料回归。
 - 执行二阶段事项时，继续维护 [harness-progress.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress.md)；执行三阶段事项时，改维护 [harness-progress-phase3.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress-phase3.md)；执行四阶段事项时，改维护 [harness-progress-phase4.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress-phase4.md)；执行五阶段事项时，改维护 [harness-progress-phase5.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress-phase5.md)。

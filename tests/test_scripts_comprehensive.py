@@ -31,6 +31,7 @@ from scripts import agent_smoke
 from scripts import agent_static_guardrails
 from scripts import agent_artifacts
 from scripts import agent_workflow
+from scripts import context_hub
 from scripts import convert_doc
 from scripts import migrate_session_evidence_annotations
 from scripts import replay_preflight_diagnostics
@@ -493,6 +494,50 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertEqual(1, result["trigger_total"])
         self.assertEqual(1, result["throttled_total"])
         self.assertEqual("business_process", result["first_trigger"]["dimension"])
+
+    def test_context_hub_prefers_local_binary(self):
+        local_root = self.sandbox_root / "context-hub-local"
+        local_bin = local_root / "node_modules" / ".bin"
+        local_bin.mkdir(parents=True, exist_ok=True)
+        chub_path = local_bin / "chub"
+        chub_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+
+        resolved = context_hub.resolve_command(
+            "chub",
+            root_dir=local_root,
+            which=lambda _: None,
+        )
+
+        self.assertEqual("local-node_modules", resolved.source)
+        self.assertEqual((str(chub_path),), resolved.command)
+
+    def test_context_hub_falls_back_to_npx_when_missing(self):
+        resolved = context_hub.resolve_command(
+            "chub",
+            root_dir=self.sandbox_root / "context-hub-npx",
+            which=lambda name: "/usr/bin/npx" if name == "npx" else None,
+        )
+
+        self.assertEqual("npx-package", resolved.source)
+        self.assertEqual(
+            ("/usr/bin/npx", "--yes", "--package", "@aisuite/chub", "--", "chub"),
+            resolved.command,
+        )
+
+    def test_context_hub_doctor_reports_runtime(self):
+        payload = context_hub.build_doctor_payload(
+            root_dir=self.sandbox_root / "context-hub-doctor",
+            which=lambda name: {
+                "node": "/usr/bin/node",
+                "npm": "/usr/bin/npm",
+                "npx": "/usr/bin/npx",
+            }.get(name),
+        )
+
+        self.assertEqual("@aisuite/chub", payload["package_name"])
+        self.assertEqual("/usr/bin/node", payload["runtime"]["node"])
+        self.assertEqual("npx-package", payload["tools"]["chub"]["source"])
+        self.assertEqual("npx-package", payload["tools"]["chub-mcp"]["source"])
 
     def test_agent_doctor_collects_failures_for_placeholder_cloud_env(self):
         env_file = self.sandbox_root / "agent-doctor-cloud.env"
@@ -4075,6 +4120,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
             ["python3", "scripts/report_generator.py", "--help"],
             ["python3", "scripts/migrate_session_evidence_annotations.py", "--help"],
             ["python3", "scripts/replay_preflight_diagnostics.py", "--help"],
+            ["python3", "scripts/context_hub.py", "--help"],
         ]
         for cmd in commands:
             completed = subprocess.run(
