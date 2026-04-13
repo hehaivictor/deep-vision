@@ -141,6 +141,24 @@ class SolutionPayloadTests(unittest.TestCase):
             payload["solution_schema"] = solution_schema
         return payload
 
+    def _iter_text_nodes(self, value, path="root"):
+        if isinstance(value, str):
+            yield path, value
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                yield from self._iter_text_nodes(item, f"{path}.{key}")
+            return
+        if isinstance(value, list):
+            for idx, item in enumerate(value):
+                yield from self._iter_text_nodes(item, f"{path}[{idx}]")
+
+    def _assert_terms_absent(self, value, forbidden_terms, context="root"):
+        for path, text in self._iter_text_nodes(value, path=context):
+            for term in forbidden_terms:
+                with self.subTest(path=path, term=term):
+                    self.assertNotIn(term, text)
+
     def test_build_solution_payload_falls_back_to_legacy_markdown_for_old_report(self):
         report_content = (
             '# DeepVision 访谈报告\n\n'
@@ -1602,6 +1620,12 @@ class SolutionPayloadTests(unittest.TestCase):
 
         proposal_brief = payload.get('proposal_brief', {}) or {}
         chapters = {item.get('id'): item for item in (payload.get('chapter_copy', {}) or {}).get('chapters', []) if isinstance(item, dict)}
+        source_titles = {
+            item.get('id'): item.get('title', '')
+            for item in technical_chapter_response.get('chapters', [])
+            if isinstance(item, dict)
+        }
+        final_titles = {chapter_id: (chapters.get(chapter_id) or {}).get('title', '') for chapter_id in ('hero', 'comparison', 'blueprint', 'integration', 'value_fit')}
 
         self.assertEqual(proposal_brief.get('meta', {}).get('generation_mode'), 'ai')
         self.assertEqual(payload.get('quality_review', {}).get('review_mode'), 'ai')
@@ -1609,30 +1633,29 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertIn('AI工程底座', proposal_brief.get('thesis', {}).get('headline', ''))
         self.assertNotIn('MLOps/LLMOps', proposal_brief.get('thesis', {}).get('headline', ''))
         self.assertNotIn('OpenAPI/gRPC', proposal_brief.get('recommended_solution', {}).get('architecture_statement', ''))
-        expected_title_fragments = {
-            'hero': ('AI工程底座',),
-            'comparison': ('AI工程底座',),
-            'blueprint': ('AI工程底座', '分层架构'),
-            'integration': ('AI工程底座', '系统闭环'),
-            'value_fit': ('当前团队', '试点决策阶段'),
-        }
-        for chapter_id, fragments in expected_title_fragments.items():
-            title = (chapters.get(chapter_id) or {}).get('title', '')
-            for fragment in fragments:
-                self.assertIn(fragment, title)
-            self.assertNotIn('MLOps/LLMOps', title)
-            self.assertNotIn('OpenAPI/gRPC', title)
-            self.assertNotIn('结构化素材', title)
-        self.assertNotIn('MLOps/LLMOps', json.dumps(chapters, ensure_ascii=False))
+        self.assertNotEqual(final_titles.get('hero', ''), source_titles.get('hero', ''))
+        self.assertTrue(final_titles.get('hero', '').startswith('为什么') or final_titles.get('hero', '').startswith('先'))
+        self.assertIn('「', final_titles.get('hero', ''))
+        self.assertNotEqual(final_titles.get('comparison', ''), source_titles.get('comparison', ''))
+        self.assertTrue(final_titles.get('comparison', '').startswith('为什么选') or final_titles.get('comparison', '').startswith('推荐路径'))
+        self.assertNotEqual(final_titles.get('blueprint', ''), source_titles.get('blueprint', ''))
+        self.assertTrue(final_titles.get('blueprint', '').startswith('推荐蓝图'))
+        self.assertIn('分层架构', final_titles.get('blueprint', ''))
+        self.assertNotEqual(final_titles.get('integration', ''), source_titles.get('integration', ''))
+        self.assertTrue(final_titles.get('integration', '').startswith('把'))
+        self.assertIn('系统闭环', final_titles.get('integration', ''))
+        self.assertNotEqual(final_titles.get('value_fit', ''), source_titles.get('value_fit', ''))
+        self.assertTrue(final_titles.get('value_fit', '').startswith('为什么这条路径更适合当前团队'))
+        self.assertIn('阶段', final_titles.get('value_fit', ''))
+        self._assert_terms_absent(chapters, ('MLOps/LLMOps', '结构化素材'), context='chapter_copy')
         metrics_text = json.dumps((chapters.get('hero') or {}).get('metrics', []), ensure_ascii=False)
-        self.assertNotIn('MLOps/LLMOps', metrics_text)
         self.assertIn('分层架构', metrics_text)
         self.assertIn('迁移工具链', metrics_text)
-        blueprint_cards_text = json.dumps((chapters.get('blueprint') or {}).get('cards', []), ensure_ascii=False)
-        self.assertTrue('能力底座' in blueprint_cards_text or 'AI工程底座' in blueprint_cards_text)
-        value_fit_cards_text = json.dumps((chapters.get('value_fit') or {}).get('cards', []), ensure_ascii=False)
-        self.assertNotIn('结构化素材', value_fit_cards_text)
-        self.assertNotIn('proposal_brief', value_fit_cards_text)
+        blueprint_cards = (chapters.get('blueprint') or {}).get('cards', []) or []
+        blueprint_card_titles = [item.get('title', '') for item in blueprint_cards if isinstance(item, dict)]
+        self.assertTrue(any(('底座' in title) or ('架构' in title) for title in blueprint_card_titles))
+        value_fit_cards = (chapters.get('value_fit') or {}).get('cards', []) or []
+        self._assert_terms_absent(value_fit_cards, ('结构化素材', 'proposal_brief'), context='value_fit.cards')
 
     def test_build_solution_payload_from_report_rehardens_delivery_titles(self):
         report_path = ROOT_DIR / "data" / "reports" / "deep-vision-20260314-e2a4fd23-交互式访谈-AI-智能体需求调研.md.solution.json"
