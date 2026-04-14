@@ -11,6 +11,12 @@ from unittest.mock import patch
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SERVER_PATH = ROOT_DIR / "web" / "server.py"
+FIXTURES_DIR = ROOT_DIR / "tests" / "fixtures" / "report_solution"
+
+
+def load_report_solution_fixture(name: str = "deepvision-tech-solution-report.solution.json") -> dict:
+    fixture_path = FIXTURES_DIR / name
+    return json.loads(fixture_path.read_text(encoding="utf-8"))
 
 
 def load_server_module():
@@ -863,8 +869,7 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertNotIn('渲染', proposal_text)
 
     def test_real_ai_platform_report_compresses_business_titles(self):
-        report_path = ROOT_DIR / "data" / "reports" / "deep-vision-20260314-e2a4fd23-交互式访谈-AI-智能体需求调研.md.solution.json"
-        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+        snapshot = load_report_solution_fixture()
 
         self.assertEqual(self.server._proposal_focus_label("MLOps/LLMOps平台优先建设"), "AI工程底座")
         self.assertEqual(
@@ -1480,8 +1485,7 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertTrue(payload.get('render_model', {}).get('overview', {}).get('title'))
 
     def test_ai_outputs_are_postprocessed_to_sample_business_tone(self):
-        report_path = ROOT_DIR / "data" / "reports" / "deep-vision-20260314-e2a4fd23-交互式访谈-AI-智能体需求调研.md.solution.json"
-        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+        snapshot = load_report_solution_fixture()
 
         technical_brief_response = {
             "meta": {
@@ -1658,8 +1662,7 @@ class SolutionPayloadTests(unittest.TestCase):
         self._assert_terms_absent(value_fit_cards, ('结构化素材', 'proposal_brief'), context='value_fit.cards')
 
     def test_build_solution_payload_from_report_rehardens_delivery_titles(self):
-        report_path = ROOT_DIR / "data" / "reports" / "deep-vision-20260314-e2a4fd23-交互式访谈-AI-智能体需求调研.md.solution.json"
-        snapshot = json.loads(report_path.read_text(encoding="utf-8"))
+        snapshot = load_report_solution_fixture()
         report_name = "delivery-hardened.md"
         snapshot["report_name"] = report_name
         self.server.write_solution_sidecar(report_name, snapshot)
