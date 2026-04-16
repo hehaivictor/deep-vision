@@ -268,6 +268,46 @@ def build_workflow_command(scenario: EvalScenario) -> list[str]:
     return command
 
 
+def _truncate_workflow_output(text: str, *, max_chars: int = 6000) -> str:
+    normalized = str(text or "").strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    omitted = len(normalized) - max_chars
+    return normalized[:max_chars].rstrip() + f"\n... [truncated {omitted} chars]"
+
+
+def build_workflow_failure_output(payload: dict[str, Any]) -> str:
+    sections: list[str] = []
+    for item in list(payload.get("step_results", []) or []):
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "").strip()
+        if status not in {"FAIL", "BLOCKED"}:
+            continue
+        title = str(item.get("title") or item.get("id") or "step").strip() or "step"
+        lines = [f"=== {status} {title} ==="]
+        detail = str(item.get("detail") or "").strip()
+        if detail:
+            lines.append(f"detail: {detail}")
+        command = str(item.get("command") or "").strip()
+        if command:
+            lines.append(f"command: {command}")
+        highlights = [str(line or "").strip() for line in list(item.get("highlights", []) or []) if str(line or "").strip()]
+        if highlights:
+            lines.append("-- highlights --")
+            lines.extend(highlights[:8])
+        stderr = _truncate_workflow_output(item.get("stderr", ""))
+        if stderr:
+            lines.append("-- stderr --")
+            lines.append(stderr)
+        stdout = _truncate_workflow_output(item.get("stdout", ""))
+        if stdout:
+            lines.append("-- stdout --")
+            lines.append(stdout)
+        sections.append("\n".join(lines).strip())
+    return "\n\n".join(section for section in sections if section).strip()
+
+
 def build_workflow_attempt(scenario: EvalScenario) -> dict[str, Any]:
     task_name = str(scenario.executor_config.get("task") or "").strip()
     task_vars = {
@@ -333,6 +373,7 @@ def build_workflow_attempt(scenario: EvalScenario) -> dict[str, Any]:
         stdout_payload["mission"] = payload.get("mission")
     if isinstance(payload.get("plan"), dict):
         stdout_payload["plan"] = payload.get("plan")
+    workflow_failure_output = build_workflow_failure_output(payload)
     return {
         "status": "PASS" if passed else "FAIL",
         "returncode": 0 if passed else int(exit_code or 2),
@@ -341,7 +382,7 @@ def build_workflow_attempt(scenario: EvalScenario) -> dict[str, Any]:
         "failed_tests": failed_subjects,
         "highlights": highlights[:8],
         "stdout": json.dumps(stdout_payload, ensure_ascii=False),
-        "stderr": "",
+        "stderr": workflow_failure_output,
         "executor_overall": overall,
     }
 

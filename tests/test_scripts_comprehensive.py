@@ -1699,6 +1699,68 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertEqual("workflow", payload["results"][0]["executor"])
         self.assertEqual("task=report-solution execute=preview", payload["results"][0]["target"])
 
+    def test_agent_eval_workflow_failure_writes_step_stderr_excerpt(self):
+        scenario_root = self.sandbox_root / "eval-workflow-failure-scenarios"
+        scenario_dir = scenario_root / "workflow"
+        artifact_root = self.sandbox_root / "eval-workflow-failure-artifacts"
+        scenario_dir.mkdir(parents=True, exist_ok=True)
+        (scenario_dir / "report-solution-preview.json").write_text(
+            json.dumps(
+                {
+                    "name": "report-solution-preview",
+                    "category": "workflow",
+                    "description": "验证 workflow 失败时会落 step 级错误日志",
+                    "tags": ["nightly", "workflow"],
+                    "budgets": {"max_duration_ms": 120000},
+                    "executor": {
+                        "type": "workflow",
+                        "task": "report-solution",
+                        "execute_mode": "preview",
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        fake_payload = {
+            "overall": "BLOCKED",
+            "summary": {"PASS": 0, "FAIL": 1, "BLOCKED": 0, "MANUAL": 0, "PLANNED": 0, "SKIP": 0},
+            "precondition_results": [],
+            "step_results": [
+                {
+                    "id": "targeted-tests",
+                    "title": "跑方案页专项回归",
+                    "status": "FAIL",
+                    "detail": "执行失败，returncode=1",
+                    "command": "uv run --with requests python3 -m unittest -q tests.test_solution_payload",
+                    "highlights": [
+                        "ERROR: test_historical_interview_markdown_extracts_overview_and_structured_fields",
+                        "Traceback (most recent call last):",
+                    ],
+                    "stdout": "E\n",
+                    "stderr": "ERROR: test_historical_interview_markdown_extracts_overview_and_structured_fields\nTraceback (most recent call last):\nAssertionError: expected fixture\n",
+                }
+            ],
+        }
+
+        with patch.object(agent_eval.agent_workflow, "run_task_workflow", return_value=(fake_payload, 1)):
+            payload, artifact_paths, exit_code = agent_eval.run_eval(
+                scenarios_root=scenario_root,
+                tags=["workflow"],
+                artifact_dir=str(artifact_root),
+            )
+
+        self.assertEqual(2, exit_code)
+        self.assertEqual("BLOCKED", payload["overall"])
+        stderr_log = Path(artifact_paths["run_dir"]) / "report-solution-preview.attempt1.stderr.log"
+        self.assertTrue(stderr_log.exists())
+        stderr_text = stderr_log.read_text(encoding="utf-8")
+        self.assertIn("=== FAIL 跑方案页专项回归 ===", stderr_text)
+        self.assertIn("AssertionError: expected fixture", stderr_text)
+        self.assertIn("uv run --with requests", stderr_text)
+
     def test_agent_observe_collects_runtime_snapshot_from_temp_workspace(self):
         observe_root = self.sandbox_root / "observe-root"
         (observe_root / "web").mkdir(parents=True, exist_ok=True)
