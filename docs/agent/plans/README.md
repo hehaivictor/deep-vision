@@ -45,5 +45,10 @@ python3 scripts/agent_planner.py \
 - Mission Contract 先收口一句话需求的目标、非目标、验收标准、风险和证据要求，不在此阶段承诺底层实现细节
 - Planner artifact 再基于 mission 收口执行范围、推荐命令和证据入口
 - Mission Contract 和 Planner artifact 现在都会进入 `progress.md`、`failure-summary.md` 和 `handoff.json`，便于下一位直接回看任务使命、计划和完成定义
-- 如果计划已经进入正式执行，请同步更新对应阶段台账，例如 [harness-progress-phase4.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/docs/agent/harness-progress-phase4.md)
+- 如果计划已经进入正式执行，请同步更新对应阶段台账，例如 [harness-progress-phase4.md](../harness-progress-phase4.md)
 - 后续若引入 Sprint Contract，应优先把 contract 文件与对应 Mission / Planner artifact 互相链接
+
+## 当前长期计划
+
+- [方案生成服务 v1.0](../../../../proposal-service/docs/plans/proposal-generation-service-v1.md)
+- [DeepVision 接入方案生成服务改造方案 v1.0](deepvision-proposal-generation-service-migration-v1.md)
