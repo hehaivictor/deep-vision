@@ -112,6 +112,53 @@ class ComprehensiveScriptTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def _materialized_task_pointer_dirs(self, case_name: str) -> tuple[Path, Path]:
+        planner_base = self.sandbox_root / case_name / "planner" / "by-task"
+        mission_base = self.sandbox_root / case_name / "planner" / "missions" / "by-task"
+        for task_name in agent_profiles.list_task_names():
+            planner_dir = planner_base / task_name
+            planner_dir.mkdir(parents=True, exist_ok=True)
+            (planner_dir / "latest.json").write_text(
+                json.dumps(
+                    {
+                        "kind": "planner_pointer",
+                        "task": task_name,
+                        "generated_at": "2026-04-16T00:00:00Z",
+                        "plan_name": f"{task_name}-plan",
+                        "goal": "test goal",
+                        "summary": "test summary",
+                        "markdown_file": str((planner_dir / "plan.md").resolve()),
+                        "json_file": str((planner_dir / "plan.json").resolve()),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            mission_dir = mission_base / task_name
+            mission_dir.mkdir(parents=True, exist_ok=True)
+            (mission_dir / "latest.json").write_text(
+                json.dumps(
+                    {
+                        "kind": "mission_pointer",
+                        "task": task_name,
+                        "generated_at": "2026-04-16T00:00:00Z",
+                        "mission_name": f"{task_name}-mission",
+                        "goal": "test goal",
+                        "summary": "test summary",
+                        "markdown_file": str((mission_dir / "mission.md").resolve()),
+                        "json_file": str((mission_dir / "mission.json").resolve()),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        return planner_base, mission_base
+
     def _write_history_run(
         self,
         *,
@@ -1699,6 +1746,68 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertEqual("workflow", payload["results"][0]["executor"])
         self.assertEqual("task=report-solution execute=preview", payload["results"][0]["target"])
 
+    def test_agent_eval_workflow_failure_writes_step_stderr_excerpt(self):
+        scenario_root = self.sandbox_root / "eval-workflow-failure-scenarios"
+        scenario_dir = scenario_root / "workflow"
+        artifact_root = self.sandbox_root / "eval-workflow-failure-artifacts"
+        scenario_dir.mkdir(parents=True, exist_ok=True)
+        (scenario_dir / "report-solution-preview.json").write_text(
+            json.dumps(
+                {
+                    "name": "report-solution-preview",
+                    "category": "workflow",
+                    "description": "验证 workflow 失败时会落 step 级错误日志",
+                    "tags": ["nightly", "workflow"],
+                    "budgets": {"max_duration_ms": 120000},
+                    "executor": {
+                        "type": "workflow",
+                        "task": "report-solution",
+                        "execute_mode": "preview",
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        fake_payload = {
+            "overall": "BLOCKED",
+            "summary": {"PASS": 0, "FAIL": 1, "BLOCKED": 0, "MANUAL": 0, "PLANNED": 0, "SKIP": 0},
+            "precondition_results": [],
+            "step_results": [
+                {
+                    "id": "targeted-tests",
+                    "title": "跑方案页专项回归",
+                    "status": "FAIL",
+                    "detail": "执行失败，returncode=1",
+                    "command": "uv run --with requests python3 -m unittest -q tests.test_solution_payload",
+                    "highlights": [
+                        "ERROR: test_historical_interview_markdown_extracts_overview_and_structured_fields",
+                        "Traceback (most recent call last):",
+                    ],
+                    "stdout": "E\n",
+                    "stderr": "ERROR: test_historical_interview_markdown_extracts_overview_and_structured_fields\nTraceback (most recent call last):\nAssertionError: expected fixture\n",
+                }
+            ],
+        }
+
+        with patch.object(agent_eval.agent_workflow, "run_task_workflow", return_value=(fake_payload, 1)):
+            payload, artifact_paths, exit_code = agent_eval.run_eval(
+                scenarios_root=scenario_root,
+                tags=["workflow"],
+                artifact_dir=str(artifact_root),
+            )
+
+        self.assertEqual(2, exit_code)
+        self.assertEqual("BLOCKED", payload["overall"])
+        stderr_log = Path(artifact_paths["run_dir"]) / "report-solution-preview.attempt1.stderr.log"
+        self.assertTrue(stderr_log.exists())
+        stderr_text = stderr_log.read_text(encoding="utf-8")
+        self.assertIn("=== FAIL 跑方案页专项回归 ===", stderr_text)
+        self.assertIn("AssertionError: expected fixture", stderr_text)
+        self.assertIn("uv run --with requests", stderr_text)
+
     def test_agent_observe_collects_runtime_snapshot_from_temp_workspace(self):
         observe_root = self.sandbox_root / "observe-root"
         (observe_root / "web").mkdir(parents=True, exist_ok=True)
@@ -2732,7 +2841,12 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertIn("# DeepVision Doc Gardening Report", markdown_path.read_text(encoding="utf-8"))
 
     def test_agent_ops_build_status_payload(self):
-        payload = agent_ops.build_ops_payload()
+        planner_base, mission_base = self._materialized_task_pointer_dirs("agent-ops-status")
+        with (
+            patch.object(agent_plans, "PLANNER_TASK_INDEX_DIR", planner_base),
+            patch.object(agent_missions, "MISSION_TASK_INDEX_DIR", mission_base),
+        ):
+            payload = agent_ops.build_ops_payload()
         self.assertIn(payload["overall"], {"HEALTHY", "ATTENTION_REQUIRED", "BLOCKED"})
         self.assertEqual("ops_status", payload["kind"])
         self.assertEqual("phase6", payload["phase"]["name"])
@@ -2751,7 +2865,12 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertIn("overall", payload["doc_gardening"])
 
     def test_agent_ops_task_gap_repo_is_fully_materialized(self):
-        gap = agent_ops.build_ops_payload()["task_gap"]
+        planner_base, mission_base = self._materialized_task_pointer_dirs("agent-ops-task-gap")
+        with (
+            patch.object(agent_plans, "PLANNER_TASK_INDEX_DIR", planner_base),
+            patch.object(agent_missions, "MISSION_TASK_INDEX_DIR", mission_base),
+        ):
+            gap = agent_ops.build_ops_payload()["task_gap"]
         self.assertEqual("HEALTHY", gap["overall"])
         self.assertFalse(gap["missing"]["planner_meta"])
         self.assertFalse(gap["missing"]["mission_meta"])

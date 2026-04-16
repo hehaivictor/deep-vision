@@ -716,7 +716,6 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     args = build_parser().parse_args(raw_argv)
     explicit_flags = collect_explicit_flags(raw_argv)
-    doctor_profile = apply_harness_profile_preset(args, explicit_flags)
     task_profile = None
     task_vars: dict[str, str] = {}
 
@@ -724,6 +723,8 @@ def main(argv: list[str] | None = None) -> int:
         task_profile = agent_profiles.get_task_profile(args.task)
         task_vars = agent_profiles.parse_task_vars(args.task_var)
         agent_profiles.apply_profile_defaults(args, task_profile, explicit_flags)
+
+    doctor_profile = apply_harness_profile_preset(args, explicit_flags)
 
     if args.list_tasks:
         return list_tasks()

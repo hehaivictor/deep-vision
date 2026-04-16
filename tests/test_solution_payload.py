@@ -95,14 +95,47 @@ class SolutionPayloadTests(unittest.TestCase):
         cls.server.assessment_ai_client = None
 
     @classmethod
+    def _wait_for_solution_payload_prewarm_jobs(cls, timeout: float = 5.0):
+        jobs_lock = getattr(cls.server, "solution_payload_prewarm_jobs_lock", None)
+        jobs = getattr(cls.server, "solution_payload_prewarm_jobs", None)
+        if jobs_lock is None or not isinstance(jobs, dict):
+            return
+
+        deadline = time.time() + max(0.1, float(timeout or 0.0))
+        while True:
+            with jobs_lock:
+                futures = list(jobs.items())
+            pending = [future for _name, future in futures if hasattr(future, "done") and not future.done()]
+            if not pending:
+                break
+            for future in pending:
+                try:
+                    future.result(timeout=0.2)
+                except Exception:
+                    pass
+            if time.time() >= deadline:
+                break
+            time.sleep(0.05)
+
+        with jobs_lock:
+            done_names = [
+                name
+                for name, future in jobs.items()
+                if not hasattr(future, "done") or future.done()
+            ]
+            for name in done_names:
+                jobs.pop(name, None)
+
+    @classmethod
     def tearDownClass(cls):
+        cls._wait_for_solution_payload_prewarm_jobs()
         cls.temp_dir.cleanup()
 
     def setUp(self):
-        for directory in (self.server.REPORTS_DIR, self.server.SESSIONS_DIR):
-            for path in directory.glob("*"):
-                if path.is_file():
-                    path.unlink()
+        self._wait_for_solution_payload_prewarm_jobs()
+        for path in sorted(self.server.DATA_DIR.rglob("*"), reverse=True):
+            if path.is_file():
+                path.unlink()
 
     def _write_structured_sidecar(self, report_name: str, snapshot: dict, *, allow_ai_enhancement: bool = False):
         self.server.write_solution_sidecar(report_name, snapshot)
@@ -351,7 +384,7 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertEqual(payload.get('headline_cards', [])[0].get('value'), '用户反馈')
 
     def test_historical_interview_markdown_extracts_overview_and_structured_fields(self):
-        report_path = ROOT_DIR / "data" / "reports" / "deep-vision-20260310-e2a4fd23-交互式访谈产品需求调研.md"
+        report_path = FIXTURES_DIR / "historical-interview-report.md"
         report_content = report_path.read_text(encoding="utf-8")
 
         snapshot = self.server.build_solution_snapshot_from_markdown_report(report_path.name, report_content)
