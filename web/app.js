@@ -2730,9 +2730,12 @@ function deepVision() {
                     }
                     if (typeof this.serverStatus.sms_login_enabled === 'boolean') {
                         this.smsLoginEnabled = this.serverStatus.sms_login_enabled;
-                        if (!this.smsLoginEnabled && this.showBindPhoneModal && !this.bindPhoneLoading) {
-                            this.closeBindPhoneModal();
-                        }
+                    }
+                    if (typeof this.canUseAccountBinding === 'function'
+                        && !this.canUseAccountBinding()
+                        && this.showBindPhoneModal
+                        && !this.bindPhoneLoading) {
+                        this.closeBindPhoneModal();
                     }
                     if (Number.isFinite(Number(this.serverStatus.sms_code_length))) {
                         this.smsCodeLength = Math.max(4, Math.min(8, Math.floor(Number(this.serverStatus.sms_code_length))));

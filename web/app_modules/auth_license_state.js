@@ -736,6 +736,10 @@
             return '未登录';
         },
 
+        canUseAccountBinding() {
+            return Boolean(this.smsLoginEnabled && this.wechatLoginEnabled);
+        },
+
         stopAuthCodeCountdown(scope = 'auth') {
             const timerKey = scope === 'bind' ? 'bindCodeTimer' : 'authCodeTimer';
             const countdownKey = scope === 'bind' ? 'bindCodeCountdown' : 'authCodeCountdown';
@@ -874,8 +878,8 @@
 
         startWechatBind() {
             if (!this.authReady) return;
-            if (!this.wechatLoginEnabled) {
-                this.showToast('当前未启用微信登录，无法绑定微信', 'warning');
+            if (!this.canUseAccountBinding()) {
+                this.showToast('仅当短信登录和微信登录同时启用时，才支持账号绑定', 'warning');
                 return;
             }
             if (this.authLoading || this.wechatBindLoading) return;
@@ -892,8 +896,8 @@
 
         openBindPhoneModal() {
             if (!this.authReady || this.bindPhoneLoading) return;
-            if (!this.smsLoginEnabled) {
-                this.showToast('当前未启用短信登录，无法绑定手机号', 'warning');
+            if (!this.canUseAccountBinding()) {
+                this.showToast('仅当短信登录和微信登录同时启用时，才支持账号绑定', 'warning');
                 return;
             }
             this.showAccountMenu = false;
@@ -1034,12 +1038,12 @@
 
         canSendBindCode() {
             const phone = this.normalizeAuthPhone(this.bindPhoneForm.phone);
-            return this.smsLoginEnabled && /^1\d{10}$/.test(phone) && !this.bindCodeSending && this.bindCodeCountdown <= 0;
+            return this.canUseAccountBinding() && /^1\d{10}$/.test(phone) && !this.bindCodeSending && this.bindCodeCountdown <= 0;
         },
 
         async sendBindCode() {
-            if (!this.smsLoginEnabled) {
-                this.showToast('短信登录暂未启用，请稍后再试', 'warning');
+            if (!this.canUseAccountBinding()) {
+                this.showToast('仅当短信登录和微信登录同时启用时，才支持账号绑定', 'warning');
                 return;
             }
             if (!this.canSendBindCode()) return;
@@ -1103,6 +1107,10 @@
 
         async submitBindPhone() {
             if (this.bindPhoneLoading) return;
+            if (!this.canUseAccountBinding()) {
+                this.showToast('仅当短信登录和微信登录同时启用时，才支持账号绑定', 'warning');
+                return;
+            }
             const payload = this.validateBindPhoneForm();
             if (!payload) return;
 

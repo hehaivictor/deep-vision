@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "ea021c1",
+  "committedAt": "2026-04-20T15:22:50+08:00",
+  "versionType": "major",
+  "title": "优化管理员中心与绑定操作展示逻辑",
+  "changes": [
+    "前端：移除顶部重复的管理员中心入口，保留设置菜单内的统一入口",
+    "前端：仅在短信登录和微信登录同时启用时展示并允许账号绑定相关操作",
+    "工程：恢复变更碎片可见性以便提交后自动聚合版本信息"
+  ],
+  "changedFiles": [
+    "web/app.js",
+    "web/app_modules/auth_license_state.js",
+    "web/index.html"
+  ]
+}
