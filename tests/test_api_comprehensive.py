@@ -1,5 +1,6 @@
 import io
 import importlib.util
+import inspect
 import json
 import sys
 import tempfile
@@ -518,21 +519,42 @@ class ComprehensiveApiTests(unittest.TestCase):
         me_resp = self.client.get("/api/auth/me")
         self.assertEqual(me_resp.status_code, 200, me_resp.get_data(as_text=True))
         me_payload = me_resp.get_json() or {}
-        self.assertEqual("experience", (me_payload.get("level") or {}).get("key"))
+        self.assertEqual("standard", (me_payload.get("level") or {}).get("key"))
         self.assertEqual(["balanced"], me_payload.get("allowed_report_profiles"))
         self.assertEqual("balanced", me_payload.get("report_profile_default"))
-        self.assertEqual(["quick"], me_payload.get("allowed_interview_modes"))
-        self.assertEqual("quick", me_payload.get("interview_mode_default"))
+        self.assertEqual(["quick", "standard"], me_payload.get("allowed_interview_modes"))
+        self.assertEqual("standard", me_payload.get("interview_mode_default"))
         self.assertEqual("standard", ((me_payload.get("interview_mode_requirements") or {}).get("standard") or {}).get("key"))
         self.assertEqual("professional", ((me_payload.get("interview_mode_requirements") or {}).get("deep") or {}).get("key"))
+        self.assertTrue((me_payload.get("capabilities") or {}).get("report.export.basic"))
+
+        status_resp = self.client.get("/api/status")
+        self.assertEqual(status_resp.status_code, 200, status_resp.get_data(as_text=True))
+        status_payload = status_resp.get_json() or {}
+        self.assertEqual("standard", (status_payload.get("level") or {}).get("key"))
+        self.assertEqual(["balanced"], status_payload.get("allowed_report_profiles"))
+        self.assertEqual(["balanced"], status_payload.get("report_profile_options"))
+        self.assertEqual(["quick", "standard"], status_payload.get("allowed_interview_modes"))
+        self.assertEqual("standard", status_payload.get("interview_mode_default"))
+
+    def test_auth_and_status_keep_experience_level_when_license_enforcement_enabled(self):
+        self.server.LICENSE_ENFORCEMENT_ENABLED = True
+        self.server.set_license_enforcement_override(True)
+        self._register()
+
+        me_resp = self.client.get("/api/auth/me")
+        self.assertEqual(me_resp.status_code, 200, me_resp.get_data(as_text=True))
+        me_payload = me_resp.get_json() or {}
+        self.assertEqual("experience", (me_payload.get("level") or {}).get("key"))
+        self.assertEqual(["quick"], me_payload.get("allowed_interview_modes"))
+        self.assertEqual("quick", me_payload.get("interview_mode_default"))
         self.assertFalse((me_payload.get("capabilities") or {}).get("report.export.basic"))
 
         status_resp = self.client.get("/api/status")
         self.assertEqual(status_resp.status_code, 200, status_resp.get_data(as_text=True))
         status_payload = status_resp.get_json() or {}
+        self.assertTrue(status_payload.get("license_enforcement_enabled"))
         self.assertEqual("experience", (status_payload.get("level") or {}).get("key"))
-        self.assertEqual(["balanced"], status_payload.get("allowed_report_profiles"))
-        self.assertEqual(["balanced"], status_payload.get("report_profile_options"))
         self.assertEqual(["quick"], status_payload.get("allowed_interview_modes"))
         self.assertEqual("quick", status_payload.get("interview_mode_default"))
 
@@ -588,6 +610,8 @@ class ComprehensiveApiTests(unittest.TestCase):
         self._register()
         original_is_license_protected_route = self.server.is_license_protected_route
         try:
+            self.server.LICENSE_ENFORCEMENT_ENABLED = True
+            self.server.set_license_enforcement_override(True)
             self.server.is_license_protected_route = lambda _path: False
 
             standard_resp = self.client.post(
@@ -3948,7 +3972,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         )
 
         with self.server.app.test_request_context("/api/metrics?last_n=20"):
-            metrics = self.server.get_metrics.__wrapped__()
+            metrics = inspect.unwrap(self.server.get_metrics)()
         self.assertEqual(metrics.status_code, 200)
         metrics_payload = metrics.get_json()
         self.assertTrue(
@@ -3995,11 +4019,11 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertIn("draft_gen_ms", metrics_payload["report_generation_runtime"]["stages"])
 
         with self.server.app.test_request_context("/api/metrics/reset", method="POST", json={}):
-            reset = self.server.reset_metrics.__wrapped__()
+            reset = inspect.unwrap(self.server.reset_metrics)()
         self.assertEqual(reset.status_code, 200)
         self.assertTrue(reset.get_json().get("success"))
         with self.server.app.test_request_context("/api/metrics"):
-            metrics_after_reset = self.server.get_metrics.__wrapped__()
+            metrics_after_reset = inspect.unwrap(self.server.get_metrics)()
         self.assertEqual(metrics_after_reset.status_code, 200)
         metrics_after_reset_payload = metrics_after_reset.get_json()
         self.assertEqual(metrics_after_reset_payload["question_generation_runtime"]["calls"], 0)
@@ -4008,7 +4032,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(metrics_after_reset_payload["question_generation"]["by_mode"]["standard"]["count"], 0)
 
         with self.server.app.test_request_context("/api/summaries"):
-            summaries = self.server.get_summaries_info.__wrapped__()
+            summaries = inspect.unwrap(self.server.get_summaries_info)()
         if isinstance(summaries, tuple):
             summaries = summaries[0]
         self.assertEqual(summaries.status_code, 200)
@@ -4016,7 +4040,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertNotIn("cache_directory", summaries.get_json())
 
         with self.server.app.test_request_context("/api/summaries/clear", method="POST", json={}):
-            clear_resp = self.server.clear_summaries_cache.__wrapped__()
+            clear_resp = inspect.unwrap(self.server.clear_summaries_cache)()
         if isinstance(clear_resp, tuple):
             clear_resp = clear_resp[0]
         self.assertEqual(clear_resp.status_code, 200)
@@ -4804,6 +4828,8 @@ class ComprehensiveApiTests(unittest.TestCase):
         self._register()
         original_is_license_protected_route = self.server.is_license_protected_route
         try:
+            self.server.LICENSE_ENFORCEMENT_ENABLED = True
+            self.server.set_license_enforcement_override(True)
             self.server.is_license_protected_route = lambda path: False if str(path or "").startswith("/api/") else original_is_license_protected_route(path)
             created = self._create_session(topic="体验版质量报告限制", interview_mode="quick")
             session_id = created["session_id"]
