@@ -1,7 +1,18 @@
 {
-  "version": "9.0.0",
-  "releaseDate": "2026-04-20",
+  "version": "9.1.0",
+  "releaseDate": "2026-04-21",
   "changelog": [
+    {
+      "version": "9.1.0",
+      "date": "2026-04-21",
+      "type": "minor",
+      "title": "支持按 License 开关控制默认等级与前端门禁",
+      "changes": [
+        "后端：恢复 License enforcement 运行时开关，并在关闭时将已登录未绑定用户默认提升为标准版",
+        "前端：仅在 enforcement 开启且无有效 License 时展示绑定门禁，并更新脚本缓存版本号",
+        "测试：补充 License 开关前后用户等级与体验版限制回归，兼容新增装饰器后的管理员接口调用"
+      ]
+    },
     {
       "version": "9.0.0",
       "date": "2026-04-20",
