@@ -2586,13 +2586,6 @@
                                             返回报告列表
                                         </button>
                                         <div class="dv-report-toolbar">
-                                            <button type="button" x-show="canViewSolutionPage()" @click="openSolutionPage(selectedReport)"
-                                                    class="report-action-secondary dv-report-toolbar-btn px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2">
-                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>
-                                                </svg>
-                                                查看方案
-                                            </button>
                                             <button type="button"
                                                     x-show="canGenerateQualityVariantForSelectedReport()"
                                                     @click="generateQualityReportVariant()"
