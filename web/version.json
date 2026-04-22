@@ -1,7 +1,17 @@
 {
-  "version": "9.1.0",
-  "releaseDate": "2026-04-21",
+  "version": "9.1.1",
+  "releaseDate": "2026-04-22",
   "changelog": [
+    {
+      "version": "9.1.1",
+      "date": "2026-04-22",
+      "type": "patch",
+      "title": "调整 License 关闭时默认专业版",
+      "changes": [
+        "后端：关闭 License enforcement 时未绑定用户默认使用专业版能力",
+        "测试：更新登录状态和系统状态接口的专业版权限预期"
+      ]
+    },
     {
       "version": "9.1.0",
       "date": "2026-04-21",
