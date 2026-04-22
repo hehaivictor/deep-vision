@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "3166bd4",
+  "committedAt": "2026-04-22T14:56:20+08:00",
+  "versionType": "patch",
+  "title": "调整 License 关闭时默认专业版",
+  "changes": [
+    "后端：关闭 License enforcement 时未绑定用户默认使用专业版能力",
+    "测试：更新登录状态和系统状态接口的专业版权限预期"
+  ],
+  "changedFiles": [
+    "tests/test_api_comprehensive.py",
+    "web/server.py"
+  ]
+}

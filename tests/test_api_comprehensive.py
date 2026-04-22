@@ -519,23 +519,24 @@ class ComprehensiveApiTests(unittest.TestCase):
         me_resp = self.client.get("/api/auth/me")
         self.assertEqual(me_resp.status_code, 200, me_resp.get_data(as_text=True))
         me_payload = me_resp.get_json() or {}
-        self.assertEqual("standard", (me_payload.get("level") or {}).get("key"))
-        self.assertEqual(["balanced"], me_payload.get("allowed_report_profiles"))
+        self.assertEqual("professional", (me_payload.get("level") or {}).get("key"))
+        self.assertEqual(["balanced", "quality"], me_payload.get("allowed_report_profiles"))
         self.assertEqual("balanced", me_payload.get("report_profile_default"))
-        self.assertEqual(["quick", "standard"], me_payload.get("allowed_interview_modes"))
-        self.assertEqual("standard", me_payload.get("interview_mode_default"))
+        self.assertEqual(["quick", "standard", "deep"], me_payload.get("allowed_interview_modes"))
+        self.assertEqual("deep", me_payload.get("interview_mode_default"))
         self.assertEqual("standard", ((me_payload.get("interview_mode_requirements") or {}).get("standard") or {}).get("key"))
         self.assertEqual("professional", ((me_payload.get("interview_mode_requirements") or {}).get("deep") or {}).get("key"))
         self.assertTrue((me_payload.get("capabilities") or {}).get("report.export.basic"))
+        self.assertTrue((me_payload.get("capabilities") or {}).get("presentation.generate"))
 
         status_resp = self.client.get("/api/status")
         self.assertEqual(status_resp.status_code, 200, status_resp.get_data(as_text=True))
         status_payload = status_resp.get_json() or {}
-        self.assertEqual("standard", (status_payload.get("level") or {}).get("key"))
-        self.assertEqual(["balanced"], status_payload.get("allowed_report_profiles"))
-        self.assertEqual(["balanced"], status_payload.get("report_profile_options"))
-        self.assertEqual(["quick", "standard"], status_payload.get("allowed_interview_modes"))
-        self.assertEqual("standard", status_payload.get("interview_mode_default"))
+        self.assertEqual("professional", (status_payload.get("level") or {}).get("key"))
+        self.assertEqual(["balanced", "quality"], status_payload.get("allowed_report_profiles"))
+        self.assertEqual(["balanced", "quality"], status_payload.get("report_profile_options"))
+        self.assertEqual(["quick", "standard", "deep"], status_payload.get("allowed_interview_modes"))
+        self.assertEqual("deep", status_payload.get("interview_mode_default"))
 
     def test_auth_and_status_keep_experience_level_when_license_enforcement_enabled(self):
         self.server.LICENSE_ENFORCEMENT_ENABLED = True
