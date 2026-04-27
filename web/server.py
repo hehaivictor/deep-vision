@@ -20918,7 +20918,8 @@ quadrantChart
 
 **quadrantChart 规则（必须遵守）：**
 - title、x-axis、y-axis、quadrant 标签**必须用英文**（技术限制）
-- 数据点名称用英文或拼音，格式：`Name: [x, y]`，x和y范围0-1
+- 数据点名称用英文或拼音，格式严格为：`Name: [x, y]`，x 和 y 必须是 0-1 的小数
+- 坐标中只能包含两个数字和一个英文逗号，禁止输出 `Name: [0.80, 4 0.9]` 这类多余数字或空格拼接
 - 不要使用特殊符号
 - **必须在图表下方添加中文图例说明**
 
@@ -31346,9 +31347,61 @@ def is_unusable_legacy_report_content(content: Optional[str]) -> bool:
     return module_is_unusable_legacy_report_content(content)
 
 
+def strip_report_leading_assistant_preamble(content: str) -> str:
+    """移除模型在报告正文前输出的寒暄式前言。"""
+    text = str(content or "")
+    if not text.strip():
+        return text
+
+    lines = text.splitlines()
+    heading_index = -1
+    for index, line in enumerate(lines[:20]):
+        if re.match(r"^\s{0,3}#{1,3}\s+\S+", line):
+            heading_index = index
+            break
+    if heading_index <= 0:
+        return text
+
+    prefix = "\n".join(lines[:heading_index]).strip()
+    if not prefix:
+        return text
+
+    prefix_compact = re.sub(r"\s+", "", prefix)
+    preamble_markers = [
+        "好的",
+        "当然",
+        "以下是",
+        "我将根据",
+        "作为一名",
+        "为您生成",
+        "生成一份专业的访谈报告",
+    ]
+    report_markers = [
+        "访谈报告",
+        "需求分析",
+        "根据您提供",
+        "访谈记录",
+    ]
+    has_preamble_marker = any(marker in prefix_compact for marker in preamble_markers)
+    has_report_marker = any(marker in prefix_compact for marker in report_markers)
+    only_preamble_lines = all(
+        not re.match(r"^\s{0,3}(?:[-*+]|\d+[.、]|\|)", line)
+        and not re.match(r"^\s{0,3}```", line)
+        for line in lines[:heading_index]
+        if line.strip() and not re.match(r"^\s{0,3}-\s*-+\s*$", line)
+    )
+    if not (has_preamble_marker and has_report_marker and only_preamble_lines):
+        return text
+
+    cleaned_lines = lines[heading_index:]
+    while cleaned_lines and not cleaned_lines[0].strip():
+        cleaned_lines = cleaned_lines[1:]
+    return "\n".join(cleaned_lines).strip() + ("\n" if text.endswith("\n") else "")
+
+
 def normalize_report_time_fields(content: str, generated_at: Optional[datetime] = None) -> str:
     """标准化报告中的时间字段，避免模型产出过期/幻觉时间。"""
-    text = str(content or "")
+    text = strip_report_leading_assistant_preamble(str(content or ""))
     if not text.strip():
         return text
 

@@ -4910,6 +4910,26 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertNotIn("V-2024-001", normalized)
         self.assertNotIn("访谈时间： 2024年", normalized)
 
+    def test_normalize_report_time_fields_strips_leading_assistant_preamble(self):
+        raw = (
+            "好的，作为一名专业的需求分析师，我已基于您提供的访谈记录，"
+            "生成了以下专业的访谈报告。\n\n"
+            "---\n\n"
+            "# 智能访谈智能体需求调研访谈报告\n\n"
+            "## 1. 访谈概述\n"
+            "报告生成时间：2025年6月\n"
+        )
+
+        normalized = self.server.normalize_report_time_fields(
+            raw,
+            generated_at=datetime(2026, 4, 22, 9, 30, 0),
+        )
+
+        self.assertTrue(normalized.startswith("# 智能访谈智能体需求调研访谈报告"))
+        self.assertNotIn("好的，作为一名专业的需求分析师", normalized)
+        self.assertNotIn("\n---\n", normalized)
+        self.assertIn("报告生成时间：2026年04月22日 09:30", normalized)
+
     def test_generate_interview_appendix_keeps_original_order_and_checkbox_markers(self):
         session = {
             "dimensions": {"customer_needs": {"coverage": 0, "items": []}},

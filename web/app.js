@@ -5366,6 +5366,95 @@ function deepVision() {
             );
         },
 
+        normalizeMermaidDefinition(definition) {
+            return String(definition || '')
+                .replace(/[“”]/g, '"')
+                .replace(/[‘’]/g, "'")
+                .trim();
+        },
+
+        normalizeMermaidPieDefinition(definition = '') {
+            const lines = String(definition || '').split('\n');
+            return lines.map((line) => {
+                const match = line.match(/^(\s*)"?([^":：\n]+?)"?\s*[：:]\s*([0-9]+(?:\.[0-9]+)?)\s*$/);
+                if (!match) return line;
+                const [, indent, label, value] = match;
+                const normalizedLabel = String(label || '').trim();
+                if (!normalizedLabel || /^(pie|title)\b/i.test(normalizedLabel)) {
+                    return line;
+                }
+                return `${indent}"${normalizedLabel}" : ${value}`;
+            }).join('\n');
+        },
+
+        normalizeMermaidQuadrantDefinition(definition = '') {
+            return String(definition || '').split('\n').map((line) => {
+                const match = line.match(/^(\s*[A-Za-z_][A-Za-z0-9_ -]*:\s*\[\s*)(-?\d+(?:\.\d+)?)(?:\s*,\s*|\s+)(?:\d+\s+)?(-?\d+(?:\.\d+)?)(\s*\]\s*)$/);
+                if (!match) return line;
+
+                const [, prefix, rawX, rawY, suffix] = match;
+                const normalizeAxis = (value) => {
+                    const numericValue = Number.parseFloat(value);
+                    if (!Number.isFinite(numericValue)) {
+                        return '0.5';
+                    }
+                    return String(Math.min(1, Math.max(0, numericValue)));
+                };
+                return `${prefix}${normalizeAxis(rawX)}, ${normalizeAxis(rawY)}${suffix}`;
+            }).join('\n');
+        },
+
+        normalizeMermaidFlowchartSubgraphs(definition = '') {
+            let subgraphIndex = 1;
+            return String(definition || '').split('\n').map((line) => {
+                const match = line.match(/^(\s*)subgraph\s+(.+?)\s*$/);
+                if (!match) return line;
+
+                const [, indent, rawTitle] = match;
+                const title = String(rawTitle || '').trim();
+                if (!title || /\[.*\]/.test(title) || /^["'].*["']$/.test(title)) {
+                    return line;
+                }
+                if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(title)) {
+                    return line;
+                }
+
+                const normalizedId = `sg_${subgraphIndex++}`;
+                const escapedTitle = title.replace(/"/g, "'");
+                return `${indent}subgraph ${normalizedId}["${escapedTitle}"]`;
+            }).join('\n');
+        },
+
+        normalizeMermaidFlowchartLabels(definition = '') {
+            return String(definition || '').split('\n').map((line) => {
+                if (/^\s*subgraph\b/.test(line)) {
+                    return line;
+                }
+
+                let nextLine = line;
+                const cleanupPairedLabel = (value, open, close) => {
+                    const pattern = new RegExp(`(\\${open}[^\\${close}\\n]*)(["“”])([^\\${close}\\n]*\\${close})`, 'g');
+                    let previous;
+                    let current = value;
+                    do {
+                        previous = current;
+                        current = current.replace(pattern, '$1$3');
+                    } while (current !== previous);
+                    return current;
+                };
+
+                nextLine = cleanupPairedLabel(nextLine, '[', ']');
+                nextLine = cleanupPairedLabel(nextLine, '{', '}');
+                nextLine = cleanupPairedLabel(nextLine, '|', '|');
+                nextLine = nextLine
+                    .replace(/(\[[^\]\n]*)[：:]([^\]\n]*\])/g, '$1-$2')
+                    .replace(/(\{[^\}\n]*)[：:]([^\}\n]*\})/g, '$1-$2')
+                    .replace(/(\|[^|\n]*)[：:]([^|\n]*\|)/g, '$1-$2');
+
+                return nextLine;
+            }).join('\n');
+        },
+
         // 渲染页面中的所有 Mermaid 图表
         async renderMermaidCharts() {
             if (typeof mermaid === 'undefined') {
@@ -5395,7 +5484,7 @@ function deepVision() {
                     }
 
                     try {
-                        const graphDefinition = (element.dataset.mermaidDefinition || element.textContent || '').trim();
+                        const graphDefinition = this.normalizeMermaidDefinition(element.dataset.mermaidDefinition || element.textContent || '');
                         if (!graphDefinition) continue;
                         element.dataset.mermaidDefinition = graphDefinition;
                         const id = `mermaid-${Date.now()}-${i}`;
@@ -5403,8 +5492,14 @@ function deepVision() {
                         // 预处理：修复常见的语法问题
                         let fixedDefinition = graphDefinition;
 
+                        if (fixedDefinition.match(/^pie\b/m)) {
+                            fixedDefinition = this.normalizeMermaidPieDefinition(fixedDefinition);
+                        }
+
                         // 修复1：检测 quadrantChart 的中文（quadrantChart 对中文支持不好，需要转换）
                         if (fixedDefinition.includes('quadrantChart')) {
+                            fixedDefinition = this.normalizeMermaidQuadrantDefinition(fixedDefinition);
+
                             // 替换所有包含冒号的 quadrant 标签（移除冒号后的部分）
                             fixedDefinition = fixedDefinition
                                 .replace(/quadrant-1\s+[^:\n]*:\s*[^\n]*/g, 'quadrant-1 P1 High Priority')
@@ -5444,6 +5539,9 @@ function deepVision() {
 
                         // 修复2：检测 flowchart/graph 中的语法问题（保留中文显示）
                         if (fixedDefinition.match(/^(graph|flowchart)\s/m)) {
+                            fixedDefinition = this.normalizeMermaidFlowchartSubgraphs(fixedDefinition);
+                            fixedDefinition = this.normalizeMermaidFlowchartLabels(fixedDefinition);
+
                             // 修复 HTML 标签（如 <br>）为换行符
                             fixedDefinition = fixedDefinition.replace(/<br\s*\/?>/gi, ' ');
 
@@ -5456,26 +5554,7 @@ function deepVision() {
                                 }
                             }
 
-                            // 修复节点标签中的特殊字符（可能导致解析失败）
-                            // 1. 替换节点标签中的半角冒号为短横线（但保留 subgraph 标识中的冒号）
-                            fixedDefinition = fixedDefinition.replace(
-                                /(\w+)\[([^\]]*):([^\]]*)\]/g,
-                                (match, id, before, after) => `${id}[${before}-${after}]`
-                            );
-
-                            // 2. 替换节点标签中的半角引号
-                            fixedDefinition = fixedDefinition.replace(
-                                /(\w+)\[([^\]]*)"([^\]]*)\]/g,
-                                (match, id, before, after) => `${id}[${before}${after}]`
-                            );
-
-                            // 3. 修复连接线上标签中的特殊字符
-                            fixedDefinition = fixedDefinition.replace(
-                                /-->\|([^|]*):([^|]*)\|/g,
-                                (match, before, after) => `-->|${before}-${after}|`
-                            );
-
-                            // 4. 修复连接定义中使用 --- 的情况（改为 --）
+                            // 修复连接定义中使用 --- 的情况（改为 --）
                             // 处理 P1 --- P1D["..."] 格式，改为 P1 --> P1D["..."]
                             fixedDefinition = fixedDefinition.replace(
                                 /(\w+)\s+---\s+(\w+)\[/g,
