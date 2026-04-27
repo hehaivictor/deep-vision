@@ -1005,7 +1005,7 @@
                             <label for="license-code-input" class="block text-sm font-medium text-primary mb-1">License</label>
                             <input id="license-code-input"
                                    x-model.trim="licenseActivationForm.code"
-                                   @input="licenseActivationError = ''"
+                                   @input="handleLicenseActivationInput($event)"
                                    type="text"
                                    autocomplete="off"
                                    placeholder="请输入管理员发放的 License"
@@ -1022,7 +1022,7 @@
                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke-width="4"></circle>
                                 <path class="opacity-75" d="M4 12a8 8 0 018-8" stroke-width="4" stroke-linecap="round"></path>
                             </svg>
-                            <span x-text="licenseActivationLoading ? '绑定中...' : '绑定 License'"></span>
+                            <span x-text="getLicenseActivationActionLabel()"></span>
                         </button>
                     </form>
 
@@ -5536,7 +5536,7 @@
                     <div>
                         <h3 id="dv-dialog-settings-title" class="dv-modal-title">设置中心</h3>
                         <p id="dv-dialog-settings-desc"
-                           class="dv-modal-body text-sm mt-1">管理外观偏好、账号绑定与 License 状态</p>
+                           class="dv-modal-body text-sm mt-1">管理外观偏好、账号绑定与版本权益</p>
                     </div>
                     <button @click="closeSettingsModal()"
                             data-dialog-autofocus
@@ -5601,32 +5601,70 @@
                                     </div>
                                 </div>
                             </div>
-                            <div class="settings-group">
-                                <h4 class="text-sm font-semibold text-primary mb-2">License 状态</h4>
-                                <div class="settings-info-grid text-sm">
-                                    <div class="settings-info-row">
-                                        <span class="settings-info-label">当前状态</span>
-                                        <span class="settings-info-value" x-text="getLicenseStatusLabel()"></span>
+                            <div x-show="licenseEnforcementEnabled" x-cloak class="settings-group space-y-4">
+                                <div class="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                                    <div>
+                                        <h4 class="text-sm font-semibold text-primary">版本与权益</h4>
+                                        <p class="mt-1 text-xs text-muted">商业授权入口即将开放；如已获得管理员授权码，可在此激活。</p>
                                     </div>
-                                    <div class="settings-info-row">
-                                        <span class="settings-info-label">License</span>
-                                        <span class="settings-info-value font-mono" x-text="licenseInfo?.masked_code || '未绑定'"></span>
+                                    <button type="button"
+                                            @click="showLicensePurchaseComingSoon()"
+                                            class="settings-action-btn px-3 py-2 rounded-lg border text-xs font-medium self-start">
+                                        购买专业版
+                                    </button>
+                                </div>
+
+                                <div class="rounded-xl border border-border bg-gray-50/80 p-3 space-y-3">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <div>
+                                            <p class="text-xs text-muted">当前版本</p>
+                                            <p class="text-base font-semibold text-primary" x-text="getLicenseCurrentPlanLabel()"></p>
+                                        </div>
+                                        <span class="text-xs px-2.5 py-1 rounded-full border border-border bg-surface text-muted"
+                                              x-text="getLicenseAccessStatusLabel()"></span>
                                     </div>
-                                    <div class="settings-info-row">
-                                        <span class="settings-info-label">生效时间</span>
-                                        <span class="settings-info-value" x-text="licenseInfo?.not_before_at ? formatDate(licenseInfo.not_before_at) : '未设置'"></span>
+                                    <div class="settings-info-grid text-sm">
+                                        <div class="settings-info-row">
+                                            <span class="settings-info-label">授权码</span>
+                                            <span class="settings-info-value font-mono" x-text="licenseInfo?.masked_code || '未绑定'"></span>
+                                        </div>
                                     </div>
-                                    <div class="settings-info-row">
-                                        <span class="settings-info-label">到期时间</span>
-                                        <span class="settings-info-value" x-text="licenseInfo?.expires_at ? formatDate(licenseInfo.expires_at) : '未设置'"></span>
+                                </div>
+
+                                <form class="space-y-2" @submit.prevent="submitLicenseActivation()" novalidate>
+                                    <label for="settings-license-code-input" class="block text-xs font-medium text-muted">输入授权码</label>
+                                    <div class="flex flex-col sm:flex-row gap-2">
+                                        <input id="settings-license-code-input"
+                                               x-model.trim="licenseActivationForm.code"
+                                               @input="handleLicenseActivationInput($event)"
+                                               type="text"
+                                               autocomplete="off"
+                                               placeholder="ECOSK-XXXXX-XXXXX-XXXXX"
+                                               class="flex-1 px-3 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary font-mono"
+                                               :aria-invalid="licenseActivationError ? 'true' : 'false'">
+                                        <button type="submit"
+                                                :disabled="!canSubmitLicenseActivation()"
+                                                class="btn-sage-blue text-white px-4 py-2.5 rounded-lg text-sm font-medium transition-colors duration-200 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+                                            <svg x-show="licenseActivationLoading" class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke-width="4"></circle>
+                                                <path class="opacity-75" d="M4 12a8 8 0 018-8" stroke-width="4" stroke-linecap="round"></path>
+                                            </svg>
+                                            <span x-text="getLicenseActivationActionLabel()"></span>
+                                        </button>
                                     </div>
-                                    <div class="settings-info-row" x-show="licenseInfo?.duration_days">
-                                        <span class="settings-info-label">授权时长</span>
-                                        <span class="settings-info-value" x-text="formatLicenseDurationDays(licenseInfo?.duration_days)"></span>
-                                    </div>
-                                    <div class="settings-info-row">
-                                        <span class="settings-info-label">剩余有效期</span>
-                                        <span class="settings-info-value" x-text="getLicenseRemainingText()"></span>
+                                    <p x-show="licenseActivationError" x-text="licenseActivationError" role="alert" class="text-xs text-red-500"></p>
+                                    <p class="text-xs text-muted">当前可粘贴管理员发放的授权码；购买入口暂未开放。</p>
+                                </form>
+
+                                <div class="rounded-xl border border-dashed border-border p-3">
+                                    <p class="text-xs font-semibold text-primary mb-2">专业版权益预览</p>
+                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                        <template x-for="item in getLicenseBenefitItems()" :key="item">
+                                            <div class="flex items-center gap-2 text-xs text-muted">
+                                                <span class="w-1.5 h-1.5 rounded-full bg-primary/70"></span>
+                                                <span x-text="item"></span>
+                                            </div>
+                                        </template>
                                     </div>
                                 </div>
                             </div>
@@ -6226,7 +6264,7 @@
     <script src="app_modules/report_state.js?v=20260409-auth-license-module-v1"></script>
     <script src="app_modules/report_detail_runtime.js?v=20260409-report-detail-runtime-v1"></script>
     <script src="app_modules/interview_runtime.js?v=20260410-interview-runtime-v1"></script>
-    <script src="app_modules/auth_license_state.js?v=20260421-auth-license-module-v2"></script>
+    <script src="app_modules/auth_license_state.js?v=20260427-license-benefits-entry-v1"></script>
     <script src="app_modules/admin_center_state.js?v=20260410-admin-center-state-v1"></script>
     <script src="app.js?v=20260410-admin-center-state-v1"></script>
 </body>

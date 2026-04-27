@@ -279,6 +279,61 @@
             return !!String(this.licenseActivationForm.code || '').trim() && !this.licenseActivationLoading;
         },
 
+        formatLicenseActivationCode(value = '') {
+            const normalized = String(value || '')
+                .toUpperCase()
+                .replace(/[^A-Z2-7]/g, '');
+            if (!normalized) return '';
+            return normalized.match(/.{1,5}/g).join('-');
+        },
+
+        handleLicenseActivationInput(event = null) {
+            const formattedCode = this.formatLicenseActivationCode(
+                event?.target?.value ?? this.licenseActivationForm.code
+            );
+            this.licenseActivationForm.code = formattedCode;
+            if (event?.target) {
+                event.target.value = formattedCode;
+            }
+            this.licenseActivationError = '';
+        },
+
+        getLicenseActivationActionLabel() {
+            if (this.licenseActivationLoading) return '正在激活...';
+            const levelKey = String(this.currentLevelInfo?.key || 'experience').trim().toLowerCase();
+            if (levelKey === 'experience' || !this.hasValidLicense) {
+                return '升级专业版';
+            }
+            return '更换授权码';
+        },
+
+        getLicenseCurrentPlanLabel() {
+            return String(
+                this.licenseInfo?.level_name
+                || this.currentLevelInfo?.name
+                || '体验版'
+            ).trim();
+        },
+
+        getLicenseAccessStatusLabel() {
+            const normalized = String(this.licenseStatus || this.licenseInfo?.status || '').trim().toLowerCase();
+            if (normalized === 'active') return '已开通';
+            if (!normalized || normalized === 'missing') return '未开通';
+            return this.getLicenseStatusLabel(normalized);
+        },
+
+        getLicenseBenefitItems() {
+            return [
+                '精审报告与完整报告能力',
+                '演示文稿生成与导出',
+                '高级模型与更高配额'
+            ];
+        },
+
+        showLicensePurchaseComingSoon() {
+            this.showToast('专业版购买入口即将开放，敬请期待。当前请联系管理员获取 License。', 'info');
+        },
+
         async submitLicenseActivation() {
             if (!this.canSubmitLicenseActivation()) return;
             this.licenseActivationLoading = true;
@@ -287,7 +342,7 @@
                 const payload = await this.apiCall('/licenses/activate', {
                     method: 'POST',
                     body: JSON.stringify({
-                        code: String(this.licenseActivationForm.code || '').trim()
+                        code: this.formatLicenseActivationCode(this.licenseActivationForm.code)
                     }),
                     skipAuthRedirect: true
                 });
