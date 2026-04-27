@@ -5455,6 +5455,102 @@ function deepVision() {
             }).join('\n');
         },
 
+        collectQuadrantPointLabelMap(element, graphDefinition = '') {
+            const labelMap = {};
+            const source = String(graphDefinition || '');
+            const container = element?.closest?.('.mermaid-container');
+            const parent = container?.parentElement;
+            if (!parent || !container) return labelMap;
+
+            const siblings = Array.from(parent.children || []);
+            const startIndex = siblings.indexOf(container);
+            if (startIndex < 0) return labelMap;
+
+            for (let index = startIndex + 1; index < siblings.length; index++) {
+                const sibling = siblings[index];
+                if (!sibling || sibling.classList?.contains('mermaid-container')) {
+                    break;
+                }
+
+                if (/^H[1-3]$/.test(sibling.tagName || '')) {
+                    break;
+                }
+                if (/^H[4-6]$/.test(sibling.tagName || '') && !/象限图|数据点|图例/.test(String(sibling.textContent || ''))) {
+                    if (Object.keys(labelMap).length > 0) {
+                        break;
+                    }
+                    continue;
+                }
+
+                const candidates = Array.from(sibling.querySelectorAll?.('li, tr') || []);
+                if (sibling.tagName === 'LI') {
+                    candidates.unshift(sibling);
+                } else if (sibling.tagName === 'TR') {
+                    candidates.unshift(sibling);
+                }
+                candidates.forEach((item) => {
+                    if (item.tagName === 'TR') {
+                        const cells = Array.from(item.querySelectorAll?.('th, td') || [])
+                            .map((cell) => String(cell.textContent || '').trim())
+                            .filter(Boolean);
+                        if (cells.length >= 2) {
+                            const key = String(cells[0] || '').trim();
+                            const label = String(cells[1] || '').replace(/[。；;，,]\s*$/, '').trim();
+                            if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(key) && label && source.includes(`${key}:`)) {
+                                labelMap[key] = label;
+                            }
+                        }
+                        return;
+                    }
+
+                    const text = String(item.textContent || '').trim();
+                    const match = text.match(/([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*(.+)$/);
+                    if (!match) return;
+
+                    const [, key, value] = match;
+                    const label = String(value || '').replace(/[。；;，,]\s*$/, '').trim();
+                    if (label && source.includes(`${key}:`)) {
+                        labelMap[key] = label;
+                    }
+                });
+            }
+
+            return labelMap;
+        },
+
+        localizeMermaidQuadrantSvg(element, graphDefinition = '') {
+            if (!String(graphDefinition || '').match(/^quadrantChart\b/m)) {
+                return;
+            }
+
+            const staticLabelMap = {
+                'Requirement Priority Matrix': '需求优先级矩阵',
+                'Priority Matrix': '优先级矩阵',
+                'Low Urgency': '低紧急度',
+                'High Urgency': '高紧急度',
+                'Low Importance': '低重要性',
+                'High Importance': '高重要性',
+                'Do First': '立即执行',
+                'Schedule': '计划执行',
+                'Delegate': '可委派',
+                'Eliminate': '低优先级',
+                'Low': '低',
+                'High': '高',
+            };
+            const dynamicLabelMap = this.collectQuadrantPointLabelMap(element, graphDefinition);
+            const labelMap = { ...staticLabelMap, ...dynamicLabelMap };
+            const svgEl = element.querySelector('svg');
+            if (!svgEl) return;
+
+            svgEl.querySelectorAll('text, tspan').forEach((textNode) => {
+                const originalText = String(textNode.textContent || '').trim();
+                const localizedText = labelMap[originalText];
+                if (localizedText) {
+                    textNode.textContent = localizedText;
+                }
+            });
+        },
+
         // 渲染页面中的所有 Mermaid 图表
         async renderMermaidCharts() {
             if (typeof mermaid === 'undefined') {
@@ -5568,6 +5664,7 @@ function deepVision() {
                         // 替换元素内容为渲染后的 SVG
                         element.innerHTML = svg;
                         element.classList.add('mermaid-rendered');
+                        this.localizeMermaidQuadrantSvg(element, graphDefinition);
 
                         // 后处理：统一图表画布底色，避免在深浅主题切换时出现黑块
                         const svgEl = element.querySelector('svg');
