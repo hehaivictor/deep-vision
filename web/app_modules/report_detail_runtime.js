@@ -502,6 +502,66 @@
             return raw;
         },
 
+        isReportReadinessBlocked(payload = {}) {
+            const errorCode = String(payload?.error_code || '').trim();
+            return errorCode === 'follow_up_required_before_report'
+                || errorCode === 'high_signal_answer_required_before_report'
+                || payload?.follow_up_required === true
+                || payload?.high_signal_answer_required === true;
+        },
+
+        getReportReadinessBlocker(payload = {}) {
+            return payload?.follow_up_blocker || payload?.evidence_signal_blocker || {};
+        },
+
+        getReportReadinessDialogMessage(payload = {}) {
+            const blocker = this.getReportReadinessBlocker(payload);
+            const question = String(blocker?.question || '').trim();
+            const base = String(payload?.message || payload?.error || '').trim();
+            if (question) {
+                return `报告生成前还需要补充关键信息：${question}。继续回到访谈后，请补 1 句原因、场景或依据。`;
+            }
+            return base || '报告生成前还需要补充至少 1 条原因、场景或依据。';
+        },
+
+        async checkReportReadiness(sessionId, options = {}) {
+            const requestedProfile = String(options?.reportProfile || '').trim();
+            const reportProfile = requestedProfile
+                ? this.normalizeReportProfile(requestedProfile, this.reportProfileDefault || 'balanced')
+                : 'balanced';
+            return await this.apiCall(`/sessions/${sessionId}/report-readiness`, {
+                method: 'POST',
+                body: JSON.stringify({ report_profile: reportProfile })
+            });
+        },
+
+        async resumeInterviewForReportReadiness(sessionId, payload = {}) {
+            const blocker = this.getReportReadinessBlocker(payload);
+            const targetDimension = String(blocker?.dimension || '').trim();
+            await this.openSession(sessionId);
+            if (targetDimension && this.currentSession?.dimensions?.[targetDimension]) {
+                this.currentStep = 1;
+                this.currentDimension = targetDimension;
+                await this.fetchNextQuestion({ force: true });
+            }
+            this.showToast('已回到访谈流程，请补充原因、场景或依据后再生成报告', 'info');
+        },
+
+        async handleReportReadinessBlocker(payload = {}, sessionId = '') {
+            const confirmed = await this.openActionConfirmDialog({
+                title: '需要继续补充访谈',
+                message: this.getReportReadinessDialogMessage(payload),
+                tone: 'warning',
+                confirmText: '继续补答',
+                cancelText: '稍后处理'
+            });
+            if (!confirmed) {
+                return false;
+            }
+            await this.resumeInterviewForReportReadiness(sessionId, payload);
+            return true;
+        },
+
         async requestGenerateReportWithRetry(sessionId, action = 'generate', maxRetries = 1, options = {}) {
             let lastError = null;
             const hasExplicitProfile = String(options?.reportProfile || '').trim().length > 0;
@@ -540,6 +600,22 @@
             if (!sessionId || this.generatingReport) return;
             if (!sessionId) return;
 
+            try {
+                const readiness = await this.checkReportReadiness(sessionId, options);
+                if (this.isReportReadinessBlocked(readiness)) {
+                    await this.handleReportReadinessBlocker(readiness, sessionId);
+                    return;
+                }
+            } catch (error) {
+                const payload = error?.payload || {};
+                if (this.isReportReadinessBlocked(payload)) {
+                    await this.handleReportReadinessBlocker(payload, sessionId);
+                    return;
+                }
+                this.showToast(this.normalizeReportGenerationError(error), 'error');
+                return;
+            }
+
             this.generatingReport = true;
             this.generatingReportSessionId = sessionId;
             this.startReportGenerationFeedback(action);
@@ -574,6 +650,16 @@
                     this.showToast('已提交报告生成任务，刷新或离开后重新进入也会继续', 'success');
                 }
             } catch (error) {
+                const blockerPayload = error?.payload || {};
+                if (this.isReportReadinessBlocked(blockerPayload)) {
+                    this.resetReportGenerationFeedback();
+                    this.generatingReport = false;
+                    this.generatingReportSessionId = '';
+                    this.stopReportGenerationPolling();
+                    this.stopWebSearchPolling();
+                    await this.handleReportReadinessBlocker(blockerPayload, sessionId);
+                    return;
+                }
                 const errorMsg = this.normalizeReportGenerationError(error);
                 this.showToast(errorMsg, 'error');
                 this.finishReportGenerationFeedback('error', errorMsg);

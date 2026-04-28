@@ -29193,6 +29193,19 @@ def get_next_question(session_id):
     session_signature = get_file_signature(session_file)
     question_cache_key = _build_question_result_cache_key(session_id, dimension, session_signature)
 
+    report_resume_question = (
+        build_report_follow_up_resume_question(session, dimension)
+        or build_report_low_signal_resume_question(session, dimension)
+    )
+    if report_resume_question:
+        _record_question_runtime(
+            "completed",
+            runtime_profile="report_readiness_resume",
+            tier_used="rule:report_readiness",
+            selection_reason="pending_report_follow_up",
+        )
+        return jsonify(report_resume_question)
+
     cached_question_payload = _get_question_result_cache(question_cache_key)
     if isinstance(cached_question_payload, dict):
         if ENABLE_DEBUG_LOG:
@@ -31594,16 +31607,16 @@ def _has_follow_up_answer_after_formal_log(interview_log: list, formal_index: in
     return False
 
 
-def build_report_follow_up_blocker(session: dict) -> Optional[dict]:
-    """quick 模式下，阻止带关键待补问的会话直接生成报告。"""
+def build_report_follow_up_blockers(session: dict) -> list[dict]:
+    """quick 模式下，收集生成报告前仍需要补充的关键追问。"""
     if not isinstance(session, dict):
-        return None
+        return []
     if get_mode_identifier(session) != "quick":
-        return None
+        return []
 
     interview_log = session.get("interview_log", [])
     if not isinstance(interview_log, list) or not interview_log:
-        return None
+        return []
 
     dim_info_map = get_dimension_info_for_session(session)
     blockers = []
@@ -31632,6 +31645,7 @@ def build_report_follow_up_blocker(session: dict) -> Optional[dict]:
             dimension_name = str(dim_info.get("name", "") or dim_info.get("title", "") or dimension).strip() or dimension
 
         blockers.append({
+            "log_index": index,
             "dimension": dimension,
             "dimension_name": dimension_name,
             "question": str(log.get("question", "") or "").strip(),
@@ -31644,6 +31658,12 @@ def build_report_follow_up_blocker(session: dict) -> Optional[dict]:
             "evidence_intent": evidence_intent,
         })
 
+    return blockers
+
+
+def build_report_follow_up_blocker(session: dict) -> Optional[dict]:
+    """quick 模式下，阻止带关键待补问的会话直接生成报告。"""
+    blockers = build_report_follow_up_blockers(session)
     if not blockers:
         return None
 
@@ -31656,6 +31676,45 @@ def build_report_follow_up_blocker(session: dict) -> Optional[dict]:
         "请先补 1 句原因、场景或依据，再生成报告。"
     )
     return blocker
+
+
+def build_report_follow_up_resume_question(session: dict, dimension: str) -> Optional[dict]:
+    """将报告生成门禁中的待补项转换为可继续回答的追问题。"""
+    normalized_dimension = str(dimension or "").strip()
+    if not normalized_dimension:
+        return None
+    blocker = next(
+        (
+            item for item in build_report_follow_up_blockers(session)
+            if str(item.get("dimension") or "").strip() == normalized_dimension
+        ),
+        None,
+    )
+    if not blocker:
+        return None
+
+    source_question = str(blocker.get("question") or "当前问题").strip() or "当前问题"
+    return {
+        "dimension": normalized_dimension,
+        "question": f"请补充说明：{source_question}。可以直接写一个具体原因、场景或依据。",
+        "options": [],
+        "multi_select": False,
+        "question_multi_select": False,
+        "is_follow_up": True,
+        "follow_up_reason": "生成报告前需要补充该题的理由、场景或依据。",
+        "answer_mode": "pick_with_reason",
+        "requires_rationale": True,
+        "evidence_intent": str(blocker.get("evidence_intent") or "high"),
+        "ai_generated": False,
+        "report_readiness_resume": True,
+        "decision_meta": {
+            "mode": get_mode_identifier(session),
+            "report_readiness_blocker": True,
+            "source_question": source_question,
+            "source_log_index": blocker.get("log_index"),
+            "follow_up_signals": blocker.get("follow_up_signals") or [],
+        },
+    }
 
 
 def build_report_low_signal_blocker(session: dict) -> Optional[dict]:
@@ -31737,6 +31796,102 @@ def build_report_low_signal_blocker(session: dict) -> Optional[dict]:
     }
 
 
+def build_report_low_signal_resume_question(session: dict, dimension: str) -> Optional[dict]:
+    """将低信号报告门禁转换为可继续回答的补充题。"""
+    normalized_dimension = str(dimension or "").strip()
+    if not normalized_dimension:
+        return None
+    blocker = build_report_low_signal_blocker(session)
+    if not blocker or str(blocker.get("dimension") or "").strip() != normalized_dimension:
+        return None
+
+    source_question = str(blocker.get("question") or "当前问题").strip() or "当前问题"
+    return {
+        "dimension": normalized_dimension,
+        "question": f"请围绕“{source_question}”补充一个具体原因、真实场景或判断依据。",
+        "options": [],
+        "multi_select": False,
+        "question_multi_select": False,
+        "is_follow_up": True,
+        "follow_up_reason": "当前回答整体信息量偏弱，生成报告前需要补充一条更具体的依据。",
+        "answer_mode": "pick_with_reason",
+        "requires_rationale": True,
+        "evidence_intent": "high",
+        "ai_generated": False,
+        "report_readiness_resume": True,
+        "decision_meta": {
+            "mode": get_mode_identifier(session),
+            "report_readiness_blocker": True,
+            "low_signal_resume": True,
+            "source_question": source_question,
+            "answer_evidence_class": blocker.get("answer_evidence_class"),
+        },
+    }
+
+
+def build_report_readiness_payload(session: dict, report_profile: str = "balanced") -> dict:
+    """生成报告前预检结果，供前端提前引导用户继续补答。"""
+    normalized_profile = normalize_report_profile_choice(report_profile, fallback="balanced")
+
+    follow_up_blocker = build_report_follow_up_blocker(session)
+    if follow_up_blocker:
+        message = follow_up_blocker.get("message", "仍有待补充的关键信息，请先完成追问再生成报告")
+        return {
+            "ready": False,
+            "can_generate": False,
+            "message": message,
+            "error": message,
+            "error_code": "follow_up_required_before_report",
+            "follow_up_required": True,
+            "follow_up_blocker": follow_up_blocker,
+            "report_profile": normalized_profile,
+        }
+
+    low_signal_blocker = build_report_low_signal_blocker(session)
+    if low_signal_blocker:
+        message = low_signal_blocker.get("message", "当前回答信号偏弱，请先补充高信息量回答再生成报告")
+        return {
+            "ready": False,
+            "can_generate": False,
+            "message": message,
+            "error": message,
+            "error_code": "high_signal_answer_required_before_report",
+            "high_signal_answer_required": True,
+            "evidence_signal_blocker": low_signal_blocker,
+            "report_profile": normalized_profile,
+        }
+
+    return {
+        "ready": True,
+        "can_generate": True,
+        "message": "",
+        "report_profile": normalized_profile,
+    }
+
+
+@app.route('/api/sessions/<session_id>/report-readiness', methods=['POST'])
+def get_report_readiness(session_id):
+    """生成报告前预检，不启动报告任务。"""
+    user_row = get_current_user()
+    if not user_row:
+        return jsonify({"error": "请先登录"}), 401
+    user_id = int(user_row["id"])
+
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        _file, error_msg, status_code = loaded
+        return jsonify({"error": error_msg}), status_code
+    _session_file, session = loaded
+
+    data = request.get_json(silent=True) or {}
+    raw_report_profile = str(data.get("report_profile", "") or "").strip().lower()
+    if raw_report_profile and raw_report_profile not in {"balanced", "quality"}:
+        return jsonify({"error": "report_profile 仅支持 balanced 或 quality"}), 400
+
+    requested_profile = normalize_report_profile_choice(raw_report_profile, fallback="balanced")
+    return jsonify(build_report_readiness_payload(session, requested_profile))
+
+
 @app.route('/api/sessions/<session_id>/generate-report', methods=['POST'])
 def generate_report(session_id):
     """异步生成访谈报告。"""
@@ -31784,25 +31939,9 @@ def generate_report(session_id):
             level_context=level_context,
         )
 
-    follow_up_blocker = build_report_follow_up_blocker(session)
-    if follow_up_blocker:
-        return jsonify({
-            "error": follow_up_blocker.get("message", "仍有待补充的关键信息，请先完成追问再生成报告"),
-            "error_code": "follow_up_required_before_report",
-            "follow_up_required": True,
-            "follow_up_blocker": follow_up_blocker,
-            "report_profile": report_profile,
-        }), 409
-
-    low_signal_blocker = build_report_low_signal_blocker(session)
-    if low_signal_blocker:
-        return jsonify({
-            "error": low_signal_blocker.get("message", "当前回答信号偏弱，请先补充高信息量回答再生成报告"),
-            "error_code": "high_signal_answer_required_before_report",
-            "high_signal_answer_required": True,
-            "evidence_signal_blocker": low_signal_blocker,
-            "report_profile": report_profile,
-        }), 409
+    readiness_payload = build_report_readiness_payload(session, report_profile)
+    if not bool(readiness_payload.get("ready")):
+        return jsonify(readiness_payload), 409
 
     current_record = get_report_generation_record(session_id) or {}
     worker_alive = is_report_generation_worker_alive(session_id)
@@ -43620,7 +43759,7 @@ def is_generation_relevant_access_log(path: str, method: str = "GET") -> bool:
         return True
 
     return bool(re.match(
-        r"^/api/sessions/[^/]+/(next-question|submit-answer|generate-report|undo-answer|skip-follow-up|complete-dimension|restart-interview|documents)$",
+        r"^/api/sessions/[^/]+/(next-question|submit-answer|generate-report|report-readiness|undo-answer|skip-follow-up|complete-dimension|restart-interview|documents)$",
         normalized,
     ))
 

@@ -4873,6 +4873,26 @@ class ComprehensiveApiTests(unittest.TestCase):
         )
         self.assertEqual(submit_resp.status_code, 200, submit_resp.get_data(as_text=True))
 
+        readiness_resp = self.client.post(
+            f"/api/sessions/{session_id}/report-readiness",
+            json={"report_profile": "balanced"},
+        )
+        self.assertEqual(readiness_resp.status_code, 200, readiness_resp.get_data(as_text=True))
+        readiness_payload = readiness_resp.get_json() or {}
+        self.assertFalse(readiness_payload.get("ready"))
+        self.assertEqual("follow_up_required_before_report", readiness_payload.get("error_code"))
+
+        resume_resp = self.client.post(
+            f"/api/sessions/{session_id}/next-question",
+            json={"dimension": dimension},
+        )
+        self.assertEqual(resume_resp.status_code, 200, resume_resp.get_data(as_text=True))
+        resume_payload = resume_resp.get_json() or {}
+        self.assertTrue(resume_payload.get("is_follow_up"))
+        self.assertTrue(resume_payload.get("report_readiness_resume"))
+        self.assertEqual([], resume_payload.get("options"))
+        self.assertIn("场景或依据", resume_payload.get("follow_up_reason", ""))
+
         response = self.client.post(
             f"/api/sessions/{session_id}/generate-report",
             json={"report_profile": "balanced"},
@@ -4947,6 +4967,26 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(3, blocker.get("formal_count"))
         self.assertEqual("pick_only", blocker.get("answer_mode"))
         self.assertEqual("low", blocker.get("evidence_intent"))
+
+        readiness_resp = self.client.post(
+            f"/api/sessions/{session_id}/report-readiness",
+            json={"report_profile": "balanced"},
+        )
+        self.assertEqual(readiness_resp.status_code, 200, readiness_resp.get_data(as_text=True))
+        readiness_payload = readiness_resp.get_json() or {}
+        self.assertFalse(readiness_payload.get("ready"))
+        self.assertEqual("high_signal_answer_required_before_report", readiness_payload.get("error_code"))
+
+        resume_resp = self.client.post(
+            f"/api/sessions/{session_id}/next-question",
+            json={"dimension": dimensions[2]},
+        )
+        self.assertEqual(resume_resp.status_code, 200, resume_resp.get_data(as_text=True))
+        resume_payload = resume_resp.get_json() or {}
+        self.assertTrue(resume_payload.get("is_follow_up"))
+        self.assertTrue(resume_payload.get("report_readiness_resume"))
+        self.assertEqual([], resume_payload.get("options"))
+        self.assertTrue((resume_payload.get("decision_meta") or {}).get("low_signal_resume"))
 
     def test_new_license_replaces_old_license_and_switches_level(self):
         self._register()

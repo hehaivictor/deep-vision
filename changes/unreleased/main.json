@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "d1887f8",
+  "committedAt": "2026-04-28T14:37:10+08:00",
+  "versionType": "minor",
+  "title": "优化报告生成前补答闭环",
+  "changes": [
+    "后端：新增报告生成预检接口，并复用待补追问与低信号拦截规则",
+    "后端：将报告生成拦截转换为可继续答题的补充问题",
+    "前端：生成报告前先预检，拦截时弹窗引导回到访谈继续补答",
+    "前端：支持无选项补答题的自由输入与提交",
+    "测试：覆盖待补追问和低信号场景的预检与继续答题链路"
+  ],
+  "changedFiles": [
+    "tests/test_api_comprehensive.py",
+    "web/app_modules/interview_runtime.js",
+    "web/app_modules/report_detail_runtime.js",
+    "web/index.html",
+    "web/server.py"
+  ]
+}

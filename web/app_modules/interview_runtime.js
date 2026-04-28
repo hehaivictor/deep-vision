@@ -457,8 +457,11 @@
             const questionText = result.question || '';
             const options = result.options || [];
             const aiRecommendation = this.normalizeAiRecommendation(result);
+            const allowsFreeText = result.report_readiness_resume === true
+                || result.answer_mode === 'free_text'
+                || result.answer_mode === 'pick_with_reason';
 
-            if (!questionText || options.length === 0) {
+            if (!questionText || (options.length === 0 && !allowsFreeText)) {
                 this.currentQuestion = this.createQuestionState({
                     serviceError: true,
                     errorTitle: '数据异常',
@@ -877,8 +880,19 @@
                         && Array.isArray(result.options)
                         && result.options.filter(option => String(option || '').trim()).length >= 2
                     );
+                    const hasUsableFreeTextQuestion = Boolean(
+                        typeof result.question === 'string'
+                        && result.question.trim()
+                        && Array.isArray(result.options)
+                        && result.options.length === 0
+                        && (
+                            result.report_readiness_resume === true
+                            || result.answer_mode === 'free_text'
+                            || result.answer_mode === 'pick_with_reason'
+                        )
+                    );
 
-                    if (!result.completed && !hasUsableQuestion) {
+                    if (!result.completed && !hasUsableQuestion && !hasUsableFreeTextQuestion) {
                         this.loadingQuestion = false;
                         this.thinkingStage = null;
                         this.stopTipRotation();
@@ -1025,8 +1039,13 @@
                 return false;
             }
 
-            if (!this.currentQuestion.text || this.currentQuestion.options.length === 0) {
+            if (!this.currentQuestion.text) {
                 return false;
+            }
+
+            const hasOptions = Array.isArray(this.currentQuestion.options) && this.currentQuestion.options.length > 0;
+            if (!hasOptions) {
+                return this.otherAnswerText.trim().length > 0;
             }
 
             if (this.currentQuestion.multiSelect) {
@@ -1067,6 +1086,7 @@
                 ? this.buildOtherResolutionPayload(otherText, otherReference)
                 : null;
             const questionMultiSelect = !!(this.currentQuestion.questionMultiSelect ?? this.currentQuestion.multiSelect);
+            const hasQuestionOptions = Array.isArray(this.currentQuestion.options) && this.currentQuestion.options.length > 0;
             const canEscalateSingleSelect = !questionMultiSelect
                 && this.otherSelected
                 && otherReference.pureReference
@@ -1075,13 +1095,19 @@
                 || (submissionOptions.allowSingleSelectMultiSubmit === true && canEscalateSingleSelect);
             const selectionEscalatedFromSingle = !questionMultiSelect && effectiveMultiSelect;
 
-            if (canEscalateSingleSelect && !effectiveMultiSelect) {
+            if (hasQuestionOptions && canEscalateSingleSelect && !effectiveMultiSelect) {
                 this.submitting = false;
                 this.openSingleSelectDisambiguation(otherReference.matchedOptions, otherText);
                 return;
             }
 
-            if (effectiveMultiSelect) {
+            if (!hasQuestionOptions) {
+                answer = otherText;
+                if (!answer) {
+                    this.submitting = false;
+                    return;
+                }
+            } else if (effectiveMultiSelect) {
                 const answers = [...this.selectedAnswers];
                 if (this.otherSelected && otherText) {
                     if (otherReference.matchedOptions.length > 0) {
