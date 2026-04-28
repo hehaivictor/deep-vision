@@ -1084,6 +1084,21 @@ function buildApiHandler(baseUrl, options = {}) {
       });
       return;
     }
+    if (method === 'POST' && pathname === '/api/sessions/session-report-001/report-readiness') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: json({
+          ready: true,
+          session_id: 'session-report-001',
+          report_profile: 'balanced',
+          follow_up_required: false,
+          high_signal_answer_required: false,
+          blockers: [],
+        }),
+      });
+      return;
+    }
     if (method === 'POST' && pathname === '/api/sessions/session-report-001/generate-report') {
       const now = nowIso();
       reportGenerationStatusBySession['session-report-001'] = {
@@ -1341,7 +1356,7 @@ async function performLiveLoginAndLicense(page, baseUrl, liveContext) {
       { timeout: 20000 },
     );
     await page.fill('#license-code-input', liveContext.licenseCode);
-    await page.getByRole('button', { name: '绑定 License', exact: true }).click({ timeout: 20000 });
+    await page.locator('button:visible').filter({ hasText: '升级专业版' }).first().click({ timeout: 20000 });
     const activateResponse = await activateResponsePromise;
     if (!activateResponse.ok()) {
       throw new Error(`License 绑定失败: status=${activateResponse.status()}`);
@@ -1398,7 +1413,7 @@ async function performLiveLoginAndLicense(page, baseUrl, liveContext) {
       { timeout: 20000 },
     );
     await page.fill('#license-code-input', liveContext.licenseCode);
-    await page.getByRole('button', { name: '绑定 License', exact: true }).click({ timeout: 20000 });
+    await page.locator('button:visible').filter({ hasText: '升级专业版' }).first().click({ timeout: 20000 });
     const activateResponse = await activateResponsePromise;
     if (!activateResponse.ok()) {
       throw new Error(`License 绑定失败: status=${activateResponse.status()}`);
@@ -1562,10 +1577,12 @@ async function scenarioAdminConfigEntry(browser, baseUrl) {
     baseUrl,
     () => {
       localStorage.setItem('deepvision_intro_seen', 'true');
+      localStorage.setItem('deepvision_guide_seen', 'true');
     },
     async (page) => {
       await page.goto(`${baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
-      await page.locator('button:has-text("管理员中心")').first().click({ timeout: 15000 });
+      await page.getByRole('button', { name: '账号与外观设置', exact: true }).click({ timeout: 15000 });
+      await page.locator('button:visible').filter({ hasText: '管理员中心' }).first().click({ timeout: 15000 });
       await page.waitForSelector('h2:has-text("管理员中心")', { timeout: 15000 });
     },
   );
@@ -1615,6 +1632,7 @@ async function scenarioLoginView(browser, baseUrl) {
     baseUrl,
     () => {
       localStorage.setItem('deepvision_intro_seen', 'true');
+      localStorage.setItem('deepvision_guide_seen', 'true');
     },
     async (page) => {
       await page.goto(`${baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
@@ -1757,7 +1775,7 @@ async function scenarioLicenseGateView(browser, baseUrl) {
       await page.waitForSelector('h2:has-text("请输入 License 继续使用")', { timeout: 15000 });
       await page.waitForSelector('text=登录后必须绑定有效 License，才能继续使用访谈与报告功能。', { timeout: 15000 });
       await page.waitForSelector('#license-code-input', { timeout: 15000 });
-      await page.getByRole('button', { name: '绑定 License', exact: true }).waitFor({ timeout: 15000 });
+      await page.locator('button:visible').filter({ hasText: '升级专业版' }).first().waitFor({ timeout: 15000 });
       await page.getByRole('button', { name: '退出登录', exact: true }).waitFor({ timeout: 15000 });
       const primaryNavVisible = await page.locator('button:visible').filter({ hasText: '新建访谈' }).count();
       if (primaryNavVisible > 0) {
@@ -1811,7 +1829,7 @@ async function scenarioLicenseActivateSuccess(browser, baseUrl) {
       await page.goto(`${baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('#license-code-input', { timeout: 15000 });
       await page.fill('#license-code-input', 'LIC-ACTIVATED-001');
-      await page.getByRole('button', { name: '绑定 License', exact: true }).click({ timeout: 15000 });
+      await page.locator('button:visible').filter({ hasText: '升级专业版' }).first().click({ timeout: 15000 });
       await page.waitForSelector('h2:has-text("访谈会话")', { timeout: 15000 });
       await page.locator('button:visible').filter({ hasText: '新建访谈' }).first().waitFor({ timeout: 15000 });
       const gateStillVisible = await page.locator('h2:has-text("请输入 License 继续使用")').count();
@@ -1867,7 +1885,7 @@ async function scenarioLicenseActivateRefresh(browser, baseUrl) {
       await page.goto(`${baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('#license-code-input', { timeout: 15000 });
       await page.fill('#license-code-input', 'LIC-ACTIVATED-REFRESH-001');
-      await page.getByRole('button', { name: '绑定 License', exact: true }).click({ timeout: 15000 });
+      await page.locator('button:visible').filter({ hasText: '升级专业版' }).first().click({ timeout: 15000 });
       await page.waitForSelector('h2:has-text("访谈会话")', { timeout: 15000 });
       await page.reload({ waitUntil: 'domcontentloaded' });
       await page.waitForSelector('h2:has-text("访谈会话")', { timeout: 15000 });
@@ -1906,6 +1924,7 @@ async function scenarioReportDetailFlow(browser, baseUrl) {
     baseUrl,
     () => {
       localStorage.setItem('deepvision_intro_seen', 'true');
+      localStorage.setItem('deepvision_guide_seen', 'true');
     },
     async (page) => {
       await page.goto(`${baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
@@ -1918,11 +1937,10 @@ async function scenarioReportDetailFlow(browser, baseUrl) {
         throw new Error(`报告详情标题异常: ${safeText(titleText, '<empty>')}`);
       }
       await page.waitForSelector('text=核心判断', { timeout: 15000 });
-      await page.getByRole('button', { name: '查看方案', exact: true }).waitFor({ timeout: 15000 });
       await page.getByRole('button', { name: '返回报告列表', exact: true }).waitFor({ timeout: 15000 });
     },
   );
-  return '可从报告列表进入报告详情，并看到方案入口按钮与核心报告内容';
+  return '可从报告列表进入报告详情，并看到核心报告内容与返回入口';
 }
 
 async function scenarioReportDetailRefresh(browser, baseUrl) {
@@ -2048,10 +2066,12 @@ async function scenarioAdminConfigTab(browser, baseUrl) {
     baseUrl,
     () => {
       localStorage.setItem('deepvision_intro_seen', 'true');
+      localStorage.setItem('deepvision_guide_seen', 'true');
     },
     async (page) => {
       await page.goto(`${baseUrl}/index.html`, { waitUntil: 'domcontentloaded' });
-      await page.locator('button:has-text("管理员中心")').first().click({ timeout: 15000 });
+      await page.getByRole('button', { name: '账号与外观设置', exact: true }).click({ timeout: 15000 });
+      await page.locator('button:visible').filter({ hasText: '管理员中心' }).first().click({ timeout: 15000 });
       await page.locator('button:has-text("配置中心")').first().click({ timeout: 15000 });
       await page.waitForSelector('h3:has-text("配置中心")', { timeout: 15000 });
       await page.waitForSelector('text=AI 配置', { timeout: 15000 });
@@ -2113,24 +2133,18 @@ async function scenarioLiveReportSolutionFlow(browser, baseUrl, liveContext) {
         throw new Error(`真实报告详情标题异常: ${titleText || '<empty>'}`);
       }
 
-      const popupPromise = page.waitForEvent('popup');
-      await page.getByRole('button', { name: '查看方案', exact: true }).click({ timeout: 15000 });
-      const popup = await popupPromise;
-      try {
-        await popup.waitForLoadState('domcontentloaded');
-        const solutionResponse = await popup.waitForResponse(
-          (response) => response.ok() && response.url().includes(`/api/reports/${encodeURIComponent(fixture.report_name)}/solution`),
-          { timeout: 25000 },
-        );
-        const payload = await solutionResponse.json();
-        if (safeText(payload?.report_name) !== fixture.report_name) {
-          throw new Error(`真实方案页 report_name 异常: ${safeText(payload?.report_name, '<empty>')}`);
-        }
-        await popup.waitForSelector('#solution-shell:not([hidden])', { timeout: 25000 });
-        await popup.waitForSelector('#btn-share', { timeout: 25000 });
-      } finally {
-        await popup.close();
+      const solutionUrl = `${baseUrl}/solution.html?report=${encodeURIComponent(fixture.report_name)}`;
+      await page.goto(solutionUrl, { waitUntil: 'domcontentloaded' });
+      const solutionResponse = await page.waitForResponse(
+        (response) => response.ok() && response.url().includes(`/api/reports/${encodeURIComponent(fixture.report_name)}/solution`),
+        { timeout: 25000 },
+      );
+      const payload = await solutionResponse.json();
+      if (safeText(payload?.report_name) !== fixture.report_name) {
+        throw new Error(`真实方案页 report_name 异常: ${safeText(payload?.report_name, '<empty>')}`);
       }
+      await page.waitForSelector('#solution-shell:not([hidden])', { timeout: 25000 });
+      await page.waitForSelector('#btn-share', { timeout: 25000 });
     },
     undefined,
     undefined,
@@ -2351,7 +2365,7 @@ function resolveSuite(name) {
         { id: 'license-gate-view', label: 'License 门禁前端视图' },
         { id: 'license-activate-success', label: 'License 绑定成功后切回业务壳' },
         { id: 'license-activate-refresh', label: 'License 绑定后刷新保持业务壳' },
-        { id: 'report-detail-flow', label: '报告详情与方案入口' },
+        { id: 'report-detail-flow', label: '报告详情恢复链路' },
         { id: 'report-detail-refresh', label: '报告详情刷新后保持详情态' },
         { id: 'interview-refresh', label: '访谈进行中刷新后保持当前会话' },
         { id: 'report-generation-refresh', label: '报告生成中刷新后保持进度' },

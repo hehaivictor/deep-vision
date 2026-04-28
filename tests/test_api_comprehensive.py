@@ -1499,6 +1499,7 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.assertEqual(apply_resp.status_code, 200, apply_resp.get_data(as_text=True))
             apply_payload = apply_resp.get_json() or {}
             self.assertEqual("apply", ((apply_payload.get("summary") or {}).get("mode")))
+            backup_id = Path(str((apply_payload.get("summary") or {}).get("backup_dir") or "")).name
 
             reused_apply = self.client.post(
                 "/api/admin/ownership-migrations/apply",
@@ -1516,7 +1517,14 @@ class ComprehensiveApiTests(unittest.TestCase):
             history_resp = self.client.get("/api/admin/ownership-migrations")
             self.assertEqual(history_resp.status_code, 200, history_resp.get_data(as_text=True))
             history_payload = history_resp.get_json() or {}
-            self.assertEqual(1, int(history_payload.get("count") or 0))
+            self.assertEqual(
+                1,
+                len([
+                    item
+                    for item in history_payload.get("items", [])
+                    if str(item.get("backup_id") or "") == backup_id
+                ]),
+            )
         finally:
             self.server.ADMIN_USER_IDS = old_admin_ids
             self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
@@ -2484,7 +2492,7 @@ class ComprehensiveApiTests(unittest.TestCase):
 
     def test_submit_answer_persists_ai_recommendation_for_undo_restore(self):
         self._register()
-        created = self._create_session(topic="AI推荐持久化")
+        created = self._create_session(topic="AI推荐持久化", interview_mode="standard")
         session_id = created["session_id"]
         dimension = list(created["dimensions"].keys())[0]
 
@@ -3013,7 +3021,7 @@ class ComprehensiveApiTests(unittest.TestCase):
 
     def test_complete_dimension_requires_coverage_threshold(self):
         self._register()
-        created = self._create_session(topic="完成维度测试")
+        created = self._create_session(topic="完成维度测试", interview_mode="standard")
         session_id = created["session_id"]
         dimension = list(created["dimensions"].keys())[0]
 

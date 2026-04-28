@@ -1034,7 +1034,7 @@ def normalize_report_profile_choice(raw_profile: str, fallback: str = "") -> str
 def get_report_v3_runtime_config(profile_choice: str = "") -> dict:
     profile = normalize_report_profile_choice(profile_choice, fallback=REPORT_V3_PROFILE)
     release_conservative_mode = bool(
-        _cfg_bool("REPORT_V3_RELEASE_CONSERVATIVE_MODE", REPORT_V3_RELEASE_CONSERVATIVE_MODE)
+        REPORT_V3_RELEASE_CONSERVATIVE_MODE
         and profile == "balanced"
     )
 

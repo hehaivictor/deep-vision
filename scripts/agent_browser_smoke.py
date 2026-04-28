@@ -100,8 +100,8 @@ EXTENDED_EXTRA_SCENARIOS = [
     ),
     BrowserScenario(
         "report-detail-flow",
-        "报告详情与方案入口",
-        "确认可从报告列表进入报告详情，并看到方案入口按钮与核心报告内容。",
+        "报告详情恢复链路",
+        "确认可从报告列表进入报告详情，并看到核心报告内容与返回入口。",
     ),
     BrowserScenario(
         "report-detail-refresh",

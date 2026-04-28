@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "ed749bf",
+  "committedAt": "2026-04-28T17:14:52+08:00",
+  "versionType": "patch",
+  "title": "修复稳定性测试夹具与报告配置",
+  "changes": [
+    "修复：调整报告 V3 保守模式运行时开关读取，确保测试动态配置生效。",
+    "测试：固定报告补答相关回归用例的访谈模式，消除跨用例历史断言污染。",
+    "测试：更新浏览器 smoke 夹具，适配当前管理员入口、License 文案和报告 readiness 检查。"
+  ],
+  "changedFiles": [
+    "scripts/agent_browser_smoke.py",
+    "scripts/agent_browser_smoke_runner.mjs",
+    "tests/test_api_comprehensive.py",
+    "web/server.py"
+  ]
+}
