@@ -5247,6 +5247,10 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertTrue(plan["force_follow_up"])
         self.assertEqual(plan["planner_mode"], "follow_up")
         self.assertTrue(plan["probe_slots"])
+        self.assertIn("为了让报告更准确", plan["reason"])
+        self.assertIn("具体原因", plan["reason"])
+        self.assertNotIn("待补证据占比", plan["reason"])
+        self.assertNotIn("证据密度", plan["reason"])
         self.assertTrue(decision["should_follow_up"])
         self.assertIn("mid_interview_preflight", decision["decision_factors"])
 

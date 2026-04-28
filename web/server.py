@@ -19437,6 +19437,39 @@ def _get_question_shadow_blocker_state(session: dict, dimension: str, ledger: Op
     }
 
 
+def build_preflight_user_reason(
+    missing_aspects: list,
+    *,
+    pending_ratio: float = 0.0,
+    evidence_density: float = 0.0,
+    blocked_sections: Optional[list] = None,
+) -> str:
+    """把内部证据指标转换为访谈页可展示的通俗提示。"""
+    clean_aspects = [
+        str(item or "").strip()
+        for item in (missing_aspects or [])
+        if str(item or "").strip()
+    ]
+    clean_sections = [
+        str(item or "").strip()
+        for item in (blocked_sections or [])
+        if str(item or "").strip()
+    ]
+
+    parts = []
+    if clean_aspects:
+        focus = "、".join(clean_aspects[:2])
+        parts.append(f"为了让报告更准确，请补充“{focus}”相关信息")
+    if pending_ratio >= 0.35 or evidence_density < 0.55:
+        parts.append("建议补一句具体原因、使用场景、角色影响或数字指标")
+    if clean_sections:
+        parts.append("这些信息会影响后续报告和方案建议")
+
+    if not parts:
+        return "当前信息还不够具体，请补充一个可写进报告的关键依据。"
+    return "；".join(parts[:3]) + "。"
+
+
 def plan_mid_interview_preflight(
     session: dict,
     dimension: str,
@@ -19539,16 +19572,12 @@ def plan_mid_interview_preflight(
                     cooldown_reason = "同类证据缺口刚刚追问过，先等待补答"
                 break
 
-    reasons = []
-    if missing_aspects:
-        reasons.append(f"未覆盖方面 {', '.join(missing_aspects[:2])}")
-    if pending_ratio >= 0.35:
-        reasons.append(f"待补证据占比 {pending_ratio:.0%}")
-    if evidence_density < 0.55:
-        reasons.append(f"证据密度 {evidence_density:.0%}")
-    if blocked_sections:
-        reasons.append(f"影子草案阻塞 {', '.join(blocked_sections)}")
-    reason_text = "；".join(reasons[:3]) if reasons else "当前维度仍有关键证据缺口"
+    reason_text = build_preflight_user_reason(
+        missing_aspects,
+        pending_ratio=pending_ratio,
+        evidence_density=evidence_density,
+        blocked_sections=blocked_sections,
+    )
 
     if should_intervene and not high_value_gap:
         should_intervene = False

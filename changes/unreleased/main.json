@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "9d4889a",
+  "committedAt": "2026-04-28T18:04:45+08:00",
+  "versionType": "patch",
+  "title": "优化智能追问提示文案",
+  "changes": [
+    "优化：将访谈证据预检提示从内部指标改为用户可理解的补充建议。",
+    "测试：增加回归断言，避免待补证据占比和证据密度等内部指标暴露到前端。"
+  ],
+  "changedFiles": [
+    "tests/test_security_regression.py",
+    "web/server.py"
+  ]
+}
