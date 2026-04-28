@@ -30469,6 +30469,59 @@ def complete_dimension(session_id):
 
 # ============ 文档上传 API ============
 
+REFERENCE_MATERIAL_CONTENT_LIMIT = 10000
+REFERENCE_MATERIAL_PREVIEW_LIMIT = 300
+
+
+def _compact_reference_material_preview(content: str, limit: int = REFERENCE_MATERIAL_PREVIEW_LIMIT) -> str:
+    text = re.sub(r"\s+", " ", str(content or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _build_reference_material_parse_meta(content: str, ext: str) -> dict:
+    text = str(content or "").strip()
+    upper_ext = str(ext or "").lstrip(".").upper()
+    parse_status = "parsed"
+    parse_error = ""
+    context_ready = bool(text)
+
+    failure_prefix = f"[{upper_ext} 解析失败:"
+    if upper_ext and text.startswith(failure_prefix):
+        parse_status = "failed"
+        parse_error = text.strip("[]")
+        context_ready = False
+    elif upper_ext and text.startswith(f"[{upper_ext} 文件:") and "转换脚本不存在" in text:
+        parse_status = "failed"
+        parse_error = "转换脚本不存在"
+        context_ready = False
+    elif text.startswith("[图片:") and any(marker in text for marker in (
+        "视觉功能已禁用",
+        "视觉 API 未配置",
+        "文件过大:",
+        "描述生成失败:",
+        "API 错误:",
+        "API 超时",
+        "处理失败:",
+    )):
+        parse_status = "degraded"
+        parse_error = text
+        context_ready = False
+
+    stored_chars = min(len(text), REFERENCE_MATERIAL_CONTENT_LIMIT)
+    return {
+        "parse_status": parse_status,
+        "parse_error": parse_error,
+        "original_size": 0,
+        "extracted_chars": len(text),
+        "stored_chars": stored_chars,
+        "is_truncated": len(text) > REFERENCE_MATERIAL_CONTENT_LIMIT,
+        "context_ready": bool(context_ready),
+        "preview": _compact_reference_material_preview(text),
+    }
+
+
 @app.route('/api/sessions/<session_id>/documents', methods=['POST'])
 def upload_document(session_id):
     """上传参考文档"""
@@ -30626,13 +30679,16 @@ def upload_document(session_id):
 
         latest_session_file, latest_session = latest_loaded
         latest_session = migrate_session_docs(latest_session)
+        stored_content = content[:REFERENCE_MATERIAL_CONTENT_LIMIT]
+        parse_meta = _build_reference_material_parse_meta(content, ext)
+        parse_meta["original_size"] = int(file_size or 0)
         uploaded_document = {
             "name": filename,
             "type": ext,
-            "content": content[:10000],  # 限制长度
+            "content": stored_content,
             "source": "upload",  # 用户上传
             "uploaded_at": get_utc_now(),
-            "original_size": int(file_size or 0),
+            **parse_meta,
         }
         if upload_archive:
             uploaded_document.update({

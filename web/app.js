@@ -3147,6 +3147,8 @@ function deepVision() {
 
             const sessionId = this.currentSession.session_id;
             let successCount = 0;
+            let readyCount = 0;
+            const uploadSummaries = [];
             this.documentUploading = true;
             try {
                 for (const file of Array.from(files)) {
@@ -3187,8 +3189,13 @@ function deepVision() {
                     );
 
                     if (response.ok) {
-                        await response.json();
+                        const payload = await response.json();
+                        const uploadedDoc = payload?.uploaded_document || {};
                         successCount += 1;
+                        if (uploadedDoc.context_ready) {
+                            readyCount += 1;
+                        }
+                        uploadSummaries.push(this.buildDocumentUploadSummary(uploadedDoc, file.name));
                     } else {
                         // 尝试获取详细错误信息
                         let errorMsg = '上传失败';
@@ -3209,7 +3216,11 @@ function deepVision() {
                 }
                 if (successCount > 0 && this.currentSession?.session_id === sessionId) {
                     this.currentSession = await this.apiCall(`/sessions/${sessionId}`);
-                    this.showToast(successCount === 1 ? '文档上传成功' : `已完成 ${successCount} 个文档上传`, 'success');
+                    const firstSummary = uploadSummaries[0] || '';
+                    const message = successCount === 1
+                        ? (firstSummary || '文档上传成功')
+                        : `已完成 ${successCount} 个文档上传，${readyCount} 个已纳入上下文`;
+                    this.showToast(message, readyCount > 0 ? 'success' : 'warning');
                 }
             } finally {
                 this.documentUploading = false;
@@ -3251,6 +3262,54 @@ function deepVision() {
         getDocumentKey(doc, index = 0) {
             if (!doc || typeof doc !== 'object') return `doc-${index}`;
             return doc.doc_id || `${doc.uploaded_at || 'unknown'}-${doc.name || 'doc'}-${doc.source || 'upload'}-${index}`;
+        },
+
+        formatDocumentCharCount(value) {
+            const count = Number(value || 0);
+            if (!Number.isFinite(count) || count <= 0) return '0 字';
+            return `${Math.round(count).toLocaleString('zh-CN')} 字`;
+        },
+
+        getDocumentContextStatus(doc) {
+            if (!doc || typeof doc !== 'object') return '状态未知';
+            if (doc.context_ready) {
+                if (doc.is_truncated) return '已纳入上下文 · 已截断';
+                return '已纳入上下文';
+            }
+            if (doc.parse_status === 'failed') return '解析失败 · 未进入上下文';
+            if (doc.parse_status === 'degraded') return '处理降级 · 未进入上下文';
+            return '未进入上下文';
+        },
+
+        getDocumentContextStatusClass(doc) {
+            if (doc?.context_ready) {
+                return doc?.is_truncated
+                    ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                    : 'bg-emerald-50 text-emerald-700 border border-emerald-200';
+            }
+            return 'bg-red-50 text-red-700 border border-red-200';
+        },
+
+        getDocumentContextDetail(doc) {
+            if (!doc || typeof doc !== 'object') return '';
+            const extracted = this.formatDocumentCharCount(doc.extracted_chars);
+            const stored = this.formatDocumentCharCount(doc.stored_chars);
+            if (doc.context_ready) {
+                return `已解析 ${extracted}，保存 ${stored}`;
+            }
+            const error = String(doc.parse_error || '').replace(/\s+/g, ' ').trim();
+            return error ? error.slice(0, 80) : `已解析 ${extracted}，但未形成有效上下文`;
+        },
+
+        buildDocumentUploadSummary(doc, fallbackName = '文档') {
+            const name = doc?.name || fallbackName;
+            if (!doc || typeof doc !== 'object') return `${name} 上传完成`;
+            if (doc.context_ready) {
+                const extracted = this.formatDocumentCharCount(doc.extracted_chars);
+                const suffix = doc.is_truncated ? '，内容较长已截断' : '';
+                return `${name} 已解析 ${extracted} 并纳入上下文${suffix}`;
+            }
+            return `${name} 已上传，但未进入上下文：${this.getDocumentContextStatus(doc)}`;
         },
 
 

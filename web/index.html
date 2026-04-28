@@ -1614,7 +1614,13 @@
                                                         </svg>
                                                     </template>
                                                 </span>
-                                                <span class="truncate flex-1" x-text="doc.name"></span>
+                                                <div class="min-w-0 flex-1">
+                                                    <div class="truncate" x-text="doc.name"></div>
+                                                    <div class="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                                                        <span class="px-1.5 py-0.5 rounded-full" :class="getDocumentContextStatusClass(doc)" x-text="getDocumentContextStatus(doc)"></span>
+                                                        <span class="text-gray-500 truncate" x-text="getDocumentContextDetail(doc)"></span>
+                                                    </div>
+                                                </div>
                                                 <button @click.stop="removeDocument(index)" class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-500 transition-all cursor-pointer" aria-label="删除文档">
                                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -1697,7 +1703,13 @@
                                                                     </svg>
                                                                 </template>
                                                             </span>
-                                                            <span class="truncate flex-1" x-text="doc.name"></span>
+                                                            <div class="min-w-0 flex-1">
+                                                                <div class="truncate" x-text="doc.name"></div>
+                                                                <div class="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                                                                    <span class="px-1.5 py-0.5 rounded-full" :class="getDocumentContextStatusClass(doc)" x-text="getDocumentContextStatus(doc)"></span>
+                                                                    <span class="text-gray-500 truncate" x-text="getDocumentContextDetail(doc)"></span>
+                                                                </div>
+                                                            </div>
                                                             <button @click="removeDocument(index)" class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-500 transition-all cursor-pointer" aria-label="删除文档">
                                                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>

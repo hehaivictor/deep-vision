@@ -2,6 +2,7 @@ import io
 import importlib.util
 import inspect
 import json
+import subprocess
 import sys
 import tempfile
 import threading
@@ -3045,6 +3046,12 @@ class ComprehensiveApiTests(unittest.TestCase):
         uploaded_document = upload_payload.get("uploaded_document") or {}
         self.assertTrue(uploaded_document.get("doc_id"))
         self.assertEqual(uploaded_document.get("name"), "note.md")
+        self.assertEqual(uploaded_document.get("parse_status"), "parsed")
+        self.assertTrue(uploaded_document.get("context_ready"))
+        self.assertEqual(uploaded_document.get("extracted_chars"), len("# title\nhello"))
+        self.assertEqual(uploaded_document.get("stored_chars"), len("# title\nhello"))
+        self.assertFalse(uploaded_document.get("is_truncated"))
+        self.assertIn("title", uploaded_document.get("preview", ""))
 
         get_session_resp = self.client.get(f"/api/sessions/{session_id}")
         self.assertEqual(get_session_resp.status_code, 200)
@@ -3052,6 +3059,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(len(materials), 1)
         self.assertEqual(materials[0]["name"], "note.md")
         self.assertEqual(materials[0].get("doc_id"), uploaded_document.get("doc_id"))
+        self.assertTrue(materials[0].get("context_ready"))
 
         cn_name = "开目AI产品手册.md"
         upload_cn_resp = self.client.post(
@@ -3085,6 +3093,85 @@ class ComprehensiveApiTests(unittest.TestCase):
         invalid_name = self.client.delete(f"/api/sessions/{session_id}/documents/../hack.md")
         self.assertEqual(invalid_name.status_code, 400)
 
+    def test_document_upload_records_truncation_diagnostics(self):
+        self._register()
+        session_id = self._create_session(topic="文档截断诊断测试")["session_id"]
+        long_content = ("长文档内容。" * 2200).encode("utf-8")
+
+        upload_resp = self.client.post(
+            f"/api/sessions/{session_id}/documents",
+            data={"file": (io.BytesIO(long_content), "long.md")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(upload_resp.status_code, 200, upload_resp.get_data(as_text=True))
+        uploaded_document = (upload_resp.get_json() or {}).get("uploaded_document") or {}
+        self.assertEqual(uploaded_document.get("parse_status"), "parsed")
+        self.assertTrue(uploaded_document.get("context_ready"))
+        self.assertGreater(uploaded_document.get("extracted_chars", 0), uploaded_document.get("stored_chars", 0))
+        self.assertEqual(uploaded_document.get("stored_chars"), self.server.REFERENCE_MATERIAL_CONTENT_LIMIT)
+        self.assertTrue(uploaded_document.get("is_truncated"))
+        self.assertLessEqual(len(uploaded_document.get("content", "")), self.server.REFERENCE_MATERIAL_CONTENT_LIMIT)
+
+    def test_document_upload_marks_conversion_failure_not_context_ready(self):
+        self._register()
+        session_id = self._create_session(topic="文档解析失败诊断测试")["session_id"]
+        old_run = subprocess.run
+
+        def _fake_convert_failure(*args, **kwargs):
+            return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="simulated convert failure")
+
+        try:
+            subprocess.run = _fake_convert_failure
+            upload_resp = self.client.post(
+                f"/api/sessions/{session_id}/documents",
+                data={"file": (io.BytesIO(b"fake docx"), "broken.docx")},
+                content_type="multipart/form-data",
+            )
+        finally:
+            subprocess.run = old_run
+
+        self.assertEqual(upload_resp.status_code, 200, upload_resp.get_data(as_text=True))
+        uploaded_document = (upload_resp.get_json() or {}).get("uploaded_document") or {}
+        self.assertEqual(uploaded_document.get("parse_status"), "failed")
+        self.assertFalse(uploaded_document.get("context_ready"))
+        self.assertIn("解析失败", uploaded_document.get("parse_error", ""))
+        self.assertGreater(uploaded_document.get("extracted_chars", 0), 0)
+
+    def test_interview_prompt_reports_reference_context_usage(self):
+        self._register()
+        session = self._create_session(topic="参考资料上下文诊断")
+        dimension = next(iter(session.get("dimensions", {}) or {}))
+        session["reference_materials"] = [
+            {
+                "name": "有效资料.md",
+                "content": "有效资料内容：系统需要支持微信登录和多实例共享数据。",
+                "context_ready": True,
+                "parse_status": "parsed",
+            },
+            {
+                "name": "失败资料.docx",
+                "content": "[DOCX 解析失败: simulated convert failure]",
+                "context_ready": False,
+                "parse_status": "failed",
+                "parse_error": "DOCX 解析失败",
+            },
+        ]
+
+        prompt, _truncated_docs, meta = self.server.build_interview_prompt(
+            session,
+            dimension,
+            [],
+            session_id=session["session_id"],
+        )
+
+        self.assertIn("有效资料内容", prompt)
+        self.assertNotIn("simulated convert failure", prompt)
+        self.assertTrue(meta.get("reference_context_used"))
+        self.assertGreater(meta.get("reference_context_chars", 0), 0)
+        self.assertEqual(meta.get("reference_doc_count"), 1)
+        self.assertEqual(meta.get("reference_doc_skipped_count"), 1)
+        self.assertIn(meta.get("reference_context_mode"), {"raw", "summary_or_truncated"})
+
     def test_document_upload_image_degrades_when_vision_disabled(self):
         self._register()
         license_code = self._generate_license_batch(note="图片上传降级测试")["licenses"][0]["code"]
@@ -3103,6 +3190,8 @@ class ComprehensiveApiTests(unittest.TestCase):
             uploaded_document = payload.get("uploaded_document") or {}
             self.assertEqual(uploaded_document.get("name"), "diagram.png")
             self.assertIn("视觉功能已禁用", uploaded_document.get("content", ""))
+            self.assertEqual(uploaded_document.get("parse_status"), "degraded")
+            self.assertFalse(uploaded_document.get("context_ready"))
         finally:
             self.server.ENABLE_VISION = old_enable_vision
 
@@ -3134,6 +3223,8 @@ class ComprehensiveApiTests(unittest.TestCase):
             uploaded_document = payload.get("uploaded_document") or {}
             self.assertEqual(uploaded_document.get("name"), "timeout.png")
             self.assertIn("API 超时", uploaded_document.get("content", ""))
+            self.assertEqual(uploaded_document.get("parse_status"), "degraded")
+            self.assertFalse(uploaded_document.get("context_ready"))
         finally:
             self.server.ENABLE_VISION = old_enable_vision
             self.server.ZHIPU_API_KEY = old_api_key

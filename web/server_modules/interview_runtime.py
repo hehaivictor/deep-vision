@@ -97,6 +97,11 @@ def build_interview_prompt(
         else:
             effective_reference_materials = []
             doc_budget = 0
+    ready_reference_materials = [
+        doc
+        for doc in effective_reference_materials
+        if not isinstance(doc, dict) or doc.get("context_ready", True)
+    ]
 
     context_parts = [f"当前访谈主题：{topic_text}"]
 
@@ -106,9 +111,9 @@ def build_interview_prompt(
     total_doc_length = 0
     truncated_docs = []
     summarized_docs = []
-    if effective_reference_materials and doc_budget > 0:
+    if ready_reference_materials and doc_budget > 0:
         context_parts.append("\n## 参考资料：")
-        for doc in effective_reference_materials:
+        for doc in ready_reference_materials:
             if doc.get("content") and total_doc_length < doc_budget:
                 remaining = doc_budget - total_doc_length
                 if is_lightweight_output and remaining < min(SMART_SUMMARY_TARGET, 600):
@@ -581,8 +586,17 @@ def build_interview_prompt(
         "runtime_probe": bool(runtime_probe),
         "formal_questions_count": formal_questions_count,
         "has_reference_docs": bool(reference_materials),
-        "reference_docs_compact_mode": bool(is_lightweight_output and effective_reference_materials),
+        "reference_docs_compact_mode": bool(is_lightweight_output and ready_reference_materials),
         "has_truncated_docs": bool(truncated_docs),
+        "reference_context_used": bool(total_doc_length > 0),
+        "reference_context_chars": int(total_doc_length),
+        "reference_doc_count": int(len(ready_reference_materials)),
+        "reference_context_mode": (
+            "none"
+            if total_doc_length <= 0
+            else ("light" if is_lightweight_output else ("summary_or_truncated" if summarized_docs or truncated_docs else "raw"))
+        ),
+        "reference_doc_skipped_count": max(0, len(effective_reference_materials) - len(ready_reference_materials)),
         "evidence_ledger": {
             "formal_questions_total": int((evidence_ledger or {}).get("formal_questions_total", 0) or 0),
             "overall_evidence_density": float((evidence_ledger or {}).get("overall_evidence_density", 0.0) or 0.0),
