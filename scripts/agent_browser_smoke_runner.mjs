@@ -1186,6 +1186,92 @@ function buildApiHandler(baseUrl, options = {}) {
       });
       return;
     }
+    if (method === 'GET' && pathname === '/api/admin/usage/summary') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: json({
+          filters: { range: '30d', from: '', to: '', query: '', scope: '' },
+          summary: {
+            total_users: 2,
+            matched_users: 2,
+            active_users: 1,
+            session_count: 3,
+            report_count: 2,
+            document_count: 1,
+            document_size_total: 3072,
+            license_status_counts: { active: 1, missing: 1 },
+            license_level_counts: { professional: 1, missing: 1 },
+            instance_scope_counts: { 'cloud-a': 1 },
+            active_definition: '统计周期内有业务活动',
+            login_tracking_available: false,
+          },
+        }),
+      });
+      return;
+    }
+    if (method === 'GET' && pathname === '/api/admin/usage/users') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: json({
+          filters: { range: '30d', from: '', to: '', query: '', scope: '' },
+          summary: {
+            total_users: 2,
+            matched_users: 2,
+            active_users: 1,
+            session_count: 3,
+            report_count: 2,
+            document_count: 1,
+            document_size_total: 3072,
+          },
+          pagination: { page: 1, page_size: 20, count: 2, total_pages: 1 },
+          items: [
+            {
+              user: { id: 1, account: '运营测试用户', phone: '13800000000', email: '', wechat_bound: true },
+              license: { status: 'active', level_key: 'professional', level_name: '专业版', expires_at: '' },
+              usage: {
+                active: true,
+                session_count: 3,
+                report_count: 2,
+                document_count: 1,
+                document_size_total: 3072,
+                answer_count: 8,
+                instance_scope_keys: ['cloud-a'],
+                last_activity_at: '2026-04-29T00:00:00Z',
+                last_activity_in_range_at: '2026-04-29T00:00:00Z',
+                last_login_at: '',
+                login_tracking_available: false,
+              },
+            },
+          ],
+        }),
+      });
+      return;
+    }
+    if (method === 'GET' && pathname.startsWith('/api/admin/usage/users/')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: json({
+          filters: { range: '30d', from: '', to: '', query: '', scope: '' },
+          summary: {},
+          detail: {
+            user_id: 1,
+            found: true,
+            profile: {
+              user: { id: 1, account: '运营测试用户', phone: '13800000000', email: '', wechat_bound: true },
+              license: { status: 'active', level_key: 'professional', level_name: '专业版' },
+              usage: { active: true, session_count: 1, report_count: 1, document_count: 1 },
+            },
+            sessions: [{ session_id: 'demo-session', topic: '运营统计会话', status: 'completed', updated_at: '2026-04-29T00:00:00Z' }],
+            reports: [{ file_name: 'demo-report.md', topic: '运营统计报告', created_at: '2026-04-29T00:00:00Z' }],
+            documents: [{ doc_id: 'demo-doc', name: '需求文档.docx', parse_status: 'parsed', original_size: 3072, uploaded_at: '2026-04-29T00:00:00Z' }],
+          },
+        }),
+      });
+      return;
+    }
     if (method === 'GET' && pathname === '/api/admin/config-center') {
       await route.fulfill({ status: 200, contentType: 'application/json; charset=utf-8', body: json(configPayload) });
       return;

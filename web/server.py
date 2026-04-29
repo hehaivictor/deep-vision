@@ -73,6 +73,7 @@ from web.server_modules.runtime_bootstrap import (
 from web.server_modules.object_storage_history import ObjectStorageHistoryService
 from web.server_modules.admin_config_center import AdminConfigCenterService
 from web.server_modules.ownership_admin_flow import AdminOwnershipMigrationService
+from web.server_modules.admin_usage import build_admin_usage_report, parse_usage_filters
 from web.server_modules.report_generation_runtime import (
     _classify_action_timeline_bucket_v3 as module_classify_action_timeline_bucket_v3,
     _is_action_metric_measurable_v3 as module_is_action_metric_measurable_v3,
@@ -43579,6 +43580,64 @@ def admin_search_users():
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify({"items": items, "count": len(items)})
+
+
+def _build_admin_usage_payload(detail_user_id: Optional[int] = None) -> dict:
+    ensure_session_index_bootstrapped()
+    ensure_report_index_bootstrapped()
+    now = datetime.now(timezone.utc)
+    filters = parse_usage_filters(request.args, now=now)
+    license_items = [
+        _build_admin_license_item(item, now=now)
+        for item in _fetch_admin_license_rows()
+    ]
+    return build_admin_usage_report(
+        auth_db_path=AUTH_DB_PATH,
+        meta_index_db_path=get_meta_index_db_target(),
+        license_items=license_items,
+        filters=filters,
+        detail_user_id=detail_user_id,
+    )
+
+
+@app.route('/api/admin/usage/summary', methods=['GET'])
+@require_admin
+@require_valid_license
+def admin_usage_summary():
+    try:
+        payload = _build_admin_usage_payload()
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({
+        "filters": payload.get("filters", {}),
+        "summary": payload.get("summary", {}),
+    })
+
+
+@app.route('/api/admin/usage/users', methods=['GET'])
+@require_admin
+@require_valid_license
+def admin_usage_users():
+    try:
+        payload = _build_admin_usage_payload()
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(payload)
+
+
+@app.route('/api/admin/usage/users/<int:user_id>', methods=['GET'])
+@require_admin
+@require_valid_license
+def admin_usage_user_detail(user_id: int):
+    try:
+        payload = _build_admin_usage_payload(detail_user_id=user_id)
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({
+        "filters": payload.get("filters", {}),
+        "summary": payload.get("summary", {}),
+        "detail": payload.get("detail", {}),
+    })
 
 
 @app.route('/api/admin/ownership-migrations/audit', methods=['POST'])

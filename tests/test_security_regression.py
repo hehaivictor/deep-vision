@@ -252,6 +252,8 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual(ordinary_get_license_summary.status_code, 403)
         ordinary_get_admin_users = self.client.get("/api/admin/users")
         self.assertEqual(ordinary_get_admin_users.status_code, 403)
+        ordinary_get_admin_usage = self.client.get("/api/admin/usage/users")
+        self.assertEqual(ordinary_get_admin_usage.status_code, 403)
         ordinary_get_license_bootstrap_status = self.client.get("/api/admin/licenses/bootstrap/status")
         self.assertEqual(ordinary_get_license_bootstrap_status.status_code, 403)
         ordinary_post_license_bootstrap = self.client.post(
@@ -342,6 +344,16 @@ class SecurityRegressionTests(unittest.TestCase):
                 "license_required",
                 (admin_get_users_without_valid_license.get_json() or {}).get("error_code"),
             )
+            admin_get_usage_without_valid_license = self.client.get("/api/admin/usage/users")
+            self.assertEqual(
+                admin_get_usage_without_valid_license.status_code,
+                403,
+                admin_get_usage_without_valid_license.get_data(as_text=True),
+            )
+            self.assertEqual(
+                "license_required",
+                (admin_get_usage_without_valid_license.get_json() or {}).get("error_code"),
+            )
             admin_get_bootstrap_status = self.client.get("/api/admin/licenses/bootstrap/status")
             self.assertEqual(admin_get_bootstrap_status.status_code, 200, admin_get_bootstrap_status.get_data(as_text=True))
             admin_get_config_center_without_valid_license = self.client.get("/api/admin/config-center")
@@ -413,6 +425,8 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertEqual(admin_reset_metrics.status_code, 200, admin_reset_metrics.get_data(as_text=True))
             admin_get_users = self.client.get("/api/admin/users")
             self.assertEqual(admin_get_users.status_code, 200, admin_get_users.get_data(as_text=True))
+            admin_get_usage = self.client.get("/api/admin/usage/users")
+            self.assertEqual(admin_get_usage.status_code, 200, admin_get_usage.get_data(as_text=True))
             admin_get_config_center = self.client.get("/api/admin/config-center")
             self.assertEqual(admin_get_config_center.status_code, 200, admin_get_config_center.get_data(as_text=True))
             admin_save_config_center = self.client.post(

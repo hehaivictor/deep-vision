@@ -19,6 +19,28 @@
         opsMetricsLastLoadedAt: 0,
         opsMetricsLastN: 200,
         adminTab: 'overview',
+        adminUsageSummary: null,
+        adminUsageUsers: [],
+        adminUsageDetail: null,
+        adminUsageLoading: false,
+        adminUsageDetailLoading: false,
+        adminUsageError: '',
+        adminUsageFilters: {
+            range: '30d',
+            q: '',
+            scope: '',
+            level_key: '',
+            license_status: '',
+            active: '',
+            page: 1,
+            page_size: 20,
+        },
+        adminUsagePagination: {
+            page: 1,
+            page_size: 20,
+            count: 0,
+            total_pages: 1,
+        },
         adminSummariesInfo: null,
         adminSummariesLoading: false,
         adminSummariesError: '',
@@ -84,7 +106,7 @@
 
         switchAdminTab(tab = 'overview') {
             if (!this.canViewAdminCenter()) return;
-            const allowedTabs = ['overview', 'license', 'ops', 'summaries', 'ownership', 'config'];
+            const allowedTabs = ['overview', 'usage', 'license', 'ops', 'summaries', 'ownership', 'config'];
             const normalizedTab = allowedTabs.includes(tab) ? tab : 'overview';
             this.adminTab = normalizedTab;
             void this.ensureAdminDataForTab(normalizedTab);
@@ -129,6 +151,13 @@
                 }
                 return;
             }
+            if (tab === 'usage') {
+                await Promise.all([
+                    this.loadAdminUsageSummary({ silent: true }),
+                    this.loadAdminUsageUsers({ silent: true }),
+                ]);
+                return;
+            }
             if (tab === 'ops') {
                 await this.loadOpsMetrics({ force: !this.opsMetrics });
                 return;
@@ -151,11 +180,114 @@
                 this.loadOpsMetrics({ silent: true }),
                 this.loadAdminSummariesInfo({ silent: true }),
                 this.loadAdminOwnershipHistory({ silent: true }),
+                this.loadAdminUsageSummary({ silent: true }),
             ];
             if (this.canManageAdminLicenses()) {
                 tasks.push(this.loadAdminLicenseSummary({ silent: true }));
             }
             await Promise.all(tasks);
+        },
+
+        buildAdminUsageQuery(extra = {}) {
+            const filters = {
+                ...this.adminUsageFilters,
+                ...extra,
+            };
+            const params = new URLSearchParams();
+            Object.entries(filters).forEach(([key, value]) => {
+                const text = String(value ?? '').trim();
+                if (text) params.set(key, text);
+            });
+            return params.toString();
+        },
+
+        async loadAdminUsageSummary(options = {}) {
+            const { silent = false } = options;
+            if (!this.canViewAdminCenter()) return null;
+            this.adminUsageError = '';
+            try {
+                const query = this.buildAdminUsageQuery({ page: 1, page_size: 1 });
+                const payload = await this.apiCall(`/admin/usage/summary${query ? `?${query}` : ''}`, {
+                    skipAuthRedirect: true,
+                });
+                this.adminUsageSummary = payload?.summary || null;
+                return this.adminUsageSummary;
+            } catch (error) {
+                const message = error?.message || '用户统计加载失败';
+                this.adminUsageError = message;
+                if (!silent) this.showToast(message, 'error');
+                return null;
+            }
+        },
+
+        async loadAdminUsageUsers(options = {}) {
+            const { page = this.adminUsageFilters.page || 1, silent = false } = options;
+            if (!this.canViewAdminCenter()) return null;
+            this.adminUsageLoading = true;
+            this.adminUsageError = '';
+            try {
+                this.adminUsageFilters.page = Math.max(1, Number(page) || 1);
+                const query = this.buildAdminUsageQuery();
+                const payload = await this.apiCall(`/admin/usage/users${query ? `?${query}` : ''}`, {
+                    skipAuthRedirect: true,
+                });
+                this.adminUsageSummary = payload?.summary || this.adminUsageSummary;
+                this.adminUsageUsers = Array.isArray(payload?.items) ? payload.items : [];
+                this.adminUsagePagination = {
+                    page: Number(payload?.pagination?.page) || this.adminUsageFilters.page,
+                    page_size: Number(payload?.pagination?.page_size) || this.adminUsageFilters.page_size,
+                    count: Number(payload?.pagination?.count) || 0,
+                    total_pages: Number(payload?.pagination?.total_pages) || 1,
+                };
+                return payload;
+            } catch (error) {
+                const message = error?.message || '用户统计列表加载失败';
+                this.adminUsageError = message;
+                if (!silent) this.showToast(message, 'error');
+                return null;
+            } finally {
+                this.adminUsageLoading = false;
+            }
+        },
+
+        async refreshAdminUsage() {
+            this.adminUsageFilters.page = 1;
+            await Promise.all([
+                this.loadAdminUsageSummary({ silent: true }),
+                this.loadAdminUsageUsers({ page: 1 }),
+            ]);
+        },
+
+        async loadAdminUsageDetail(userId) {
+            const normalizedUserId = Number(userId) || 0;
+            if (!this.canViewAdminCenter() || normalizedUserId <= 0) return null;
+            this.adminUsageDetailLoading = true;
+            this.adminUsageError = '';
+            try {
+                const query = this.buildAdminUsageQuery({ page: 1, page_size: 1 });
+                const payload = await this.apiCall(`/admin/usage/users/${normalizedUserId}${query ? `?${query}` : ''}`, {
+                    skipAuthRedirect: true,
+                });
+                this.adminUsageDetail = payload?.detail || null;
+                return this.adminUsageDetail;
+            } catch (error) {
+                const message = error?.message || '用户详情加载失败';
+                this.adminUsageError = message;
+                this.showToast(message, 'error');
+                return null;
+            } finally {
+                this.adminUsageDetailLoading = false;
+            }
+        },
+
+        goToAdminUsagePage(page) {
+            const totalPages = Math.max(1, Number(this.adminUsagePagination?.total_pages) || 1);
+            const nextPage = Math.min(totalPages, Math.max(1, Number(page) || 1));
+            void this.loadAdminUsageUsers({ page: nextPage });
+        },
+
+        getAdminUsageTotalPages() {
+            return Math.max(1, Number(this.adminUsagePagination?.total_pages) || 1);
         },
 
         async loadAdminSummariesInfo(options = {}) {

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "40d3290",
+  "committedAt": "2026-04-29T20:14:31+08:00",
+  "versionType": "minor",
+  "title": "新增用户运营统计管理功能",
+  "changes": [
+    "后端新增管理员用户使用统计接口，支持跨实例汇总会话、报告和参考文档活动。",
+    "前端管理员中心新增用户统计页签，提供活跃、License、实例和使用明细查看。",
+    "测试补齐跨实例统计、权限边界和浏览器 smoke mock 覆盖。"
+  ],
+  "changedFiles": [
+    "scripts/agent_browser_smoke_runner.mjs",
+    "tests/test_api_comprehensive.py",
+    "tests/test_security_regression.py",
+    "web/app_modules/admin_center_state.js",
+    "web/index.html",
+    "web/server.py",
+    "web/server_modules/admin_usage.py"
+  ]
+}

@@ -11,7 +11,7 @@ import types
 import unittest
 import uuid
 from concurrent.futures import Future
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -897,6 +897,124 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.assertEqual("revoked", revoked_detail.get_json().get("status"))
             self.assertEqual("批量撤销测试", revoked_detail.get_json().get("revoked_reason"))
         finally:
+            self.server.ADMIN_USER_IDS = old_admin_ids
+            self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
+
+    def test_admin_usage_endpoints_cover_cross_instance_business_activity(self):
+        admin_user = self._register()
+        user_client = self.server.app.test_client()
+        target_user = self._register(client=user_client)
+        old_admin_ids = set(self.server.ADMIN_USER_IDS)
+        old_admin_phones = set(self.server.ADMIN_PHONE_NUMBERS)
+        old_scope = self.server.INSTANCE_SCOPE_KEY
+        try:
+            self.server.ADMIN_USER_IDS = {int(admin_user["id"])}
+            self.server.ADMIN_PHONE_NUMBERS = set()
+
+            admin_license = self._generate_license_batch(note="运营统计管理员激活")["licenses"][0]["code"]
+            self._activate_license(admin_license)
+            target_license = self._generate_license_batch(level_key="professional", note="运营统计专业版")["licenses"][0]["code"]
+            ok, status_code, payload = self.server.activate_license_for_user(target_license, int(target_user["id"]))
+            self.assertTrue(ok, payload)
+            self.assertEqual(200, status_code)
+
+            now_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            for scope_key in ("cloud-a", "cloud-b"):
+                session_id = f"usage-{scope_key}-{uuid.uuid4().hex[:8]}"
+                session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+                self.server.save_session_json_and_sync(
+                    session_file,
+                    {
+                        "session_id": session_id,
+                        "topic": f"运营统计 {scope_key}",
+                        "status": "completed",
+                        "created_at": now_iso,
+                        "updated_at": now_iso,
+                        "owner_user_id": int(target_user["id"]),
+                        "instance_scope_key": scope_key,
+                        "dimensions": {},
+                        "interview_log": [
+                            {"question": "问题1", "answer": "回答1"},
+                            {"question": "问题2", "answer": "回答2"},
+                        ],
+                        "reference_materials": [
+                            {
+                                "doc_id": f"doc-{scope_key}",
+                                "name": f"{scope_key}.docx",
+                                "type": ".docx",
+                                "content": "文档正文不应出现在运营统计接口",
+                                "uploaded_at": now_iso,
+                                "parse_status": "parsed",
+                                "context_ready": True,
+                                "original_size": 3072,
+                                "stored_chars": 18,
+                            }
+                        ],
+                    },
+                )
+                report_name = self._build_scoped_report_name(
+                    f"运营统计 {scope_key}",
+                    date_str=datetime.now(timezone.utc).strftime("%Y%m%d"),
+                    session_id=uuid.uuid4().hex[:8],
+                )
+                (self.server.REPORTS_DIR / report_name).write_text("# 运营统计报告\n", encoding="utf-8")
+                self.server.INSTANCE_SCOPE_KEY = scope_key
+                self.server.set_report_owner_id(report_name, int(target_user["id"]))
+                with self.server.get_meta_index_connection() as conn:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO report_index (
+                            file_name, owner_user_id, instance_scope_key, deleted, size, created_at,
+                            session_id, topic, scenario_name, report_template, report_type,
+                            report_profile, source_report_name, report_variant_label,
+                            file_mtime_ns, file_size, indexed_at
+                        ) VALUES (?, ?, ?, 0, ?, ?, ?, ?, '', '', 'standard', 'balanced', '', '', 0, ?, ?)
+                        """,
+                        (
+                            report_name,
+                            int(target_user["id"]),
+                            scope_key,
+                            len("# 运营统计报告\n".encode("utf-8")),
+                            now_iso,
+                            session_id,
+                            f"运营统计 {scope_key}",
+                            len("# 运营统计报告\n".encode("utf-8")),
+                            now_iso,
+                        ),
+                    )
+
+            list_resp = self.client.get(f"/api/admin/usage/users?q={quote(target_user['phone'])}&range=all")
+            self.assertEqual(list_resp.status_code, 200, list_resp.get_data(as_text=True))
+            list_payload = list_resp.get_json()
+            self.assertEqual(1, list_payload.get("pagination", {}).get("count"))
+            item = list_payload["items"][0]
+            self.assertEqual(int(target_user["id"]), item["user"]["id"])
+            self.assertTrue(item["usage"]["active"])
+            self.assertEqual(2, item["usage"]["session_count"])
+            self.assertEqual(2, item["usage"]["report_count"])
+            self.assertEqual(2, item["usage"]["document_count"])
+            self.assertEqual(6144, item["usage"]["document_size_total"])
+            self.assertEqual(["cloud-a", "cloud-b"], item["usage"]["instance_scope_keys"])
+            self.assertEqual("professional", item["license"]["level_key"])
+
+            scoped_resp = self.client.get(f"/api/admin/usage/users?q={quote(target_user['phone'])}&range=all&scope=cloud-a")
+            self.assertEqual(scoped_resp.status_code, 200, scoped_resp.get_data(as_text=True))
+            scoped_item = scoped_resp.get_json()["items"][0]
+            self.assertEqual(1, scoped_item["usage"]["session_count"])
+            self.assertEqual(1, scoped_item["usage"]["report_count"])
+            self.assertEqual(1, scoped_item["usage"]["document_count"])
+            self.assertEqual(["cloud-a"], scoped_item["usage"]["instance_scope_keys"])
+
+            detail_resp = self.client.get(f"/api/admin/usage/users/{target_user['id']}?range=all")
+            self.assertEqual(detail_resp.status_code, 200, detail_resp.get_data(as_text=True))
+            detail_payload = detail_resp.get_json().get("detail") or {}
+            self.assertTrue(detail_payload.get("found"))
+            self.assertEqual(2, len(detail_payload.get("sessions", [])))
+            self.assertEqual(2, len(detail_payload.get("reports", [])))
+            self.assertEqual(2, len(detail_payload.get("documents", [])))
+            self.assertNotIn("content", detail_payload["documents"][0])
+        finally:
+            self.server.INSTANCE_SCOPE_KEY = old_scope
             self.server.ADMIN_USER_IDS = old_admin_ids
             self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
 

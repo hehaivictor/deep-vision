@@ -2807,6 +2807,11 @@
                                     class="px-3.5 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer">
                                 总览
                             </button>
+                            <button @click="switchAdminTab('usage')"
+                                    :class="adminTab === 'usage' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-secondary border-gray-200 hover:bg-gray-50'"
+                                    class="px-3.5 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer">
+                                用户统计
+                            </button>
                             <button @click="switchAdminTab('license')"
                                     :class="adminTab === 'license' ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-secondary border-gray-200 hover:bg-gray-50'"
                                     class="px-3.5 py-2 rounded-lg border text-sm font-medium transition-colors cursor-pointer">
@@ -3002,6 +3007,206 @@
                                 </div>
                             </div>
                         </div>
+                    </div>
+
+                    <div x-show="adminTab === 'usage'" x-cloak class="space-y-4">
+                        <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                            <div class="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-4">
+                                <div>
+                                    <h3 class="text-lg font-semibold text-primary">用户运营统计</h3>
+                                    <p class="text-sm text-muted mt-1">跨实例查看用户活跃、会话、报告、参考文档和 License 状态。活跃用户按业务活动统计，不依赖当前实例登录流水。</p>
+                                </div>
+                                <div class="flex flex-wrap items-end gap-2">
+                                    <label class="text-xs text-muted">
+                                        时间范围
+                                        <select x-model="adminUsageFilters.range"
+                                                @change="refreshAdminUsage()"
+                                                class="block mt-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-primary">
+                                            <option value="7d">近 7 天</option>
+                                            <option value="30d">近 30 天</option>
+                                            <option value="90d">近 90 天</option>
+                                            <option value="all">全部</option>
+                                        </select>
+                                    </label>
+                                    <label class="text-xs text-muted">
+                                        账号/昵称
+                                        <input type="search"
+                                               x-model.trim="adminUsageFilters.q"
+                                               @keydown.enter.prevent="refreshAdminUsage()"
+                                               placeholder="手机号、邮箱、微信昵称"
+                                               class="block mt-1 w-52 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-primary">
+                                    </label>
+                                    <label class="text-xs text-muted">
+                                        实例 Scope
+                                        <input type="search"
+                                               x-model.trim="adminUsageFilters.scope"
+                                               @keydown.enter.prevent="refreshAdminUsage()"
+                                               placeholder="留空表示跨实例"
+                                               class="block mt-1 w-40 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-primary">
+                                    </label>
+                                    <label class="text-xs text-muted">
+                                        活跃
+                                        <select x-model="adminUsageFilters.active"
+                                                @change="refreshAdminUsage()"
+                                                class="block mt-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-primary">
+                                            <option value="">全部</option>
+                                            <option value="active">仅活跃</option>
+                                            <option value="inactive">仅未活跃</option>
+                                        </select>
+                                    </label>
+                                    <button @click="refreshAdminUsage()"
+                                            :disabled="adminUsageLoading"
+                                            class="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm font-medium hover:bg-gray-800 disabled:opacity-50">
+                                        <span x-text="adminUsageLoading ? '加载中...' : '刷新'"></span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div x-show="adminUsageError" x-cloak class="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600" x-text="adminUsageError"></div>
+
+                            <div class="grid grid-cols-2 lg:grid-cols-5 gap-3">
+                                <div class="rounded-xl bg-slate-50 px-4 py-3">
+                                    <div class="text-xs text-muted">匹配用户</div>
+                                    <div class="text-2xl font-semibold text-primary mt-1" x-text="adminUsageSummary?.matched_users ?? 0"></div>
+                                </div>
+                                <div class="rounded-xl bg-slate-50 px-4 py-3">
+                                    <div class="text-xs text-muted">活跃用户</div>
+                                    <div class="text-2xl font-semibold text-primary mt-1" x-text="adminUsageSummary?.active_users ?? 0"></div>
+                                </div>
+                                <div class="rounded-xl bg-slate-50 px-4 py-3">
+                                    <div class="text-xs text-muted">会话</div>
+                                    <div class="text-2xl font-semibold text-primary mt-1" x-text="adminUsageSummary?.session_count ?? 0"></div>
+                                </div>
+                                <div class="rounded-xl bg-slate-50 px-4 py-3">
+                                    <div class="text-xs text-muted">报告</div>
+                                    <div class="text-2xl font-semibold text-primary mt-1" x-text="adminUsageSummary?.report_count ?? 0"></div>
+                                </div>
+                                <div class="rounded-xl bg-slate-50 px-4 py-3">
+                                    <div class="text-xs text-muted">参考文档</div>
+                                    <div class="text-2xl font-semibold text-primary mt-1" x-text="adminUsageSummary?.document_count ?? 0"></div>
+                                    <div class="text-xs text-muted mt-1" x-text="formatBytes(adminUsageSummary?.document_size_total || 0)"></div>
+                                </div>
+                            </div>
+
+                            <div class="overflow-x-auto rounded-xl border border-gray-200">
+                                <table class="min-w-full divide-y divide-gray-200 text-sm">
+                                    <thead class="bg-slate-50 text-xs text-muted">
+                                        <tr>
+                                            <th class="px-4 py-3 text-left font-medium">用户</th>
+                                            <th class="px-4 py-3 text-left font-medium">License</th>
+                                            <th class="px-4 py-3 text-left font-medium">活跃</th>
+                                            <th class="px-4 py-3 text-left font-medium">会话/报告/文档</th>
+                                            <th class="px-4 py-3 text-left font-medium">实例</th>
+                                            <th class="px-4 py-3 text-right font-medium">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody class="divide-y divide-gray-100 bg-white">
+                                        <template x-for="item in adminUsageUsers" :key="`admin-usage-${item.user.id}`">
+                                            <tr>
+                                                <td class="px-4 py-3">
+                                                    <div class="font-medium text-primary" x-text="item.user.account || '-'"></div>
+                                                    <div class="text-xs text-muted mt-1">
+                                                        ID <span x-text="item.user.id"></span>
+                                                        <span x-show="item.user.phone"> · <span x-text="item.user.phone"></span></span>
+                                                        <span x-show="item.user.wechat_bound"> · 微信已绑定</span>
+                                                    </div>
+                                                </td>
+                                                <td class="px-4 py-3">
+                                                    <div class="text-primary" x-text="item.license.level_name || '未绑定'"></div>
+                                                    <div class="text-xs text-muted mt-1" x-text="item.license.status || 'missing'"></div>
+                                                </td>
+                                                <td class="px-4 py-3">
+                                                    <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium"
+                                                          :class="item.usage.active ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-gray-50 text-gray-500 border border-gray-200'"
+                                                          x-text="item.usage.active ? '活跃' : '未活跃'"></span>
+                                                    <div class="text-xs text-muted mt-1" x-text="item.usage.last_activity_at ? formatDate(item.usage.last_activity_at) : '无业务活动'"></div>
+                                                </td>
+                                                <td class="px-4 py-3 text-secondary">
+                                                    <span x-text="item.usage.session_count"></span> /
+                                                    <span x-text="item.usage.report_count"></span> /
+                                                    <span x-text="item.usage.document_count"></span>
+                                                </td>
+                                                <td class="px-4 py-3">
+                                                    <div class="max-w-xs truncate text-secondary" x-text="(item.usage.instance_scope_keys || []).join('、') || '-'"></div>
+                                                </td>
+                                                <td class="px-4 py-3 text-right">
+                                                    <button @click="loadAdminUsageDetail(item.user.id)"
+                                                            class="text-sm font-medium text-[#357BE2] hover:underline">
+                                                        查看详情
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                                <div x-show="!adminUsageLoading && adminUsageUsers.length === 0" x-cloak class="px-4 py-8 text-center text-sm text-muted">
+                                    暂无匹配用户。
+                                </div>
+                            </div>
+
+                            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-sm text-muted">
+                                <div>
+                                    第 <span class="font-medium text-primary" x-text="adminUsagePagination.page || 1"></span> /
+                                    <span class="font-medium text-primary" x-text="getAdminUsageTotalPages()"></span> 页，
+                                    共 <span class="font-medium text-primary" x-text="adminUsagePagination.count || 0"></span> 条
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <button @click="goToAdminUsagePage((adminUsagePagination.page || 1) - 1)"
+                                            :disabled="(adminUsagePagination.page || 1) <= 1"
+                                            class="px-3 py-1.5 rounded-lg border border-gray-200 text-secondary disabled:opacity-40">上一页</button>
+                                    <button @click="goToAdminUsagePage((adminUsagePagination.page || 1) + 1)"
+                                            :disabled="(adminUsagePagination.page || 1) >= getAdminUsageTotalPages()"
+                                            class="px-3 py-1.5 rounded-lg border border-gray-200 text-secondary disabled:opacity-40">下一页</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <template x-if="adminUsageDetail">
+                            <div class="bg-surface border border-border rounded-2xl p-5 space-y-4">
+                                <div class="flex items-start justify-between gap-4">
+                                    <div>
+                                        <h3 class="text-lg font-semibold text-primary" x-text="adminUsageDetail?.profile?.user?.account || '用户详情'"></h3>
+                                        <p class="text-sm text-muted mt-1">
+                                            最近展示各 50 条会话、报告和参考文档；不会展示回答正文、报告正文或文档正文。
+                                        </p>
+                                    </div>
+                                    <button @click="adminUsageDetail = null" class="text-sm text-muted hover:text-primary">关闭</button>
+                                </div>
+                                <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 text-sm">
+                                    <div class="rounded-xl bg-slate-50 p-4">
+                                        <div class="text-xs text-muted">最近会话</div>
+                                        <template x-for="session in adminUsageDetail.sessions || []" :key="`usage-session-${session.session_id}`">
+                                            <div class="mt-3 border-t border-gray-200 pt-3">
+                                                <div class="font-medium text-primary" x-text="session.topic || session.session_id"></div>
+                                                <div class="text-xs text-muted mt-1" x-text="formatDate(session.updated_at || session.created_at)"></div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                    <div class="rounded-xl bg-slate-50 p-4">
+                                        <div class="text-xs text-muted">最近报告</div>
+                                        <template x-for="report in adminUsageDetail.reports || []" :key="`usage-report-${report.file_name}`">
+                                            <div class="mt-3 border-t border-gray-200 pt-3">
+                                                <div class="font-medium text-primary truncate" x-text="report.topic || report.file_name"></div>
+                                                <div class="text-xs text-muted mt-1" x-text="formatDate(report.created_at)"></div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                    <div class="rounded-xl bg-slate-50 p-4">
+                                        <div class="text-xs text-muted">参考文档</div>
+                                        <template x-for="doc in adminUsageDetail.documents || []" :key="`usage-doc-${doc.session_id}-${doc.doc_id || doc.name}`">
+                                            <div class="mt-3 border-t border-gray-200 pt-3">
+                                                <div class="font-medium text-primary truncate" x-text="doc.name || '-'"></div>
+                                                <div class="text-xs text-muted mt-1">
+                                                    <span x-text="doc.parse_status || '-'"></span> ·
+                                                    <span x-text="formatBytes(doc.original_size || 0)"></span> ·
+                                                    <span x-text="formatDate(doc.uploaded_at)"></span>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+                        </template>
                     </div>
 
                     <div x-show="adminTab === 'license'" x-cloak class="space-y-5">
