@@ -96,6 +96,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         cls.server.TEMP_DIR = data_dir / "temp"
         cls.server.METRICS_DIR = data_dir / "metrics"
         cls.server.SUMMARIES_DIR = data_dir / "summaries"
+        cls.server.REFERENCE_MATERIALS_DIR = data_dir / "reference_materials"
         cls.server.PRESENTATIONS_DIR = data_dir / "presentations"
         cls.server.AUTH_DIR = data_dir / "auth"
         cls.server.AUTH_DB_PATH = cls.server.AUTH_DIR / "users.db"
@@ -115,6 +116,7 @@ class ComprehensiveApiTests(unittest.TestCase):
             cls.server.TEMP_DIR,
             cls.server.METRICS_DIR,
             cls.server.SUMMARIES_DIR,
+            cls.server.REFERENCE_MATERIALS_DIR,
             cls.server.PRESENTATIONS_DIR,
             cls.server.AUTH_DIR,
         ]:
@@ -3237,6 +3239,41 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(uploaded_document.get("stored_chars"), self.server.REFERENCE_MATERIAL_CONTENT_LIMIT)
         self.assertTrue(uploaded_document.get("is_truncated"))
         self.assertLessEqual(len(uploaded_document.get("content", "")), self.server.REFERENCE_MATERIAL_CONTENT_LIMIT)
+
+    def test_long_document_tail_can_be_recalled_from_fulltext_chunks(self):
+        self._register()
+        created = self._create_session(topic="离线审批能力验证")
+        session_id = created["session_id"]
+        dimension = next(iter(created.get("dimensions", {}) or {}))
+        head = "开头普通说明。" * 1800
+        tail = "\n\n尾部关键需求：必须支持离线审批和断网补录，并保留审批链路证据。"
+        long_content = (head + tail).encode("utf-8")
+
+        upload_resp = self.client.post(
+            f"/api/sessions/{session_id}/documents",
+            data={"file": (io.BytesIO(long_content), "tail.md")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(upload_resp.status_code, 200, upload_resp.get_data(as_text=True))
+        uploaded_document = (upload_resp.get_json() or {}).get("uploaded_document") or {}
+        self.assertTrue(uploaded_document.get("is_truncated"))
+        self.assertNotIn("尾部关键需求", uploaded_document.get("content", ""))
+        self.assertTrue(uploaded_document.get("chunk_manifest_ref"))
+        self.assertGreater(uploaded_document.get("chunk_count", 0), 1)
+
+        session_resp = self.client.get(f"/api/sessions/{session_id}")
+        self.assertEqual(session_resp.status_code, 200, session_resp.get_data(as_text=True))
+        session = session_resp.get_json() or {}
+        prompt, _truncated_docs, meta = self.server.build_interview_prompt(
+            session,
+            dimension,
+            [],
+            session_id=session_id,
+        )
+
+        self.assertIn("尾部关键需求", prompt)
+        self.assertEqual(meta.get("reference_context_mode"), "chunk_selection")
+        self.assertTrue(meta.get("reference_context_chunk_selected"))
 
     def test_document_upload_marks_conversion_failure_not_context_ready(self):
         self._register()

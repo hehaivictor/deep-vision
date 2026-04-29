@@ -2280,6 +2280,7 @@ CONVERTED_DIR = DATA_DIR / "converted"
 TEMP_DIR = DATA_DIR / "temp"
 METRICS_DIR = DATA_DIR / "metrics"
 SUMMARIES_DIR = DATA_DIR / "summaries"  # 文档摘要缓存目录
+REFERENCE_MATERIALS_DIR = DATA_DIR / "reference_materials"
 PRESENTATIONS_DIR = DATA_DIR / "presentations"
 AUTH_DIR = DATA_DIR / "auth"
 PRESENTATION_MAP_FILE = PRESENTATIONS_DIR / ".presentation_map.json"
@@ -2646,7 +2647,7 @@ def validate_runtime_security_config() -> None:
         raise RuntimeError(f"运行配置校验失败：\n{detail}")
 
 
-for d in [SESSIONS_DIR, REPORTS_DIR, CONVERTED_DIR, TEMP_DIR, METRICS_DIR, SUMMARIES_DIR, PRESENTATIONS_DIR, AUTH_DIR]:
+for d in [SESSIONS_DIR, REPORTS_DIR, CONVERTED_DIR, TEMP_DIR, METRICS_DIR, SUMMARIES_DIR, REFERENCE_MATERIALS_DIR, PRESENTATIONS_DIR, AUTH_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 validate_runtime_security_config()
@@ -18074,6 +18075,7 @@ def process_document_for_context(
     topic: str = "",
     *,
     allow_smart_summary: bool = True,
+    query_text: str = "",
 ) -> tuple[str, str, int, bool]:
     """
     处理文档以用于上下文（统一的文档处理入口）
@@ -18094,6 +18096,18 @@ def process_document_for_context(
 
     original_length = len(content)
     max_allowed = min(MAX_DOC_LENGTH, remaining_length)
+
+    if doc.get("chunk_manifest_ref"):
+        selected_content, selection_meta = select_reference_material_context(
+            doc,
+            query_text=query_text or topic,
+            max_chars=max_allowed,
+            chunk_limit=REFERENCE_MATERIAL_CONTEXT_CHUNK_LIMIT,
+        )
+        if selected_content:
+            doc["_last_context_selection"] = selection_meta
+            full_length = int(doc.get("extracted_chars", 0) or original_length)
+            return doc_name, selected_content, len(selected_content), len(selected_content) < full_length
 
     # 如果文档很短（不超过摘要阈值），直接使用
     if original_length <= SMART_SUMMARY_THRESHOLD:
@@ -20630,7 +20644,16 @@ def _build_compact_report_reference_block(session: dict, max_docs: int = 3, max_
     for doc in normalized_docs[: max(1, int(max_docs or 1))]:
         doc_name = _normalize_report_prompt_excerpt(doc.get("name", "文档"), max_len=48, placeholder="文档")
         source_marker = "自动抓取" if doc.get("source") == "auto" else "用户上传"
-        content = _normalize_report_prompt_excerpt(doc.get("content", ""), max_len=max_chars, placeholder="内容缺失")
+        if doc.get("chunk_manifest_ref"):
+            selected_content, _selection_meta = select_reference_material_context(
+                doc,
+                query_text=str(session.get("topic", "") or ""),
+                max_chars=max_chars,
+                chunk_limit=2,
+            )
+        else:
+            selected_content = str(doc.get("content", "") or "")
+        content = _normalize_report_prompt_excerpt(selected_content, max_len=max_chars, placeholder="内容缺失")
         lines.append(f"- {doc_name}（{source_marker}）：{content}")
     return "\n".join(lines) if lines else "- 无参考资料"
 
@@ -20831,7 +20854,16 @@ def build_report_prompt_with_options(session: dict, evidence_pack: Optional[dict
             source_marker = "🔄 " if doc.get("source") == "auto" else ""
             prompt += f"### {source_marker}{doc_name}\n"
             if doc.get("content"):
-                content = doc["content"]
+                reference_selection_meta = {}
+                if doc.get("chunk_manifest_ref"):
+                    content, reference_selection_meta = select_reference_material_context(
+                        doc,
+                        query_text=f"{topic}\n{description}",
+                        max_chars=MAX_DOC_LENGTH,
+                        chunk_limit=REFERENCE_MATERIAL_CONTEXT_CHUNK_LIMIT,
+                    )
+                else:
+                    content = doc["content"]
                 original_length = len(content)
 
                 # 使用智能摘要处理长文档
@@ -20850,6 +20882,10 @@ def build_report_prompt_with_options(session: dict, evidence_pack: Optional[dict
                     prompt += f"*[文档内容过长，已截取前 {MAX_DOC_LENGTH} 字符]*\n\n"
                 else:
                     prompt += f"{content}\n\n"
+                if isinstance(reference_selection_meta, dict) and reference_selection_meta.get("mode") == "chunk_selection":
+                    prompt += (
+                        f"*[已从全文索引 {reference_selection_meta.get('chunk_count', 0)} 个片段中选取相关内容]*\n\n"
+                    )
             else:
                 prompt += "*[文档内容为空]*\n\n"
     else:
@@ -30501,6 +30537,12 @@ def complete_dimension(session_id):
 
 REFERENCE_MATERIAL_CONTENT_LIMIT = 10000
 REFERENCE_MATERIAL_PREVIEW_LIMIT = 300
+REFERENCE_MATERIAL_CHUNK_SIZE = max(800, _cfg_int("REFERENCE_MATERIAL_CHUNK_SIZE", 1800))
+REFERENCE_MATERIAL_CHUNK_OVERLAP = max(0, _cfg_int("REFERENCE_MATERIAL_CHUNK_OVERLAP", 160))
+if REFERENCE_MATERIAL_CHUNK_OVERLAP >= REFERENCE_MATERIAL_CHUNK_SIZE:
+    REFERENCE_MATERIAL_CHUNK_OVERLAP = max(0, REFERENCE_MATERIAL_CHUNK_SIZE // 10)
+REFERENCE_MATERIAL_CONTEXT_CHUNK_LIMIT = max(1, _cfg_int("REFERENCE_MATERIAL_CONTEXT_CHUNK_LIMIT", 4))
+REFERENCE_MATERIAL_INLINE_CHUNK_PREVIEW_LIMIT = max(20, _cfg_int("REFERENCE_MATERIAL_INLINE_CHUNK_PREVIEW_LIMIT", 120))
 
 
 def _compact_reference_material_preview(content: str, limit: int = REFERENCE_MATERIAL_PREVIEW_LIMIT) -> str:
@@ -30508,6 +30550,239 @@ def _compact_reference_material_preview(content: str, limit: int = REFERENCE_MAT
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _safe_reference_material_segment(value: str, fallback: str = "item") -> str:
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value or "").strip()).strip(".-")
+    if not text:
+        text = fallback
+    return text[:96]
+
+
+def _reference_material_storage_dir(session_id: str, doc_id: str) -> Path:
+    session_segment = _safe_reference_material_segment(session_id, "session")
+    doc_segment = _safe_reference_material_segment(doc_id, "doc")
+    target = (REFERENCE_MATERIALS_DIR / session_segment / doc_segment).resolve()
+    if not is_path_under(target, REFERENCE_MATERIALS_DIR):
+        raise ValueError("参考资料归档路径无效")
+    return target
+
+
+def _relative_data_ref(path: Path) -> str:
+    try:
+        return str(Path(path).resolve().relative_to(DATA_DIR.resolve()))
+    except Exception:
+        return ""
+
+
+def _resolve_data_ref(ref: str) -> Path:
+    normalized = str(ref or "").strip()
+    if not normalized:
+        raise ValueError("数据引用为空")
+    target = (DATA_DIR / normalized).resolve()
+    if not is_path_under(target, DATA_DIR):
+        raise ValueError("数据引用路径无效")
+    return target
+
+
+def _build_reference_material_chunks(content: str) -> list[dict]:
+    text = str(content or "")
+    if not text.strip():
+        return []
+    chunk_size = REFERENCE_MATERIAL_CHUNK_SIZE
+    overlap = min(REFERENCE_MATERIAL_CHUNK_OVERLAP, max(0, chunk_size // 3))
+    chunks = []
+    start = 0
+    text_length = len(text)
+    while start < text_length:
+        hard_end = min(text_length, start + chunk_size)
+        end = hard_end
+        if hard_end < text_length:
+            split_floor = start + max(200, chunk_size // 2)
+            paragraph_split = text.rfind("\n\n", split_floor, hard_end)
+            line_split = text.rfind("\n", split_floor, hard_end)
+            split_at = max(paragraph_split, line_split)
+            if split_at > start:
+                end = min(text_length, split_at + 1)
+        chunk_text = text[start:end].strip()
+        if chunk_text:
+            chunks.append({
+                "chunk_id": f"chunk-{len(chunks) + 1:04d}",
+                "index": len(chunks),
+                "start": start,
+                "end": end,
+                "text": chunk_text,
+                "preview": _compact_reference_material_preview(
+                    chunk_text,
+                    REFERENCE_MATERIAL_INLINE_CHUNK_PREVIEW_LIMIT,
+                ),
+            })
+        if end >= text_length:
+            break
+        next_start = max(end - overlap, start + 1)
+        if next_start <= start:
+            next_start = end
+        start = next_start
+    return chunks
+
+
+def save_reference_material_fulltext_artifacts(
+    *,
+    session_id: str,
+    doc_id: str,
+    filename: str,
+    content: str,
+    ext: str,
+) -> dict:
+    text = str(content or "")
+    if not text.strip():
+        return {}
+    target_dir = _reference_material_storage_dir(session_id, doc_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    full_text_path = target_dir / "full_content.md"
+    chunks_path = target_dir / "chunks.json"
+    chunks = _build_reference_material_chunks(text)
+    full_text_path.write_text(text, encoding="utf-8")
+    chunks_path.write_text(json.dumps({
+        "version": 1,
+        "doc_id": doc_id,
+        "name": filename,
+        "type": ext,
+        "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "chunk_size": REFERENCE_MATERIAL_CHUNK_SIZE,
+        "chunk_overlap": REFERENCE_MATERIAL_CHUNK_OVERLAP,
+        "chunks": chunks,
+    }, ensure_ascii=False), encoding="utf-8")
+    inline_chunks = [
+        {
+            "chunk_id": chunk.get("chunk_id"),
+            "index": chunk.get("index"),
+            "start": chunk.get("start"),
+            "end": chunk.get("end"),
+            "preview": chunk.get("preview"),
+        }
+        for chunk in chunks[:REFERENCE_MATERIAL_CONTEXT_CHUNK_LIMIT]
+    ]
+    return {
+        "full_content_ref": _relative_data_ref(full_text_path),
+        "chunk_manifest_ref": _relative_data_ref(chunks_path),
+        "full_content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "chunk_count": len(chunks),
+        "chunk_index_version": 1,
+        "chunk_previews": inline_chunks,
+    }
+
+
+def load_reference_material_chunks(doc: dict) -> list[dict]:
+    if not isinstance(doc, dict):
+        return []
+    manifest_ref = str(doc.get("chunk_manifest_ref") or "").strip()
+    if not manifest_ref:
+        return []
+    try:
+        manifest_path = _resolve_data_ref(manifest_ref)
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            print(f"⚠️  读取参考资料分块失败: {exc}")
+        return []
+    chunks = payload.get("chunks", []) if isinstance(payload, dict) else []
+    return [chunk for chunk in chunks if isinstance(chunk, dict) and str(chunk.get("text") or "").strip()]
+
+
+def _tokenize_reference_material_query(query_text: str) -> list[str]:
+    normalized = str(query_text or "").lower()
+    raw_terms = re.findall(r"[a-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", normalized)
+    terms = []
+    for term in raw_terms:
+        compact = term.strip()
+        if compact and compact not in terms:
+            terms.append(compact)
+        if re.fullmatch(r"[\u4e00-\u9fff]{6,}", compact):
+            for size in (4, 3):
+                for index in range(0, max(0, len(compact) - size + 1)):
+                    gram = compact[index:index + size]
+                    if gram and gram not in terms:
+                        terms.append(gram)
+    return terms[:80]
+
+
+def select_reference_material_context(
+    doc: dict,
+    *,
+    query_text: str = "",
+    max_chars: int = 0,
+    chunk_limit: int = 0,
+) -> tuple[str, dict]:
+    chunks = load_reference_material_chunks(doc)
+    limit = max(1, int(max_chars or MAX_DOC_LENGTH))
+    if not chunks:
+        content = str((doc or {}).get("content") or "")
+        return content[:limit], {
+            "mode": "stored_content",
+            "selected_chunks": [],
+            "chunk_count": 0,
+        }
+
+    terms = _tokenize_reference_material_query(query_text)
+    scored = []
+    for chunk in chunks:
+        text = str(chunk.get("text") or "")
+        lowered = text.lower()
+        score = sum(lowered.count(term) for term in terms)
+        scored.append((score, int(chunk.get("index", 0) or 0), chunk))
+
+    selected = []
+    max_chunks = max(1, int(chunk_limit or REFERENCE_MATERIAL_CONTEXT_CHUNK_LIMIT))
+    positive_scored = [item for item in scored if item[0] > 0]
+    if positive_scored:
+        for _score, _index, chunk in sorted(positive_scored, key=lambda item: (-item[0], item[1])):
+            selected.append(chunk)
+            if len(selected) >= max_chunks:
+                break
+        selected.sort(key=lambda item: int(item.get("index", 0) or 0))
+    else:
+        candidate_indexes = [0]
+        if len(chunks) > 2:
+            candidate_indexes.append(len(chunks) // 2)
+        if len(chunks) > 1:
+            candidate_indexes.append(len(chunks) - 1)
+        for index in candidate_indexes:
+            chunk = chunks[index]
+            if chunk not in selected:
+                selected.append(chunk)
+            if len(selected) >= max_chunks:
+                break
+
+    parts = []
+    used = 0
+    selected_meta = []
+    for chunk in selected:
+        text = str(chunk.get("text") or "").strip()
+        if not text:
+            continue
+        prefix = f"[片段 {int(chunk.get('index', 0) or 0) + 1}/{len(chunks)}]\n"
+        available = limit - used - len(prefix)
+        if available <= 0:
+            break
+        clipped = text[:available]
+        parts.append(prefix + clipped)
+        used += len(prefix) + len(clipped)
+        selected_meta.append({
+            "chunk_id": chunk.get("chunk_id"),
+            "index": chunk.get("index"),
+            "start": chunk.get("start"),
+            "end": chunk.get("end"),
+        })
+        if used >= limit:
+            break
+
+    return "\n\n".join(parts).strip(), {
+        "mode": "chunk_selection",
+        "selected_chunks": selected_meta,
+        "chunk_count": len(chunks),
+        "query_terms": terms[:12],
+    }
 
 
 def _build_reference_material_parse_meta(content: str, ext: str) -> dict:
@@ -30733,6 +31008,19 @@ def upload_document(session_id):
             uploaded_document,
             index=len(latest_session["reference_materials"]),
         )
+        if parse_meta.get("context_ready"):
+            try:
+                uploaded_document.update(save_reference_material_fulltext_artifacts(
+                    session_id=session_id,
+                    doc_id=uploaded_document["doc_id"],
+                    filename=filename,
+                    content=content,
+                    ext=ext,
+                ))
+            except Exception as exc:
+                uploaded_document["full_content_warning"] = f"全文索引保存失败，已保留兼容摘录: {exc}"
+                if ENABLE_DEBUG_LOG:
+                    print(f"⚠️  {uploaded_document['full_content_warning']}")
         latest_session["reference_materials"].append(uploaded_document)
         latest_session["updated_at"] = get_utc_now()
         save_session_json_and_sync(latest_session_file, latest_session)

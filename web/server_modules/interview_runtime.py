@@ -111,8 +111,15 @@ def build_interview_prompt(
     total_doc_length = 0
     truncated_docs = []
     summarized_docs = []
+    chunk_selected_docs = []
     if ready_reference_materials and doc_budget > 0:
         context_parts.append("\n## 参考资料：")
+        reference_query_text = " ".join([
+            topic_text,
+            dim_info.get("name", ""),
+            dimension_description,
+            " ".join(str(item or "") for item in key_aspects),
+        ])
         for doc in ready_reference_materials:
             if doc.get("content") and total_doc_length < doc_budget:
                 remaining = doc_budget - total_doc_length
@@ -125,6 +132,7 @@ def build_interview_prompt(
                     remaining,
                     topic,
                     allow_smart_summary=not runtime_probe,
+                    query_text=reference_query_text,
                 )
 
                 if processed_content:
@@ -141,7 +149,10 @@ def build_interview_prompt(
                     total_doc_length += used_length
 
                     if was_processed:
-                        if used_length < original_length * 0.6:
+                        context_selection = doc.get("_last_context_selection", {}) if isinstance(doc, dict) else {}
+                        if isinstance(context_selection, dict) and context_selection.get("mode") == "chunk_selection":
+                            chunk_selected_docs.append(display_name if is_lightweight_output else f"{doc_name}（从{context_selection.get('chunk_count', 0)}个片段中选取相关内容）")
+                        elif used_length < original_length * 0.6:
                             summarized_docs.append(display_name if is_lightweight_output else f"{doc_name}（原{original_length}字符，摘要至{used_length}字符）")
                         else:
                             truncated_docs.append(display_name if is_lightweight_output else f"{doc_name}（原{original_length}字符，截取{used_length}字符）")
@@ -151,6 +162,11 @@ def build_interview_prompt(
             context_parts.append(f"\n提示：文档已摘要：{', '.join(summarized_docs[:2])}")
         else:
             context_parts.append(f"\n📝 注意：以下文档已通过AI生成摘要以保留关键信息：{', '.join(summarized_docs)}")
+    if chunk_selected_docs:
+        if is_lightweight_output:
+            context_parts.append(f"\n提示：文档按相关片段引用：{', '.join(chunk_selected_docs[:2])}")
+        else:
+            context_parts.append(f"\n📌 注意：以下长文档已按当前主题/维度从全文索引中选取相关片段：{', '.join(chunk_selected_docs)}")
     if truncated_docs:
         if is_lightweight_output:
             context_parts.append(f"\n提示：文档有截断：{', '.join(truncated_docs[:2])}")
@@ -588,13 +604,14 @@ def build_interview_prompt(
         "has_reference_docs": bool(reference_materials),
         "reference_docs_compact_mode": bool(is_lightweight_output and ready_reference_materials),
         "has_truncated_docs": bool(truncated_docs),
+        "reference_context_chunk_selected": bool(chunk_selected_docs),
         "reference_context_used": bool(total_doc_length > 0),
         "reference_context_chars": int(total_doc_length),
         "reference_doc_count": int(len(ready_reference_materials)),
         "reference_context_mode": (
             "none"
             if total_doc_length <= 0
-            else ("light" if is_lightweight_output else ("summary_or_truncated" if summarized_docs or truncated_docs else "raw"))
+            else ("light" if is_lightweight_output else ("chunk_selection" if chunk_selected_docs else ("summary_or_truncated" if summarized_docs or truncated_docs else "raw")))
         ),
         "reference_doc_skipped_count": max(0, len(effective_reference_materials) - len(ready_reference_materials)),
         "evidence_ledger": {
