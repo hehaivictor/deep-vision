@@ -48,6 +48,8 @@ python3 scripts/loadtest_list_endpoints.py --base-url http://127.0.0.1:5001
 
 - 归属迁移优先 `list-users`、`audit`、`migrate` 的 dry-run，再决定是否 `--apply`。
 - 配置中心写入前，先确认目标是 `.env`、`config.py` 还是 `site-config.js`，不要混淆层次。
+- 配置中心只写入当前最高优先级 env 文件；如果 `DEEPVISION_ENV_FILE` 指定多个文件，保存时只改最后一个文件，不回写较低优先级文件。
+- 如果运行值来自进程环境变量或 `DEEPVISION_` 前缀环境变量，配置中心保存文件不会覆盖当前运行值，需要调整部署环境并重启服务。
 - 调整配置中心接口时，优先复用 `build_admin_config_center_payload()` 与 `save_admin_config_group()`，不要把文件写入逻辑重新塞回 Flask 路由。
 - 管理后台相关变更如果影响部署行为，务必同时检查 [README.md](/Users/hehai/Documents/开目软件/Agents/project/DeepVision/README.md) 和对应 runbook 是否需要更新。
 

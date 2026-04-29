@@ -4219,9 +4219,12 @@
 
                             <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
                                 <div class="rounded-xl border border-border bg-white px-4 py-4 space-y-2">
-                                    <div class="text-xs text-muted">当前编辑文件</div>
+                                    <div class="text-xs text-muted" x-text="adminConfigSource === 'env' ? '当前写入目标' : '当前编辑文件'"></div>
                                     <div class="text-sm font-semibold text-primary" x-text="getAdminConfigSourceLabel(adminConfigSource)"></div>
                                     <div class="text-xs text-muted break-all" x-text="getAdminConfigSourcePayload(adminConfigSource)?.file?.path || '-'"></div>
+                                    <div class="text-xs text-amber-700"
+                                         x-show="adminConfigSource === 'env' && getAdminConfigSourcePayload('env')?.file?.write_target_reason"
+                                         x-text="getAdminConfigSourcePayload('env')?.file?.write_target_reason"></div>
                                     <div class="text-xs text-muted">
                                         文件状态：
                                         <span class="font-medium text-primary" x-text="getAdminConfigSourcePayload(adminConfigSource)?.file?.exists ? '已存在' : '将自动创建'"></span>
@@ -4263,6 +4266,12 @@
                                         已加载环境文件：
                                         <span class="font-medium text-primary" x-text="(getAdminConfigSourcePayload('env')?.file?.loaded_files || []).length"></span>
                                     </div>
+                                    <div class="text-xs text-muted break-all"
+                                         x-show="adminConfigSource === 'env' && (getAdminConfigSourcePayload('env')?.file?.loaded_files?.length || 0) > 0"
+                                         x-text="(getAdminConfigSourcePayload('env')?.file?.loaded_files || []).join(' → ')"></div>
+                                    <div class="text-xs text-amber-700"
+                                         x-show="adminConfigSource === 'env' && getAdminConfigSourcePayload('env')?.file?.process_env_notice"
+                                         x-text="getAdminConfigSourcePayload('env')?.file?.process_env_notice"></div>
                                     <div class="text-xs text-muted"
                                          x-show="adminConfigSource === 'config'">
                                         托管区块键数：

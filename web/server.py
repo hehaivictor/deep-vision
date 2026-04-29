@@ -2769,6 +2769,7 @@ ADMIN_ENV_SETTINGS_GROUPS: list[dict[str, Any]] = [
             _admin_setting("BUILTIN_SCENARIOS_DIR", "内置场景目录", description="系统场景配置目录。"),
             _admin_setting("CUSTOM_SCENARIOS_DIR", "自定义场景目录", description="用户自定义场景目录。"),
             _admin_setting("INSTANCE_SCOPE_KEY", "实例作用域标识", description="多实例共享数据目录时必须区分。"),
+            _admin_bool("INSTANCE_SCOPE_ENFORCEMENT_ENABLED", "启用实例隔离", description="开启后会按 INSTANCE_SCOPE_KEY 过滤会话、报告和自定义场景。"),
         ],
     },
     {
@@ -2919,6 +2920,7 @@ ADMIN_CONFIG_SETTINGS_GROUPS: list[dict[str, Any]] = [
         "items": [
             _admin_setting("MODEL_NAME", "默认模型", description="兼容历史回落。"),
             _admin_setting("QUESTION_MODEL_NAME", "问题模型"),
+            _admin_setting("QUESTION_MODEL_NAME_DEEP", "深度问题模型", description="深度访谈 question_deep lane 使用的专用模型。"),
             _admin_setting("REPORT_MODEL_NAME", "报告模型"),
             _admin_setting("REPORT_DRAFT_MODEL_NAME", "报告草案模型"),
             _admin_setting("REPORT_REVIEW_MODEL_NAME", "报告审稿模型"),
@@ -3007,8 +3009,12 @@ ADMIN_CONFIG_SETTINGS_GROUPS: list[dict[str, Any]] = [
             _admin_int("REPORTS_LIST_MAX_INFLIGHT", "报告列表最大并发"),
             _admin_int("REPORT_GENERATION_MAX_WORKERS", "报告生成 Worker"),
             _admin_int("REPORT_GENERATION_MAX_PENDING", "报告队列上限"),
+            _admin_bool("SOLUTION_PAYLOAD_PREWARM_ENABLED", "方案页预热", description="报告生成后是否后台预热方案页 payload。"),
+            _admin_int("SOLUTION_PAYLOAD_PREWARM_MAX_WORKERS", "方案页预热 Worker", description="方案页 payload 预热线程池大小。"),
             _admin_int("SEARCH_MAX_RESULTS", "搜索结果数"),
             _admin_int("SEARCH_TIMEOUT", "搜索超时"),
+            _admin_setting("VISION_MODEL_NAME", "视觉模型", description="图片理解链路使用的模型名称。"),
+            _admin_list("SUPPORTED_IMAGE_TYPES", "图片支持类型", description="允许上传到视觉链路的图片扩展名，逗号分隔。"),
             _admin_int("MAX_IMAGE_SIZE_MB", "图片大小上限 MB"),
             _admin_int("DOCUMENT_CONVERT_TIMEOUT_SECONDS", "文档转换超时（秒）"),
             _admin_float("API_TIMEOUT", "通用 API 超时"),
@@ -3139,7 +3145,22 @@ ADMIN_SITE_SETTINGS_GROUPS: list[dict[str, Any]] = [
         "items": [
             _admin_setting("api.baseUrl", "API 基础地址", description="前端请求后端接口的基础地址。", requires_restart=False),
             _admin_int("api.webSearchPollInterval", "Web Search 轮询间隔", description="控制呼吸灯状态轮询频率。", requires_restart=False),
+            _admin_int("api.sessionListPollInterval", "会话列表轮询间隔", description="报告生成中会话列表自动刷新频率，单位毫秒。", requires_restart=False),
+            _admin_int("api.reportStatusPollInterval", "报告状态轮询间隔", description="报告生成状态刷新频率，单位毫秒。", requires_restart=False),
             _admin_setting("version.configFile", "版本信息文件", description="前端启动后用于加载版本信息的文件名。", requires_restart=False),
+        ],
+    },
+    {
+        "id": "site_frontend_limits",
+        "title": "前端输入与上传限制",
+        "description": "管理前端输入长度与上传大小提示；后端仍保留真实校验边界。",
+        "source": "site",
+        "items": [
+            _admin_int("limits.topicMaxLength", "访谈主题长度", description="新建会话主题最大字符数。", requires_restart=False),
+            _admin_int("limits.descriptionMaxLength", "访谈描述长度", description="新建会话描述最大字符数。", requires_restart=False),
+            _admin_int("limits.answerMaxLength", "回答长度", description="单次回答最大字符数。", requires_restart=False),
+            _admin_int("limits.otherInputMaxLength", "自定义选项长度", description="选择“其他”时补充文本最大字符数。", requires_restart=False),
+            _admin_int("limits.maxFileSize", "上传文件大小", description="前端上传文件大小上限，单位字节。", requires_restart=False),
         ],
     },
 ]
@@ -3726,11 +3747,11 @@ def _get_admin_runtime_source_label(source: str, key: str) -> str:
     if source == "site":
         return "共享数据库 site_config_store（刷新页面后生效）"
     if os.environ.get(f"DEEPVISION_{key}") is not None:
-        return "DEEPVISION_ 环境变量"
+        return "DEEPVISION_ 环境变量（保存配置文件不会覆盖当前运行值）"
     if os.environ.get(key) is not None:
         if key in LOADED_ENV_KEYS:
             return ".env 文件"
-        return "进程环境变量"
+        return "进程环境变量（保存配置文件不会覆盖当前运行值）"
     if _should_use_runtime_config_fallback(key):
         return "config.py"
     return "内置默认"

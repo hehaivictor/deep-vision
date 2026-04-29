@@ -289,7 +289,16 @@ const SITE_CONFIG = {
   },
   "api": {
     "baseUrl": "http://localhost:5001/api",
-    "webSearchPollInterval": 200
+    "webSearchPollInterval": 200,
+    "sessionListPollInterval": 3000,
+    "reportStatusPollInterval": 600
+  },
+  "limits": {
+    "topicMaxLength": 200,
+    "descriptionMaxLength": 1000,
+    "answerMaxLength": 5000,
+    "otherInputMaxLength": 2000,
+    "maxFileSize": 10485760
   },
   "researchTips": [
     "回答越具体，生成的问题越精准",

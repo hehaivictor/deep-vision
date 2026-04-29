@@ -54,6 +54,32 @@ class AdminConfigCenterService:
         self._runtime_source_label_getter = runtime_source_label_getter
         self._runtime_setting_value_getter = runtime_setting_value_getter
 
+    def _get_explicit_env_files(self) -> list[str]:
+        return [
+            str(item)
+            for item in list(self._env_load_metadata.get("explicit_env_files") or [])
+            if str(item or "").strip()
+        ]
+
+    def _get_env_write_policy(self, env_path: Path) -> dict[str, Any]:
+        explicit_env_files = self._get_explicit_env_files()
+        loaded_files = [str(item) for item in self._loaded_env_files if str(item or "").strip()]
+        if explicit_env_files:
+            reason = "DEEPVISION_ENV_FILE 指定了多个文件时，只写入最后一个最高优先级 env。"
+        elif loaded_files:
+            reason = "未显式指定 env 链时，写入当前服务已加载的 env 文件。"
+        else:
+            reason = "当前进程未加载 env 文件，配置中心会写入默认 web/.env；需确认启动命令会加载它。"
+        return {
+            "write_target_path": str(env_path),
+            "write_target_exists": env_path.exists(),
+            "write_target_reason": reason,
+            "write_policy": "single_highest_priority_env",
+            "explicit_env_files": explicit_env_files,
+            "loaded_file_count": len(loaded_files),
+            "process_env_notice": "若运行值来自进程环境变量，保存 env 文件不会覆盖当前进程值，需调整部署环境并重启。",
+        }
+
     @staticmethod
     def _get_nested_setting_value(container: Any, dotted_key: str) -> Any:
         current = container
@@ -151,6 +177,7 @@ class AdminConfigCenterService:
                 "exists": env_path.exists(),
                 "loaded_files": list(self._loaded_env_files),
                 "override_existing": bool(self._env_load_metadata.get("override_existing")),
+                **self._get_env_write_policy(env_path),
             }
         elif source == "config":
             runtime_config = self._get_runtime_config()
@@ -182,7 +209,7 @@ class AdminConfigCenterService:
                 "source_meta": {
                     "env": {
                         "mode_label": self._config_resolution_mode,
-                        "hint": "配置会写入 .env。除少量动态读取项外，大多数改动需要重启服务后完全生效。",
+                        "hint": "配置中心只写入当前最高优先级 env 文件。若运行值来自进程环境变量，保存后不会覆盖当前进程值，需调整部署环境并重启。",
                     },
                     "config": {
                         "mode_label": self._config_resolution_mode,

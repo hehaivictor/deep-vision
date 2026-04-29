@@ -1671,9 +1671,22 @@ class ComprehensiveApiTests(unittest.TestCase):
         old_get_config_file_path = self.server.get_admin_config_file_path
         old_get_site_config_file_path = self.server.get_admin_site_config_file_path
         old_runtime_config = self.server.runtime_config
+        old_service_loaded_env_files = list(self.server.admin_config_center_service._loaded_env_files)
+        old_service_env_metadata = dict(self.server.admin_config_center_service._env_load_metadata)
+        env_base_path = self.server.DATA_DIR / "admin-center-base.env"
         env_path = self.server.DATA_DIR / "admin-center.env"
         config_path = self.server.DATA_DIR / "admin-center-config.py"
         site_config_path = self.server.DATA_DIR / "admin-center-site-config.js"
+        env_base_path.write_text(
+            "\n".join(
+                [
+                    "CONFIG_RESOLUTION_MODE=hybrid",
+                    "ENABLE_AI=false",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         env_path.write_text(
             "\n".join(
                 [
@@ -1727,8 +1740,14 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.server.get_admin_env_file_path = lambda: env_path
             self.server.get_admin_config_file_path = lambda: config_path
             self.server.get_admin_site_config_file_path = lambda: site_config_path
+            self.server.admin_config_center_service._loaded_env_files = [str(env_base_path), str(env_path)]
+            self.server.admin_config_center_service._env_load_metadata = {
+                "explicit_env_files": [str(env_base_path), str(env_path)],
+                "override_existing": False,
+            }
             self.server.runtime_config = types.SimpleNamespace(
                 MODEL_NAME="legacy-model",
+                QUESTION_MODEL_NAME_DEEP="deep-model",
                 REPORT_V3_PROFILE="balanced",
             )
 
@@ -1746,6 +1765,10 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.assertIn("env", catalog_payload)
             self.assertIn("config", catalog_payload)
             self.assertIn("site", catalog_payload)
+            env_file_meta = catalog_payload["env"]["file"]
+            self.assertEqual(str(env_path), env_file_meta.get("write_target_path"))
+            self.assertEqual("single_highest_priority_env", env_file_meta.get("write_policy"))
+            self.assertEqual([str(env_base_path), str(env_path)], env_file_meta.get("explicit_env_files"))
             self.assertTrue(any(group.get("id") == "env_resolution" for group in catalog_payload["env"]["groups"]))
             self.assertTrue(any(group.get("id") == "config_models" for group in catalog_payload["config"]["groups"]))
             self.assertTrue(any(group.get("id") == "config_observability_cache" for group in catalog_payload["config"]["groups"]))
@@ -1760,11 +1783,32 @@ class ComprehensiveApiTests(unittest.TestCase):
             env_deploy_keys = {item.get("key") for item in env_deploy_group.get("items", [])}
             self.assertIn("GUNICORN_ACCESSLOG", env_deploy_keys)
             self.assertIn("GUNICORN_ERRORLOG", env_deploy_keys)
+            self.assertIn("INSTANCE_SCOPE_ENFORCEMENT_ENABLED", env_deploy_keys)
+
+            config_models_group = next(group for group in catalog_payload["config"]["groups"] if group.get("id") == "config_models")
+            config_model_keys = {item.get("key") for item in config_models_group.get("items", [])}
+            self.assertIn("QUESTION_MODEL_NAME_DEEP", config_model_keys)
+
+            config_capacity_group = next(group for group in catalog_payload["config"]["groups"] if group.get("id") == "config_runtime_capacity")
+            config_capacity_keys = {item.get("key") for item in config_capacity_group.get("items", [])}
+            self.assertIn("SOLUTION_PAYLOAD_PREWARM_ENABLED", config_capacity_keys)
+            self.assertIn("SOLUTION_PAYLOAD_PREWARM_MAX_WORKERS", config_capacity_keys)
+            self.assertIn("VISION_MODEL_NAME", config_capacity_keys)
+            self.assertIn("SUPPORTED_IMAGE_TYPES", config_capacity_keys)
 
             config_observability_group = next(group for group in catalog_payload["config"]["groups"] if group.get("id") == "config_observability_cache")
             observability_items = {item.get("key"): item for item in config_observability_group.get("items", [])}
             self.assertIn("METRICS_ASYNC_BATCH_SIZE", observability_items)
             self.assertTrue(observability_items["METRICS_ASYNC_BATCH_SIZE"].get("advanced"))
+
+            site_frontend_group = next(group for group in catalog_payload["site"]["groups"] if group.get("id") == "site_frontend_integration")
+            site_frontend_keys = {item.get("key") for item in site_frontend_group.get("items", [])}
+            self.assertIn("api.sessionListPollInterval", site_frontend_keys)
+            self.assertIn("api.reportStatusPollInterval", site_frontend_keys)
+            site_limits_group = next(group for group in catalog_payload["site"]["groups"] if group.get("id") == "site_frontend_limits")
+            site_limit_keys = {item.get("key") for item in site_limits_group.get("items", [])}
+            self.assertIn("limits.topicMaxLength", site_limit_keys)
+            self.assertIn("limits.answerMaxLength", site_limit_keys)
 
             save_env_resp = self.client.post(
                 "/api/admin/config-center/save",
@@ -1790,6 +1834,7 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.assertIn("ENABLE_AI=true", env_text)
             self.assertIn("ENABLE_WEB_SEARCH=true", env_text)
             self.assertIn("DEBUG_MODE=false", env_text)
+            self.assertNotIn("CONFIG_RESOLUTION_MODE=env_only", env_base_path.read_text(encoding="utf-8"))
 
             save_config_resp = self.client.post(
                 "/api/admin/config-center/save",
@@ -1799,6 +1844,7 @@ class ComprehensiveApiTests(unittest.TestCase):
                     "values": {
                         "MODEL_NAME": "gpt-5.4",
                         "QUESTION_MODEL_NAME": "gpt-5.4",
+                        "QUESTION_MODEL_NAME_DEEP": "gpt-5.4-deep",
                         "REPORT_MODEL_NAME": "gpt-5.4-mini",
                     },
                 },
@@ -1809,6 +1855,7 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.assertIn("DEEPVISION ADMIN UI MANAGED CONFIG BEGIN", config_text)
             self.assertIn("MODEL_NAME = 'gpt-5.4'", config_text)
             self.assertIn("QUESTION_MODEL_NAME = 'gpt-5.4'", config_text)
+            self.assertIn("QUESTION_MODEL_NAME_DEEP = 'gpt-5.4-deep'", config_text)
             self.assertIn("REPORT_MODEL_NAME = 'gpt-5.4-mini'", config_text)
 
             refreshed_payload = save_config_resp.get_json().get("config_center", {})
@@ -1816,7 +1863,27 @@ class ComprehensiveApiTests(unittest.TestCase):
             config_models_group = next(group for group in config_groups if group.get("id") == "config_models")
             config_items = {item["key"]: item for item in config_models_group.get("items", [])}
             self.assertEqual("gpt-5.4", config_items["MODEL_NAME"]["value"])
+            self.assertEqual("gpt-5.4-deep", config_items["QUESTION_MODEL_NAME_DEEP"]["value"])
             self.assertEqual("gpt-5.4-mini", config_items["REPORT_MODEL_NAME"]["value"])
+
+            save_site_limits_resp = self.client.post(
+                "/api/admin/config-center/save",
+                json={
+                    "source": "site",
+                    "group_id": "site_frontend_limits",
+                    "values": {
+                        "limits.topicMaxLength": "240",
+                        "limits.descriptionMaxLength": "1200",
+                        "limits.answerMaxLength": "6000",
+                        "limits.otherInputMaxLength": "2500",
+                        "limits.maxFileSize": "12582912",
+                    },
+                },
+            )
+            self.assertEqual(save_site_limits_resp.status_code, 200, save_site_limits_resp.get_data(as_text=True))
+            saved_limit_values = self.server.load_runtime_site_config_values()
+            self.assertEqual(240, saved_limit_values["limits"]["topicMaxLength"])
+            self.assertEqual(6000, saved_limit_values["limits"]["answerMaxLength"])
 
             save_site_resp = self.client.post(
                 "/api/admin/config-center/save",
@@ -1852,6 +1919,8 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.server.get_admin_config_file_path = old_get_config_file_path
             self.server.get_admin_site_config_file_path = old_get_site_config_file_path
             self.server.runtime_config = old_runtime_config
+            self.server.admin_config_center_service._loaded_env_files = old_service_loaded_env_files
+            self.server.admin_config_center_service._env_load_metadata = old_service_env_metadata
 
     def test_wechat_auth_lifecycle_success(self):
         old_enabled = self.server.WECHAT_LOGIN_ENABLED

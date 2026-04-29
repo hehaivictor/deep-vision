@@ -1798,6 +1798,12 @@ class SecurityRegressionTests(unittest.TestCase):
             "REPORT_V3_ALLOW_DRAFT_ALTERNATE_LANE_IN_RELEASE_CONSERVATIVE",
         ]
         env_backup = {key: os.environ.get(key) for key in env_keys}
+        global_keys = [
+            "REPORT_V3_RELEASE_CONSERVATIVE_MODE",
+            "REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE",
+            "REPORT_V3_ALLOW_DRAFT_ALTERNATE_LANE_IN_RELEASE_CONSERVATIVE",
+        ]
+        global_backup = {key: getattr(self.server, key) for key in global_keys}
         fn_keys = [
             "build_report_evidence_pack",
             "build_report_draft_prompt_v3",
@@ -1818,6 +1824,9 @@ class SecurityRegressionTests(unittest.TestCase):
             os.environ["REPORT_V3_RELEASE_CONSERVATIVE_MODE"] = "true"
             os.environ["REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE"] = "true"
             os.environ["REPORT_V3_ALLOW_DRAFT_ALTERNATE_LANE_IN_RELEASE_CONSERVATIVE"] = "false"
+            self.server.REPORT_V3_RELEASE_CONSERVATIVE_MODE = True
+            self.server.REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE = True
+            self.server.REPORT_V3_ALLOW_DRAFT_ALTERNATE_LANE_IN_RELEASE_CONSERVATIVE = False
 
             self.server.build_report_evidence_pack = lambda _session: {"facts": [{"q_id": "Q1"}], "overall_coverage": 1.0}
             self.server.build_report_draft_prompt_v3 = lambda *_args, **_kwargs: "draft prompt"
@@ -1877,6 +1886,8 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertLessEqual(int(draft_call_meta[0]["max_tokens"] or 0), 2600)
         finally:
             for key, value in fn_backup.items():
+                setattr(self.server, key, value)
+            for key, value in global_backup.items():
                 setattr(self.server, key, value)
             for key, value in env_backup.items():
                 if value is None:

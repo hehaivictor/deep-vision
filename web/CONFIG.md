@@ -87,7 +87,9 @@ colors: {
 ```javascript
 api: {
   baseUrl: 'http://localhost:5001/api',
-  webSearchPollInterval: 200
+  webSearchPollInterval: 200,
+  sessionListPollInterval: 3000,
+  reportStatusPollInterval: 600
 }
 ```
 
@@ -95,10 +97,34 @@ api: {
 
 - `baseUrl`：前端请求的 API 基础地址
 - `webSearchPollInterval`：Web Search 状态轮询间隔
+- `sessionListPollInterval`：会话列表自动刷新间隔
+- `reportStatusPollInterval`：报告生成状态轮询间隔
 
 注意：
 
 - `api.baseUrl` 只决定请求目标，不决定后端的登录、短信、微信、管理员权限或 License 策略
+
+### 4. 前端输入限制 `limits`
+
+用于控制浏览器侧的输入长度与上传大小提示。真实服务端限制仍以后端校验为准。
+
+```javascript
+limits: {
+  topicMaxLength: 200,
+  descriptionMaxLength: 1000,
+  answerMaxLength: 5000,
+  otherInputMaxLength: 2000,
+  maxFileSize: 10485760
+}
+```
+
+字段说明：
+
+- `topicMaxLength`：访谈主题最大长度
+- `descriptionMaxLength`：补充描述最大长度
+- `answerMaxLength`：常规回答最大长度
+- `otherInputMaxLength`：其他选项输入最大长度
+- `maxFileSize`：前端文件上传大小上限，单位字节
 
 ## 最小示例
 
@@ -129,7 +155,9 @@ colors: {
 ```javascript
 api: {
   baseUrl: 'https://your-domain.com/api',
-  webSearchPollInterval: 200
+  webSearchPollInterval: 200,
+  sessionListPollInterval: 3000,
+  reportStatusPollInterval: 600
 }
 ```
 
@@ -160,7 +188,16 @@ const SITE_CONFIG = {
   },
   api: {
     baseUrl: 'http://localhost:5001/api',
-    webSearchPollInterval: 200
+    webSearchPollInterval: 200,
+    sessionListPollInterval: 3000,
+    reportStatusPollInterval: 600
+  },
+  limits: {
+    topicMaxLength: 200,
+    descriptionMaxLength: 1000,
+    answerMaxLength: 5000,
+    otherInputMaxLength: 2000,
+    maxFileSize: 10485760
   }
 };
 ```
