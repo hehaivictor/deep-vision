@@ -3270,10 +3270,18 @@ function deepVision() {
             return `${Math.round(count).toLocaleString('zh-CN')} 字`;
         },
 
+        isDocumentFullTextIndexed(doc) {
+            if (!doc || typeof doc !== 'object') return false;
+            const hasRef = Boolean(doc.chunk_manifest_ref || doc.full_content_ref);
+            const chunkCount = Number(doc.chunk_count || 0);
+            return hasRef && Number.isFinite(chunkCount) && chunkCount > 0;
+        },
+
         getDocumentContextStatus(doc) {
             if (!doc || typeof doc !== 'object') return '状态未知';
             if (doc.context_ready) {
-                if (doc.is_truncated) return '已纳入上下文 · 已截断';
+                if (this.isDocumentFullTextIndexed(doc)) return '全文可参考 · 摘录已压缩';
+                if (doc.is_truncated) return '仅保留前 10,000 字 · 后续未纳入参考';
                 return '已纳入上下文';
             }
             if (doc.parse_status === 'failed') return '解析失败 · 未进入上下文';
@@ -3283,6 +3291,9 @@ function deepVision() {
 
         getDocumentContextStatusClass(doc) {
             if (doc?.context_ready) {
+                if (this.isDocumentFullTextIndexed(doc)) {
+                    return 'bg-emerald-50 text-emerald-700 border border-emerald-200';
+                }
                 return doc?.is_truncated
                     ? 'bg-amber-50 text-amber-700 border border-amber-200'
                     : 'bg-emerald-50 text-emerald-700 border border-emerald-200';
@@ -3295,6 +3306,12 @@ function deepVision() {
             const extracted = this.formatDocumentCharCount(doc.extracted_chars);
             const stored = this.formatDocumentCharCount(doc.stored_chars);
             if (doc.context_ready) {
+                if (this.isDocumentFullTextIndexed(doc)) {
+                    return `AI 会按问题从全文中提取相关片段，兼容摘录 ${stored}`;
+                }
+                if (doc.is_truncated) {
+                    return `已解析 ${extracted}，仅保存 ${stored}`;
+                }
                 return `已解析 ${extracted}，保存 ${stored}`;
             }
             const error = String(doc.parse_error || '').replace(/\s+/g, ' ').trim();
@@ -3306,7 +3323,9 @@ function deepVision() {
             if (!doc || typeof doc !== 'object') return `${name} 上传完成`;
             if (doc.context_ready) {
                 const extracted = this.formatDocumentCharCount(doc.extracted_chars);
-                const suffix = doc.is_truncated ? '，内容较长已截断' : '';
+                const suffix = this.isDocumentFullTextIndexed(doc)
+                    ? '，全文可按需参考'
+                    : (doc.is_truncated ? '，仅前 10,000 字纳入参考' : '');
                 return `${name} 已解析 ${extracted} 并纳入上下文${suffix}`;
             }
             return `${name} 已上传，但未进入上下文：${this.getDocumentContextStatus(doc)}`;
