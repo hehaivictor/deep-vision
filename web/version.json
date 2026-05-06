@@ -1,7 +1,19 @@
 {
-  "version": "10.3.3",
-  "releaseDate": "2026-04-30",
+  "version": "10.4.0",
+  "releaseDate": "2026-05-06",
   "changelog": [
+    {
+      "version": "10.4.0",
+      "date": "2026-05-06",
+      "type": "minor",
+      "title": "新增访谈题内 AI 助手",
+      "changes": [
+        "后端新增题内助手接口、Prompt 规范化与聊天记录持久化。",
+        "前端新增当前题内联 Chat、采纳预填与选项编号推断。",
+        "测试补充接口、安全边界和报告证据隔离回归。",
+        "修复报告生成 runtime 测试 patchpoint 污染。"
+      ]
+    },
     {
       "version": "10.3.3",
       "date": "2026-04-30",
