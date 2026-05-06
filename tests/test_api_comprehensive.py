@@ -10,7 +10,7 @@ import time
 import types
 import unittest
 import uuid
-from concurrent.futures import Future
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -84,7 +84,46 @@ class ComprehensiveApiTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls._drain_report_generation_workers(timeout_seconds=5.0)
         cls.temp_dir.cleanup()
+
+    @classmethod
+    def _drain_report_generation_workers(cls, timeout_seconds=3.0):
+        """等待异步报告生成测试任务收尾，避免跨测试模块污染共享 runtime 绑定。"""
+        deadline = time.time() + max(0.1, float(timeout_seconds or 0.1))
+        while True:
+            with cls.server.report_generation_workers_lock:
+                workers = list(cls.server.report_generation_workers.items())
+            if not workers:
+                return
+
+            made_progress = False
+            for session_id, worker in workers:
+                if not isinstance(worker, Future):
+                    cls.server.cleanup_report_generation_worker(session_id)
+                    made_progress = True
+                    continue
+                remaining = max(0.0, deadline - time.time())
+                if worker.done() or remaining <= 0:
+                    if not worker.done():
+                        worker.cancel()
+                    cls.server.cleanup_report_generation_worker(session_id, worker)
+                    made_progress = True
+                    continue
+                try:
+                    worker.result(timeout=min(0.5, remaining))
+                except FutureTimeoutError:
+                    pass
+                except Exception:
+                    pass
+                if worker.done():
+                    cls.server.cleanup_report_generation_worker(session_id, worker)
+                    made_progress = True
+
+            if time.time() >= deadline:
+                return
+            if not made_progress:
+                time.sleep(0.02)
 
     @classmethod
     def _configure_sandbox_paths(cls):
@@ -166,6 +205,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         cls.server.scenario_loader = scenario_loader_module._scenario_loader
 
     def setUp(self):
+        self._drain_report_generation_workers(timeout_seconds=1.0)
         self.client = self.server.app.test_client()
         self.server.LICENSE_ENFORCEMENT_ENABLED = False
         self.server.set_license_enforcement_override(False)
@@ -2724,6 +2764,242 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(
             ((detail_payload.get("interview_log") or [])[-1] or {}).get("ai_recommendation", {}),
             log.get("ai_recommendation"),
+        )
+
+    def test_interview_assistant_chat_persists_without_formal_log(self):
+        self._register()
+        created = self._create_session(topic="题内助手", interview_mode="standard")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        captured = {}
+        old_resolve_ai_client = self.server.resolve_ai_client
+        old_call_claude = self.server.call_claude
+        try:
+            self.server.resolve_ai_client = lambda call_type="", **_kwargs: object() if call_type == "summary_interview_chat" else old_resolve_ai_client(call_type=call_type, **_kwargs)
+
+            def fake_call_claude(prompt, **kwargs):
+                captured["prompt"] = prompt
+                captured["kwargs"] = kwargs
+                return (
+                    json.dumps(
+                        {
+                            "content": "这几个选项主要区别在推进节奏和风险承担。若当前目标是快速验证，可优先选方案A。",
+                            "suggested_answer": {
+                                "selected_options": ["方案A"],
+                                "custom_text": "",
+                                "rationale_text": "当前目标偏快速验证，方案A更匹配。",
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    {"success": True},
+                )
+
+            self.server.call_claude = fake_call_claude
+
+            response = self.client.post(
+                f"/api/sessions/{session_id}/interview-assistant-chat",
+                json={
+                    "dimension": dimension,
+                    "question": "优先推进哪个方向？",
+                    "options": ["方案A", "方案B", "方案C"],
+                    "multi_select": False,
+                    "answer_mode": "pick_only",
+                    "selected_answers": [],
+                    "other_answer_text": "",
+                    "message": "这几个选项有什么区别？",
+                    "question_fingerprint": "q-api-test",
+                    "client_messages": [],
+                },
+            )
+        finally:
+            self.server.resolve_ai_client = old_resolve_ai_client
+            self.server.call_claude = old_call_claude
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        payload = response.get_json() or {}
+        self.assertEqual("q-api-test", payload.get("question_fingerprint"))
+        self.assertIn("区别", payload.get("content", ""))
+        self.assertEqual(["方案A"], (payload.get("suggested_answer") or {}).get("selected_options"))
+        self.assertEqual("summary_interview_chat", captured["kwargs"].get("call_type"))
+        self.assertEqual(900, captured["kwargs"].get("max_tokens"))
+        self.assertEqual(30, captured["kwargs"].get("timeout"))
+        self.assertTrue(captured["kwargs"].get("return_meta"))
+        self.assertIn("优先推进哪个方向", captured.get("prompt", ""))
+
+        detail_resp = self.client.get(f"/api/sessions/{session_id}")
+        self.assertEqual(detail_resp.status_code, 200, detail_resp.get_data(as_text=True))
+        detail_payload = detail_resp.get_json() or {}
+        self.assertEqual([], detail_payload.get("interview_log"))
+        chat_store = detail_payload.get("interview_assistant_chats") or {}
+        self.assertIn("q-api-test", chat_store)
+        messages = ((chat_store.get("q-api-test") or {}).get("messages") or [])
+        self.assertEqual(["user", "assistant"], [item.get("role") for item in messages])
+
+        submit_resp = self.client.post(
+            f"/api/sessions/{session_id}/submit-answer",
+            json={
+                "question": "优先推进哪个方向？",
+                "answer": "方案A",
+                "dimension": dimension,
+                "options": ["方案A", "方案B", "方案C"],
+                "is_follow_up": False,
+                "rationale_text": "当前目标偏快速验证，方案A更匹配。",
+            },
+        )
+        self.assertEqual(submit_resp.status_code, 200, submit_resp.get_data(as_text=True))
+        submit_payload = submit_resp.get_json() or {}
+        self.assertEqual(1, len(submit_payload.get("interview_log") or []))
+        self.assertEqual(
+            "当前目标偏快速验证，方案A更匹配。",
+            (submit_payload.get("interview_log") or [{}])[-1].get("rationale_text"),
+        )
+
+    def test_interview_assistant_chat_normalizes_malformed_model_response_and_limits_user_message(self):
+        self._register()
+        created = self._create_session(topic="题内助手兜底", interview_mode="standard")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        old_resolve_ai_client = self.server.resolve_ai_client
+        old_call_claude = self.server.call_claude
+        try:
+            self.server.resolve_ai_client = lambda call_type="", **_kwargs: object() if call_type == "summary_interview_chat" else old_resolve_ai_client(call_type=call_type, **_kwargs)
+            model_outputs = [
+                "这是一段非 JSON 回复，但仍应作为纯文本展示。",
+                json.dumps(
+                    {
+                        "content": "正文可正常展示，异常建议应被丢弃。",
+                        "suggested_answer": {"selected_options": "不是列表"},
+                    },
+                    ensure_ascii=False,
+                ),
+            ]
+
+            def fake_call_claude(*_args, **_kwargs):
+                return (model_outputs.pop(0), {"success": True})
+
+            self.server.call_claude = fake_call_claude
+
+            response = self.client.post(
+                f"/api/sessions/{session_id}/interview-assistant-chat",
+                json={
+                    "dimension": dimension,
+                    "question": "请选择主要风险",
+                    "options": ["进度风险", "预算风险"],
+                    "multi_select": False,
+                    "answer_mode": "pick_only",
+                    "selected_answers": [],
+                    "other_answer_text": "",
+                    "message": "x" * 1200,
+                    "question_fingerprint": "q-long-message",
+                    "client_messages": [{"role": "assistant", "content": "历史上下文"}],
+                },
+            )
+            invalid_suggestion_resp = self.client.post(
+                f"/api/sessions/{session_id}/interview-assistant-chat",
+                json={
+                    "dimension": dimension,
+                    "question": "请选择主要风险",
+                    "options": ["进度风险", "预算风险"],
+                    "multi_select": False,
+                    "answer_mode": "pick_only",
+                    "selected_answers": [],
+                    "message": "这次建议结构异常也不要失败",
+                    "question_fingerprint": "q-invalid-model-suggestion",
+                },
+            )
+        finally:
+            self.server.resolve_ai_client = old_resolve_ai_client
+            self.server.call_claude = old_call_claude
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        payload = response.get_json() or {}
+        self.assertEqual("这是一段非 JSON 回复，但仍应作为纯文本展示。", payload.get("content"))
+        self.assertIsNone(payload.get("suggested_answer"))
+        self.assertEqual(invalid_suggestion_resp.status_code, 200, invalid_suggestion_resp.get_data(as_text=True))
+        invalid_suggestion_payload = invalid_suggestion_resp.get_json() or {}
+        self.assertEqual("正文可正常展示，异常建议应被丢弃。", invalid_suggestion_payload.get("content"))
+        self.assertIsNone(invalid_suggestion_payload.get("suggested_answer"))
+
+        detail_resp = self.client.get(f"/api/sessions/{session_id}")
+        self.assertEqual(detail_resp.status_code, 200, detail_resp.get_data(as_text=True))
+        messages = (((detail_resp.get_json() or {}).get("interview_assistant_chats") or {}).get("q-long-message") or {}).get("messages") or []
+        self.assertEqual(1000, len(messages[0].get("content", "")))
+
+    def test_interview_assistant_chat_rejects_invalid_selection_payload(self):
+        self._register()
+        created = self._create_session(topic="题内助手校验", interview_mode="standard")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        response = self.client.post(
+            f"/api/sessions/{session_id}/interview-assistant-chat",
+            json={
+                "dimension": dimension,
+                "question": "请选择主要风险",
+                "options": ["进度风险", "预算风险"],
+                "multi_select": False,
+                "answer_mode": "pick_only",
+                "selected_answers": ["伪造选项"],
+                "message": "这个选项可以吗？",
+                "question_fingerprint": "q-invalid-selection",
+            },
+        )
+        self.assertEqual(response.status_code, 400, response.get_data(as_text=True))
+        self.assertIn("selected_answers包含无效选项", response.get_json().get("error", ""))
+
+    def test_interview_assistant_chat_infers_option_references_from_rationale(self):
+        self._register()
+        created = self._create_session(topic="题内助手选项推断", interview_mode="standard")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        old_resolve_ai_client = self.server.resolve_ai_client
+        old_call_claude = self.server.call_claude
+        try:
+            self.server.resolve_ai_client = lambda call_type="", **_kwargs: object() if call_type == "summary_interview_chat" else old_resolve_ai_client(call_type=call_type, **_kwargs)
+
+            def fake_call_claude(*_args, **_kwargs):
+                return (
+                    json.dumps(
+                        {
+                            "content": "秒级同步主要关联两个环节：1. 无人值守自动化生产；2. 跨系统实时工艺调整。选项3和选项4优先级较低。",
+                            "suggested_answer": {
+                                "selected_options": [],
+                                "custom_text": "",
+                                "rationale_text": "秒级同步的核心是保障自动化生产流程不中断（选项1）及跨系统工艺调整即时生效（选项2）。选项3涉及人员交互，通常容许稍高延迟。",
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                    {"success": True},
+                )
+
+            self.server.call_claude = fake_call_claude
+            response = self.client.post(
+                f"/api/sessions/{session_id}/interview-assistant-chat",
+                json={
+                    "dimension": dimension,
+                    "question": "秒级同步主要用于保障哪些具体业务环节的运作？",
+                    "options": ["无人值守自动化生产", "跨系统实时工艺调整", "作业员实时接收指令", "质检与不良品追溯"],
+                    "multi_select": True,
+                    "answer_mode": "pick_with_reason",
+                    "selected_answers": [],
+                    "message": "这几个选项有什么区别，我该如何选择？",
+                    "question_fingerprint": "q-option-reference",
+                },
+            )
+        finally:
+            self.server.resolve_ai_client = old_resolve_ai_client
+            self.server.call_claude = old_call_claude
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        payload = response.get_json() or {}
+        self.assertEqual(
+            ["无人值守自动化生产", "跨系统实时工艺调整"],
+            (payload.get("suggested_answer") or {}).get("selected_options"),
         )
 
     def test_submit_answer_triggers_current_dimension_prefetch_with_latest_signature(self):

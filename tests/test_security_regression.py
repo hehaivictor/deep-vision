@@ -223,11 +223,147 @@ class SecurityRegressionTests(unittest.TestCase):
             ("post", "/api/scenarios/generate", {"user_description": "这是一个足够长的场景描述文本用于测试鉴权"}),  # noqa: E501
             ("post", "/api/metrics/reset", {}),
             ("post", "/api/summaries/clear", {}),
+            ("post", "/api/sessions/fake-session/interview-assistant-chat", {"message": "x"}),
         ]
 
         for method, path, body in blocked_cases:
             response = getattr(self.client, method)(path, json=body)
             self.assertEqual(response.status_code, 401, f"{path} should be protected")
+
+    def test_interview_assistant_chat_respects_session_owner_and_instance_scope(self):
+        self._register_user()
+        old_scope = self.server.INSTANCE_SCOPE_KEY
+        old_scope_enforcement = self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED
+        try:
+            self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED = True
+            self.server.INSTANCE_SCOPE_KEY = "instance-a"
+            session_id = self._create_session(topic="题内助手隔离")
+            session_payload = self.server.safe_load_session(self.server.SESSIONS_DIR / f"{session_id}.json")
+            dimension = next(iter(session_payload.get("dimensions", {}).keys()))
+
+            other_client = self.server.app.test_client()
+            self._register_user(client=other_client)
+            other_resp = other_client.post(
+                f"/api/sessions/{session_id}/interview-assistant-chat",
+                json={
+                    "dimension": dimension,
+                    "question": "请选择主要风险",
+                    "options": ["进度风险", "预算风险"],
+                    "multi_select": False,
+                    "answer_mode": "pick_only",
+                    "message": "这个怎么选？",
+                    "question_fingerprint": "q-security-owner",
+                },
+            )
+            self.assertEqual(other_resp.status_code, 404, other_resp.get_data(as_text=True))
+
+            self.server.INSTANCE_SCOPE_KEY = "instance-b"
+            scope_resp = self.client.post(
+                f"/api/sessions/{session_id}/interview-assistant-chat",
+                json={
+                    "dimension": dimension,
+                    "question": "请选择主要风险",
+                    "options": ["进度风险", "预算风险"],
+                    "multi_select": False,
+                    "answer_mode": "pick_only",
+                    "message": "这个怎么选？",
+                    "question_fingerprint": "q-security-scope",
+                },
+            )
+            self.assertEqual(scope_resp.status_code, 404, scope_resp.get_data(as_text=True))
+        finally:
+            self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED = old_scope_enforcement
+            self.server.INSTANCE_SCOPE_KEY = old_scope
+
+    def test_interview_assistant_chat_rejects_malformed_context_payloads(self):
+        self._register_user()
+        session_id = self._create_session(topic="题内助手上下文校验")
+        session_payload = self.server.safe_load_session(self.server.SESSIONS_DIR / f"{session_id}.json")
+        dimension = next(iter(session_payload.get("dimensions", {}).keys()))
+
+        malformed_messages_resp = self.client.post(
+            f"/api/sessions/{session_id}/interview-assistant-chat",
+            json={
+                "dimension": dimension,
+                "question": "请选择主要风险",
+                "options": ["进度风险", "预算风险"],
+                "multi_select": False,
+                "answer_mode": "pick_only",
+                "message": "这个怎么选？",
+                "client_messages": "not-a-list",
+            },
+        )
+        self.assertEqual(malformed_messages_resp.status_code, 400, malformed_messages_resp.get_data(as_text=True))
+        self.assertIn("client_messages必须是列表", malformed_messages_resp.get_json().get("error", ""))
+
+        too_many_options_resp = self.client.post(
+            f"/api/sessions/{session_id}/interview-assistant-chat",
+            json={
+                "dimension": dimension,
+                "question": "请选择主要风险",
+                "options": [f"选项{i}" for i in range(9)],
+                "multi_select": False,
+                "answer_mode": "pick_only",
+                "message": "这些选项有什么区别？",
+            },
+        )
+        self.assertEqual(too_many_options_resp.status_code, 400, too_many_options_resp.get_data(as_text=True))
+        self.assertIn("options最多支持8项", too_many_options_resp.get_json().get("error", ""))
+
+    def test_interview_assistant_chats_do_not_feed_report_or_evidence_ledger(self):
+        session = {
+            "session_id": "security-chat-session",
+            "topic": "题内助手证据隔离",
+            "description": "",
+            "scenario_config": {
+                "dimensions": [
+                    {
+                        "id": "customer_needs",
+                        "name": "客户需求",
+                        "description": "识别客户需求",
+                        "key_aspects": ["痛点", "目标"],
+                    }
+                ],
+                "report": {"type": "standard"},
+            },
+            "dimensions": {
+                "customer_needs": {
+                    "coverage": 50,
+                    "items": [{"name": "正式回答", "description": "正式问题", "priority": "中"}],
+                }
+            },
+            "reference_materials": [],
+            "interview_log": [
+                {
+                    "question": "正式问题",
+                    "answer": "正式回答",
+                    "dimension": "customer_needs",
+                    "options": ["正式回答"],
+                    "is_follow_up": False,
+                }
+            ],
+            "interview_assistant_chats": {
+                "q-secret": {
+                    "messages": [
+                        {
+                            "role": "assistant",
+                            "content": "不应进入报告的助手内容",
+                            "suggested_answer": {"custom_text": "不应进入证据"},
+                        }
+                    ]
+                }
+            },
+        }
+
+        ledger = self.server.build_session_evidence_ledger(session)
+        ledger_text = json.dumps(ledger, ensure_ascii=False)
+        self.assertNotIn("不应进入报告", ledger_text)
+        self.assertNotIn("不应进入证据", ledger_text)
+
+        prompt = self.server.build_report_prompt(session)
+        self.assertIn("正式回答", prompt)
+        self.assertNotIn("不应进入报告", prompt)
+        self.assertNotIn("不应进入证据", prompt)
 
         summaries_response = self.client.get("/api/summaries")
         self.assertEqual(summaries_response.status_code, 401)

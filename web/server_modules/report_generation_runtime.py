@@ -10,10 +10,29 @@ from typing import Any, Optional
 import requests
 
 
+REPORT_RUNTIME_MODULE_EXPORT_NAMES = {
+    "compute_report_quality_meta_v3",
+    "build_report_quality_meta_fallback",
+    "generate_report_v3_pipeline",
+    "is_unusable_legacy_report_content",
+    "classify_v3_pipeline_exception",
+    "run_report_generation_job",
+}
+
+
 def configure_report_generation_runtime(bindings: dict[str, Any]) -> None:
     if not isinstance(bindings, dict):
         raise TypeError("bindings must be a dict")
-    globals().update(bindings)
+    for key, value in bindings.items():
+        if key in REPORT_RUNTIME_MODULE_EXPORT_NAMES:
+            globals()[f"_server_patchpoint_{key}"] = value
+        else:
+            globals()[key] = value
+
+
+def _runtime_patchpoint(name: str, fallback: Any) -> Any:
+    patched = globals().get(f"_server_patchpoint_{name}")
+    return patched if callable(patched) else fallback
 
 
 def _compute_table_row_readiness_v3(items: list, required_fields: list[str]) -> float:
@@ -689,7 +708,10 @@ def generate_report_v3_pipeline(
                 phase_lanes=phase_lanes,
             )
             quality_gate_start = _time.perf_counter()
-            quality_meta = compute_report_quality_meta_v3(current_draft, evidence_pack, final_issues)
+            quality_meta = _runtime_patchpoint(
+                "compute_report_quality_meta_v3",
+                compute_report_quality_meta_v3,
+            )(current_draft, evidence_pack, final_issues)
             if isinstance(quality_meta, dict):
                 quality_meta["runtime_profile"] = runtime_profile
                 quality_meta["review_skipped_by_release_conservative"] = True
@@ -1016,7 +1038,10 @@ def generate_report_v3_pipeline(
                     filtered_model_issue_count=len(filtered_model_issues or []),
                 )
                 quality_gate_start = _time.perf_counter()
-                quality_meta = compute_report_quality_meta_v3(current_draft, evidence_pack, final_issues)
+                quality_meta = _runtime_patchpoint(
+                    "compute_report_quality_meta_v3",
+                    compute_report_quality_meta_v3,
+                )(current_draft, evidence_pack, final_issues)
                 if isinstance(quality_meta, dict):
                     quality_meta["runtime_profile"] = runtime_profile
                 quality_gate_issues = build_quality_gate_issues_v3(quality_meta)
@@ -1153,7 +1178,10 @@ def generate_report_v3_pipeline(
     except Exception as e:
         if ENABLE_DEBUG_LOG:
             print(f"⚠️ V3 报告流程失败: {summarize_error_for_log(e, limit=260)}")
-        exception_kind = classify_v3_pipeline_exception(e)
+        exception_kind = _runtime_patchpoint(
+            "classify_v3_pipeline_exception",
+            classify_v3_pipeline_exception,
+        )(e)
         return {
             "status": "failed",
             "reason": "exception",
@@ -1601,7 +1629,10 @@ def run_report_generation_job(
                     next_hint="完成证据包后会生成结构化草案",
                     progress_override=20,
                 )
-                v3_result = generate_report_v3_pipeline(
+                v3_result = _runtime_patchpoint(
+                    "generate_report_v3_pipeline",
+                    generate_report_v3_pipeline,
+                )(
                     session,
                     session_id=session_id,
                     preferred_lane="report",
@@ -1701,7 +1732,10 @@ def run_report_generation_job(
                 )
                 failover_suffix = f"_failover_{REPORT_V3_FAILOVER_LANE}"
                 failover_started_at = _time.perf_counter()
-                failover_result = generate_report_v3_pipeline(
+                failover_result = _runtime_patchpoint(
+                    "generate_report_v3_pipeline",
+                    generate_report_v3_pipeline,
+                )(
                     session,
                     session_id=session_id,
                     preferred_lane=REPORT_V3_FAILOVER_LANE,
@@ -1947,7 +1981,10 @@ def run_report_generation_job(
                 2,
             )
 
-            if is_unusable_legacy_report_content(report_content):
+            if _runtime_patchpoint(
+                "is_unusable_legacy_report_content",
+                is_unusable_legacy_report_content,
+            )(report_content):
                 fallback_primary_lane = resolve_call_lane(call_type="report_legacy_fallback")
                 fallback_primary_model = resolve_model_name_for_lane(
                     call_type="report_legacy_fallback",
@@ -1976,7 +2013,10 @@ def run_report_generation_job(
                         timeout=legacy_timeout,
                         preferred_lane=retry_lane,
                     )
-                    if not is_unusable_legacy_report_content(retry_content):
+                    if not _runtime_patchpoint(
+                        "is_unusable_legacy_report_content",
+                        is_unusable_legacy_report_content,
+                    )(retry_content):
                         report_content = retry_content
                     else:
                         if ENABLE_DEBUG_LOG:
@@ -1993,7 +2033,10 @@ def run_report_generation_job(
 
             if report_content:
                 report_content = report_content + generate_interview_appendix(session)
-                quality_meta = build_report_quality_meta_fallback(
+                quality_meta = _runtime_patchpoint(
+                    "build_report_quality_meta_fallback",
+                    build_report_quality_meta_fallback,
+                )(
                     session,
                     mode="legacy_ai_fallback",
                     evidence_pack=fallback_evidence_pack,
@@ -2063,7 +2106,10 @@ def run_report_generation_job(
             progress_override=84,
         )
         report_content = generate_simple_report(session)
-        quality_meta = build_report_quality_meta_fallback(session, mode="simple_template_fallback")
+        quality_meta = _runtime_patchpoint(
+            "build_report_quality_meta_fallback",
+            build_report_quality_meta_fallback,
+        )(session, mode="simple_template_fallback")
         session["last_report_quality_meta"] = quality_meta
         update_report_generation_status(
             session_id,

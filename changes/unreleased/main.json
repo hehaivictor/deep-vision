@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "c47ee82",
+  "committedAt": "2026-05-06T19:56:08+08:00",
+  "versionType": "minor",
+  "title": "新增访谈题内 AI 助手",
+  "changes": [
+    "后端新增题内助手接口、Prompt 规范化与聊天记录持久化。",
+    "前端新增当前题内联 Chat、采纳预填与选项编号推断。",
+    "测试补充接口、安全边界和报告证据隔离回归。",
+    "修复报告生成 runtime 测试 patchpoint 污染。"
+  ],
+  "changedFiles": [
+    "tests/test_api_comprehensive.py",
+    "tests/test_security_regression.py",
+    "web/app_modules/interview_runtime.js",
+    "web/index.html",
+    "web/server.py",
+    "web/server_modules/interview_assistant_chat.py",
+    "web/server_modules/report_generation_runtime.py"
+  ]
+}

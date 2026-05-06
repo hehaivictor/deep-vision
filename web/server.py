@@ -93,6 +93,11 @@ from web.server_modules.interview_runtime import (
     _prepare_question_generation_runtime as module_prepare_question_generation_runtime,
     _select_question_generation_runtime_profile as module_select_question_generation_runtime_profile,
 )
+from web.server_modules.interview_assistant_chat import (
+    append_interview_assistant_chat_exchange,
+    generate_interview_assistant_chat_reply,
+    normalize_interview_assistant_chat_payload,
+)
 
 try:
     import fcntl
@@ -30127,6 +30132,61 @@ def extract_other_resolution(log: dict, option_list: list[str]) -> Optional[dict
     }
 
 
+@app.route('/api/sessions/<session_id>/interview-assistant-chat', methods=['POST'])
+def interview_assistant_chat(session_id):
+    """当前题内 AI 助手；辅助解释不进入正式访谈记录。"""
+    user_id = get_current_user_id_or_none()
+    if not user_id:
+        return jsonify({"error": "请先登录"}), 401
+
+    loaded = load_session_for_user(session_id, user_id)
+    if len(loaded) == 3:
+        _file, error_msg, status_code = loaded
+        return jsonify({"error": error_msg}), status_code
+
+    _session_file, session = loaded
+    data = request.get_json() or {}
+    try:
+        chat_payload = normalize_interview_assistant_chat_payload(data, session)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    if not resolve_ai_client(call_type="summary_interview_chat"):
+        return jsonify({"error": "AI 助手暂时不可用"}), 503
+
+    now_iso = get_utc_now()
+    try:
+        reply = generate_interview_assistant_chat_reply(
+            session,
+            chat_payload,
+            call_ai=call_claude,
+            now_iso=now_iso,
+            get_dimension_info_for_session=get_dimension_info_for_session,
+            select_reference_material_context=select_reference_material_context,
+            reference_context_chunk_limit=REFERENCE_MATERIAL_CONTEXT_CHUNK_LIMIT,
+        )
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            print(f"⚠️ 题内助手生成失败: {exc}")
+        return jsonify({"error": "AI 助手暂时不可用"}), 502
+
+    with locked_session_for_user(session_id, user_id) as latest_loaded:
+        if len(latest_loaded) == 3:
+            _file, error_msg, status_code = latest_loaded
+            return jsonify({"error": error_msg}), status_code
+
+        latest_session_file, latest_session = latest_loaded
+        append_interview_assistant_chat_exchange(
+            latest_session,
+            chat_payload,
+            reply,
+            now_iso=now_iso,
+        )
+        latest_session["updated_at"] = now_iso
+        save_session_json_and_sync(latest_session_file, latest_session)
+    return jsonify(reply)
+
+
 @app.route('/api/sessions/<session_id>/submit-answer', methods=['POST'])
 @with_session_write_lock
 def submit_answer(session_id):
@@ -44212,7 +44272,7 @@ def is_generation_relevant_access_log(path: str, method: str = "GET") -> bool:
         return True
 
     return bool(re.match(
-        r"^/api/sessions/[^/]+/(next-question|submit-answer|generate-report|report-readiness|undo-answer|skip-follow-up|complete-dimension|restart-interview|documents)$",
+        r"^/api/sessions/[^/]+/(next-question|submit-answer|interview-assistant-chat|generate-report|report-readiness|undo-answer|skip-follow-up|complete-dimension|restart-interview|documents)$",
         normalized,
     ))
 

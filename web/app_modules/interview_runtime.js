@@ -90,6 +90,13 @@
         rationaleText: '',
         otherAnswerText: '',
         otherSelected: false,
+        assistantChatExpanded: false,
+        assistantChatInput: '',
+        assistantChatLoading: false,
+        assistantChatError: '',
+        assistantChatRetryMessage: '',
+        assistantChatMessages: [],
+        assistantChatQuestionFingerprint: '',
     };
 
     const interviewRuntimeMethods = {
@@ -511,6 +518,7 @@
             this.aiRecommendationExpanded = false;
             this.aiRecommendationApplied = false;
             this.aiRecommendationPrevSelection = null;
+            this.syncInterviewAssistantChatForCurrentQuestion();
 
             const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
             const disableTypingEffect = (typeof SITE_CONFIG !== 'undefined'
@@ -745,6 +753,7 @@
             this.aiRecommendationExpanded = false;
             this.aiRecommendationApplied = false;
             this.aiRecommendationPrevSelection = null;
+            this.resetInterviewAssistantChatState();
             if (preferPrefetch) {
                 this.applyThinkingStage({
                     stage_index: this.thinkingStage?.stage_index ?? 0,
@@ -1030,6 +1039,387 @@
             }
         },
 
+        buildInterviewAssistantQuestionFingerprint({
+            dimension = '',
+            question = '',
+            options = [],
+            answerMode = ''
+        } = {}) {
+            const source = JSON.stringify({
+                dimension: String(dimension || '').trim(),
+                question: String(question || '').trim(),
+                options: Array.isArray(options)
+                    ? options.map(item => String(item || '').trim())
+                    : [],
+                answer_mode: String(answerMode || '').trim(),
+            });
+            let hashValue = 2166136261;
+            for (let index = 0; index < source.length; index += 1) {
+                hashValue ^= source.charCodeAt(index);
+                hashValue = Math.imul(hashValue, 16777619) >>> 0;
+            }
+            return `q-${hashValue.toString(16).padStart(8, '0')}`;
+        },
+
+        getInterviewAssistantQuestionFingerprint() {
+            const question = this.currentQuestion;
+            if (!question || !question.text) return '';
+            return this.buildInterviewAssistantQuestionFingerprint({
+                dimension: this.currentDimension,
+                question: question.text,
+                options: question.options || [],
+                answerMode: question.answerMode || 'pick_only',
+            });
+        },
+
+        resetInterviewAssistantChatState(options = {}) {
+            const preserveExpanded = options.preserveExpanded === true;
+            this.assistantChatExpanded = preserveExpanded ? !!this.assistantChatExpanded : false;
+            this.assistantChatInput = '';
+            this.assistantChatLoading = false;
+            this.assistantChatError = '';
+            this.assistantChatRetryMessage = '';
+            this.assistantChatMessages = [];
+            this.assistantChatQuestionFingerprint = '';
+        },
+
+        syncInterviewAssistantChatForCurrentQuestion(options = {}) {
+            const fingerprint = this.getInterviewAssistantQuestionFingerprint();
+            if (!fingerprint) {
+                this.resetInterviewAssistantChatState();
+                return;
+            }
+            const preserveExpanded = options.preserveExpanded === true;
+            const store = this.currentSession?.interview_assistant_chats;
+            const thread = store && typeof store === 'object' ? store[fingerprint] : null;
+            const messages = Array.isArray(thread?.messages)
+                ? thread.messages
+                    .filter(item => item && typeof item === 'object')
+                    .map(item => ({
+                        message_id: String(item.message_id || `iac-local-${Date.now()}-${Math.random()}`),
+                        role: item.role === 'assistant' ? 'assistant' : 'user',
+                        content: String(item.content || ''),
+                        suggested_answer: item.suggested_answer || null,
+                        created_at: String(item.created_at || ''),
+                        question_fingerprint: String(item.question_fingerprint || fingerprint),
+                    }))
+                    .filter(item => item.content)
+                : [];
+            this.assistantChatQuestionFingerprint = fingerprint;
+            this.assistantChatMessages = messages;
+            this.assistantChatInput = '';
+            this.assistantChatLoading = false;
+            this.assistantChatError = '';
+            this.assistantChatRetryMessage = '';
+            if (!preserveExpanded) {
+                this.assistantChatExpanded = messages.length > 0 ? this.assistantChatExpanded : false;
+            }
+        },
+
+        getAssistantChatClientMessages() {
+            return (Array.isArray(this.assistantChatMessages) ? this.assistantChatMessages : [])
+                .filter(item => item && (item.role === 'user' || item.role === 'assistant') && item.content)
+                .slice(-8)
+                .map(item => ({
+                    role: item.role,
+                    content: item.content,
+                }));
+        },
+
+        canSendInterviewAssistantChat() {
+            if (this.assistantChatLoading || this.loadingQuestion || this.submitting) return false;
+            if (!this.currentSession?.session_id || !this.currentQuestion?.text || this.currentQuestion?.serviceError) return false;
+            return String(this.assistantChatInput || '').trim().length > 0;
+        },
+
+        appendAssistantChatMessage(message) {
+            const fingerprint = this.getInterviewAssistantQuestionFingerprint();
+            if (!fingerprint || !message) return;
+            const normalized = {
+                message_id: String(message.message_id || `iac-local-${Date.now()}-${Math.random()}`),
+                role: message.role === 'assistant' ? 'assistant' : 'user',
+                content: String(message.content || ''),
+                suggested_answer: message.suggested_answer || null,
+                created_at: String(message.created_at || new Date().toISOString()),
+                question_fingerprint: String(message.question_fingerprint || fingerprint),
+            };
+            if (!normalized.content) return;
+            this.assistantChatQuestionFingerprint = fingerprint;
+            this.assistantChatMessages = [...(this.assistantChatMessages || []), normalized].slice(-20);
+
+            if (!this.currentSession) return;
+            if (!this.currentSession.interview_assistant_chats || typeof this.currentSession.interview_assistant_chats !== 'object') {
+                this.currentSession.interview_assistant_chats = {};
+            }
+            const thread = this.currentSession.interview_assistant_chats[fingerprint] || {};
+            const existingMessages = Array.isArray(thread.messages) ? thread.messages : [];
+            this.currentSession.interview_assistant_chats[fingerprint] = {
+                ...thread,
+                question_fingerprint: fingerprint,
+                dimension: this.currentDimension,
+                question: this.currentQuestion.text,
+                options: this.currentQuestion.options || [],
+                answer_mode: this.currentQuestion.answerMode || 'pick_only',
+                updated_at: normalized.created_at,
+                messages: [...existingMessages, normalized].slice(-20),
+            };
+        },
+
+        async sendInterviewAssistantChat() {
+            if (!this.canSendInterviewAssistantChat()) return;
+
+            const message = String(this.assistantChatInput || '').trim();
+            const fingerprint = this.getInterviewAssistantQuestionFingerprint();
+            const clientMessages = this.getAssistantChatClientMessages();
+            this.assistantChatExpanded = true;
+            this.assistantChatInput = '';
+            this.assistantChatError = '';
+            this.assistantChatRetryMessage = '';
+            this.assistantChatLoading = true;
+            this.appendAssistantChatMessage({
+                message_id: `iac-user-local-${Date.now()}`,
+                role: 'user',
+                content: message,
+                created_at: new Date().toISOString(),
+                question_fingerprint: fingerprint,
+            });
+
+            try {
+                const result = await this.apiCall(
+                    `/sessions/${this.currentSession.session_id}/interview-assistant-chat`,
+                    {
+                        method: 'POST',
+                        body: JSON.stringify({
+                            dimension: this.currentDimension,
+                            question: this.currentQuestion.text,
+                            options: this.currentQuestion.options || [],
+                            multi_select: !!this.currentQuestion.multiSelect,
+                            answer_mode: this.currentQuestion.answerMode || 'pick_only',
+                            selected_answers: this.selectedAnswers || [],
+                            other_answer_text: this.otherSelected ? this.otherAnswerText : '',
+                            message,
+                            question_fingerprint: fingerprint,
+                            client_messages: clientMessages,
+                        }),
+                    }
+                );
+                if (fingerprint !== this.getInterviewAssistantQuestionFingerprint()) {
+                    return;
+                }
+                this.appendAssistantChatMessage({
+                    message_id: result.message_id,
+                    role: 'assistant',
+                    content: result.content,
+                    suggested_answer: result.suggested_answer || null,
+                    created_at: result.created_at,
+                    question_fingerprint: result.question_fingerprint || fingerprint,
+                });
+            } catch (error) {
+                this.assistantChatError = error?.message || 'AI 助手暂时不可用';
+                this.assistantChatRetryMessage = message;
+            } finally {
+                this.assistantChatLoading = false;
+            }
+        },
+
+        async retryInterviewAssistantChat() {
+            if (this.assistantChatLoading) return;
+            const retryMessage = String(this.assistantChatRetryMessage || '').trim();
+            if (!retryMessage) return;
+            this.assistantChatInput = retryMessage;
+            this.assistantChatRetryMessage = '';
+            await this.sendInterviewAssistantChat();
+        },
+
+        normalizeAssistantOptionReferenceText(value) {
+            return String(value || '')
+                .trim()
+                .replace(/[\s"'“”‘’《》<>「」『』（）()【】[\]]+/g, '');
+        },
+
+        parseAssistantOptionReferenceIndex(value, optionCount = 0) {
+            const text = String(value || '').trim();
+            if (!text || optionCount <= 0) return null;
+            const chineseIndexes = {
+                一: 1,
+                二: 2,
+                两: 2,
+                三: 3,
+                四: 4,
+                五: 5,
+                六: 6,
+                七: 7,
+                八: 8,
+            };
+            const parsed = /^\d+$/.test(text) ? Number(text) : chineseIndexes[text];
+            if (!Number.isInteger(parsed) || parsed < 1 || parsed > optionCount) return null;
+            return parsed - 1;
+        },
+
+        extractAssistantOptionReferenceIndexes(text, optionCount = 0) {
+            const source = String(text || '');
+            if (!source || optionCount <= 0) return [];
+            const indexes = [];
+            const seen = new Set();
+            const patterns = [
+                /(?:选项|第)\s*([一二两三四五六七八\d]+)\s*(?:项|个)?/g,
+                /(?:^|[^A-Za-z0-9])([1-8])\s*[.、)]/g,
+            ];
+            for (const pattern of patterns) {
+                let match = pattern.exec(source);
+                while (match) {
+                    const parsed = this.parseAssistantOptionReferenceIndex(match[1], optionCount);
+                    if (parsed !== null && !seen.has(parsed)) {
+                        indexes.push(parsed);
+                        seen.add(parsed);
+                    }
+                    match = pattern.exec(source);
+                }
+            }
+            return indexes;
+        },
+
+        appendUniqueAssistantOption(target, seen, option) {
+            const normalized = String(option || '').trim();
+            if (!normalized || seen.has(normalized)) return;
+            target.push(normalized);
+            seen.add(normalized);
+        },
+
+        mapAssistantOptionReferencesToOptions(rawItems = [], options = []) {
+            if (!Array.isArray(rawItems) || !Array.isArray(options) || options.length === 0) return [];
+            const normalizedLookup = new Map();
+            options.forEach(option => {
+                const normalized = this.normalizeAssistantOptionReferenceText(option);
+                if (normalized) normalizedLookup.set(normalized, option);
+            });
+
+            const selectedOptions = [];
+            const seen = new Set();
+            rawItems.forEach(item => {
+                const text = String(item || '').trim();
+                if (!text) return;
+                if (options.includes(text)) {
+                    this.appendUniqueAssistantOption(selectedOptions, seen, text);
+                    return;
+                }
+                const normalizedMatch = normalizedLookup.get(this.normalizeAssistantOptionReferenceText(text));
+                if (normalizedMatch) {
+                    this.appendUniqueAssistantOption(selectedOptions, seen, normalizedMatch);
+                    return;
+                }
+                this.extractAssistantOptionReferenceIndexes(text, options.length)
+                    .forEach(index => this.appendUniqueAssistantOption(selectedOptions, seen, options[index]));
+            });
+            return selectedOptions;
+        },
+
+        getAssistantOptionHintSegments(text) {
+            const source = String(text || '');
+            if (!source) return [];
+            const positiveHints = /(建议|推荐|优先|应选|选择|可选|更匹配|适合|核心|主要|关联|保障|直接关系)/;
+            const negativeHints = /(不建议|不优先|不需要|无需|不如|不是|后续|较低|容许|侧重)/;
+            return source
+                .split(/[\n。！？!?；;]+/)
+                .map(segment => segment.trim())
+                .filter(segment => segment && positiveHints.test(segment) && !negativeHints.test(segment));
+        },
+
+        inferAssistantSuggestedOptionsFromText(texts = [], options = []) {
+            if (!Array.isArray(texts) || !Array.isArray(options) || options.length === 0) return [];
+            const selectedOptions = [];
+            const seen = new Set();
+            const normalizedOptions = options
+                .map(option => ({
+                    option,
+                    normalized: this.normalizeAssistantOptionReferenceText(option),
+                }))
+                .filter(item => item.normalized);
+
+            texts.forEach(text => {
+                this.getAssistantOptionHintSegments(text).forEach(segment => {
+                    const normalizedSegment = this.normalizeAssistantOptionReferenceText(segment);
+                    normalizedOptions.forEach(({ option, normalized }) => {
+                        if (normalizedSegment.includes(normalized)) {
+                            this.appendUniqueAssistantOption(selectedOptions, seen, option);
+                        }
+                    });
+                    this.extractAssistantOptionReferenceIndexes(segment, options.length)
+                        .forEach(index => this.appendUniqueAssistantOption(selectedOptions, seen, options[index]));
+                });
+            });
+            return selectedOptions;
+        },
+
+        getAssistantSuggestedAnswer(message) {
+            const suggested = message?.suggested_answer;
+            if (!suggested || typeof suggested !== 'object') return null;
+            const options = Array.isArray(this.currentQuestion?.options) ? this.currentQuestion.options : [];
+            const customText = String(suggested.custom_text || '').trim();
+            const rationaleText = String(suggested.rationale_text || '').trim();
+            const rawSelectedOptions = Array.isArray(suggested.selected_options)
+                ? suggested.selected_options.map(item => String(item || '').trim()).filter(Boolean)
+                : [];
+            let selectedOptions = this.mapAssistantOptionReferencesToOptions(rawSelectedOptions, options);
+            if (selectedOptions.length === 0) {
+                selectedOptions = this.inferAssistantSuggestedOptionsFromText(
+                    [rationaleText, customText, message?.content],
+                    options,
+                );
+            }
+            if (selectedOptions.length === 0 && !customText && !rationaleText) return null;
+            return {
+                selectedOptions,
+                customText,
+                rationaleText,
+                hasAnswer: selectedOptions.length > 0 || !!customText,
+            };
+        },
+
+        getAssistantSuggestionApplyLabel(message) {
+            const suggestion = this.getAssistantSuggestedAnswer(message);
+            return suggestion?.hasAnswer ? '采纳为待提交答案' : '采纳补充说明';
+        },
+
+        canApplyAssistantSuggestion(message) {
+            const suggestion = this.getAssistantSuggestedAnswer(message);
+            if (!suggestion) return false;
+            const fingerprint = this.getInterviewAssistantQuestionFingerprint();
+            return !!fingerprint && String(message?.question_fingerprint || '') === fingerprint;
+        },
+
+        applyAssistantSuggestion(message) {
+            if (!this.canApplyAssistantSuggestion(message)) {
+                this.showToast('当前题目已变化，请重新向助手提问', 'warning');
+                return;
+            }
+
+            const suggestion = this.getAssistantSuggestedAnswer(message);
+            if (!suggestion) return;
+
+            const options = Array.isArray(this.currentQuestion?.options) ? this.currentQuestion.options : [];
+            const matchedOptions = suggestion.selectedOptions.filter(option => options.includes(option));
+            if (matchedOptions.length > 0) {
+                this.selectedAnswers = this.currentQuestion.multiSelect ? Array.from(new Set(matchedOptions)) : [matchedOptions[0]];
+                this.otherSelected = false;
+                this.otherAnswerText = '';
+            } else if (suggestion.customText) {
+                this.selectedAnswers = [];
+                this.otherSelected = true;
+                this.otherAnswerText = suggestion.customText;
+            }
+
+            if (suggestion.rationaleText) {
+                this.rationaleText = suggestion.rationaleText;
+            }
+            this.clearAiRecommendationApplied();
+            this.resetSingleSelectDisambiguation();
+            this.showToast(
+                suggestion.hasAnswer ? '已预填助手建议，请确认后再提交' : '已预填补充说明，请确认后再提交',
+                'info',
+            );
+        },
+
         canSubmitAnswer() {
             if (this.submitting) {
                 return false;
@@ -1290,6 +1680,7 @@
                 this.aiRecommendationExpanded = false;
                 this.aiRecommendationApplied = false;
                 this.aiRecommendationPrevSelection = null;
+                this.syncInterviewAssistantChatForCurrentQuestion();
                 this.selectedAnswers = [];
                 this.rationaleText = '';
                 this.otherAnswerText = '';

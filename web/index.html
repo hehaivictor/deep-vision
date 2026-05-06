@@ -1958,6 +1958,111 @@
                                         <h3 class="text-xl font-semibold text-primary mb-6" x-text="currentQuestion.text"></h3>
                                     </div>
 
+                                    <!-- 当前题助手 -->
+                                    <section x-show="(getTotalProgress() < 100 || currentQuestion.isFollowUp) && currentQuestion.text && !currentQuestion.serviceError"
+                                             class="mb-4 border-y border-gray-200 bg-gray-50/70 px-4 py-3">
+                                        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                            <button type="button"
+                                                    @click="assistantChatExpanded = !assistantChatExpanded; if (assistantChatExpanded && !assistantChatQuestionFingerprint) syncInterviewAssistantChatForCurrentQuestion({ preserveExpanded: true })"
+                                                    :aria-expanded="assistantChatExpanded ? 'true' : 'false'"
+                                                    aria-controls="interview-assistant-chat-panel"
+                                                    class="inline-flex items-center gap-2 text-sm font-medium text-primary hover:text-[#357BE2] focus:outline-none focus:ring-2 focus:ring-[#357BE2]/40 rounded-md transition-colors duration-200 cursor-pointer">
+                                                <svg class="w-4 h-4 text-[#357BE2]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 4v-4z"/>
+                                                </svg>
+                                                <span>问问 AI</span>
+                                                <span x-show="assistantChatMessages.length > 0"
+                                                      class="text-xs text-muted"
+                                                      x-text="`${assistantChatMessages.length} 条`"></span>
+                                            </button>
+                                            <div class="flex flex-wrap items-center gap-2 text-xs text-muted">
+                                                <span>仅辅助判断，采纳后仍需手动提交</span>
+                                                <button type="button"
+                                                        x-show="assistantChatMessages.length > 0"
+                                                        @click="syncInterviewAssistantChatForCurrentQuestion({ preserveExpanded: true })"
+                                                        class="text-[#357BE2] hover:text-[#2c6bd1] focus:outline-none focus:ring-2 focus:ring-[#357BE2]/40 rounded-md transition-colors duration-200 cursor-pointer">
+                                                    恢复本题记录
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <div id="interview-assistant-chat-panel"
+                                             x-show="assistantChatExpanded"
+                                             x-transition.opacity.duration.200ms
+                                             class="mt-3 space-y-3">
+                                            <div x-show="assistantChatMessages.length > 0"
+                                                 role="log"
+                                                 aria-live="polite"
+                                                 class="max-h-64 overflow-y-auto pr-1 space-y-2">
+                                                <template x-for="message in assistantChatMessages" :key="message.message_id">
+                                                    <div :class="message.role === 'user' ? 'ml-auto bg-[#EDF4FE] text-primary' : 'mr-auto bg-white text-primary border border-gray-200'"
+                                                         class="max-w-full sm:max-w-[88%] rounded-lg px-3 py-2 text-sm leading-relaxed">
+                                                        <div class="text-[11px] font-medium text-muted mb-1"
+                                                             x-text="message.role === 'user' ? '我' : 'AI 助手'"></div>
+                                                        <p class="whitespace-pre-wrap break-words" x-text="message.content"></p>
+                                                        <template x-if="message.role === 'assistant' && getAssistantSuggestedAnswer(message)">
+                                                            <div class="mt-2 flex flex-wrap items-center gap-2">
+                                                                <button type="button"
+                                                                        @click="applyAssistantSuggestion(message)"
+                                                                        :disabled="!canApplyAssistantSuggestion(message)"
+                                                                        :class="canApplyAssistantSuggestion(message) ? 'bg-[#357BE2] text-white hover:bg-[#2c6bd1] cursor-pointer' : 'bg-gray-100 text-gray-400 cursor-not-allowed'"
+                                                                        class="inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-[#357BE2]/40">
+                                                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                                                    </svg>
+                                                                    <span x-text="canApplyAssistantSuggestion(message) ? getAssistantSuggestionApplyLabel(message) : '题目已变化'"></span>
+                                                                </button>
+                                                            </div>
+                                                        </template>
+                                                    </div>
+                                                </template>
+                                            </div>
+
+                                            <div x-show="assistantChatLoading"
+                                                 class="flex items-center gap-2 text-xs text-muted"
+                                                 aria-live="polite">
+                                                <span class="inline-flex h-2 w-2 rounded-full bg-[#357BE2] animate-pulse"></span>
+                                                <span>AI 助手正在整理回答</span>
+                                            </div>
+
+                                            <div x-show="assistantChatError"
+                                                 class="flex flex-col gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 sm:flex-row sm:items-center sm:justify-between">
+                                                <span x-text="assistantChatError"></span>
+                                                <button type="button"
+                                                        x-show="assistantChatRetryMessage"
+                                                        @click="retryInterviewAssistantChat()"
+                                                        class="shrink-0 text-red-700 hover:text-red-900 focus:outline-none focus:ring-2 focus:ring-red-300 rounded-md transition-colors duration-200 cursor-pointer">
+                                                    重试
+                                                </button>
+                                            </div>
+
+                                            <div class="space-y-2">
+                                                <label for="interview-assistant-chat-input"
+                                                       class="block text-xs font-medium text-muted">向 AI 询问当前题</label>
+                                                <div class="flex flex-col gap-2 sm:flex-row">
+                                                    <textarea id="interview-assistant-chat-input"
+                                                              x-model="assistantChatInput"
+                                                              rows="2"
+                                                              maxlength="1000"
+                                                              :disabled="assistantChatLoading"
+                                                              placeholder="例如：这几个选项有什么区别？我应该怎么判断？"
+                                                              class="min-h-[52px] flex-1 resize-y rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-primary focus:outline-none focus:ring-2 focus:ring-[#357BE2]/40 focus:border-[#357BE2] disabled:bg-gray-100 disabled:text-gray-500"></textarea>
+                                                    <button type="button"
+                                                            @click="sendInterviewAssistantChat()"
+                                                            :disabled="!canSendInterviewAssistantChat()"
+                                                            :class="canSendInterviewAssistantChat() ? 'report-action-primary cursor-pointer' : 'report-action-disabled cursor-not-allowed'"
+                                                            class="inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-[#357BE2]/40 sm:self-stretch">
+                                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M12 5l7 7-7 7"/>
+                                                        </svg>
+                                                        发送
+                                                    </button>
+                                                </div>
+                                                <p class="text-[11px] text-muted">不会自动进入报告；只有采纳并提交当前题后，才会成为正式回答。</p>
+                                            </div>
+                                        </div>
+                                    </section>
+
                                     <!-- 全部完成提示 - 100%时显示 -->
                                     <div x-show="getTotalProgress() === 100 && !currentQuestion.isFollowUp" class="text-center py-8" style="display: none;">
                                         <div class="inline-flex items-center justify-center w-16 h-16 bg-[#F0F8FF] rounded-full mb-4">
@@ -2125,6 +2230,17 @@
                                                   placeholder="请补充具体原因、场景或依据"
                                                   rows="4"
                                                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cta/50 focus:border-cta resize-y min-h-[120px]"></textarea>
+                                    </div>
+
+                                    <div x-show="(getTotalProgress() < 100 || currentQuestion.isFollowUp) && (currentQuestion.requiresRationale || rationaleText)"
+                                         class="mt-4 space-y-2">
+                                        <label for="interview-rationale-input" class="block text-xs font-medium text-muted">补充说明</label>
+                                        <textarea id="interview-rationale-input"
+                                                  x-model="rationaleText"
+                                                  rows="2"
+                                                  maxlength="3000"
+                                                  placeholder="可补充判断依据、场景或取舍原因"
+                                                  class="w-full min-h-[72px] resize-y rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-primary focus:outline-none focus:ring-2 focus:ring-cta/50 focus:border-cta"></textarea>
                                     </div>
 
                                     <!-- 用户控制按钮组 - 未完成时显示 -->
@@ -6497,7 +6613,7 @@
     <script src="app_modules/session_list_state.js?v=20260409-auth-license-module-v1"></script>
     <script src="app_modules/report_state.js?v=20260409-auth-license-module-v1"></script>
     <script src="app_modules/report_detail_runtime.js?v=20260409-report-detail-runtime-v1"></script>
-    <script src="app_modules/interview_runtime.js?v=20260410-interview-runtime-v1"></script>
+    <script src="app_modules/interview_runtime.js?v=20260506-interview-assistant-chat-v2"></script>
     <script src="app_modules/auth_license_state.js?v=20260427-license-benefits-entry-v1"></script>
     <script src="app_modules/admin_center_state.js?v=20260410-admin-center-state-v1"></script>
     <script src="app.js?v=20260410-admin-center-state-v1"></script>
