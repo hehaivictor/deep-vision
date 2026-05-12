@@ -91,7 +91,7 @@ const SITE_CONFIG = {
         "success": "#22C55E",
         "warning": "#F59E0B",
         "danger": "#EF4444",
-        "overlay": "rgba(15, 23, 42, 0.5)"
+        "overlay": "rgba(15, 23, 42, 0.56)"
       }
     },
     "dark": {
@@ -144,7 +144,7 @@ const SITE_CONFIG = {
           "colors": {
             "brand": "#357BE2",
             "brandHover": "#2563EB",
-            "overlay": "rgba(15, 23, 42, 0.5)"
+            "overlay": "rgba(15, 23, 42, 0.56)"
           },
           "shadow": {
             "card": "0 8px 24px rgba(15, 23, 42, 0.08)",

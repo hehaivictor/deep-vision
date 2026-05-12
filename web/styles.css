@@ -45,7 +45,7 @@
     --dv-color-success: #22c55e;
     --dv-color-warning: #f59e0b;
     --dv-color-danger: #ef4444;
-    --dv-color-overlay: rgba(15, 23, 42, 0.5);
+    --dv-color-overlay: rgba(15, 23, 42, 0.56);
     --dv-radius-sm: 0.5rem;
     --dv-radius-md: 0.75rem;
     --dv-radius-lg: 1rem;
@@ -65,8 +65,6 @@
 
 .dv-overlay {
     background: var(--dv-color-overlay);
-    backdrop-filter: blur(3px);
-    -webkit-backdrop-filter: blur(3px);
     padding-top: max(0.75rem, env(safe-area-inset-top, 0px));
     padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
 }
