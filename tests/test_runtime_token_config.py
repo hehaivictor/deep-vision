@@ -13,6 +13,19 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 SERVER_PATH = ROOT_DIR / "web" / "server.py"
 
 
+def load_checked_in_config_module():
+    config_path = ROOT_DIR / "web" / "config.py"
+    spec = importlib.util.spec_from_file_location("dv_checked_in_config_test", config_path)
+    module = importlib.util.module_from_spec(spec)
+    previous_env = dict(os.environ)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        os.environ.clear()
+        os.environ.update(previous_env)
+    return module
+
+
 def load_server_module(
     config_overrides=None,
     env_overrides=None,
@@ -100,13 +113,43 @@ def load_server_module(
 
 class RuntimeTokenConfigTests(unittest.TestCase):
     def test_report_release_safeguards_are_enabled_in_checked_in_config(self):
-        config_path = ROOT_DIR / "web" / "config.py"
-        spec = importlib.util.spec_from_file_location("dv_checked_in_config_test", config_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        module = load_checked_in_config_module()
 
         self.assertTrue(module.REPORT_V3_RELEASE_CONSERVATIVE_MODE)
         self.assertTrue(module.REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED)
+
+    def test_checked_in_report_release_safeguards_drive_runtime_short_circuit(self):
+        checked_in_config = load_checked_in_config_module()
+        module = load_server_module(
+            {
+                "REPORT_V3_RELEASE_CONSERVATIVE_MODE": checked_in_config.REPORT_V3_RELEASE_CONSERVATIVE_MODE,
+                "REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED": checked_in_config.REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED,
+                "REPORT_V3_RELEASE_SHORT_CIRCUIT_TIMEOUT_THRESHOLD": 2,
+                "GATEWAY_CIRCUIT_BREAKER_ENABLED": True,
+                "GATEWAY_CIRCUIT_FAIL_THRESHOLD": 4,
+                "GATEWAY_CIRCUIT_COOLDOWN_SECONDS": 120.0,
+                "GATEWAY_CIRCUIT_FAILURE_WINDOW_SECONDS": 180.0,
+            }
+        )
+
+        runtime_cfg = module.get_report_v3_runtime_config("balanced")
+
+        self.assertTrue(runtime_cfg["release_conservative_mode"])
+        module.reset_gateway_circuit_state()
+        try:
+            module.record_gateway_lane_failure("report_draft", "timeout")
+            module.record_gateway_lane_failure("report_draft", "timeout")
+
+            meta = module.get_release_conservative_report_short_circuit_meta(
+                runtime_cfg,
+                preferred_lane="report",
+            )
+        finally:
+            module.reset_gateway_circuit_state()
+
+        self.assertTrue(meta.get("triggered"))
+        self.assertEqual(meta.get("reason"), "consecutive_draft_timeout")
+        self.assertEqual(meta.get("timeout_lane"), "report_draft")
 
     def test_data_dir_supports_env_file_and_process_override(self):
         with tempfile.TemporaryDirectory() as temp_root:
