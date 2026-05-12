@@ -230,13 +230,13 @@ REPORT_V3_MIN_REVIEW_ROUNDS = 0
 # 作用：控制报告 V3 是否启用草案与审稿双阶段流程。
 REPORT_V3_DUAL_STAGE_ENABLED = True
 # 作用：控制发布期报告链路是否默认启用保守降档策略。
-REPORT_V3_RELEASE_CONSERVATIVE_MODE = False
+REPORT_V3_RELEASE_CONSERVATIVE_MODE = True
 # 作用：控制发布期保守模式下是否允许草案阶段切到备用 lane。
 REPORT_V3_ALLOW_DRAFT_ALTERNATE_LANE_IN_RELEASE_CONSERVATIVE = False
 # 作用：控制发布期保守模式下是否跳过模型审稿。
 REPORT_V3_SKIP_MODEL_REVIEW_IN_RELEASE_CONSERVATIVE = True
 # 作用：控制发布期报告链路是否在连续超时或熔断时直接短路到标准回退。
-REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED = False
+REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED = True
 # 作用：控制发布期保守模式下是否强制草案主链路保持在主 lane。
 REPORT_V3_DRAFT_STRICT_PRIMARY_LANE_IN_RELEASE_CONSERVATIVE = True
 # 作用：设置发布期短路回退触发所需的超时次数阈值。

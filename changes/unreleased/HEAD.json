@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "branch": "HEAD",
+  "baseRef": "origin/main",
+  "sourceCommit": "918c580",
+  "committedAt": "2026-05-12T10:44:28+08:00",
+  "versionType": "patch",
+  "title": "配置：恢复报告发布期保守短路默认值",
+  "changes": [
+    "测试：补充报告保护开关回归断言"
+  ],
+  "changedFiles": [
+    "tests/test_runtime_token_config.py",
+    "web/config.py"
+  ]
+}

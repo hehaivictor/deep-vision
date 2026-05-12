@@ -99,6 +99,15 @@ def load_server_module(
 
 
 class RuntimeTokenConfigTests(unittest.TestCase):
+    def test_report_release_safeguards_are_enabled_in_checked_in_config(self):
+        config_path = ROOT_DIR / "web" / "config.py"
+        spec = importlib.util.spec_from_file_location("dv_checked_in_config_test", config_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        self.assertTrue(module.REPORT_V3_RELEASE_CONSERVATIVE_MODE)
+        self.assertTrue(module.REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED)
+
     def test_data_dir_supports_env_file_and_process_override(self):
         with tempfile.TemporaryDirectory() as temp_root:
             isolated_data_dir = Path(temp_root) / "isolated-data"
