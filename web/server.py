@@ -27612,18 +27612,9 @@ def auth_account_merge_apply():
         return jsonify({"error": "确认短语不匹配"}), 400
 
     candidate = preview.get("candidate") or {}
-    try:
-        _, signature_payload = _build_account_merge_preview_payload(candidate, int(user_row["id"]))
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 409
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 409
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 400
-
-    current_signature = _serialize_account_merge_preview_signature(signature_payload)
-    if current_signature != str(preview.get("signature") or "").strip():
-        return jsonify({"error": "预览数据已变化，请重新确认合并内容"}), 409
+    ok, error_message = _validate_account_merge_candidate(candidate, current_user_id=int(user_row["id"]))
+    if not ok:
+        return jsonify({"error": error_message}), 409
 
     try:
         merge_summary, updated_user = _execute_account_merge_apply(

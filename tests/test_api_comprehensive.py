@@ -2475,6 +2475,80 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.server._get_admin_meta_index_db_target = old_get_admin_meta_index_db_target
             self.server._use_postgres_shared_meta_storage = old_use_postgres_shared_meta_storage
 
+    def test_account_merge_apply_uses_current_source_assets_after_preview(self):
+        target_user = self._register()
+        target_license = self._generate_license_batch(level_key="professional", note="账号合并目标 License")["licenses"][0]["code"]
+        ok, status_code, payload = self.server.activate_license_for_user(target_license, int(target_user["id"]))
+        self.assertTrue(ok, payload)
+        self.assertEqual(200, status_code)
+
+        source_wechat = self._create_wechat_user(
+            app_id="wx-test-app",
+            openid="mock-openid-current-assets",
+            unionid="mock-unionid-current-assets",
+            nickname="微信待合并账号",
+        )
+        fixture = self._create_owned_merge_fixture(int(source_wechat["id"]), f"current-assets-{uuid.uuid4().hex[:6]}")
+        identity = self.server.query_wechat_identity_by_user_id(int(source_wechat["id"]))
+        self.assertIsNotNone(identity)
+
+        with self.client.session_transaction() as sess:
+            sess["account_merge_candidate"] = {
+                "target_user_id": int(target_user["id"]),
+                "source_user_id": int(source_wechat["id"]),
+                "identity_type": "wechat",
+                "identity_value": str(identity["unionid"] or f"{identity['app_id']}:{identity['openid']}"),
+                "app_id": str(identity["app_id"] or ""),
+                "openid": str(identity["openid"] or ""),
+                "unionid": str(identity["unionid"] or ""),
+                "nickname": "微信待合并账号",
+                "avatar_url": "",
+                "issued_at": int(self.server._time.time()),
+            }
+
+        preview_resp = self.client.post("/api/auth/account-merge/preview", json={})
+        self.assertEqual(preview_resp.status_code, 200, preview_resp.get_data(as_text=True))
+        preview_payload = preview_resp.get_json()
+        self.assertEqual(1, preview_payload["source_account"]["asset_counts"]["sessions"])
+        self.assertEqual(1, preview_payload["source_account"]["asset_counts"]["licenses"])
+
+        extra_session_id = f"current-assets-extra-{uuid.uuid4().hex[:8]}"
+        extra_session_file = self.server.SESSIONS_DIR / f"{extra_session_id}.json"
+        now_iso = datetime.utcnow().isoformat()
+        self.server.save_session_json_and_sync(
+            extra_session_file,
+            {
+                "session_id": extra_session_id,
+                "topic": "预览后新增会话",
+                "status": "in_progress",
+                "created_at": now_iso,
+                "updated_at": now_iso,
+                "owner_user_id": int(source_wechat["id"]),
+                "dimensions": {},
+                "interview_log": [],
+            },
+        )
+
+        apply_resp = self.client.post(
+            "/api/auth/account-merge/apply",
+            json={
+                "preview_token": preview_payload["preview_token"],
+                "confirm_text": preview_payload["confirm_phrase"],
+            },
+        )
+        self.assertEqual(apply_resp.status_code, 200, apply_resp.get_data(as_text=True))
+        apply_payload = apply_resp.get_json()
+        self.assertTrue(apply_payload["user"]["wechat_bound"])
+        self.assertEqual("微信待合并账号", apply_payload["user"]["wechat_nickname"])
+        self.assertEqual(2, apply_payload["summary"]["sessions"]["matched"])
+
+        migrated_session = json.loads(fixture["session_file"].read_text(encoding="utf-8"))
+        extra_session = json.loads(extra_session_file.read_text(encoding="utf-8"))
+        self.assertEqual(int(target_user["id"]), int(migrated_session["owner_user_id"]))
+        self.assertEqual(int(target_user["id"]), int(extra_session["owner_user_id"]))
+        source_row_after = self.server.query_user_by_id(int(source_wechat["id"]))
+        self.assertEqual(int(target_user["id"]), int(source_row_after["merged_into_user_id"] or 0))
+
     def test_session_crud(self):
         self._register()
         created = self._create_session(topic="CRUD测试主题")
