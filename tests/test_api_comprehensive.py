@@ -85,6 +85,7 @@ class ComprehensiveApiTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls._drain_report_generation_workers(timeout_seconds=5.0)
+        cls.server.metrics_collector.close()
         cls.temp_dir.cleanup()
 
     @classmethod

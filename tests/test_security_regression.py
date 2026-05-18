@@ -81,6 +81,7 @@ class SecurityRegressionTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls.server.metrics_collector.close()
         cls.temp_dir.cleanup()
 
     @classmethod

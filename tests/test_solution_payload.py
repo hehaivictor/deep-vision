@@ -129,6 +129,7 @@ class SolutionPayloadTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls._wait_for_solution_payload_prewarm_jobs()
+        cls.server.metrics_collector.close()
         cls.temp_dir.cleanup()
 
     def setUp(self):
