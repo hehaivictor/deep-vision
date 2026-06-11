@@ -238,8 +238,7 @@
 
                 await this.loadReports();
                 const reportName = String(data?.report_name || '').trim();
-                const aiGenerated = data?.ai_generated;
-                const aiLabel = aiGenerated === true ? '（AI 生成）' : (aiGenerated === false ? '（模板生成）' : '');
+                const aiLabel = this.getReportGenerationCompletionLabel(data);
                 if (wasTracking) {
                     this.showToast(`访谈报告生成成功 ${aiLabel}`.trim(), 'success');
                 }
@@ -250,9 +249,7 @@
                 return;
             }
 
-            const message = this.normalizeReportGenerationError({
-                message: data?.error || data?.message || '访谈报告生成失败'
-            });
+            const message = this.getReportGenerationFailureMessage(data);
             this.finishReportGenerationFeedback('error', message);
             if (wasTracking) {
                 this.showToast(message, 'error');
@@ -500,6 +497,41 @@
             }
 
             return raw;
+        },
+
+        isModelGenerationFailedResult(result = {}) {
+            const debug = result?.last_report_v3_debug || result?.debug || result?.report_v3_debug || {};
+            const runtimePath = String(result?.runtime_path || debug?.runtime_path || '').trim();
+            const reason = String(result?.reason || debug?.reason || '').trim();
+            const state = String(result?.state || result?.report_status || '').trim();
+            return state === 'failed'
+                || runtimePath === 'model_generation_failed'
+                || reason === 'model_generation_failed'
+                || reason === 'legacy_fallback_failed';
+        },
+
+        isTemplateFallbackReportResult(result = {}) {
+            const debug = result?.last_report_v3_debug || result?.debug || result?.report_v3_debug || {};
+            const runtimePath = String(result?.runtime_path || debug?.runtime_path || '').trim();
+            return result?.template_fallback === true
+                || runtimePath === 'simple_template_fallback'
+                || result?.ai_generated === false;
+        },
+
+        getReportGenerationCompletionLabel(result = {}) {
+            if (this.isTemplateFallbackReportResult(result)) {
+                return '（模板兜底，非正式 AI 报告）';
+            }
+            return result?.ai_generated === true ? '（AI 生成）' : '';
+        },
+
+        getReportGenerationFailureMessage(result = {}) {
+            if (this.isModelGenerationFailedResult(result)) {
+                return '模型报告生成失败，未生成可交付报告，请检查模型服务后重试';
+            }
+            return this.normalizeReportGenerationError({
+                message: result?.error || result?.message || '访谈报告生成失败'
+            });
         },
 
         isReportReadinessBlocked(payload = {}) {

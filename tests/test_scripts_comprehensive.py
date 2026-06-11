@@ -937,6 +937,13 @@ class ComprehensiveScriptTests(unittest.TestCase):
             )
         )
 
+    def test_report_detail_distinguishes_model_failure_from_template_fallback(self):
+        content = (ROOT_DIR / "web" / "app_modules" / "report_detail_runtime.js").read_text(encoding="utf-8")
+        self.assertIn("isModelGenerationFailedResult", content)
+        self.assertIn("isTemplateFallbackReportResult", content)
+        self.assertIn("模型报告生成失败", content)
+        self.assertIn("模板兜底", content)
+
     def test_agent_scenario_scaffold_builds_from_eval_run(self):
         run_dir = self._write_eval_run(
             run_name="eval-run",

@@ -2,11 +2,15 @@
   "schemaVersion": 1,
   "branch": "codex/intus-optimization-backport",
   "baseRef": "origin/main",
-  "sourceCommit": "ff359e9",
-  "committedAt": "2026-06-11T11:55:46+08:00",
+  "sourceCommit": "43945cb",
+  "committedAt": "2026-06-11T12:05:16+08:00",
   "versionType": "minor",
-  "title": "优化访谈问题质量闸门",
+  "title": "收紧报告生成失败态",
   "changes": [
+    "报告：模型与标准回退都失败时记录失败诊断并阻断模板伪成功。",
+    "前端：区分模型失败和显式模板兜底提示。",
+    "测试：补充失败态不绑定报告和提示分类回归。",
+    "优化访谈问题质量闸门",
     "访谈：增加语义重复题识别和用户可见低质题拦截。",
     "后端：缓存、预生成和 AI 生成结果统一接入质量闸门。",
     "测试：补充深度访谈质量场景和脚本索引回归。",
@@ -19,6 +23,10 @@
     "tests/harness_scenarios/report-solution/deep-interview-question-quality.json",
     "tests/test_question_fast_strategy.py",
     "tests/test_scripts_comprehensive.py",
-    "web/server.py"
+    "tests/test_security_regression.py",
+    "web/app_modules/report_detail_runtime.js",
+    "web/config.py",
+    "web/server.py",
+    "web/server_modules/report_generation_runtime.py"
   ]
 }

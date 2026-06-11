@@ -1430,6 +1430,73 @@ def run_report_generation_job(
             )
             return report_file, filename
 
+        def persist_report_failure_diagnostics(
+            quality_meta: Optional[dict] = None,
+            error_detail: str = "",
+            failure_reason: str = "legacy_fallback_failed",
+            runtime_path: str = "model_generation_failed",
+            next_hint: str = "请稍后重试，或检查模型服务后重新生成报告",
+        ) -> None:
+            """记录模型报告失败诊断，不生成、不绑定模板报告。"""
+            error_text = str(error_detail or "模型报告生成失败，未生成可交付内容").strip()
+            if len(error_text) > 220:
+                error_text = error_text[:217] + "..."
+            debug_payload = dict(session.get("last_report_v3_debug") or {})
+            debug_payload.update({
+                "reason": str(failure_reason or "model_generation_failed"),
+                "error": error_text,
+                "runtime_path": str(runtime_path or "model_generation_failed"),
+            })
+            session["status"] = "failed"
+            session["updated_at"] = get_utc_now()
+            session["last_report_v3_debug"] = debug_payload
+            if isinstance(quality_meta, dict):
+                session["last_report_quality_meta"] = quality_meta
+            session.pop("last_report_name", None)
+            session.pop("current_report_name", None)
+            session.pop("current_report_path", None)
+
+            with named_file_lock("sessions", session_id):
+                latest_session = safe_load_session(session_file)
+                if isinstance(latest_session, dict) and ensure_session_owner(latest_session, user_id):
+                    latest_session["status"] = "failed"
+                    latest_session["updated_at"] = get_utc_now()
+                    latest_session["last_report_v3_debug"] = debug_payload
+                    if isinstance(quality_meta, dict):
+                        latest_session["last_report_quality_meta"] = quality_meta
+                    latest_session.pop("last_report_name", None)
+                    latest_session.pop("current_report_name", None)
+                    latest_session.pop("current_report_path", None)
+                    save_session_json_and_sync(session_file, latest_session)
+
+            update_report_generation_status(
+                session_id,
+                "failed",
+                message=f"报告生成失败：{error_text}",
+                active=False,
+                detail_key="failed",
+                next_hint=next_hint,
+            )
+            set_report_generation_metadata(session_id, {
+                "request_id": request_id,
+                "report_name": "",
+                "report_path": "",
+                "ai_generated": False,
+                "v3_enabled": False,
+                "report_quality_meta": quality_meta if isinstance(quality_meta, dict) else {},
+                "source_report_name": normalized_source_report_name,
+                "report_variant_label": selected_report_variant_label,
+                "error": error_text,
+                "runtime_path": str(runtime_path or "model_generation_failed"),
+                "completed_at": get_utc_now(),
+            })
+            _record_report_runtime(
+                "failed",
+                runtime_profile=selected_report_profile,
+                path=str(runtime_path or "model_generation_failed"),
+                reason=str(failure_reason or "model_generation_failed"),
+            )
+
         def build_v3_failure_debug(result: Optional[dict]) -> dict:
             if isinstance(result, dict):
                 return {
@@ -2096,6 +2163,29 @@ def run_report_generation_job(
                     reason=fallback_runtime_reason,
                 )
                 return
+
+        if not bool(globals().get("REPORT_SIMPLE_TEMPLATE_FALLBACK_ENABLED", False)):
+            model_failure_reason = str(primary_failure.get("reason") or "model_generation_failed")
+            model_failure_error_detail = (
+                str(primary_failure.get("error", "") or "")
+                or describe_v3_failure_reason(model_failure_reason)
+                or "模型报告生成失败，未生成可交付内容"
+            )
+            quality_meta = _runtime_patchpoint(
+                "build_report_quality_meta_fallback",
+                build_report_quality_meta_fallback,
+            )(
+                session,
+                mode="model_generation_failed",
+                evidence_pack=fallback_evidence_pack,
+            )
+            persist_report_failure_diagnostics(
+                quality_meta=quality_meta,
+                error_detail=model_failure_error_detail,
+                failure_reason=model_failure_reason,
+                runtime_path="model_generation_failed",
+            )
+            return
 
         update_report_generation_status(
             session_id,

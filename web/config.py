@@ -231,6 +231,8 @@ REPORT_V3_MIN_REVIEW_ROUNDS = 0
 REPORT_V3_DUAL_STAGE_ENABLED = True
 # 作用：控制发布期报告链路是否默认启用保守降档策略。
 REPORT_V3_RELEASE_CONSERVATIVE_MODE = True
+# 作用：控制模型报告失败后是否允许保存基础模板报告。默认关闭，避免模板兜底伪装成正式成功。
+REPORT_SIMPLE_TEMPLATE_FALLBACK_ENABLED = False
 # 作用：控制发布期保守模式下是否允许草案阶段切到备用 lane。
 REPORT_V3_ALLOW_DRAFT_ALTERNATE_LANE_IN_RELEASE_CONSERVATIVE = False
 # 作用：控制发布期保守模式下是否跳过模型审稿。
