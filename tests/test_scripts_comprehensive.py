@@ -790,6 +790,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertIn("cloud-import", task_names)
         self.assertIn("config-center", task_names)
         self.assertIn("presentation-export", task_names)
+        self.assertIn("product-ui-flow", task_names)
         self.assertIn("report-solution", task_names)
 
         profile = agent_profiles.get_task_profile("ownership-migration")
@@ -2892,11 +2893,11 @@ class ComprehensiveScriptTests(unittest.TestCase):
             payload["phase"]["current_priority"],
             {"H6-6 Harness Ops Surface", "phase6 已完成，待新阶段计划"},
         )
-        self.assertEqual(8, payload["coverage"]["task_count"])
-        self.assertEqual(8, payload["coverage"]["planner_meta"])
-        self.assertEqual(8, payload["coverage"]["planner_materialized"])
-        self.assertEqual(8, payload["coverage"]["mission_meta"])
-        self.assertEqual(8, payload["coverage"]["mission_materialized"])
+        self.assertEqual(9, payload["coverage"]["task_count"])
+        self.assertEqual(9, payload["coverage"]["planner_meta"])
+        self.assertEqual(9, payload["coverage"]["planner_materialized"])
+        self.assertEqual(9, payload["coverage"]["mission_meta"])
+        self.assertEqual(9, payload["coverage"]["mission_materialized"])
         self.assertGreaterEqual(payload["coverage"]["high_risk_total"], payload["coverage"]["high_risk_contracts"])
         self.assertGreaterEqual(payload["coverage"]["calibration_samples"], 6)
         self.assertTrue(any("agent_ops.py status" in item for item in payload["recommended_commands"]))
@@ -4391,6 +4392,7 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertIn("ownership-migration", tasks_listed.stdout)
         self.assertIn("cloud-import", tasks_listed.stdout)
         self.assertIn("presentation-export", tasks_listed.stdout)
+        self.assertIn("product-ui-flow", tasks_listed.stdout)
 
     def test_scenario_loader_generates_unique_ids_within_same_second(self):
         custom_dir = self.sandbox_root / "scenario-loader" / "custom"

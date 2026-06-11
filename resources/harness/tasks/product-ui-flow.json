@@ -1,0 +1,143 @@
+{
+  "name": "product-ui-flow",
+  "description": "产品前端关键路径、加载/错误态、刷新恢复和只读边界的轻量发布准入检查。",
+  "risk_level": "medium",
+  "doctor_profile": "local",
+  "guardrails_suite": "minimal",
+  "smoke_suite": "minimal",
+  "strict_doctor": false,
+  "docs": [
+    "docs/agent/auth-identity.md",
+    "docs/agent/interview.md",
+    "docs/agent/report-solution.md",
+    "docs/agent/admin-ops.md"
+  ],
+  "mission": {
+    "summary": "把前端体验类诉求先收口成“关键路径是否可完成、状态是否可恢复、只读边界是否成立”的发布准入判断，再进入 browser smoke 和必要的人工轻量检查。",
+    "desired_outcomes": [
+      "先确认问题落在登录、License 门禁、账号绑定、访谈、报告详情、方案页、公开分享还是配置中心",
+      "先验证主操作按钮、加载态、错误态、刷新恢复和只读态是否满足发布准入",
+      "先复用现有 extended browser smoke 与 evaluator 场景，不临时新增第三套前端测试框架"
+    ],
+    "acceptance_criteria": [
+      "桌面与移动视口下关键页面没有明显遮挡、错位、按钮不可点或状态卡死",
+      "登录、License gate、账号绑定、访谈、报告详情、方案页、公开分享、配置中心均有可识别的加载态或错误态",
+      "刷新恢复后页面 URL、上下文、主操作按钮和提示文案保持一致",
+      "公开分享只读态不可写，关键弹窗、表单和页签不会重复提交或卡死"
+    ],
+    "non_goals": [
+      "不替代完整视觉回归、跨浏览器矩阵、无障碍专项或产品 UX 审查",
+      "不为一次发布准入临时新增独立前端测试框架"
+    ],
+    "risks": [
+      "轻微视觉问题可作为 WARN，但按钮不可点、刷新丢上下文、只读态可写必须阻断",
+      "browser smoke 覆盖不到的细项应进入手工轻量检查项，不能伪造自动化结论"
+    ],
+    "evidence_expectations": [
+      "artifacts/ci/browser-smoke/latest.json",
+      "artifacts/browser-smoke/product-ui-flow/latest.json",
+      "artifacts/harness-runs/latest.json",
+      "tests/harness_scenarios/browser/browser-smoke-extended.json"
+    ]
+  },
+  "planner": {
+    "summary": "先把前端关键路径、刷新恢复、加载/错误态、只读边界和 browser smoke 证据收口成可执行计划，再决定是否需要补手工轻量检查。",
+    "scope_focus": [
+      "优先围绕登录、License gate、账号绑定、访谈、报告详情、方案页、公开分享、配置中心界定范围",
+      "优先复用 extended browser smoke、stability-local 场景和既有 harness artifact",
+      "明确哪些检查已有自动化证据，哪些只能作为手工轻量检查项记录"
+    ],
+    "acceptance_focus": [
+      "关键页面主操作按钮可点击，刷新后上下文与提示文案一致",
+      "加载态、错误态、只读态和页签/弹窗/表单交互不出现卡死或重复提交",
+      "公开分享匿名只读边界不被削弱，配置中心页签切换不影响管理员边界"
+    ],
+    "non_goals": [
+      "不把发布准入扩展成完整视觉设计改造",
+      "不新增与现有 browser smoke 平行的测试框架"
+    ],
+    "risks": [
+      "移动视口和刷新恢复问题往往不会被 API 回归暴露，需要保留 browser smoke 或手工证据",
+      "只读态和 License gate 一旦回退，会直接影响交付边界和数据安全"
+    ]
+  },
+  "playbook": {
+    "output": "docs/agent/playbooks/product-ui-flow.md",
+    "title": "产品前端交互准入",
+    "summary": "把发布前轻量前端体验检查固定到 extended browser smoke、harness 证据和手工检查项三段，避免只看接口 happy path。",
+    "when_to_use": [
+      "发布前需要判断前端关键路径是否具备交付信心",
+      "登录、License、账号绑定、访谈、报告详情、方案页、公开分享或配置中心出现交互异常",
+      "需要确认刷新恢复、加载态、错误态、只读态和按钮可点击性"
+    ],
+    "command_blocks": [
+      {
+        "commands": [
+          "python3 scripts/agent_browser_smoke.py --suite extended --artifact-dir artifacts/browser-smoke/product-ui-flow",
+          "python3 scripts/agent_eval.py --scenario browser-smoke-extended --artifact-dir artifacts/harness-eval",
+          "python3 scripts/agent_harness.py --profile auto --browser-smoke --artifact-dir artifacts/harness-runs"
+        ]
+      },
+      {
+        "intro": "如自动化无法覆盖具体交互细项，记录为手工轻量检查项，不临时新建测试框架：",
+        "commands": [
+          "python3 scripts/agent_ci_summary.py --latest-json artifacts/browser-smoke/product-ui-flow/latest.json --title \"Product UI Flow\""
+        ]
+      }
+    ],
+    "artifact_files": [
+      "artifacts/browser-smoke/product-ui-flow/latest.json",
+      "artifacts/harness-eval/latest.json",
+      "artifacts/harness-runs/latest.json",
+      "artifacts/ci/browser-smoke/latest.json"
+    ],
+    "focus_points": [
+      "桌面与移动视口下是否有明显遮挡、错位或按钮不可点",
+      "登录、License gate、账号绑定、访谈、报告详情、方案页、公开分享、配置中心是否都有明确加载态或错误态",
+      "刷新恢复后 URL、上下文、主操作按钮和提示文案是否一致",
+      "弹窗、表单、页签、只读态是否出现卡死、重复提交或越权写入"
+    ],
+    "manual_confirmations": [
+      "新增第三方前端测试框架或替换现有 browser smoke 执行路径",
+      "修改登录、License gate、公开分享只读或配置中心权限交互",
+      "将自动化未覆盖的前端体验项标记为已自动通过"
+    ]
+  },
+  "workflow": {
+    "mode": "verify_first",
+    "preconditions": [
+      {
+        "id": "browser-env-ready",
+        "title": "确认本地浏览器 smoke 运行环境可用",
+        "type": "requires_browser_env",
+        "suite": "extended"
+      }
+    ],
+    "steps": [
+      {
+        "id": "read",
+        "title": "先读前端相关领域文档与 extended smoke 场景",
+        "detail": "优先阅读 docs/agent/auth-identity.md、docs/agent/interview.md、docs/agent/report-solution.md、docs/agent/admin-ops.md，并对照 tests/harness_scenarios/browser/browser-smoke-extended.json。"
+      },
+      {
+        "id": "browser-smoke",
+        "title": "执行扩展浏览器回归",
+        "executor": "browser_smoke",
+        "suite": "extended",
+        "quiet": true
+      },
+      {
+        "id": "evaluator",
+        "title": "执行 evaluator 中的 extended browser 场景",
+        "executor": "scenario",
+        "scenario": "browser-smoke-extended",
+        "quiet": true
+      },
+      {
+        "id": "manual-checklist",
+        "title": "记录自动化未覆盖的手工轻量检查项",
+        "detail": "若脚本无法自动覆盖桌面/移动遮挡、错误态文案或重复提交等细项，在最终报告中列为手工轻量检查项，并标明是否阻断。"
+      }
+    ]
+  }
+}
