@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "branch": "codex/intus-optimization-backport",
+  "baseRef": "origin/main",
+  "sourceCommit": "ff359e9",
+  "committedAt": "2026-06-11T11:55:46+08:00",
+  "versionType": "minor",
+  "title": "优化访谈问题质量闸门",
+  "changes": [
+    "访谈：增加语义重复题识别和用户可见低质题拦截。",
+    "后端：缓存、预生成和 AI 生成结果统一接入质量闸门。",
+    "测试：补充深度访谈质量场景和脚本索引回归。",
+    "文档：新增 Intus 优化回迁实施计划",
+    "计划：拆分访谈质量、报告可信度、模型韧性和前端体验回迁阶段。",
+    "治理：明确差异审计、测试命令、验收标准和发布准入路径。"
+  ],
+  "changedFiles": [
+    "docs/agent/plans/intus-optimization-backport-plan.md",
+    "tests/harness_scenarios/report-solution/deep-interview-question-quality.json",
+    "tests/test_question_fast_strategy.py",
+    "tests/test_scripts_comprehensive.py",
+    "web/server.py"
+  ]
+}

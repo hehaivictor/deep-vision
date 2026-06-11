@@ -1,0 +1,41 @@
+{
+  "name": "deep-interview-question-quality",
+  "category": "report-solution",
+  "description": "覆盖深度访谈问题生成的模型 lane、语义去重、用户可见质量闸门和证据意图边界。",
+  "tags": [
+    "nightly",
+    "report",
+    "interview",
+    "quality",
+    "stability-local"
+  ],
+  "budgets": {
+    "max_duration_ms": 180000
+  },
+  "cases": [
+    {
+      "test_id": "tests.test_question_fast_strategy.QuestionFastStrategyTests.test_get_interview_mode_runtime_strategy_deep_uses_dedicated_question_model",
+      "label": "深度访谈使用独立问题模型"
+    },
+    {
+      "test_id": "tests.test_question_fast_strategy.QuestionFastStrategyTests.test_runtime_profile_deep_promotes_high_evidence_on_critical_dimension",
+      "label": "深度模式关键维度提升证据意图"
+    },
+    {
+      "test_id": "tests.test_question_fast_strategy.QuestionFastStrategyTests.test_question_similarity_detects_semantic_duplicate",
+      "label": "语义相似问题可识别"
+    },
+    {
+      "test_id": "tests.test_question_fast_strategy.QuestionFastStrategyTests.test_visible_question_quality_gate_rejects_generic_question_and_options",
+      "label": "泛化题干和模板选项会被质量闸门拦截"
+    },
+    {
+      "test_id": "tests.test_question_fast_strategy.QuestionFastStrategyTests.test_visible_question_quality_gate_accepts_contextual_question_and_options",
+      "label": "具备业务上下文的问题可通过质量闸门"
+    },
+    {
+      "test_id": "tests.test_question_fast_strategy.QuestionFastStrategyTests.test_should_reject_visible_question_marks_low_quality_cache_candidate",
+      "label": "缓存候选低质题会被拒绝"
+    }
+  ]
+}

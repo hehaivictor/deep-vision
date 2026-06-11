@@ -1784,6 +1784,75 @@ class QuestionFastStrategyTests(unittest.TestCase):
             3.4,
         )
 
+    def test_question_similarity_detects_semantic_duplicate(self):
+        self.assertTrue(
+            self.server.is_similar_interview_question(
+                "当前最核心的业务痛点是什么？",
+                "目前最大的业务问题主要是什么？",
+            )
+        )
+        self.assertTrue(
+            self.server.is_similar_interview_question(
+                "当前最让你们头疼的痛点是什么？",
+                "当前最影响推进的痛点是什么？",
+            )
+        )
+        self.assertFalse(
+            self.server.is_similar_interview_question(
+                "当前最核心的业务痛点是什么？",
+                "需要对接哪些外部系统？",
+            )
+        )
+
+    def test_visible_question_quality_gate_rejects_generic_question_and_options(self):
+        result = self.server.evaluate_visible_question_quality_gate(
+            {
+                "question": "当前最需要优先确认的重点是什么？",
+                "options": ["效率", "成本", "体验", "质量"],
+                "multi_select": False,
+            },
+            session={"topic": "AI 视觉质检系统建设访谈"},
+            dimension="customer_needs",
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertIn("generic_question", result["reasons"])
+        self.assertIn("generic_options", result["reasons"])
+
+    def test_visible_question_quality_gate_accepts_contextual_question_and_options(self):
+        result = self.server.evaluate_visible_question_quality_gate(
+            {
+                "question": "在 AI 视觉质检系统进入产线试点前，哪类业务边界最容易影响验收决策？",
+                "options": [
+                    "检测模型与人工复核团队的责任边界",
+                    "质检数据与 MES 系统接口的数据边界",
+                    "产线运维与算法团队的部署边界",
+                    "业务负责人和项目负责人的验收边界",
+                ],
+                "multi_select": False,
+            },
+            session={"topic": "AI 视觉质检系统建设访谈"},
+            dimension="customer_needs",
+        )
+
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["reasons"], [])
+
+    def test_should_reject_visible_question_marks_low_quality_cache_candidate(self):
+        result = self.server.should_reject_visible_question(
+            {
+                "question": "请问还有什么补充？",
+                "options": ["选项A", "选项B", "选项C"],
+            },
+            session={"topic": "AI 视觉质检系统建设访谈"},
+            dimension="tech_constraints",
+            source="prefetch_cache",
+        )
+
+        self.assertTrue(result["reject"])
+        self.assertEqual(result["reason"], "visible_quality_gate")
+        self.assertIn("generic_options", result["quality_gate"]["reasons"])
+
 
     def test_prefetch_runtime_profile_uses_independent_params(self):
         self.server.QUESTION_FAST_TIMEOUT = 7.0
