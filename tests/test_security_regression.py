@@ -4865,6 +4865,99 @@ class SecurityRegressionTests(unittest.TestCase):
             for key, value in backup.items():
                 setattr(self.server, key, value)
 
+    def test_resolve_model_fallback_candidates_uses_lane_specific_backup(self):
+        keys = [
+            "MODEL_FALLBACK_ENABLED",
+            "QUESTION_MODEL_NAME",
+            "QUESTION_FALLBACK_MODEL_NAME",
+            "REPORT_DRAFT_MODEL_NAME",
+            "REPORT_DRAFT_FALLBACK_MODEL_NAME",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+
+        try:
+            self.server.MODEL_FALLBACK_ENABLED = True
+            self.server.QUESTION_MODEL_NAME = "question-main"
+            self.server.QUESTION_FALLBACK_MODEL_NAME = "question-backup"
+            self.server.REPORT_DRAFT_MODEL_NAME = "draft-main"
+            self.server.REPORT_DRAFT_FALLBACK_MODEL_NAME = "draft-backup"
+
+            self.assertEqual(
+                self.server.resolve_model_fallback_candidates(call_type="question_fast", selected_lane="question"),
+                ["question-main", "question-backup"],
+            )
+            self.assertEqual(
+                self.server.resolve_model_fallback_candidates(call_type="report_v3_draft", selected_lane="report_draft"),
+                ["draft-main", "draft-backup"],
+            )
+
+            self.server.REPORT_DRAFT_FALLBACK_MODEL_NAME = "draft-main"
+            self.assertEqual(
+                self.server.resolve_model_fallback_candidates(call_type="report_v3_draft", selected_lane="report_draft"),
+                ["draft-main"],
+            )
+        finally:
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+
+    def test_call_claude_retries_with_fallback_model_after_empty_primary(self):
+        class _DummyMessages:
+            def __init__(self):
+                self.models = []
+
+            def create(self, **kwargs):
+                model = kwargs.get("model")
+                self.models.append(model)
+                if model == "question-main":
+                    return types.SimpleNamespace(content=[{"type": "text", "text": "   "}])
+                return types.SimpleNamespace(content=[{"type": "text", "text": "backup-ok"}])
+
+        class _DummyClient:
+            def __init__(self):
+                self.messages = _DummyMessages()
+
+        keys = [
+            "MODEL_FALLBACK_ENABLED",
+            "QUESTION_MODEL_NAME",
+            "QUESTION_FALLBACK_MODEL_NAME",
+            "question_ai_client",
+            "report_ai_client",
+            "summary_ai_client",
+            "search_decision_ai_client",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+
+        try:
+            client = _DummyClient()
+            self.server.MODEL_FALLBACK_ENABLED = True
+            self.server.QUESTION_MODEL_NAME = "question-main"
+            self.server.QUESTION_FALLBACK_MODEL_NAME = "question-backup"
+            self.server.question_ai_client = client
+            self.server.report_ai_client = None
+            self.server.summary_ai_client = None
+            self.server.search_decision_ai_client = None
+
+            result, meta = self.server.call_claude(
+                "请生成问题",
+                max_tokens=64,
+                call_type="question_fast",
+                preferred_lane="question",
+                timeout=12.0,
+                return_meta=True,
+            )
+
+            self.assertEqual(result, "backup-ok")
+            self.assertEqual(client.messages.models, ["question-main", "question-backup"])
+            self.assertTrue(meta.get("model_fallback_attempted"))
+            self.assertEqual(meta.get("model_fallback_from"), "question-main")
+            self.assertEqual(meta.get("model_fallback_to"), "question-backup")
+            self.assertEqual(meta.get("model"), "question-backup")
+            self.assertTrue(meta.get("success"))
+            self.assertEqual(len(meta.get("attempts") or []), 2)
+        finally:
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+
     def test_create_anthropic_client_disables_sdk_retries(self):
         original_constructor = self.server.anthropic.Anthropic
         captured = {}

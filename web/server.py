@@ -591,6 +591,14 @@ REPORT_REVIEW_MODEL_NAME = _cfg_text("REPORT_REVIEW_MODEL_NAME", REPORT_MODEL_NA
 SUMMARY_MODEL_NAME = _cfg_text("SUMMARY_MODEL_NAME", QUESTION_MODEL_NAME) or QUESTION_MODEL_NAME
 SEARCH_DECISION_MODEL_NAME = _cfg_text("SEARCH_DECISION_MODEL_NAME", SUMMARY_MODEL_NAME) or SUMMARY_MODEL_NAME
 ASSESSMENT_MODEL_NAME = _cfg_text("ASSESSMENT_MODEL_NAME", SEARCH_DECISION_MODEL_NAME) or SEARCH_DECISION_MODEL_NAME
+MODEL_FALLBACK_ENABLED = _cfg_bool("MODEL_FALLBACK_ENABLED", True)
+QUESTION_FALLBACK_MODEL_NAME = _cfg_text("QUESTION_FALLBACK_MODEL_NAME", "") or ""
+QUESTION_MODEL_NAME_DEEP_FALLBACK = _cfg_text("QUESTION_MODEL_NAME_DEEP_FALLBACK", "") or ""
+REPORT_DRAFT_FALLBACK_MODEL_NAME = _cfg_text("REPORT_DRAFT_FALLBACK_MODEL_NAME", "") or ""
+REPORT_REVIEW_FALLBACK_MODEL_NAME = _cfg_text("REPORT_REVIEW_FALLBACK_MODEL_NAME", "") or ""
+SUMMARY_FALLBACK_MODEL_NAME = _cfg_text("SUMMARY_FALLBACK_MODEL_NAME", "") or ""
+SEARCH_DECISION_FALLBACK_MODEL_NAME = _cfg_text("SEARCH_DECISION_FALLBACK_MODEL_NAME", "") or ""
+ASSESSMENT_FALLBACK_MODEL_NAME = _cfg_text("ASSESSMENT_FALLBACK_MODEL_NAME", "") or ""
 
 # 鉴权路由配置：兼容 Anthropic x-api-key 与 Bearer Authorization 两种网关模式
 # 未显式配置时，按网关地址自动推断（aicodemirror 默认 Bearer）。
@@ -2205,6 +2213,71 @@ def resolve_model_name_for_lane(call_type: str = "", model_name: str = "", selec
     return resolve_model_name(call_type=call_type, model_name=model_name)
 
 
+def _known_primary_model_fallback(explicit_model: str) -> str:
+    normalized_model = str(explicit_model or "").strip()
+    if not normalized_model:
+        return ""
+    known_pairs = [
+        (QUESTION_MODEL_NAME_DEEP, QUESTION_MODEL_NAME_DEEP_FALLBACK),
+        (QUESTION_MODEL_NAME, QUESTION_FALLBACK_MODEL_NAME),
+        (REPORT_DRAFT_MODEL_NAME, REPORT_DRAFT_FALLBACK_MODEL_NAME),
+        (REPORT_REVIEW_MODEL_NAME, REPORT_REVIEW_FALLBACK_MODEL_NAME),
+        (SUMMARY_MODEL_NAME, SUMMARY_FALLBACK_MODEL_NAME),
+        (SEARCH_DECISION_MODEL_NAME, SEARCH_DECISION_FALLBACK_MODEL_NAME),
+        (ASSESSMENT_MODEL_NAME, ASSESSMENT_FALLBACK_MODEL_NAME),
+    ]
+    for primary_model, fallback_model in known_pairs:
+        if normalized_model == str(primary_model or "").strip():
+            return str(fallback_model or "").strip()
+    return ""
+
+
+def resolve_fallback_model_name_for_lane(call_type: str = "", selected_lane: str = "", model_name: str = "") -> str:
+    """根据调用场景选择同 lane 内的备用模型。"""
+    if not MODEL_FALLBACK_ENABLED:
+        return ""
+
+    explicit = str(model_name or "").strip()
+    if explicit:
+        return _known_primary_model_fallback(explicit)
+
+    lane = str(selected_lane or "").strip().lower()
+    lowered = str(call_type or "").strip().lower()
+    if lane == "question_deep":
+        return str(QUESTION_MODEL_NAME_DEEP_FALLBACK or "").strip()
+    if _is_report_draft_call_type(call_type) or lane == "report_draft":
+        return str(REPORT_DRAFT_FALLBACK_MODEL_NAME or "").strip()
+    if _is_report_review_call_type(call_type) or lane == "report_review":
+        return str(REPORT_REVIEW_FALLBACK_MODEL_NAME or "").strip()
+    if "assessment" in lowered or lane == "assessment":
+        return str(ASSESSMENT_FALLBACK_MODEL_NAME or "").strip()
+    if "search_decision" in lowered or lane == "search_decision":
+        return str(SEARCH_DECISION_FALLBACK_MODEL_NAME or "").strip()
+    if "summary" in lowered or lane == "summary":
+        return str(SUMMARY_FALLBACK_MODEL_NAME or "").strip()
+    return str(QUESTION_FALLBACK_MODEL_NAME or "").strip()
+
+
+def resolve_model_fallback_candidates(call_type: str = "", model_name: str = "", selected_lane: str = "") -> list[str]:
+    """返回主模型和可选备用模型，保持顺序并去重。"""
+    primary_model = resolve_model_name_for_lane(
+        call_type=call_type,
+        model_name=model_name,
+        selected_lane=selected_lane,
+    )
+    fallback_model = resolve_fallback_model_name_for_lane(
+        call_type=call_type,
+        selected_lane=selected_lane,
+        model_name=model_name,
+    )
+    candidates = []
+    for candidate in [primary_model, fallback_model]:
+        normalized = str(candidate or "").strip()
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+    return candidates
+
+
 def resolve_call_lane(call_type: str = "", model_name: str = "") -> str:
     """根据调用类型判断应该优先使用的问题/报告网关。"""
     lowered = (call_type or "").lower()
@@ -2933,6 +3006,14 @@ ADMIN_CONFIG_SETTINGS_GROUPS: list[dict[str, Any]] = [
             _admin_setting("SUMMARY_MODEL_NAME", "摘要模型"),
             _admin_setting("SEARCH_DECISION_MODEL_NAME", "搜索决策模型"),
             _admin_setting("ASSESSMENT_MODEL_NAME", "评分模型"),
+            _admin_bool("MODEL_FALLBACK_ENABLED", "启用主备模型降级"),
+            _admin_setting("QUESTION_FALLBACK_MODEL_NAME", "问题备用模型", advanced=True),
+            _admin_setting("QUESTION_MODEL_NAME_DEEP_FALLBACK", "深度问题备用模型", advanced=True),
+            _admin_setting("REPORT_DRAFT_FALLBACK_MODEL_NAME", "报告草案备用模型", advanced=True),
+            _admin_setting("REPORT_REVIEW_FALLBACK_MODEL_NAME", "报告审稿备用模型", advanced=True),
+            _admin_setting("SUMMARY_FALLBACK_MODEL_NAME", "摘要备用模型", advanced=True),
+            _admin_setting("SEARCH_DECISION_FALLBACK_MODEL_NAME", "搜索决策备用模型", advanced=True),
+            _admin_setting("ASSESSMENT_FALLBACK_MODEL_NAME", "评分备用模型", advanced=True),
         ],
     },
     {
@@ -26573,19 +26654,58 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
                 hedge_triggered: bool = False, cache_hit: bool = False,
                 return_meta: bool = False, strict_preferred_lane: bool = False):
     """同步调用 Claude 兼容 API，按需返回文本或文本+元信息。"""
-    response_text, call_meta = _call_claude_internal(
-        prompt,
-        max_tokens=max_tokens,
-        retry_on_timeout=retry_on_timeout,
+    primary_lane = str(preferred_lane or "").strip().lower()
+    if not primary_lane:
+        primary_lane = resolve_call_lane(call_type=call_type, model_name=model_name)
+    model_candidates = resolve_model_fallback_candidates(
         call_type=call_type,
-        truncated_docs=truncated_docs,
-        timeout=timeout,
         model_name=model_name,
-        preferred_lane=preferred_lane,
-        hedge_triggered=hedge_triggered,
-        cache_hit=cache_hit,
-        strict_preferred_lane=strict_preferred_lane,
+        selected_lane=primary_lane,
     )
+    if not model_candidates:
+        model_candidates = [str(model_name or "").strip()]
+
+    attempts = []
+    response_text = None
+    call_meta = {}
+    primary_model = model_candidates[0] if model_candidates else ""
+
+    for index, candidate_model in enumerate(model_candidates):
+        effective_call_type = call_type if index == 0 else f"{call_type}_model_fallback"
+        response_text, call_meta = _call_claude_internal(
+            prompt,
+            max_tokens=max_tokens,
+            retry_on_timeout=retry_on_timeout if index == 0 else False,
+            call_type=effective_call_type,
+            truncated_docs=truncated_docs,
+            timeout=timeout,
+            model_name=candidate_model,
+            preferred_lane=preferred_lane,
+            hedge_triggered=hedge_triggered,
+            cache_hit=cache_hit,
+            strict_preferred_lane=strict_preferred_lane,
+        )
+        attempt_meta = dict(call_meta or {})
+        attempts.append(attempt_meta)
+        if response_text:
+            if index > 0:
+                call_meta["model_fallback_attempted"] = True
+                call_meta["model_fallback_from"] = primary_model
+                call_meta["model_fallback_to"] = candidate_model
+            break
+        if index == 0 and len(model_candidates) > 1:
+            failure_reason = str((call_meta or {}).get("failure_reason", "") or "gateway_error")
+            print(
+                f"⚠️ 模型主备切换: call_type={call_type}, "
+                f"primary={primary_model or '-'}, fallback={model_candidates[1] or '-'}, reason={failure_reason}"
+            )
+
+    if isinstance(call_meta, dict):
+        call_meta.setdefault("model_fallback_attempted", len(attempts) > 1)
+        if len(attempts) > 1:
+            call_meta.setdefault("model_fallback_from", primary_model)
+            call_meta.setdefault("model_fallback_to", model_candidates[-1])
+        call_meta["attempts"] = attempts
     if return_meta:
         return response_text, call_meta
     return response_text

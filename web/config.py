@@ -27,6 +27,22 @@ SUMMARY_MODEL_NAME = "deepseek-ai/DeepSeek-V3.2"
 SEARCH_DECISION_MODEL_NAME = "doubao-seed-2.0-code"
 # 作用：设置评分链路使用的模型名称。
 ASSESSMENT_MODEL_NAME = "deepseek-ai/DeepSeek-V3.2"
+# 作用：启用同一调用场景下的备用模型重试；备用模型为空时不会改变现有调用。
+MODEL_FALLBACK_ENABLED = True
+# 作用：设置问题生成链路主模型失败后的备用模型。
+QUESTION_FALLBACK_MODEL_NAME = ""
+# 作用：设置深度访谈问题链路主模型失败后的备用模型。
+QUESTION_MODEL_NAME_DEEP_FALLBACK = ""
+# 作用：设置报告草案阶段主模型失败后的备用模型。
+REPORT_DRAFT_FALLBACK_MODEL_NAME = ""
+# 作用：设置报告审稿阶段主模型失败后的备用模型。
+REPORT_REVIEW_FALLBACK_MODEL_NAME = ""
+# 作用：设置摘要链路主模型失败后的备用模型。
+SUMMARY_FALLBACK_MODEL_NAME = ""
+# 作用：设置搜索决策链路主模型失败后的备用模型。
+SEARCH_DECISION_FALLBACK_MODEL_NAME = ""
+# 作用：设置评分链路主模型失败后的备用模型。
+ASSESSMENT_FALLBACK_MODEL_NAME = ""
 
 # ============ AI 客户端通用策略 ===========
 # 客户端启动方式与接入开关请放在 .env；这里只保留非敏感运行默认值。
