@@ -360,6 +360,8 @@ QUESTION_RESULT_CACHE_TTL_SECONDS = 180
 QUESTION_RESULT_CACHE_MAX_ENTRIES = 512
 # 作用：设置并发命中同一预生成问题时等待首个结果的最长时间（秒）。
 QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = 1.8
+# 作用：设置预生成在途标记允许存活的最长时间（秒），避免异常线程留下卡死状态。
+QUESTION_PREFETCH_INFLIGHT_TTL_SECONDS = 120.0
 # 作用：设置提交答案后优先等待预生成结果的最长时间（秒）。
 QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS = 3.0
 # 作用：设置摘要异步更新的最小触发间隔（秒）。

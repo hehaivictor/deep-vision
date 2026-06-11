@@ -833,6 +833,9 @@ if QUESTION_RESULT_CACHE_MAX_ENTRIES < 64:
 QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = _cfg_float("QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS", 1.8)
 if QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS < 0.0:
     QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = 0.0
+QUESTION_PREFETCH_INFLIGHT_TTL_SECONDS = _cfg_float("QUESTION_PREFETCH_INFLIGHT_TTL_SECONDS", 120.0)
+if QUESTION_PREFETCH_INFLIGHT_TTL_SECONDS < 1.0:
+    QUESTION_PREFETCH_INFLIGHT_TTL_SECONDS = 1.0
 QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS = _cfg_float("QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS", 3.0)
 if QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS < QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS:
     QUESTION_SUBMIT_PREFETCH_WAIT_SECONDS = QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS
@@ -4804,6 +4807,14 @@ def _set_question_result_cache(cache_key: str, value: dict) -> None:
             "value": copy.deepcopy(value),
             "expire_at": expire_at,
         }
+
+
+def _delete_question_result_cache(cache_key: str) -> None:
+    key = str(cache_key or "").strip()
+    if not key:
+        return
+    with question_result_cache_lock:
+        question_result_cache.pop(key, None)
 
 
 def _build_interview_prompt_cache_key(
@@ -13777,11 +13788,38 @@ def _prefetch_entry_matches_signature(entry: Optional[dict], session_signature: 
     return cached_signature == expected_signature
 
 
+def _prune_question_prefetch_inflight_locked(now_ts: Optional[float] = None) -> int:
+    now_value = _time.time() if now_ts is None else float(now_ts)
+    ttl_seconds = max(1.0, float(QUESTION_PREFETCH_INFLIGHT_TTL_SECONDS or 1.0))
+    stale_keys = []
+    stale_events = []
+    for key, inflight in list(question_prefetch_inflight.items()):
+        if not isinstance(inflight, dict):
+            stale_keys.append(key)
+            continue
+        try:
+            started_at = float(inflight.get("started_at", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            started_at = 0.0
+        if started_at <= 0.0 or (now_value - started_at) > ttl_seconds:
+            event = inflight.get("event")
+            if isinstance(event, threading.Event):
+                stale_events.append(event)
+            stale_keys.append(key)
+
+    for key in stale_keys:
+        question_prefetch_inflight.pop(key, None)
+    for event in stale_events:
+        event.set()
+    return len(stale_keys)
+
+
 def _begin_question_prefetch_inflight(cache_key: str) -> tuple[Optional[threading.Event], bool]:
     key = str(cache_key or "").strip()
     if not key:
         return None, False
     with question_prefetch_inflight_lock:
+        _prune_question_prefetch_inflight_locked()
         inflight = question_prefetch_inflight.get(key)
         event = inflight.get("event") if isinstance(inflight, dict) else None
         if isinstance(event, threading.Event):
@@ -13811,6 +13849,7 @@ def _wait_for_question_prefetch_inflight(cache_key: str, wait_seconds: float) ->
     if not key or wait_seconds <= 0:
         return False
     with question_prefetch_inflight_lock:
+        _prune_question_prefetch_inflight_locked()
         inflight = question_prefetch_inflight.get(key)
         event = inflight.get("event") if isinstance(inflight, dict) else None
     if not isinstance(event, threading.Event):

@@ -112,6 +112,18 @@ class ComprehensiveScriptTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_production_dockerfile_contains_node_runtime_and_sensitive_excludes(self):
+        dockerfile = ROOT_DIR / "deploy" / "Dockerfile.production"
+        docker_text = dockerfile.read_text(encoding="utf-8")
+        self.assertIn("FROM node:", docker_text)
+        self.assertIn("COPY --from=node-runtime /usr/local/bin/node", docker_text)
+        self.assertIn("npm -v", docker_text)
+
+        dockerignore = ROOT_DIR / ".dockerignore"
+        ignore_text = dockerignore.read_text(encoding="utf-8")
+        for pattern in [".env", ".env.*", "data/", "artifacts/", "node_modules/"]:
+            self.assertIn(pattern, ignore_text)
+
     def _materialized_task_pointer_dirs(self, case_name: str) -> tuple[Path, Path]:
         planner_base = self.sandbox_root / case_name / "planner" / "by-task"
         mission_base = self.sandbox_root / case_name / "planner" / "missions" / "by-task"

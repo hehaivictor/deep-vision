@@ -3124,10 +3124,10 @@ class ComprehensiveApiTests(unittest.TestCase):
             def _generate_prefetched_question(*_args, **kwargs):
                 generate_calls.append(kwargs.get("base_call_type"))
                 return (
-                    '{"question":"预取后的下一题","options":["选项A","选项B"],"multi_select":false}',
+                    '{"question":"当前业务流程中，下一步最需要补充确认的风险点是什么？","options":["审批效率风险","跨系统同步风险","一线执行风险"],"multi_select":false}',
                     {
-                        "question": "预取后的下一题",
-                        "options": ["选项A", "选项B"],
+                        "question": "当前业务流程中，下一步最需要补充确认的风险点是什么？",
+                        "options": ["审批效率风险", "跨系统同步风险", "一线执行风险"],
                         "multi_select": False,
                     },
                     "fast:summary",
@@ -3165,7 +3165,7 @@ class ComprehensiveApiTests(unittest.TestCase):
             )
             self.assertEqual(next_q.status_code, 200, next_q.get_data(as_text=True))
             payload = next_q.get_json() or {}
-            self.assertEqual(payload.get("question"), "预取后的下一题")
+            self.assertEqual(payload.get("question"), "当前业务流程中，下一步最需要补充确认的风险点是什么？")
             self.assertTrue(payload.get("prefetched") or payload.get("cached"))
             self.assertEqual(payload.get("dimension"), dimension)
             self.assertEqual(generate_calls, ["prefetch_current"])
@@ -3292,10 +3292,10 @@ class ComprehensiveApiTests(unittest.TestCase):
                 "fast_prompt": "fast prompt",
             }
             self.server.generate_question_with_tiered_strategy = lambda *args, **kwargs: (
-                "{\"question\":\"排队后的下一题\"}",
+                "{\"question\":\"排队后当前最需要确认的业务流程瓶颈是什么？\"}",
                 {
-                    "question": "排队后的下一题",
-                    "options": ["选项一", "选项二"],
+                    "question": "排队后当前最需要确认的业务流程瓶颈是什么？",
+                    "options": ["审批流转瓶颈", "数据同步瓶颈", "一线执行瓶颈"],
                     "multi_select": False,
                     "is_follow_up": False,
                 },
@@ -3317,7 +3317,7 @@ class ComprehensiveApiTests(unittest.TestCase):
             elapsed_ms = (time.perf_counter() - started_at) * 1000.0
             self.assertEqual(next_q.status_code, 200, next_q.get_data(as_text=True))
             payload = next_q.get_json() or {}
-            self.assertEqual(payload.get("question"), "排队后的下一题")
+            self.assertEqual(payload.get("question"), "排队后当前最需要确认的业务流程瓶颈是什么？")
             self.assertEqual(payload.get("question_generation_tier"), "fast:question")
             self.assertGreater(elapsed_ms, 20.0)
         finally:
@@ -3346,7 +3346,7 @@ class ComprehensiveApiTests(unittest.TestCase):
         try:
             self.server.resolve_ai_client = lambda call_type="question": object()
             self.server.generate_question_with_tiered_strategy = lambda *_args, **_kwargs: (
-                '{"question":"当前最需要优先确认的重点是什么？","options":["预算范围","上线节奏"',
+                '{"question":"当前最需要优先确认的业务推进重点是什么？","options":["预算范围","上线节奏","系统集成约束"',
                 None,
                 "fast:summary",
             )
@@ -3361,7 +3361,7 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.assertTrue(payload.get("ai_generated"))
             self.assertTrue(payload.get("repair_applied"))
             self.assertGreaterEqual(len(payload.get("options", [])), 2)
-            self.assertEqual(payload.get("question"), "当前最需要优先确认的重点是什么？")
+            self.assertEqual(payload.get("question"), "当前最需要优先确认的业务推进重点是什么？")
         finally:
             self.server.resolve_ai_client = old_resolve_ai_client
             self.server.generate_question_with_tiered_strategy = old_generate_question
@@ -3424,8 +3424,8 @@ class ComprehensiveApiTests(unittest.TestCase):
                 with self.server.prefetch_cache_lock:
                     self.server.prefetch_cache.setdefault(session_id, {})[dimension] = {
                         "question_data": {
-                            "question": "预生成首题",
-                            "options": ["选项A", "选项B"],
+                            "question": "在当前业务流程中，最需要优先优化的环节是什么？",
+                            "options": ["审批流转效率", "跨系统数据同步", "一线操作体验"],
                             "multi_select": False,
                             "dimension": dimension,
                             "ai_generated": True,
@@ -3448,7 +3448,7 @@ class ComprehensiveApiTests(unittest.TestCase):
 
             self.assertEqual(next_q.status_code, 200, next_q.get_data(as_text=True))
             payload = next_q.get_json()
-            self.assertEqual(payload.get("question"), "预生成首题")
+            self.assertEqual(payload.get("question"), "在当前业务流程中，最需要优先优化的环节是什么？")
             self.assertTrue(payload.get("prefetched"))
             self.assertEqual(payload.get("dimension"), dimension)
         finally:
@@ -3485,8 +3485,8 @@ class ComprehensiveApiTests(unittest.TestCase):
             def _complete_prefetch():
                 time.sleep(0.12)
                 prefetched_question = {
-                    "question": "提交后命中的预取题",
-                    "options": ["选项A", "选项B"],
+                    "question": "针对已提交的回答，下一步最需要澄清的业务约束是什么？",
+                    "options": ["预算边界", "上线窗口", "现有系统约束"],
                     "multi_select": False,
                     "dimension": dimension,
                     "ai_generated": True,
@@ -3513,7 +3513,7 @@ class ComprehensiveApiTests(unittest.TestCase):
 
             self.assertEqual(next_q.status_code, 200, next_q.get_data(as_text=True))
             payload = next_q.get_json() or {}
-            self.assertEqual(payload.get("question"), "提交后命中的预取题")
+            self.assertEqual(payload.get("question"), "针对已提交的回答，下一步最需要澄清的业务约束是什么？")
             self.assertTrue(payload.get("cached"))
         finally:
             self.server.QUESTION_PREFETCH_INFLIGHT_WAIT_SECONDS = old_wait
@@ -3521,6 +3521,30 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.server.resolve_ai_client = old_resolve_ai_client
             self.server.generate_question_with_tiered_strategy = old_generate_question
             self.server._end_question_prefetch_inflight(cache_key, owner_event)
+
+    def test_stale_question_prefetch_inflight_is_pruned_for_new_owner(self):
+        cache_key = "stale-prefetch-inflight-key"
+        old_ttl = self.server.QUESTION_PREFETCH_INFLIGHT_TTL_SECONDS
+        try:
+            self.server.QUESTION_PREFETCH_INFLIGHT_TTL_SECONDS = 0.05
+            stale_event, is_owner = self.server._begin_question_prefetch_inflight(cache_key)
+            self.assertTrue(is_owner)
+            self.assertIsNotNone(stale_event)
+            with self.server.question_prefetch_inflight_lock:
+                self.server.question_prefetch_inflight[cache_key]["started_at"] = time.time() - 10.0
+
+            fresh_event, fresh_owner = self.server._begin_question_prefetch_inflight(cache_key)
+
+            self.assertTrue(fresh_owner)
+            self.assertIsNot(fresh_event, stale_event)
+            self.assertTrue(stale_event.is_set())
+            with self.server.question_prefetch_inflight_lock:
+                current = self.server.question_prefetch_inflight.get(cache_key)
+            self.assertIs(current.get("event"), fresh_event)
+        finally:
+            self.server.QUESTION_PREFETCH_INFLIGHT_TTL_SECONDS = old_ttl
+            self.server._end_question_prefetch_inflight(cache_key, locals().get("fresh_event"))
+            self.server._end_question_prefetch_inflight(cache_key, locals().get("stale_event"))
 
     def test_next_question_discards_stale_prefetch_after_signature_change(self):
         self._register()

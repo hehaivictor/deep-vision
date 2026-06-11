@@ -1642,11 +1642,20 @@ def run_report_generation_job(
             )
             return True
 
+        v3_result = None
+        primary_failure = None
+        failover_attempted = False
+        failover_success = False
+        failover_failure = None
+        failover_result = None
+        fallback_evidence_pack = None
+
         fast_short_circuit_meta = get_release_conservative_report_short_circuit_meta(
             selected_report_runtime_cfg,
             preferred_lane="report",
         )
-        if resolve_ai_client(call_type="report"):
+        has_report_ai_client = bool(resolve_ai_client(call_type="report"))
+        if has_report_ai_client:
             if fast_short_circuit_meta.get("triggered"):
                 v3_result = {
                     "status": "failed",
@@ -1768,10 +1777,6 @@ def run_report_generation_job(
                     return
 
             primary_failure = build_v3_failure_debug(v3_result)
-            failover_attempted = False
-            failover_success = False
-            failover_failure = None
-            failover_result = None
 
             if (
                 bool(selected_report_runtime_cfg.get("failover_enabled", REPORT_V3_FAILOVER_ENABLED))
@@ -1894,6 +1899,9 @@ def run_report_generation_job(
                         return
 
                 failover_failure = build_v3_failure_debug(failover_result)
+
+            if primary_failure is None:
+                primary_failure = build_v3_failure_debug(v3_result)
 
             session["last_report_v3_debug"] = {
                 "generated_at": get_utc_now(),
@@ -2164,7 +2172,17 @@ def run_report_generation_job(
                 )
                 return
 
-        if not bool(globals().get("REPORT_SIMPLE_TEMPLATE_FALLBACK_ENABLED", False)):
+        if primary_failure is None:
+            primary_failure = build_v3_failure_debug(v3_result)
+
+        allow_template_for_missing_local_model = (
+            not has_report_ai_client
+            and str(primary_failure.get("reason") or "") == "v3_pipeline_returned_empty"
+        )
+        if (
+            not bool(globals().get("REPORT_SIMPLE_TEMPLATE_FALLBACK_ENABLED", False))
+            and not allow_template_for_missing_local_model
+        ):
             model_failure_reason = str(primary_failure.get("reason") or "model_generation_failed")
             model_failure_error_detail = (
                 str(primary_failure.get("error", "") or "")
