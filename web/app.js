@@ -3992,6 +3992,7 @@ function deepVision() {
             content = content.replace(/(^|\n)###\s*报告质量指标[\s\S]*?(?=\n##\s|\n###\s|$)/g, '\n');
             // 导出时移除“生成方式”行（兼容历史报告）
             content = content.replace(/^\s*\*\*生成方式\*\*:[^\n]*\n?/gm, '');
+            content = this.normalizeMermaidBlocksForExport(content);
             return content.trim();
         },
 
@@ -4004,6 +4005,7 @@ function deepVision() {
             let appendix = content.slice(appendixIndex).trim();
             appendix = appendix.replace(/^\s*\*\*生成方式\*\*:[^\n]*\n?/gm, '');
             appendix = this.normalizeAppendixSummaryText(appendix);
+            appendix = this.normalizeMermaidBlocksForExport(appendix);
             return appendix.trim();
         },
 
@@ -5533,6 +5535,44 @@ function deepVision() {
             }).join('\n');
         },
 
+        normalizeMermaidForExport(definition = '') {
+            let fixedDefinition = this.normalizeMermaidDefinition(definition);
+            if (!fixedDefinition) return '';
+
+            if (fixedDefinition.match(/^pie\b/m)) {
+                fixedDefinition = this.normalizeMermaidPieDefinition(fixedDefinition);
+            }
+            if (fixedDefinition.match(/^quadrantChart\b/m)) {
+                fixedDefinition = this.normalizeMermaidQuadrantDefinition(fixedDefinition);
+            }
+            if (fixedDefinition.match(/^(graph|flowchart)\s/m)) {
+                fixedDefinition = this.normalizeMermaidFlowchartSubgraphs(fixedDefinition);
+                fixedDefinition = this.normalizeMermaidFlowchartLabels(fixedDefinition);
+                fixedDefinition = fixedDefinition.replace(/<br\s*\/?>/gi, ' ');
+
+                const subgraphCount = (fixedDefinition.match(/subgraph\s/g) || []).length;
+                const endCount = (fixedDefinition.match(/\bend\b/g) || []).length;
+                if (subgraphCount > endCount) {
+                    fixedDefinition += `${'\n    end'.repeat(subgraphCount - endCount)}`;
+                }
+                fixedDefinition = fixedDefinition.replace(
+                    /(\w+)\s+---\s+(\w+)\[/g,
+                    (_match, from, to) => `${from} --> ${to}[`
+                );
+            }
+            return fixedDefinition.trim();
+        },
+
+        normalizeMermaidBlocksForExport(content = '') {
+            return String(content || '').replace(
+                /```mermaid\s*\n([\s\S]*?)```/g,
+                (_match, rawDefinition) => {
+                    const normalized = this.normalizeMermaidForExport(rawDefinition);
+                    return normalized ? `\`\`\`mermaid\n${normalized}\n\`\`\`` : '';
+                }
+            );
+        },
+
         collectQuadrantPointLabelMap(element, graphDefinition = '') {
             const labelMap = {};
             const source = String(graphDefinition || '');
@@ -5947,16 +5987,40 @@ function deepVision() {
         getEstimatedRemainingQuestions() {
             if (!this.currentSession) return 0;
 
-            if (this.getTotalProgress() >= 100) {
+            const progress = this.getTotalProgress();
+            if (progress >= 100) {
                 return 0;
             }
 
             const answered = this.getCurrentQuestionCount();
+            const fallbackRemaining = this.getFallbackEstimatedRemainingQuestions(answered);
+            const remaining = this.getProgressAlignedRemainingQuestions(answered, progress, fallbackRemaining);
+            return remaining > 50 ? '50+' : remaining;
+        },
+
+        getFallbackEstimatedRemainingQuestions(answered = this.getCurrentQuestionCount()) {
             const bounds = this.getEstimatedQuestionBounds();
             const remainingMin = Math.max(0, bounds.min - answered);
             const remainingMax = Math.max(0, bounds.max - answered);
-            const remaining = Math.round((remainingMin + remainingMax) / 2);
-            return remaining > 50 ? '50+' : remaining;
+            return Math.round((remainingMin + remainingMax) / 2);
+        },
+
+        getProgressAlignedRemainingQuestions(answered, progress, fallbackRemaining) {
+            const normalizedAnswered = Math.max(0, Number(answered) || 0);
+            const normalizedProgress = Math.max(0, Math.min(100, Number(progress) || 0));
+            const normalizedFallback = Math.max(0, Number(fallbackRemaining) || 0);
+
+            if (normalizedProgress >= 100) {
+                return 0;
+            }
+            if (normalizedAnswered <= 0 || normalizedProgress <= 0) {
+                return normalizedFallback;
+            }
+
+            const progressRemaining = Math.ceil(
+                normalizedAnswered * (100 - normalizedProgress) / normalizedProgress
+            );
+            return Math.min(normalizedFallback, Math.max(0, progressRemaining));
         },
 
         // 获取进度反馈信息

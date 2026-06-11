@@ -956,6 +956,15 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertIn("模型报告生成失败", content)
         self.assertIn("模板兜底", content)
 
+    def test_frontend_export_normalizes_mermaid_and_remaining_questions(self):
+        content = (ROOT_DIR / "web" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("normalizeMermaidBlocksForExport", content)
+        self.assertIn("normalizeMermaidForExport", content)
+        self.assertIn("content = this.normalizeMermaidBlocksForExport(content);", content)
+        self.assertIn("appendix = this.normalizeMermaidBlocksForExport(appendix);", content)
+        self.assertIn("getProgressAlignedRemainingQuestions", content)
+        self.assertIn("normalizedAnswered * (100 - normalizedProgress) / normalizedProgress", content)
+
     def test_agent_scenario_scaffold_builds_from_eval_run(self):
         run_dir = self._write_eval_run(
             run_name="eval-run",
