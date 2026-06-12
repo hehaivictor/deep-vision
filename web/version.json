@@ -1,7 +1,18 @@
 {
-  "version": "10.5.1",
-  "releaseDate": "2026-06-11",
+  "version": "10.5.2",
+  "releaseDate": "2026-06-12",
   "changelog": [
+    {
+      "version": "10.5.2",
+      "date": "2026-06-12",
+      "type": "patch",
+      "title": "优化模型备用配置默认值",
+      "changes": [
+        "配置：参考 Intus 补齐各链路备用模型，避免配置中心 fallback 为空",
+        "运行时：补齐无 config.py 场景下的备用模型默认值",
+        "测试：增加模型备用配置非空静态回归"
+      ]
+    },
     {
       "version": "10.5.1",
       "date": "2026-06-11",
