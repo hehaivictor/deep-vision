@@ -14,24 +14,24 @@ MODEL_NAME = "doubao-seed-2-0-pro"  # 默认主模型（问题链路）
 # 作用：设置问题生成链路使用的模型名称。
 QUESTION_MODEL_NAME = MODEL_NAME
 # 作用：设置深度访谈模式下 question lane 的专用模型名称。
-QUESTION_MODEL_NAME_DEEP = "deepseek-ai/DeepSeek-V3.2"
-# 作用：设置报告主链路使用的模型名称。
-REPORT_MODEL_NAME = "deepseek-ai/DeepSeek-V3.2"
+QUESTION_MODEL_NAME_DEEP = "claude-opus-4-7"
+# 作用：设置报告主链路使用的模型名称；保持轻量基线，避免同网关回退影响摘要/搜索/评分。
+REPORT_MODEL_NAME = "doubao-seed-2-0-pro"
 # 作用：设置报告草案阶段使用的模型名称。
-REPORT_DRAFT_MODEL_NAME = REPORT_MODEL_NAME
+REPORT_DRAFT_MODEL_NAME = "gemini-3.1-pro-preview"
 # 作用：设置报告审稿阶段使用的模型名称。
-REPORT_REVIEW_MODEL_NAME = "doubao-seed-2-0-pro"
+REPORT_REVIEW_MODEL_NAME = "claude-opus-4-7"
 # 作用：设置摘要链路使用的模型名称。
-SUMMARY_MODEL_NAME = "deepseek-ai/DeepSeek-V3.2"
+SUMMARY_MODEL_NAME = "kimi-for-coding"
 # 作用：设置搜索决策链路使用的模型名称。
-SEARCH_DECISION_MODEL_NAME = "doubao-seed-2.0-code"
+SEARCH_DECISION_MODEL_NAME = "kimi-for-coding"
 # 作用：设置评分链路使用的模型名称。
-ASSESSMENT_MODEL_NAME = "deepseek-ai/DeepSeek-V3.2"
-# 作用：启用同一调用场景下的备用模型重试；默认参考 Intus 的主备模型分工，避免配置中心显示为空后实际无法降级。
+ASSESSMENT_MODEL_NAME = "kimi-for-coding"
+# 作用：启用核心模型调用的主备模型降级；密钥和网关仍由 .env 管理。
 MODEL_FALLBACK_ENABLED = True
-# 作用：设置问题生成链路主模型失败后的备用模型。
+# 作用：设置普通问题链路主模型失败后的备用模型。
 QUESTION_FALLBACK_MODEL_NAME = "kimi-for-coding"
-# 作用：设置深度访谈问题链路主模型失败后的备用模型。
+# 作用：设置深度问题链路主模型失败后的备用模型。
 QUESTION_MODEL_NAME_DEEP_FALLBACK = "doubao-seed-2-0-pro"
 # 作用：设置报告草案阶段主模型失败后的备用模型。
 REPORT_DRAFT_FALLBACK_MODEL_NAME = "doubao-seed-2-0-pro"

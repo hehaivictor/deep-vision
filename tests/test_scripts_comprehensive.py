@@ -966,9 +966,17 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertIn("getProgressAlignedRemainingQuestions", content)
         self.assertIn("normalizedAnswered * (100 - normalizedProgress) / normalizedProgress", content)
 
-    def test_model_fallback_defaults_are_not_empty(self):
+    def test_model_role_defaults_match_release_config(self):
         content = (ROOT_DIR / "web" / "config.py").read_text(encoding="utf-8")
         expected_defaults = {
+            "MODEL_NAME": "doubao-seed-2-0-pro",
+            "QUESTION_MODEL_NAME_DEEP": "claude-opus-4-7",
+            "REPORT_MODEL_NAME": "doubao-seed-2-0-pro",
+            "REPORT_DRAFT_MODEL_NAME": "gemini-3.1-pro-preview",
+            "REPORT_REVIEW_MODEL_NAME": "claude-opus-4-7",
+            "SUMMARY_MODEL_NAME": "kimi-for-coding",
+            "SEARCH_DECISION_MODEL_NAME": "kimi-for-coding",
+            "ASSESSMENT_MODEL_NAME": "kimi-for-coding",
             "QUESTION_FALLBACK_MODEL_NAME": "kimi-for-coding",
             "QUESTION_MODEL_NAME_DEEP_FALLBACK": "doubao-seed-2-0-pro",
             "REPORT_DRAFT_FALLBACK_MODEL_NAME": "doubao-seed-2-0-pro",
@@ -979,7 +987,11 @@ class ComprehensiveScriptTests(unittest.TestCase):
         }
         for key, value in expected_defaults.items():
             self.assertIn(f'{key} = "{value}"', content)
-        self.assertNotIn('FALLBACK_MODEL_NAME = ""', content)
+        self.assertIn("QUESTION_MODEL_NAME = MODEL_NAME", content)
+        self.assertIn("MODEL_FALLBACK_ENABLED = True", content)
+        for key in expected_defaults:
+            if "FALLBACK" in key:
+                self.assertNotIn(f'{key} = ""', content)
 
     def test_agent_scenario_scaffold_builds_from_eval_run(self):
         run_dir = self._write_eval_run(
