@@ -770,16 +770,16 @@ QUESTION_HEDGED_ENABLED = _cfg_bool("QUESTION_HEDGED_ENABLED", True)
 QUESTION_HEDGED_DELAY_SECONDS = _cfg_float("QUESTION_HEDGED_DELAY_SECONDS", 3.0)
 if QUESTION_HEDGED_DELAY_SECONDS < 0.5:
     QUESTION_HEDGED_DELAY_SECONDS = 0.5
-QUESTION_HEDGED_SECONDARY_LANE = _cfg_text("QUESTION_HEDGED_SECONDARY_LANE", "summary").strip().lower()
-if QUESTION_HEDGED_SECONDARY_LANE not in {"report", "summary", "search_decision"}:
-    QUESTION_HEDGED_SECONDARY_LANE = "summary"
+QUESTION_HEDGED_SECONDARY_LANE = _cfg_text("QUESTION_HEDGED_SECONDARY_LANE", "question_deep").strip().lower()
+if QUESTION_HEDGED_SECONDARY_LANE not in {"question", "question_deep"}:
+    QUESTION_HEDGED_SECONDARY_LANE = "question_deep"
 QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT = _cfg_bool("QUESTION_HEDGED_ONLY_WHEN_DISTINCT_CLIENT", True)
 QUESTION_HIGH_EVIDENCE_PRIMARY_LANE = _cfg_text("QUESTION_HIGH_EVIDENCE_PRIMARY_LANE", "question").strip().lower()
 if QUESTION_HIGH_EVIDENCE_PRIMARY_LANE not in {"question", "report"}:
     QUESTION_HIGH_EVIDENCE_PRIMARY_LANE = "question"
-QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = _cfg_text("QUESTION_HIGH_EVIDENCE_SECONDARY_LANE", "report").strip().lower()
-if QUESTION_HIGH_EVIDENCE_SECONDARY_LANE not in {"question", "report", "search_decision"}:
-    QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = "report"
+QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = _cfg_text("QUESTION_HIGH_EVIDENCE_SECONDARY_LANE", "question_deep").strip().lower()
+if QUESTION_HIGH_EVIDENCE_SECONDARY_LANE not in {"question", "question_deep"}:
+    QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = "question_deep"
 QUESTION_HIGH_EVIDENCE_DISABLE_DYNAMIC_LANE = _cfg_bool("QUESTION_HIGH_EVIDENCE_DISABLE_DYNAMIC_LANE", True)
 QUESTION_HIGH_EVIDENCE_HEDGED_ENABLED = _cfg_bool("QUESTION_HIGH_EVIDENCE_HEDGED_ENABLED", False)
 QUESTION_HIGH_EVIDENCE_FAST_PATH_ENABLED = _cfg_bool("QUESTION_HIGH_EVIDENCE_FAST_PATH_ENABLED", True)
@@ -821,9 +821,9 @@ if PREFETCH_QUESTION_HEDGE_DELAY_SECONDS < 0.5:
 PREFETCH_QUESTION_PRIMARY_LANE = _cfg_text("PREFETCH_QUESTION_PRIMARY_LANE", "question").strip().lower()
 if PREFETCH_QUESTION_PRIMARY_LANE not in {"question", "summary", "report", "search_decision"}:
     PREFETCH_QUESTION_PRIMARY_LANE = "question"
-PREFETCH_QUESTION_SECONDARY_LANE = _cfg_text("PREFETCH_QUESTION_SECONDARY_LANE", "summary").strip().lower()
-if PREFETCH_QUESTION_SECONDARY_LANE not in {"question", "summary", "report", "search_decision"}:
-    PREFETCH_QUESTION_SECONDARY_LANE = "summary"
+PREFETCH_QUESTION_SECONDARY_LANE = _cfg_text("PREFETCH_QUESTION_SECONDARY_LANE", "question_deep").strip().lower()
+if PREFETCH_QUESTION_SECONDARY_LANE not in {"question", "question_deep"}:
+    PREFETCH_QUESTION_SECONDARY_LANE = "question_deep"
 QUESTION_RESULT_CACHE_TTL_SECONDS = _cfg_int("QUESTION_RESULT_CACHE_TTL_SECONDS", 120)
 if QUESTION_RESULT_CACHE_TTL_SECONDS < 0:
     QUESTION_RESULT_CACHE_TTL_SECONDS = 0
@@ -2208,7 +2208,7 @@ def resolve_model_name_for_lane(call_type: str = "", model_name: str = "", selec
     if report_phase_model:
         return report_phase_model
 
-    if lane in {"question", "report", "report_draft", "report_review", "summary", "search_decision", "assessment"}:
+    if lane in {"question", "question_deep", "report", "report_draft", "report_review", "summary", "search_decision", "assessment"}:
         lane_model = _resolve_lane_model_name(lane)
         if lane_model:
             return lane_model
@@ -2247,7 +2247,9 @@ def resolve_fallback_model_name_for_lane(call_type: str = "", selected_lane: str
     lane = str(selected_lane or "").strip().lower()
     lowered = str(call_type or "").strip().lower()
     if lane == "question_deep":
-        return str(QUESTION_MODEL_NAME_DEEP_FALLBACK or "").strip()
+        return str(QUESTION_MODEL_NAME or "").strip()
+    if lane == "question":
+        return str(QUESTION_MODEL_NAME_DEEP or QUESTION_MODEL_NAME_DEEP_FALLBACK or "").strip()
     if _is_report_draft_call_type(call_type) or lane == "report_draft":
         return str(REPORT_DRAFT_FALLBACK_MODEL_NAME or "").strip()
     if _is_report_review_call_type(call_type) or lane == "report_review":
@@ -2258,7 +2260,9 @@ def resolve_fallback_model_name_for_lane(call_type: str = "", selected_lane: str
         return str(SEARCH_DECISION_FALLBACK_MODEL_NAME or "").strip()
     if "summary" in lowered or lane == "summary":
         return str(SUMMARY_FALLBACK_MODEL_NAME or "").strip()
-    return str(QUESTION_FALLBACK_MODEL_NAME or "").strip()
+    if "question" in lowered:
+        return str(QUESTION_MODEL_NAME_DEEP or QUESTION_MODEL_NAME_DEEP_FALLBACK or "").strip()
+    return str(QUESTION_MODEL_NAME_DEEP or QUESTION_MODEL_NAME_DEEP_FALLBACK or "").strip()
 
 
 def resolve_model_fallback_candidates(call_type: str = "", model_name: str = "", selected_lane: str = "") -> list[str]:
@@ -2281,6 +2285,13 @@ def resolve_model_fallback_candidates(call_type: str = "", model_name: str = "",
     return candidates
 
 
+def _is_question_call_type(call_type: str = "") -> bool:
+    lowered = str(call_type or "").strip().lower()
+    if "summary" in lowered or "report" in lowered or "assessment" in lowered or "search_decision" in lowered:
+        return False
+    return "question" in lowered or lowered.startswith("prefetch")
+
+
 def resolve_call_lane(call_type: str = "", model_name: str = "") -> str:
     """根据调用类型判断应该优先使用的问题/报告网关。"""
     lowered = (call_type or "").lower()
@@ -2292,6 +2303,8 @@ def resolve_call_lane(call_type: str = "", model_name: str = "") -> str:
         return "summary"
     if "report" in lowered:
         return "report"
+    if "question" in lowered:
+        return "question"
 
     explicit = str(model_name or "").strip()
     if explicit and explicit == REPORT_MODEL_NAME and explicit != QUESTION_MODEL_NAME:
@@ -4090,6 +4103,7 @@ def _resolve_dynamic_question_lane_order(runtime_profile: Optional[dict], phase:
     profile = dict(runtime_profile or {})
     normalized_phase = "fast" if str(phase or "").strip().lower() == "fast" else "full"
     dynamic_lane_order_enabled = bool(profile.get("dynamic_lane_order_enabled", True))
+    lock_primary_lane = bool(profile.get("lock_primary_lane", False))
     disallowed_lanes = {
         str(item or "").strip().lower()
         for item in (profile.get("disallowed_lanes", []) if isinstance(profile.get("disallowed_lanes", []), list) else [])
@@ -4102,9 +4116,7 @@ def _resolve_dynamic_question_lane_order(runtime_profile: Optional[dict], phase:
         if lane_name and lane_name not in disallowed_lanes and lane_name not in base_candidates:
             base_candidates.append(lane_name)
 
-    fallback_candidates = ["question", "summary", "report", "search_decision"]
-    if normalized_phase == "full":
-        fallback_candidates = ["question", "report", "summary", "search_decision"]
+    fallback_candidates = ["question", "question_deep"]
     for lane_name in fallback_candidates:
         if lane_name in disallowed_lanes:
             continue
@@ -4118,22 +4130,34 @@ def _resolve_dynamic_question_lane_order(runtime_profile: Optional[dict], phase:
 
     if QUESTION_LANE_DYNAMIC_ENABLED and dynamic_lane_order_enabled and len(ordered_candidates) > 1:
         ranked = list(ordered_candidates)
-        for index in range(1, len(ranked)):
-            candidate_lane = ranked[index]
-            current_lane = ranked[index - 1]
-            if _should_promote_question_lane(snapshot.get(candidate_lane, {}), snapshot.get(current_lane, {})):
-                ranked[index - 1], ranked[index] = ranked[index], ranked[index - 1]
 
-        promoting = True
-        while promoting:
-            promoting = False
-            for index in range(1, len(ranked)):
-                candidate_lane = ranked[index]
-                current_lane = ranked[index - 1]
+        def _promote_ranked_candidates(candidates: list[str], *, min_index: int = 0) -> list[str]:
+            ranked_candidates = list(candidates)
+            if len(ranked_candidates) <= 1:
+                return ranked_candidates
+
+            start_index = max(1, min_index + 1)
+            for index in range(start_index, len(ranked_candidates)):
+                candidate_lane = ranked_candidates[index]
+                current_lane = ranked_candidates[index - 1]
                 if _should_promote_question_lane(snapshot.get(candidate_lane, {}), snapshot.get(current_lane, {})):
-                    ranked[index - 1], ranked[index] = ranked[index], ranked[index - 1]
-                    promoting = True
-        ordered_candidates = ranked
+                    ranked_candidates[index - 1], ranked_candidates[index] = ranked_candidates[index], ranked_candidates[index - 1]
+
+            promoting = True
+            while promoting:
+                promoting = False
+                for index in range(start_index, len(ranked_candidates)):
+                    candidate_lane = ranked_candidates[index]
+                    current_lane = ranked_candidates[index - 1]
+                    if _should_promote_question_lane(snapshot.get(candidate_lane, {}), snapshot.get(current_lane, {})):
+                        ranked_candidates[index - 1], ranked_candidates[index] = ranked_candidates[index], ranked_candidates[index - 1]
+                        promoting = True
+            return ranked_candidates
+
+        if lock_primary_lane and ranked:
+            ordered_candidates = [ranked[0], *_promote_ranked_candidates(ranked[1:], min_index=1)]
+        else:
+            ordered_candidates = _promote_ranked_candidates(ranked)
 
     resolved_primary = ordered_candidates[0] if ordered_candidates else primary_lane
     resolved_secondary = ordered_candidates[1] if len(ordered_candidates) > 1 else secondary_lane
@@ -4144,6 +4168,7 @@ def _resolve_dynamic_question_lane_order(runtime_profile: Optional[dict], phase:
         "ordered_candidates": ordered_candidates,
         "snapshot": snapshot,
         "dynamic_enabled": bool(QUESTION_LANE_DYNAMIC_ENABLED and dynamic_lane_order_enabled),
+        "lock_primary_lane": bool(lock_primary_lane),
         "disallowed_lanes": sorted(disallowed_lanes),
     }
 
@@ -15410,10 +15435,10 @@ def _resolve_report_gateway_lane_candidates(call_type: str = "", primary_lane: s
 
     if normalized_primary_lane == "question":
         if _is_report_review_call_type(call_type):
-            return _dedupe_lane_candidates(["question", "report_review", "report_draft"])
+            return _dedupe_lane_candidates(["question", "question_deep"])
         if _is_report_draft_call_type(call_type):
-            return _dedupe_lane_candidates(["question", "report_draft", "report_review"])
-        return _dedupe_lane_candidates(["question", "report_draft", "report_review"])
+            return _dedupe_lane_candidates(["question", "question_deep"])
+        return _dedupe_lane_candidates(["question", "question_deep"])
 
     if _is_report_review_call_type(call_type):
         return _dedupe_lane_candidates(["report_review", "report_draft", "question"])
@@ -15446,7 +15471,7 @@ def _lane_candidates_for_client_resolution(
     if forced_lane == "report":
         return ["report", "question"]
     if forced_lane == "question":
-        return ["question", "report"]
+        return ["question", "question_deep"]
 
     lane = resolve_call_lane(call_type=call_type, model_name=model_name)
     if lane == "report":
@@ -15457,7 +15482,7 @@ def _lane_candidates_for_client_resolution(
         return ["search_decision", "summary", "question", "report"]
     if lane == "summary":
         return ["summary", "report", "question", "search_decision"]
-    return ["question", "report", "summary", "search_decision", "assessment"]
+    return ["question", "question_deep"]
 
 
 def resolve_ai_client_with_lane(
@@ -18699,7 +18724,7 @@ def resolve_interview_mode_lane_model_overrides(mode_or_session) -> tuple[dict, 
         return {}, False
     if not _is_question_lane_available_for_model(deep_model):
         return {}, True
-    return {"question": deep_model}, False
+    return {"question_deep": deep_model}, False
 
 
 def get_interview_mode_runtime_strategy(mode_or_session) -> dict:
@@ -26499,6 +26524,17 @@ def _build_ai_call_meta(selected_lane: str, effective_model: str, effective_time
     }
 
 
+def _format_ai_call_failure_log(selected_lane: str, call_type: str, effective_model: str, error_message: str) -> str:
+    scope = str(selected_lane or "").strip() or "unknown"
+    call_type_text = str(call_type or "").strip() or "unknown"
+    model_text = str(effective_model or "").strip() or "unknown"
+    error_text = str(error_message or "").strip() or "unknown"
+    return (
+        f"❌ AI 网关调用失败：lane={scope}，"
+        f"call_type={call_type_text}，model={model_text}，error={error_text}"
+    )
+
+
 def _call_claude_internal(prompt: str, max_tokens: int = None, retry_on_timeout: bool = True,
                          call_type: str = "unknown", truncated_docs: list = None,
                          timeout: float = None, model_name: str = "", preferred_lane: str = "",
@@ -26546,7 +26582,7 @@ def _call_claude_internal(prompt: str, max_tokens: int = None, retry_on_timeout:
     try:
         if ENABLE_DEBUG_LOG:
             print(
-                f"🤖 调用 Claude API，lane={selected_lane or 'unknown'}，"
+                f"🤖 调用 AI 网关，lane={selected_lane or 'unknown'}，"
                 f"model={effective_model}，max_tokens={max_tokens}，timeout={effective_timeout}s"
             )
             if skipped_open_lanes:
@@ -26581,7 +26617,7 @@ def _call_claude_internal(prompt: str, max_tokens: int = None, retry_on_timeout:
     except Exception as e:
         raw_error_message = str(e)
         error_message = summarize_error_for_log(raw_error_message, limit=320)
-        print(f"❌ Claude API 调用失败: {error_message}")
+        print(_format_ai_call_failure_log(selected_lane, call_type, effective_model, error_message))
         error_kind = classify_gateway_failure_kind(raw_error_message)
         lower_error = raw_error_message.lower()
         call_type_lower = str(call_type or "").lower()
@@ -26701,6 +26737,16 @@ def call_claude(prompt: str, max_tokens: int = None, retry_on_timeout: bool = Tr
         model_name=model_name,
         selected_lane=primary_lane,
     )
+    if _is_question_call_type(call_type):
+        filtered_candidates = [candidate for candidate in model_candidates if candidate in {
+            str(QUESTION_MODEL_NAME or "").strip(),
+            str(QUESTION_MODEL_NAME_DEEP or "").strip(),
+        }]
+        model_candidates = filtered_candidates or [resolve_model_name_for_lane(
+            call_type=call_type,
+            model_name=model_name,
+            selected_lane=primary_lane,
+        )]
     if not model_candidates:
         model_candidates = [str(model_name or "").strip()]
 

@@ -477,7 +477,7 @@ def build_interview_prompt(
         prompt = f"""**严格输出要求：你的回复必须是纯 JSON 对象，不要添加任何解释、markdown 代码块或其他文本。第一个字符必须是 {{，最后一个字符必须是 }}**
 
 你是一个高效率的访谈师，正在进行"{topic_text}"的访谈。
-请用尽量少的文字，生成一个可直接选择的问题。
+请用尽量少的文字，但必须直指当前维度最关键的缺口，避免泛题。
 
 {chr(10).join(context_parts)}
 
@@ -507,6 +507,7 @@ def build_interview_prompt(
 约束：
 - 只输出这个 JSON，不要代码块，不要额外说明
 - options 保持 3-4 个，每项尽量不超过 14 个字
+- 问题和选项都要尽量具体，至少点名一个场景、角色、约束或目标
 - 不要输出 ai_recommendation、conflict_detected、conflict_description
 - is_follow_up 必须严格照抄模板中的值"""
     else:
@@ -648,6 +649,7 @@ def _select_question_generation_runtime_profile(
     lowered_call_type = str(base_call_type or "").strip().lower()
     is_prefetch_first = lowered_call_type.startswith("prefetch_first")
     is_prefetch = lowered_call_type.startswith("prefetch")
+    is_prefetch_current = lowered_call_type == "prefetch_current"
     profile_prefix = "prefetch_first" if is_prefetch_first else ("prefetch" if is_prefetch else "question")
     prompt_length = len(prompt or "")
     has_search = bool(normalized_meta.get("has_search", False))
@@ -708,12 +710,12 @@ def _select_question_generation_runtime_profile(
         or INTERVIEW_MODE_HIGH_EVIDENCE_POLICIES.get(normalized_mode, INTERVIEW_MODE_HIGH_EVIDENCE_POLICIES["standard"])
     )
     high_evidence_intent = evidence_intent == "high" and not is_prefetch
-    can_use_light_prompt = not has_search and (
+    can_use_light_prompt = not is_prefetch_current and not has_search and (
         not has_truncated_docs or (has_reference_docs and QUESTION_FAST_LIGHT_REFERENCE_DOCS_ENABLED)
     )
     reference_light_candidate = bool(can_use_light_prompt and has_reference_docs)
     high_evidence_fast_candidate = bool(high_evidence_intent and can_use_light_prompt and QUESTION_HIGH_EVIDENCE_FAST_PATH_ENABLED)
-    effective_fast_allowed = bool(allow_fast_path)
+    effective_fast_allowed = bool(allow_fast_path) and not is_prefetch_current
 
     profile_name = f"{profile_prefix}_balanced_full"
     fast_output_mode = "full"
@@ -737,6 +739,7 @@ def _select_question_generation_runtime_profile(
     hedge_delay_by_lane = QUESTION_HEDGE_DELAY_BY_LANE
     reasons = []
     release_conservative_mode = bool(QUESTION_RELEASE_CONSERVATIVE_MODE and not is_prefetch)
+    lock_primary_lane = profile_prefix in {"question", "prefetch", "prefetch_first"}
 
     if is_prefetch:
         primary_lane = PREFETCH_QUESTION_PRIMARY_LANE
@@ -760,6 +763,14 @@ def _select_question_generation_runtime_profile(
         full_timeout_by_lane = {}
         full_max_tokens_by_lane = {}
         hedge_delay_by_lane = {}
+        if is_prefetch_current:
+            reasons.append("prefetch_current_full_only")
+
+    if lock_primary_lane and primary_lane != "question":
+        previous_primary = primary_lane
+        primary_lane = "question"
+        if previous_primary and previous_primary != primary_lane:
+            secondary_lane = previous_primary
 
     if high_evidence_intent:
         primary_lane = QUESTION_HIGH_EVIDENCE_PRIMARY_LANE
@@ -1002,6 +1013,7 @@ def _select_question_generation_runtime_profile(
         "full_max_tokens": full_max_tokens,
         "primary_lane": primary_lane,
         "secondary_lane": secondary_lane,
+        "lock_primary_lane": bool(lock_primary_lane),
         "hedged_enabled": hedged_enabled,
         "hedge_delay_seconds": max(0.5, float(hedge_delay_seconds)),
         "fast_timeout_by_lane": fast_timeout_by_lane,
@@ -1286,9 +1298,9 @@ def _call_question_with_optional_hedge(
     lane_model_overrides: Optional[dict] = None,
 ) -> tuple[Optional[str], str, dict]:
     """问题生成可选竞速：主通道先发，延迟触发备用通道，谁先返回可用结果用谁。"""
-    valid_lanes = {"question", "report", "summary", "search_decision"}
+    valid_lanes = {"question", "question_deep"}
     primary_lane = str(primary_lane or "question").strip().lower() or "question"
-    default_secondary_lane = str(globals().get("QUESTION_HEDGED_SECONDARY_LANE", "summary") or "summary").strip().lower() or "summary"
+    default_secondary_lane = "question_deep"
     secondary_lane = str(secondary_lane or default_secondary_lane).strip().lower() or default_secondary_lane
     if primary_lane not in valid_lanes:
         primary_lane = "question"

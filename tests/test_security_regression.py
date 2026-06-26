@@ -4842,6 +4842,7 @@ class SecurityRegressionTests(unittest.TestCase):
         backup = {key: getattr(self.server, key) for key in keys}
 
         try:
+            self.server.reset_gateway_circuit_state()
             self.server.question_ai_client = _DummyClient()
             self.server.report_ai_client = None
             self.server.summary_ai_client = None
@@ -4862,6 +4863,7 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertFalse(meta.get("success"))
             self.assertEqual(meta.get("timeout_seconds"), 12.0)
         finally:
+            self.server.reset_gateway_circuit_state()
             for key, value in backup.items():
                 setattr(self.server, key, value)
 
@@ -4869,7 +4871,9 @@ class SecurityRegressionTests(unittest.TestCase):
         keys = [
             "MODEL_FALLBACK_ENABLED",
             "QUESTION_MODEL_NAME",
+            "QUESTION_MODEL_NAME_DEEP",
             "QUESTION_FALLBACK_MODEL_NAME",
+            "QUESTION_MODEL_NAME_DEEP_FALLBACK",
             "REPORT_DRAFT_MODEL_NAME",
             "REPORT_DRAFT_FALLBACK_MODEL_NAME",
         ]
@@ -4878,13 +4882,19 @@ class SecurityRegressionTests(unittest.TestCase):
         try:
             self.server.MODEL_FALLBACK_ENABLED = True
             self.server.QUESTION_MODEL_NAME = "question-main"
+            self.server.QUESTION_MODEL_NAME_DEEP = "question-deep"
             self.server.QUESTION_FALLBACK_MODEL_NAME = "question-backup"
+            self.server.QUESTION_MODEL_NAME_DEEP_FALLBACK = "question-deep-backup"
             self.server.REPORT_DRAFT_MODEL_NAME = "draft-main"
             self.server.REPORT_DRAFT_FALLBACK_MODEL_NAME = "draft-backup"
 
             self.assertEqual(
                 self.server.resolve_model_fallback_candidates(call_type="question_fast", selected_lane="question"),
-                ["question-main", "question-backup"],
+                ["question-main", "question-deep"],
+            )
+            self.assertEqual(
+                self.server.resolve_model_fallback_candidates(call_type="question_fast", selected_lane="question_deep"),
+                ["question-deep", "question-main"],
             )
             self.assertEqual(
                 self.server.resolve_model_fallback_candidates(call_type="report_v3_draft", selected_lane="report_draft"),
@@ -4919,6 +4929,7 @@ class SecurityRegressionTests(unittest.TestCase):
         keys = [
             "MODEL_FALLBACK_ENABLED",
             "QUESTION_MODEL_NAME",
+            "QUESTION_MODEL_NAME_DEEP",
             "QUESTION_FALLBACK_MODEL_NAME",
             "question_ai_client",
             "report_ai_client",
@@ -4931,6 +4942,7 @@ class SecurityRegressionTests(unittest.TestCase):
             client = _DummyClient()
             self.server.MODEL_FALLBACK_ENABLED = True
             self.server.QUESTION_MODEL_NAME = "question-main"
+            self.server.QUESTION_MODEL_NAME_DEEP = "question-deep"
             self.server.QUESTION_FALLBACK_MODEL_NAME = "question-backup"
             self.server.question_ai_client = client
             self.server.report_ai_client = None
@@ -4947,13 +4959,61 @@ class SecurityRegressionTests(unittest.TestCase):
             )
 
             self.assertEqual(result, "backup-ok")
-            self.assertEqual(client.messages.models, ["question-main", "question-backup"])
+            self.assertEqual(client.messages.models, ["question-main", "question-deep"])
             self.assertTrue(meta.get("model_fallback_attempted"))
             self.assertEqual(meta.get("model_fallback_from"), "question-main")
-            self.assertEqual(meta.get("model_fallback_to"), "question-backup")
-            self.assertEqual(meta.get("model"), "question-backup")
+            self.assertEqual(meta.get("model_fallback_to"), "question-deep")
+            self.assertEqual(meta.get("model"), "question-deep")
             self.assertTrue(meta.get("success"))
             self.assertEqual(len(meta.get("attempts") or []), 2)
+        finally:
+            for key, value in backup.items():
+                setattr(self.server, key, value)
+
+    def test_call_claude_logs_ai_gateway_scope_instead_of_claude_api(self):
+        class _FailingMessages:
+            def create(self, **kwargs):
+                raise RuntimeError("Request timed out or interrupted")
+
+        class _DummyClient:
+            def __init__(self):
+                self.messages = _FailingMessages()
+
+        keys = [
+            "question_ai_client",
+            "QUESTION_MODEL_NAME_DEEP",
+            "report_ai_client",
+            "summary_ai_client",
+            "search_decision_ai_client",
+        ]
+        backup = {key: getattr(self.server, key) for key in keys}
+
+        try:
+            self.server.question_ai_client = _DummyClient()
+            self.server.QUESTION_MODEL_NAME_DEEP = "question-deep"
+            self.server.report_ai_client = None
+            self.server.summary_ai_client = None
+            self.server.search_decision_ai_client = None
+
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                result, meta = self.server.call_claude(
+                    "请生成问题",
+                    max_tokens=64,
+                    call_type="question_fast",
+                    preferred_lane="question",
+                    timeout=12.0,
+                    return_meta=True,
+                )
+
+            log_output = buffer.getvalue()
+            self.assertIsNone(result)
+            self.assertFalse(meta.get("success"))
+            self.assertIn("AI 网关调用失败", log_output)
+            self.assertIn("lane=question", log_output)
+            self.assertIn("call_type=question_fast", log_output)
+            self.assertIn("model=", log_output)
+            self.assertNotIn("Claude API 调用失败", log_output)
         finally:
             for key, value in backup.items():
                 setattr(self.server, key, value)

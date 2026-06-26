@@ -123,8 +123,8 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.server.PREFETCH_QUESTION_FAST_TIMEOUT = 10.5
         self.server.PREFETCH_QUESTION_FAST_MAX_TOKENS = 760
         self.server.PREFETCH_QUESTION_HEDGE_DELAY_SECONDS = 2.4
-        self.server.PREFETCH_QUESTION_PRIMARY_LANE = "summary"
-        self.server.PREFETCH_QUESTION_SECONDARY_LANE = "question"
+        self.server.PREFETCH_QUESTION_PRIMARY_LANE = "question"
+        self.server.PREFETCH_QUESTION_SECONDARY_LANE = "question_deep"
         self.server.SEARCH_DECISION_MAX_INFLIGHT = 1
         self.server.SEARCH_DECISION_PREFETCH_RULE_ONLY = True
         self.server.SEARCH_DECISION_SEMAPHORE = self.server.threading.BoundedSemaphore(self.server.SEARCH_DECISION_MAX_INFLIGHT)
@@ -264,7 +264,7 @@ class QuestionFastStrategyTests(unittest.TestCase):
             strategy = self.server.get_interview_mode_runtime_strategy("deep")
 
         self.assertEqual(strategy["mode"], "deep")
-        self.assertEqual(strategy["lane_model_overrides"], {"question": "glm-5.1"})
+        self.assertEqual(strategy["lane_model_overrides"], {"question_deep": "glm-5.1"})
         self.assertFalse(strategy["deep_model_fallback"])
         self.assertEqual(strategy["blindspot_cap"], 4)
         self.assertEqual(strategy["high_evidence_policy"], "deep_promoted")
@@ -553,7 +553,7 @@ class QuestionFastStrategyTests(unittest.TestCase):
 
         primary_lane, secondary_lane, lane_meta = self.server._resolve_dynamic_question_lane_order(runtime_profile, phase="full")
         self.assertEqual(primary_lane, "question")
-        self.assertEqual(secondary_lane, "report")
+        self.assertEqual(secondary_lane, "question_deep")
         self.assertNotIn("summary", lane_meta["ordered_candidates"])
         self.assertFalse(lane_meta["dynamic_enabled"])
 
@@ -911,7 +911,7 @@ class QuestionFastStrategyTests(unittest.TestCase):
                 "full_timeout": 24.0,
                 "full_max_tokens": 1200,
                 "primary_lane": "question",
-                "secondary_lane": "summary",
+                "secondary_lane": "question_deep",
                 "hedged_enabled": True,
                 "hedge_delay_seconds": 1.0,
             },
@@ -1288,7 +1288,7 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertEqual(calls[0]["prompt"], "LIGHT_PROMPT")
         self.assertEqual(calls[0]["max_tokens"], 640)
         self.assertEqual(calls[0]["call_type"], "question_fast")
-        self.assertEqual(calls[0]["kwargs"]["secondary_lane"], "summary")
+        self.assertEqual(calls[0]["kwargs"]["secondary_lane"], "question_deep")
         self.assertEqual(tier_used, "fast:question")
         self.assertEqual(result["question"], "请确认最核心诉求？")
         self.assertFalse(result["question_hedge_triggered"])
@@ -1455,8 +1455,8 @@ class QuestionFastStrategyTests(unittest.TestCase):
                 return None, "question", {"attempts": [{"lane": "question", "success": False}]}
             return (
                 '{"question":"请补充关键成熟度判断","options":["稳定性","成本","生态"],"multi_select":true,"is_follow_up":false,"follow_up_reason":null}',
-                "report",
-                {"attempts": [{"lane": "report", "success": True}], "response_length": 60},
+                "question_deep",
+                {"attempts": [{"lane": "question_deep", "success": True}], "response_length": 60},
             )
 
         self.server._call_question_with_optional_hedge = fake_call
@@ -1484,7 +1484,7 @@ class QuestionFastStrategyTests(unittest.TestCase):
                 "full_timeout": 24.0,
                 "full_max_tokens": 1200,
                 "primary_lane": "question",
-                "secondary_lane": "report",
+                "secondary_lane": "question_deep",
                 "hedged_enabled": False,
                 "fallback_enabled": True,
                 "hedge_delay_seconds": 1.0,
@@ -1495,13 +1495,13 @@ class QuestionFastStrategyTests(unittest.TestCase):
         )
 
         self.assertEqual([item["call_type"] for item in calls], ["question", "question_fallback"])
-        self.assertEqual(calls[1]["primary_lane"], "report")
+        self.assertEqual(calls[1]["primary_lane"], "question_deep")
         self.assertFalse(calls[1]["hedged_enabled"])
-        self.assertEqual(tier_used, "full_fallback:report")
+        self.assertEqual(tier_used, "full_fallback:question_deep")
         self.assertTrue(result["question_fallback_triggered"])
         self.assertFalse(result["question_hedge_triggered"])
         self.assertEqual(result["question"], "请补充关键成熟度判断")
-        self.assertIn("report", tier_used)
+        self.assertIn("question_deep", tier_used)
 
     def test_dynamic_lane_order_promotes_better_lane(self):
         runtime_profile = {
@@ -1509,7 +1509,8 @@ class QuestionFastStrategyTests(unittest.TestCase):
             "fast_prompt_mode": "light",
             "full_prompt_mode": "full",
             "primary_lane": "question",
-            "secondary_lane": "summary",
+            "secondary_lane": "question_deep",
+            "lock_primary_lane": True,
         }
         strategy_key = self.server._build_question_lane_strategy_key(runtime_profile, "fast")
 
@@ -1528,9 +1529,10 @@ class QuestionFastStrategyTests(unittest.TestCase):
             )
 
         primary_lane, secondary_lane, lane_meta = self.server._resolve_dynamic_question_lane_order(runtime_profile, phase="fast")
-        self.assertEqual(primary_lane, "summary")
-        self.assertEqual(secondary_lane, "question")
-        self.assertIn("summary", lane_meta["ordered_candidates"])
+        self.assertEqual(primary_lane, "question")
+        self.assertEqual(secondary_lane, "question_deep")
+        self.assertTrue(lane_meta["lock_primary_lane"])
+        self.assertEqual(lane_meta["ordered_candidates"][0], "question")
 
     def test_generate_question_uses_dynamic_lane_order(self):
         runtime_profile = {
@@ -1544,7 +1546,8 @@ class QuestionFastStrategyTests(unittest.TestCase):
             "full_timeout": 24.0,
             "full_max_tokens": 1200,
             "primary_lane": "question",
-            "secondary_lane": "summary",
+            "secondary_lane": "question_deep",
+            "lock_primary_lane": True,
             "hedged_enabled": True,
             "hedge_delay_seconds": 1.0,
         }
@@ -1596,16 +1599,16 @@ class QuestionFastStrategyTests(unittest.TestCase):
             runtime_profile=runtime_profile,
         )
 
-        self.assertEqual(calls[0]["primary_lane"], "summary")
-        self.assertEqual(calls[0]["secondary_lane"], "question")
-        self.assertEqual(tier_used, "fast:summary")
+        self.assertEqual(calls[0]["primary_lane"], "question")
+        self.assertEqual(calls[0]["secondary_lane"], "question_deep")
+        self.assertEqual(tier_used, "fast:question")
         self.assertEqual(result["question"], "请继续说明最关键诉求")
         self.assertIn("question", response)
 
     def test_generate_question_applies_lane_specific_runtime_params(self):
-        self.server.QUESTION_FAST_TIMEOUT_BY_LANE = {"summary": 7.0}
-        self.server.QUESTION_FAST_MAX_TOKENS_BY_LANE = {"summary": 580}
-        self.server.QUESTION_HEDGE_DELAY_BY_LANE = {"summary": 0.8}
+        self.server.QUESTION_FAST_TIMEOUT_BY_LANE = {"question": 7.0}
+        self.server.QUESTION_FAST_MAX_TOKENS_BY_LANE = {"question": 580}
+        self.server.QUESTION_HEDGE_DELAY_BY_LANE = {"question": 0.8}
 
         runtime_profile = {
             "profile_name": "question_follow_up_light",
@@ -1618,7 +1621,8 @@ class QuestionFastStrategyTests(unittest.TestCase):
             "full_timeout": 24.0,
             "full_max_tokens": 1200,
             "primary_lane": "question",
-            "secondary_lane": "summary",
+            "secondary_lane": "question_deep",
+            "lock_primary_lane": True,
             "hedged_enabled": True,
             "hedge_delay_seconds": 1.0,
         }
@@ -1674,11 +1678,11 @@ class QuestionFastStrategyTests(unittest.TestCase):
             runtime_profile=runtime_profile,
         )
 
-        self.assertEqual(calls[0]["kwargs"]["primary_lane"], "summary")
+        self.assertEqual(calls[0]["kwargs"]["primary_lane"], "question")
         self.assertEqual(calls[0]["timeout"], 7.0)
         self.assertEqual(calls[0]["max_tokens"], 580)
         self.assertEqual(calls[0]["kwargs"]["hedge_delay_seconds"], 0.8)
-        self.assertEqual(tier_used, "fast:summary")
+        self.assertEqual(tier_used, "fast:question")
 
     def test_call_question_hedge_uses_secondary_lane_runtime_params(self):
         records = []
@@ -1724,25 +1728,23 @@ class QuestionFastStrategyTests(unittest.TestCase):
             timeout=0.3,
             retry_on_timeout=False,
             debug=False,
-            primary_lane="summary",
-            secondary_lane="question",
+            primary_lane="question",
+            secondary_lane="question_deep",
             hedged_enabled=True,
             hedge_delay_seconds=0.05,
             lane_runtime_overrides={
-                "summary": {"timeout": 0.3, "max_tokens": 580},
-                "question": {"timeout": 0.8, "max_tokens": 960},
+                "question": {"timeout": 0.3, "max_tokens": 580},
+                "question_deep": {"timeout": 0.8, "max_tokens": 960},
             },
         )
 
         self.assertEqual(lane, "question")
         self.assertIsNotNone(response)
         calls_by_lane = {item["lane"]: item for item in records}
-        self.assertEqual(calls_by_lane["summary"]["timeout"], 0.3)
-        self.assertEqual(calls_by_lane["summary"]["max_tokens"], 580)
-        self.assertEqual(calls_by_lane["question"]["timeout"], 0.8)
-        self.assertEqual(calls_by_lane["question"]["max_tokens"], 960)
+        self.assertEqual(calls_by_lane["question"]["timeout"], 0.3)
+        self.assertEqual(calls_by_lane["question"]["max_tokens"], 580)
         attempts = meta.get("attempts", [])
-        self.assertEqual(len(attempts), 2)
+        self.assertEqual(len(attempts), 1)
 
     def test_question_primary_hedge_delay_adds_grace_window(self):
         self.assertEqual(
@@ -1764,7 +1766,7 @@ class QuestionFastStrategyTests(unittest.TestCase):
             "fast_prompt_mode": "light",
             "full_prompt_mode": "full",
             "primary_lane": "question",
-            "secondary_lane": "summary",
+            "secondary_lane": "question_deep",
         }
         strategy_key = self.server._build_question_lane_strategy_key(runtime_profile, "fast")
         for latency in [2600.0, 3000.0, 3400.0]:
@@ -1869,8 +1871,8 @@ class QuestionFastStrategyTests(unittest.TestCase):
 
         self.assertEqual(profile["profile_name"], "prefetch_balanced_light")
         self.assertTrue(profile["allow_fast_path"])
-        self.assertEqual(profile["primary_lane"], "summary")
-        self.assertEqual(profile["secondary_lane"], "question")
+        self.assertEqual(profile["primary_lane"], "question")
+        self.assertEqual(profile["secondary_lane"], "question_deep")
         self.assertEqual(profile["fast_timeout"], 10.5)
         self.assertEqual(profile["fast_max_tokens"], 760)
         self.assertEqual(profile["full_timeout"], 48.0)
@@ -1890,15 +1892,15 @@ class QuestionFastStrategyTests(unittest.TestCase):
         )
 
         self.assertEqual(profile["profile_name"], "prefetch_first_balanced_light")
-        self.assertEqual(profile["primary_lane"], "summary")
-        self.assertEqual(profile["secondary_lane"], "question")
+        self.assertEqual(profile["primary_lane"], "question")
+        self.assertEqual(profile["secondary_lane"], "question_deep")
         self.assertEqual(profile["full_timeout"], 48.0)
         self.assertEqual(profile["full_max_tokens"], 1200)
 
     def test_generate_prefetch_question_keeps_background_runtime_isolation(self):
-        self.server.QUESTION_FAST_TIMEOUT_BY_LANE = {"summary": 7.0}
-        self.server.QUESTION_FAST_MAX_TOKENS_BY_LANE = {"summary": 580}
-        self.server.QUESTION_HEDGE_DELAY_BY_LANE = {"summary": 0.8}
+        self.server.QUESTION_FAST_TIMEOUT_BY_LANE = {"question": 7.0}
+        self.server.QUESTION_FAST_MAX_TOKENS_BY_LANE = {"question": 580}
+        self.server.QUESTION_HEDGE_DELAY_BY_LANE = {"question": 0.8}
 
         runtime_profile = self.server._select_question_generation_runtime_profile(
             "轻量 prompt",
@@ -1947,11 +1949,121 @@ class QuestionFastStrategyTests(unittest.TestCase):
         )
 
         self.assertEqual(calls[0]["call_type"], "prefetch_fast")
-        self.assertEqual(calls[0]["kwargs"]["primary_lane"], "summary")
+        self.assertEqual(calls[0]["kwargs"]["primary_lane"], "question")
         self.assertEqual(calls[0]["timeout"], 10.5)
         self.assertEqual(calls[0]["max_tokens"], 760)
         self.assertEqual(calls[0]["kwargs"]["hedge_delay_seconds"], 2.4)
-        self.assertEqual(tier_used, "fast:summary")
+        self.assertEqual(tier_used, "fast:question")
+
+    def test_prefetch_current_runtime_profile_forces_full_prompt(self):
+        build_calls = []
+        original_build = self.server.build_interview_prompt
+        original_select = self.server._select_question_generation_runtime_profile
+        self.addCleanup(setattr, self.server, "build_interview_prompt", original_build)
+        self.addCleanup(setattr, self.server, "_select_question_generation_runtime_profile", original_select)
+
+        def fake_build(*args, **kwargs):
+            build_calls.append(kwargs.get("output_mode", "full"))
+            return (
+                f"PROMPT:{kwargs.get('output_mode', 'full')}",
+                [],
+                {
+                    "output_mode": kwargs.get("output_mode", "full"),
+                    "search_mode": kwargs.get("search_mode", "rule_only"),
+                    "has_search": False,
+                    "has_reference_docs": False,
+                    "has_truncated_docs": False,
+                    "reference_docs_compact_mode": False,
+                    "formal_questions_count": 2,
+                    "answer_mode": "pick_only",
+                    "requires_rationale": False,
+                    "evidence_intent": "low",
+                },
+            )
+
+        self.server.build_interview_prompt = fake_build
+        self.server._select_question_generation_runtime_profile = lambda *args, **kwargs: {
+            "profile_name": "prefetch_balanced_full",
+            "selection_reason": "prefetch_current_full_only",
+            "allow_fast_path": False,
+            "fast_output_mode": "full",
+            "full_output_mode": "full",
+            "fast_timeout": 8.0,
+            "fast_max_tokens": 640,
+            "full_timeout": 24.0,
+            "full_max_tokens": 1200,
+            "primary_lane": "question",
+            "secondary_lane": "question_deep",
+            "hedged_enabled": True,
+            "hedge_delay_seconds": 1.0,
+        }
+
+        prepared = self.server._prepare_question_generation_runtime(
+            session={"topic": "当前维度测试", "session_id": "sid"},
+            dimension="customer_needs",
+            all_dim_logs=[],
+            base_call_type="prefetch_current",
+            allow_fast_path=True,
+        )
+
+        self.assertEqual(build_calls, ["full", "full"])
+        self.assertFalse(prepared["runtime_profile"]["allow_fast_path"])
+        self.assertEqual(prepared["runtime_profile"]["fast_prompt_mode"], "full")
+        self.assertEqual(prepared["fast_prompt"], "PROMPT:full")
+        self.assertEqual(prepared["runtime_profile"]["profile_name"], "prefetch_balanced_full")
+        self.assertIn("prefetch_current_full_only", prepared["runtime_profile"]["selection_reason"])
+
+    def test_generate_prefetch_current_uses_full_prompt(self):
+        profile = self.server._select_question_generation_runtime_profile(
+            "当前维度 prompt",
+            truncated_docs=[],
+            decision_meta={"formal_questions_count": 2},
+            base_call_type="prefetch_current",
+            allow_fast_path=True,
+        )
+
+        calls = []
+        original_call = self.server._call_question_with_optional_hedge
+        original_parse = self.server.parse_question_response
+        self.addCleanup(setattr, self.server, "_call_question_with_optional_hedge", original_call)
+        self.addCleanup(setattr, self.server, "parse_question_response", original_parse)
+
+        def fake_call(prompt, max_tokens, call_type, truncated_docs=None, timeout=None, retry_on_timeout=False, debug=False, **kwargs):
+            calls.append({
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+                "call_type": call_type,
+                "kwargs": kwargs,
+            })
+            return (
+                '{"question":"当前维度下一步最关键的确认点是什么？","options":["流程边界","责任边界","数据边界"],"multi_select":false,"is_follow_up":false,"follow_up_reason":null}',
+                kwargs.get("primary_lane", "question"),
+                {"response_length": 92},
+            )
+
+        self.server._call_question_with_optional_hedge = fake_call
+        self.server.parse_question_response = lambda response, debug=False: {
+            "question": "当前维度下一步最关键的确认点是什么？",
+            "options": ["流程边界", "责任边界", "数据边界"],
+            "multi_select": False,
+            "is_follow_up": False,
+            "follow_up_reason": None,
+        }
+
+        _response, _result, tier_used = self.server.generate_question_with_tiered_strategy(
+            "FULL_PREFETCH_CURRENT_PROMPT",
+            truncated_docs=[],
+            debug=False,
+            base_call_type="prefetch_current",
+            allow_fast_path=bool(profile["allow_fast_path"]),
+            fast_prompt="LIGHT_PREFETCH_CURRENT_PROMPT",
+            runtime_profile=profile,
+        )
+
+        self.assertEqual(calls[0]["call_type"], "prefetch_current")
+        self.assertEqual(calls[0]["prompt"], "FULL_PREFETCH_CURRENT_PROMPT")
+        self.assertEqual(calls[0]["kwargs"]["primary_lane"], "question")
+        self.assertEqual(tier_used, "full:question")
 
     def test_trigger_prefetch_if_needed_uses_tiered_runtime(self):
         session_id = "prefetch-session"
@@ -1974,8 +2086,9 @@ class QuestionFastStrategyTests(unittest.TestCase):
             "fast_max_tokens": 760,
             "full_timeout": 48.0,
             "full_max_tokens": 1200,
-            "primary_lane": "summary",
-            "secondary_lane": "question",
+            "primary_lane": "question",
+            "secondary_lane": "question_deep",
+            "lock_primary_lane": True,
             "hedged_enabled": True,
             "hedge_delay_seconds": 2.4,
             "fast_timeout_by_lane": {},
@@ -2047,7 +2160,7 @@ class QuestionFastStrategyTests(unittest.TestCase):
                     "is_follow_up": False,
                     "follow_up_reason": None,
                 },
-                "fast:summary",
+                "fast:question",
             )
 
         class ImmediateThread:
@@ -2078,6 +2191,8 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertEqual(len(generate_calls), 1)
         self.assertEqual(generate_calls[0]["base_call_type"], "prefetch")
         self.assertEqual(generate_calls[0]["fast_prompt"], "LIGHT_PREFETCH_PROMPT")
+        self.assertEqual(generate_calls[0]["runtime_profile"]["primary_lane"], "question")
+        self.assertEqual(generate_calls[0]["runtime_profile"]["secondary_lane"], "question_deep")
         with self.server.prefetch_cache_lock:
             cached = self.server.prefetch_cache.get(session_id, {}).get("business_process")
         self.assertIsNotNone(cached)
@@ -2091,7 +2206,7 @@ class QuestionFastStrategyTests(unittest.TestCase):
 
         self.server._call_question_with_optional_hedge = lambda *args, **kwargs: (
             '{"question":"需要与哪些现有系统集成？","options":["ERP系统","CRM系统","OA办公系统"],"multi_select":false,"is_follow_up":false,"follow_up_reason":null}',
-            "summary",
+            "question",
             {"response_length": 96},
         )
         self.server.parse_question_response = lambda _response, debug=False: {
@@ -2110,7 +2225,7 @@ class QuestionFastStrategyTests(unittest.TestCase):
             allow_fast_path=False,
         )
 
-        self.assertEqual(tier_used, "full:summary")
+        self.assertEqual(tier_used, "full:question")
         self.assertFalse(result["question_multi_select"])
         self.assertTrue(result["multi_select"])
 
