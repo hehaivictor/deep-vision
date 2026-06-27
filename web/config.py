@@ -184,11 +184,11 @@ QUESTION_FAST_MAX_TOKENS_BY_LANE = {"question": 900, "summary": 600, "report": 1
 # 作用：控制发布期问题链路是否默认启用保守降档策略。
 QUESTION_RELEASE_CONSERVATIVE_MODE = False
 # 作用：按 lane 覆盖问题全量档超时时间。
-QUESTION_FULL_TIMEOUT_BY_LANE = {"question": 18.0, "summary": 12.0, "report": 45.0, "search_decision": 12.0}
+QUESTION_FULL_TIMEOUT_BY_LANE = {"question": 24.0, "question_deep": 32.0, "summary": 12.0, "report": 36.0, "search_decision": 12.0}
 # 作用：按 lane 覆盖问题全量档最大 token 数。
-QUESTION_FULL_MAX_TOKENS_BY_LANE = {"question": 1500, "summary": 900, "report": 1800, "search_decision": 420}
+QUESTION_FULL_MAX_TOKENS_BY_LANE = {"question": 1100, "question_deep": 1300, "summary": 900, "report": 1300, "search_decision": 420}
 # 作用：按 lane 覆盖问题竞速的备用通道启动延迟。
-QUESTION_HEDGE_DELAY_BY_LANE = {"question": 1.2, "summary": 0.8, "report": 1.6, "search_decision": 0.8}
+QUESTION_HEDGE_DELAY_BY_LANE = {"question": 1.2, "question_deep": 1.2, "summary": 0.8, "report": 1.6, "search_decision": 0.8}
 # 作用：设置快速/标准/深度三档模式进入 prompt 的最大盲区数量。
 INTERVIEW_MODE_MAX_BLINDSPOTS_QUICK = 1
 INTERVIEW_MODE_MAX_BLINDSPOTS_STANDARD = 2
