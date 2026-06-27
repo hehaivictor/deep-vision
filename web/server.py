@@ -3940,6 +3940,81 @@ web_search_active = False
 # ============ 思考进度状态追踪（方案B）============
 thinking_status = {}           # { session_id: { stage, stage_index, total_stages, message } }
 thinking_status_lock = threading.Lock()
+THINKING_STATUS_TTL_SECONDS = 15 * 60
+
+
+def get_thinking_status_dir() -> Path:
+    return DATA_DIR / "runtime" / "thinking-status"
+
+
+def get_thinking_status_file(session_id: str) -> Path:
+    digest = hashlib.sha1(str(session_id or "").encode("utf-8")).hexdigest()
+    return get_thinking_status_dir() / f"{digest}.json"
+
+
+def persist_thinking_status(session_id: str, status_payload: dict) -> None:
+    if not session_id or not isinstance(status_payload, dict):
+        return
+    payload = dict(status_payload)
+    payload["session_id"] = str(session_id)
+    payload["updated_at"] = get_utc_now()
+    payload["updated_ts"] = float(_time.time())
+    try:
+        _write_json_atomic(get_thinking_status_file(session_id), payload)
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            print(f"[thinking-status] 持久化失败: session_id={session_id}, error={exc}")
+
+
+def read_persisted_thinking_status(session_id: str) -> Optional[dict]:
+    if not session_id:
+        return None
+    status_file = get_thinking_status_file(session_id)
+    if not status_file.exists():
+        return None
+    try:
+        payload = json.loads(status_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            print(f"[thinking-status] 读取失败: session_id={session_id}, error={exc}")
+        try:
+            status_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+    if not isinstance(payload, dict) or str(payload.get("session_id") or "") != str(session_id):
+        return None
+
+    updated_ts = payload.get("updated_ts")
+    try:
+        updated_ts_value = float(updated_ts)
+    except (TypeError, ValueError):
+        updated_ts_value = 0.0
+    if updated_ts_value and (_time.time() - updated_ts_value) > THINKING_STATUS_TTL_SECONDS:
+        try:
+            status_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+
+    stage = str(payload.get("stage") or "")
+    stage_info = THINKING_STAGES.get(stage)
+    if not stage_info:
+        return None
+    return {
+        "stage": stage,
+        "stage_index": int(payload.get("stage_index", stage_info["index"])),
+        "total_stages": int(payload.get("total_stages", 3)),
+        "message": str(payload.get("message") or stage_info["message"]),
+    }
+
+
+def remove_persisted_thinking_status(session_id: str) -> None:
+    try:
+        get_thinking_status_file(session_id).unlink(missing_ok=True)
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            print(f"[thinking-status] 清理失败: session_id={session_id}, error={exc}")
 
 # ============ AI 调度优先级控制 ============
 # 目标：问题/报告优先，摘要/搜索决策后台降级，减少主链路尾延迟。
@@ -13351,19 +13426,22 @@ def update_thinking_status(session_id: str, stage: str, has_search: bool = True)
     # - 无搜索时：分析(0) -> 生成(2)，检索阶段被跳过
     index = stage_info["index"]
 
+    status_payload = {
+        "stage": stage,
+        "stage_index": index,
+        "total_stages": 3,  # 总是3个阶段，无搜索时检索会被快速跳过
+        "message": stage_info["message"],
+    }
     with thinking_status_lock:
-        thinking_status[session_id] = {
-            "stage": stage,
-            "stage_index": index,
-            "total_stages": 3,  # 总是3个阶段，无搜索时检索会被快速跳过
-            "message": stage_info["message"],
-        }
+        thinking_status[session_id] = status_payload
+    persist_thinking_status(session_id, status_payload)
 
 
 def clear_thinking_status(session_id: str):
     """清除思考进度状态"""
     with thinking_status_lock:
         thinking_status.pop(session_id, None)
+    remove_persisted_thinking_status(session_id)
 
 
 def update_report_generation_status(
@@ -27075,8 +27153,21 @@ def _is_scenario_accessible_to_user(
     return is_instance_scope_visible(scenario.get(INSTANCE_SCOPE_FIELD), expected_scope=expected_scope)
 
 
+def refresh_custom_scenarios_for_access() -> None:
+    refresh_func = getattr(scenario_loader, "refresh_custom_scenarios", None)
+    if not callable(refresh_func):
+        return
+    try:
+        refresh_func()
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            print(f"[scenario-loader] 自定义场景刷新失败: {exc}")
+
+
 def get_accessible_scenarios_for_user(user_id: Optional[int] = None) -> list[dict]:
     expected_scope = get_active_instance_scope_key()
+    if _normalize_user_id_for_scenarios(user_id) is not None:
+        refresh_custom_scenarios_for_access()
     scenarios = scenario_loader.get_all_scenarios()
     return [
         scenario
@@ -27086,12 +27177,22 @@ def get_accessible_scenarios_for_user(user_id: Optional[int] = None) -> list[dic
 
 
 def get_accessible_scenario_or_none(scenario_id: str, user_id: Optional[int] = None) -> Optional[dict]:
+    expected_scope = get_active_instance_scope_key()
     scenario = scenario_loader.get_scenario(scenario_id)
     if not _is_scenario_accessible_to_user(
         scenario,
         user_id=user_id,
-        expected_scope=get_active_instance_scope_key(),
+        expected_scope=expected_scope,
     ):
+        if str(scenario_id or "").startswith("custom-"):
+            refresh_custom_scenarios_for_access()
+            scenario = scenario_loader.get_scenario(scenario_id)
+            if _is_scenario_accessible_to_user(
+                scenario,
+                user_id=user_id,
+                expected_scope=expected_scope,
+            ):
+                return scenario
         return None
     return scenario
 
@@ -44218,6 +44319,12 @@ def get_thinking_status(session_id):
 
     with thinking_status_lock:
         status = thinking_status.get(session_id)
+
+    if not status:
+        status = read_persisted_thinking_status(session_id)
+        if status:
+            with thinking_status_lock:
+                thinking_status[session_id] = status
 
     if status:
         return jsonify({

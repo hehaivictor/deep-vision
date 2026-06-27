@@ -4558,6 +4558,73 @@ class ComprehensiveApiTests(unittest.TestCase):
         delete_resp = self.client.delete(f"/api/scenarios/custom/{scenario_id}")
         self.assertEqual(delete_resp.status_code, 200)
 
+    def test_custom_scenario_created_by_another_worker_is_available_for_session_creation(self):
+        user = self._register()
+
+        from scripts import scenario_loader as scenario_loader_module
+
+        external_loader = scenario_loader_module.ScenarioLoader(
+            scenarios_dir=self.server.scenario_loader.scenarios_dir,
+            builtin_dir=self.server.scenario_loader.builtin_dir,
+            custom_dir=self.server.scenario_loader.custom_dir,
+            migrate_legacy_custom_dir=self.server.scenario_loader.legacy_custom_dir,
+        )
+        scenario_id = external_loader.save_custom_scenario(
+            {
+                "name": "跨 worker 场景",
+                "description": "验证另一个 worker 新建的场景可被当前 worker 使用",
+                "keywords": ["跨 worker", "同步"],
+                "owner_user_id": int(user["id"]),
+                "dimensions": [
+                    {
+                        "id": "worker_sync",
+                        "name": "同步验证",
+                        "description": "确认场景缓存刷新",
+                        "key_aspects": ["可见性", "创建会话"],
+                        "min_questions": 1,
+                        "max_questions": 2,
+                    }
+                ],
+                "report": {"type": "standard", "template": "default"},
+            }
+        )
+        self.assertIsNone(self.server.scenario_loader.get_scenario(scenario_id))
+
+        list_resp = self.client.get("/api/scenarios")
+        self.assertEqual(list_resp.status_code, 200, list_resp.get_data(as_text=True))
+        self.assertTrue(any(item.get("id") == scenario_id for item in (list_resp.get_json() or [])))
+
+        create_resp = self.client.post(
+            "/api/sessions",
+            json={"topic": "跨 worker 场景会话", "scenario_id": scenario_id},
+        )
+        self.assertEqual(create_resp.status_code, 200, create_resp.get_data(as_text=True))
+        payload = create_resp.get_json() or {}
+        self.assertEqual(payload.get("scenario_id"), scenario_id)
+
+    def test_thinking_status_survives_worker_memory_miss(self):
+        self._register()
+        payload = self._create_session(topic="跨 worker 思考状态")
+        session_id = payload["session_id"]
+
+        self.server.update_thinking_status(session_id, "generating", has_search=False)
+        with self.server.thinking_status_lock:
+            self.server.thinking_status.clear()
+
+        status_resp = self.client.get(f"/api/status/thinking/{session_id}")
+        self.assertEqual(status_resp.status_code, 200, status_resp.get_data(as_text=True))
+        status_payload = status_resp.get_json() or {}
+        self.assertTrue(status_payload.get("active"))
+        self.assertEqual(status_payload.get("stage"), "generating")
+        self.assertEqual(status_payload.get("stage_index"), 2)
+
+        self.server.clear_thinking_status(session_id)
+        with self.server.thinking_status_lock:
+            self.server.thinking_status.clear()
+        cleared_resp = self.client.get(f"/api/status/thinking/{session_id}")
+        self.assertEqual(cleared_resp.status_code, 200, cleared_resp.get_data(as_text=True))
+        self.assertFalse((cleared_resp.get_json() or {}).get("active"))
+
     def test_report_template_validate_and_preview_api(self):
         self._register()
 
