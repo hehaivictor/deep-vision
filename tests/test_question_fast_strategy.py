@@ -1605,6 +1605,71 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertEqual(result["question"], "请继续说明最关键诉求")
         self.assertIn("question", response)
 
+    def test_generate_question_forces_full_prompt_for_high_evidence_prefetch(self):
+        runtime_profile = {
+            "profile_name": "question_probe_evidence",
+            "selection_reason": "high_evidence_intent",
+            "allow_fast_path": True,
+            "fast_prompt_mode": "light",
+            "full_prompt_mode": "full",
+            "fast_timeout": 8.0,
+            "fast_max_tokens": 640,
+            "full_timeout": 24.0,
+            "full_max_tokens": 1200,
+            "primary_lane": "question",
+            "secondary_lane": "question_deep",
+            "lock_primary_lane": True,
+            "hedged_enabled": True,
+            "hedge_delay_seconds": 1.0,
+            "answer_mode": "pick_with_reason",
+            "requires_rationale": True,
+            "evidence_intent": "high",
+        }
+        calls = []
+        original_call = self.server._call_question_with_optional_hedge
+        original_parse = self.server.parse_question_response
+        self.addCleanup(setattr, self.server, "_call_question_with_optional_hedge", original_call)
+        self.addCleanup(setattr, self.server, "parse_question_response", original_parse)
+
+        def fake_call(prompt, max_tokens, call_type, truncated_docs=None, timeout=None, retry_on_timeout=False, debug=False, **kwargs):
+            calls.append({"prompt": prompt, "call_type": call_type, "kwargs": kwargs})
+            return (
+                '{"question":"PLM 集成时，哪些接口必须优先打通？","options":["ERP 物料主数据","MES 工单下发","CAD/EDA 设计文件直连"],"multi_select":true,"is_follow_up":false,"follow_up_reason":null,"answer_mode":"pick_with_reason","requires_rationale":true,"evidence_intent":"high"}',
+                kwargs.get("primary_lane", "question"),
+                {"response_length": 176},
+            )
+
+        self.server._call_question_with_optional_hedge = fake_call
+        self.server.parse_question_response = lambda response, debug=False: {
+            "question": "PLM 集成时，哪些接口必须优先打通？",
+            "options": ["ERP 物料主数据", "MES 工单下发", "CAD/EDA 设计文件直连"],
+            "multi_select": True,
+            "is_follow_up": False,
+            "follow_up_reason": None,
+            "answer_mode": "pick_with_reason",
+            "requires_rationale": True,
+            "evidence_intent": "high",
+        }
+
+        response, result, tier_used = self.server.generate_question_with_tiered_strategy(
+            "FULL_PROMPT",
+            truncated_docs=[],
+            debug=False,
+            base_call_type="question",
+            allow_fast_path=True,
+            fast_prompt="LIGHT_PROMPT",
+            runtime_profile=runtime_profile,
+        )
+
+        self.assertEqual(calls[0]["prompt"], "FULL_PROMPT")
+        self.assertEqual(calls[0]["call_type"], "question_fast")
+        self.assertEqual(tier_used, "fast:question")
+        self.assertEqual(result["question"], "PLM 集成时，哪些接口必须优先打通？")
+        self.assertEqual(result["answer_mode"], "pick_with_reason")
+        self.assertTrue(result["requires_rationale"])
+        self.assertEqual(result["evidence_intent"], "high")
+        self.assertIn("PLM", response)
+
     def test_generate_question_applies_lane_specific_runtime_params(self):
         self.server.QUESTION_FAST_TIMEOUT_BY_LANE = {"question": 7.0}
         self.server.QUESTION_FAST_MAX_TOKENS_BY_LANE = {"question": 580}
@@ -1839,6 +1904,28 @@ class QuestionFastStrategyTests(unittest.TestCase):
 
         self.assertTrue(result["passed"], result)
         self.assertEqual(result["reasons"], [])
+
+    def test_visible_question_quality_gate_rejects_shallow_interface_enumeration(self):
+        result = self.server.evaluate_visible_question_quality_gate(
+            {
+                "question": "PLM 与现有系统集成时，哪些接口是必须优先打通的？",
+                "options": [
+                    "ERP（SAP/Oracle）物料与BOM同步",
+                    "MES 工单与工艺路线下发",
+                    "CAD/EDA 设计文件直连",
+                    "CRM 客户需求与配置器",
+                ],
+                "multi_select": True,
+                "answer_mode": "pick_with_reason",
+                "requires_rationale": True,
+                "evidence_intent": "high",
+            },
+            session={"topic": "PLM 产品全生命周期需求调研"},
+            dimension="tech_constraints",
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertIn("shallow_context_options", result["reasons"])
 
     def test_should_reject_visible_question_marks_low_quality_cache_candidate(self):
         result = self.server.should_reject_visible_question(

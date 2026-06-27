@@ -1,0 +1,43 @@
+{
+  "attempt": 1,
+  "executor": "unittest",
+  "status": "PASS",
+  "returncode": 0,
+  "duration_ms": 1116.75,
+  "command": [
+    "/Users/hehai/.local/bin/uv",
+    "run",
+    "--with",
+    "flask",
+    "--with",
+    "flask-cors",
+    "--with",
+    "anthropic",
+    "--with",
+    "requests",
+    "--with",
+    "reportlab",
+    "--with",
+    "pillow",
+    "--with",
+    "jdcloud-sdk",
+    "--with",
+    "psycopg[binary]",
+    "--with",
+    "boto3",
+    "python3",
+    "-m",
+    "unittest",
+    "-q",
+    "tests.test_api_comprehensive.ComprehensiveApiTests.test_submit_answer_is_idempotent_for_immediate_duplicate_payload",
+    "tests.test_api_comprehensive.ComprehensiveApiTests.test_generate_report_returns_existing_active_payload_when_retriggered",
+    "tests.test_api_comprehensive.ComprehensiveApiTests.test_reactivating_same_license_keeps_current_binding_stable",
+    "tests.test_api_comprehensive.ComprehensiveApiTests.test_solution_share_creation_is_idempotent_for_same_owner",
+    "tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_ownership_preview_reissue_invalidates_old_token_and_apply_is_single_use"
+  ],
+  "failed_tests": [],
+  "highlights": [
+    "OK"
+  ],
+  "executor_overall": "PASS"
+}

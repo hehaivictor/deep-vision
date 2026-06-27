@@ -1,0 +1,263 @@
+./Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:370: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now_iso = datetime.utcnow().isoformat()
+/Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:2518: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now_iso = datetime.utcnow().isoformat()
+............../Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:2105: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now_iso = datetime.utcnow().isoformat()
+................................/Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:292: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().replace(microsecond=0)
+....../Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:1111: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().replace(microsecond=0).isoformat()
+./Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:1255: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().replace(microsecond=0).isoformat()
+................................................................................................................................................/Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_security_regression.py:752: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now_iso = datetime.utcnow().isoformat()
+..../Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_security_regression.py:208: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().replace(microsecond=0)
+....................................................................................................................................................................✅ 配置文件加载成功 (web.config)
+⚠️  未配置 SECRET_KEY，开发模式使用固定默认会话密钥
+[ScenarioLoader] 已加载 8 个场景配置
+🔐 已为 License 库初始化共享签名密钥
+[ScenarioLoader] 已加载 0 个场景配置
+启动初始化完成：reason=first_request_fallback，total=60.1ms，auth_db=0.5ms，license_db=0.5ms，meta_index_schema=59.1ms
+[SMS][mock] scene=login phone=16674343190 code=572876
+[SMS][mock] scene=login phone=18204855261 code=515101
+[ScenarioLoader] 已加载 1 个场景配置
+[SMS][mock] scene=login phone=14146649303 code=823366
+🔐 已为 License 库初始化共享签名密钥
+[SMS][mock] scene=login phone=11447603835 code=374743
+[SMS][mock] scene=login phone=15490683793 code=390408
+[SMS][mock] scene=login phone=10472817987 code=616546
+[SMS][mock] scene=login phone=14297690562 code=536389
+[SMS][mock] scene=login phone=15567090458 code=645159
+[SMS][mock] scene=login phone=13198304542 code=437410
+[SMS][mock] scene=login phone=13376200428 code=727461
+[SMS][mock] scene=login phone=19497317167 code=273600
+[SMS][mock] scene=login phone=19177254094 code=834893
+[ScenarioLoader] 已加载 1 个场景配置
+[ScenarioLoader] 已加载 1 个场景配置
+[SMS][mock] scene=login phone=15123092996 code=287219
+[SMS][mock] scene=login phone=17574503664 code=835386
+[ScenarioLoader] 已加载 1 个场景配置
+[SMS][mock] scene=login phone=11609377080 code=677238
+[SMS][mock] scene=login phone=11201198431 code=629779
+[SMS][mock] scene=login phone=12198949380 code=668920
+[SMS][mock] scene=login phone=18601465522 code=583814
+[SMS][mock] scene=login phone=11662341120 code=904352
+[SMS][mock] scene=login phone=11662341120 code=513840
+[SMS][mock] scene=login phone=10399757990 code=728055
+[SMS][mock] scene=login phone=14186806343 code=734191
+[SMS][mock] scene=login phone=19182278884 code=605595
+[SMS][mock] scene=bind phone=19182278884 code=899638
+[ScenarioLoader] 已加载 2 个场景配置
+[ScenarioLoader] 已加载 2 个场景配置
+[ScenarioLoader] 已加载 2 个场景配置
+[SMS][mock] scene=login phone=18506303875 code=775989
+[SMS][mock] scene=bind phone=18506303875 code=571909
+[ScenarioLoader] 已加载 2 个场景配置
+[SMS][mock] scene=login phone=17319035793 code=207581
+[ScenarioLoader] 已加载 3 个场景配置
+[SMS][mock] scene=login phone=19502808796 code=909471
+[ScenarioLoader] 已加载 3 个场景配置
+[SMS][mock] scene=login phone=12134341891 code=576980
+[SMS][mock] scene=login phone=17716065453 code=798941
+[SMS][mock] scene=login phone=16935944523 code=759808
+[SMS][mock] scene=login phone=11395837641 code=387345
+[SMS][mock] scene=login phone=10143487719 code=745084
+[SMS][mock] scene=login phone=15506562232 code=677403
+[SMS][mock] scene=login phone=18914998280 code=105207
+[SMS][mock] scene=login phone=15911113469 code=122667
+[ScenarioLoader] 已加载 5 个场景配置
+[SMS][mock] scene=login phone=18465138477 code=189890
+[SMS][mock] scene=login phone=16226375366 code=754860
+[SMS][mock] scene=login phone=16966756188 code=906179
+[SMS][mock] scene=login phone=13101510434 code=973361
+[SMS][mock] scene=login phone=13365698870 code=295448
+[SMS][mock] scene=login phone=13796146367 code=462362
+[SMS][mock] scene=login phone=18666748971 code=412527
+[SMS][mock] scene=login phone=11716821439 code=610681
+[SMS][mock] scene=login phone=17505951959 code=705192
+[SMS][mock] scene=login phone=16616971757 code=741221
+[SMS][mock] scene=login phone=10654005246 code=211072
+[SMS][mock] scene=login phone=19931343374 code=380451
+[SMS][mock] scene=login phone=17195559383 code=176080
+[SMS][mock] scene=login phone=14507150845 code=743700
+[SMS][mock] scene=login phone=16435907206 code=760945
+[SMS][mock] scene=login phone=13692874179 code=725103
+[SMS][mock] scene=login phone=18812089082 code=908563
+⚠️ AI 场景生成失败，已切换本地草案兜底: AI 场景结构不完整
+[SMS][mock] scene=login phone=18458240649 code=319624
+[SMS][mock] scene=login phone=13786617859 code=421006
+🔐 已将旧 users.db 中的 License 数据迁移到独立的 licenses.db
+🔐 已将旧 users.db 中的 License 数据迁移到独立的 licenses.db
+🔐 已将 License 签名密钥迁移到 License 库，同库多机共享不再依赖本机 SECRET_KEY
+[SMS][mock] scene=login phone=14069742561 code=665085
+[SMS][mock] scene=login phone=18877207138 code=881124
+[SMS][mock] scene=login phone=17605023391 code=657595
+[SMS][mock] scene=login phone=10260442885 code=640408
+[SMS][mock] scene=login phone=18600734500 code=866636
+[SMS][mock] scene=login phone=15176897480 code=327588
+[SMS][mock] scene=login phone=16572669230 code=714489
+[SMS][mock] scene=login phone=11748296552 code=242729
+[SMS][mock] scene=login phone=14965373618 code=651720
+[SMS][mock] scene=login phone=14974745174 code=671119
+[SMS][mock] scene=login phone=12304415553 code=534322
+生成问题时发生异常: simulated timeout
+[SMS][mock] scene=login phone=17489793597 code=132251
+[SMS][mock] scene=login phone=19728218757 code=343391
+[SMS][mock] scene=login phone=13746462102 code=268179
+[SMS][mock] scene=login phone=17935741913 code=273667
+[SMS][mock] scene=login phone=19463556052 code=387919
+[SMS][mock] scene=login phone=19420831812 code=367837
+[SMS][mock] scene=login phone=19146194361 code=128039
+[SMS][mock] scene=login phone=14813667349 code=170630
+[SMS][mock] scene=login phone=14600794330 code=148561
+[SMS][mock] scene=login phone=13645975911 code=700882
+[SMS][mock] scene=login phone=15093201018 code=156990
+[SMS][mock] scene=login phone=12150873297 code=177018
+[SMS][mock] scene=login phone=11506639455 code=130785
+[SMS][mock] scene=login phone=15491040168 code=724306
+[SMS][mock] scene=login phone=12777800505 code=452380
+[SMS][mock] scene=login phone=12192243191 code=602580
+[SMS][mock] scene=login phone=14107740400 code=854566
+[SMS][mock] scene=login phone=17899195803 code=334839
+[SMS][mock] scene=login phone=12421580574 code=360685
+[SMS][mock] scene=login phone=17932550284 code=192229
+[SMS][mock] scene=login phone=16626464292 code=493521
+[SMS][mock] scene=login phone=18380354613 code=235223
+[SMS][mock] scene=login phone=13830796879 code=443011
+[SMS][mock] scene=login phone=10359354107 code=184842
+[SMS][mock] scene=login phone=18294743491 code=918410
+[SMS][mock] scene=login phone=15183857908 code=403369
+[SMS][mock] scene=login phone=11653563400 code=891004
+[SMS][mock] scene=login phone=13887064778 code=882657
+[SMS][mock] scene=login phone=12855598435 code=792802
+[SMS][mock] scene=login phone=11458069532 code=641194
+[SMS][mock] scene=login phone=10217192891 code=553835
+[SMS][mock] scene=login phone=11435711138 code=174758
+[SMS][mock] scene=login phone=13364468704 code=462534
+[SMS][mock] scene=login phone=14928008395 code=371501
+[SMS][mock] scene=login phone=10192709833 code=511411
+[SMS][mock] scene=login phone=15133523876 code=169667
+[SMS][mock] scene=login phone=12883342237 code=823761
+[SMS][mock] scene=login phone=14445162445 code=626497
+[SMS][mock] scene=login phone=10626379325 code=578546
+[SMS][mock] scene=login phone=13334065834 code=214958
+[SMS][mock] scene=login phone=10586205109 code=736726
+[SMS][mock] scene=login phone=10643145711 code=945591
+✅ 配置文件加载成功 (web.config)
+⚠️  未配置 SECRET_KEY，开发模式使用固定默认会话密钥
+🔐 已为 License 库初始化共享签名密钥
+✅ 已迁移 site-config.js 到 site_config_store
+启动初始化完成：reason=first_request_fallback，total=60.6ms，auth_db=0.5ms，license_db=0.6ms，meta_index_schema=59.5ms
+🤖 调用 Claude API，lane=question，model=doubao-seed-2-0-pro，max_tokens=64，timeout=12.0s
+❌ Claude API 调用失败: 模型响应中未包含可用文本内容
+   原因: 模型返回空文本，或仅返回了非 text 内容块
+🤖 调用 Claude API，lane=question，model=doubao-seed-2-0-pro，max_tokens=256，timeout=10.0s
+ℹ️ 熔断切换：跳过冷却 lane=report
+✅ API 响应成功，长度: 16 字符
+⚠️ V3 报告流程失败: simulated timeout
+[SMS][mock] scene=login phone=10873670617 code=254632
+🔐 已将旧 users.db 中的 License 数据迁移到独立的 licenses.db
+[SMS][mock] scene=login phone=18770049161 code=807032
+🔮 开始预生成首题: session=dv-20260518111808-0c9b29b9..............
+----------------------------------------------------------------------
+Ran 380 tests in 20.214s
+
+OK
+
+⚡ 首题预生成优先窗口生效: session=dv-20260518111808-0c9b29b9
+⚙️ 首题预生成通道: fast:summary
+✅ 首题预生成完成: session=dv-20260518111808-0c9b29b9
+[SMS][mock] scene=login phone=16881781634 code=300046
+🔮 开始预生成首题: session=dv-20260518111809-57474cc9
+⚡ 首题预生成优先窗口生效: session=dv-20260518111809-57474cc9
+[SMS][mock] scene=login phone=19947713254 code=399780
+⚙️ 首题预生成通道: fast:summary
+✅ 首题预生成完成: session=dv-20260518111809-57474cc9
+[SMS][mock] scene=login phone=16988827049 code=275392
+[SMS][mock] scene=login phone=18703746132 code=701094
+[SMS][mock] scene=login phone=12714690137 code=888935
+🔐 已为 License 库初始化共享签名密钥
+[SMS][mock] scene=login phone=16088980799 code=477861
+[SMS][mock] scene=login phone=18730921225 code=589248
+[SMS][mock] scene=login phone=11764945359 code=119610
+[SMS][mock] scene=login phone=10054786929 code=662429
+[SMS][mock] scene=login phone=11469242648 code=672236
+[SMS][mock] scene=login phone=11564258870 code=136684
+[SMS][mock] scene=login phone=10602719371 code=949657
+🔮 开始预生成首题: session=dv-20260518111810-9162e714
+⚡ 首题预生成优先窗口生效: session=dv-20260518111810-9162e714
+⚠️ V3 报告流程未通过，自动回退标准流程；primary[reason=exception,profile=balanced,parse_stage=review_generation,lane=report,phase_lanes=draft=report,review=report,error=simulated timeout,final_issue_count=0,final_issue_types=-,exception_stage=review_generation,exception_kind=timeout,salvage_attempted=False,salvage_success=False,salvage_quality_issue_count=0,salvage_issue_types=-,salvage_note=disabled_by_release_conservative_mode,salvage_error=-]
+📊 回退报告 Prompt 统计：模式=compact，总长度=13字符，参考资料=0个，访谈记录=0条
+⚙️ 首题预生成通道: fast:summary
+✅ 首题预生成完成: session=dv-20260518111810-9162e714
+[SMS][mock] scene=login phone=15715537090 code=443151
+🔮 开始预生成首题: session=dv-20260518111810-abd758c2
+⚡ 首题预生成优先窗口生效: session=dv-20260518111810-abd758c2
+ℹ️ V3 报告流程未通过，自动回退标准流程；primary[reason=quality_gate_failed,profile=balanced,parse_stage=quality_gate,lane=report,phase_lanes=draft=report,review=report,error=profile=balanced,final_issue_count=1,final_issue_count=1,final_issue_types=quality_gate_evidence,exception_stage=-,exception_kind=-,salvage_attempted=False,salvage_success=False,salvage_quality_issue_count=0,salvage_issue_types=-,salvage_note=disabled_by_release_conservative_mode,salvage_error=-]
+📊 回退报告 Prompt 统计：模式=compact，总长度=13字符，参考资料=0个，访谈记录=0条
+⚙️ 首题预生成通道: fast:summary
+✅ 首题预生成完成: session=dv-20260518111810-abd758c2
+ℹ️ V3 报告流程未通过，自动回退标准流程；primary[reason=release_conservative_short_circuit,profile=balanced,parse_stage=draft_short_circuit,lane=report,phase_lanes=draft=report,review=report,error=检测到报告草案最近连续超时 2 次，发布保守档直接回退标准报告生成,final_issue_count=0,final_issue_types=-,exception_stage=-,exception_kind=-,salvage_attempted=False,salvage_success=False,salvage_quality_issue_count=0,salvage_issue_types=-,salvage_note=disabled_by_release_conservative_mode,salvage_error=-]
+📊 回退报告 Prompt 统计：模式=compact，总长度=23字符，参考资料=0个，访谈记录=0条
+[SMS][mock] scene=login phone=13906213405 code=246810
+[SMS][mock] scene=login phone=12274546524 code=442944
+[SMS][mock] scene=login phone=12722446870 code=111111
+[SMS][mock] scene=login phone=12722446870 code=222222
+[SMS][mock] scene=login phone=15525394242 code=643594
+🔮 开始预生成首题: session=dv-20260518111810-f83db768
+⚡ 首题预生成优先窗口生效: session=dv-20260518111810-f83db768
+⚙️ 首题预生成通道: fast:summary
+✅ 首题预生成完成: session=dv-20260518111810-f83db768
+✅ 配置文件加载成功 (web.config)
+⚠️  未配置 SECRET_KEY，开发模式使用固定默认会话密钥
+✅ 已迁移会话主数据到 session_store: 1
+✅ 已迁移 site-config.js 到 site_config_store
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=final-stage-upgrade.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=delivery-fast.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=delivery-hardened.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=async-prewarm-sidecar.md, error=no such table: report_index
+✅ 方案缓存预热完成: report=async-prewarm-sidecar.md
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=cache-refresh-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=cache-refresh-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=degraded-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-ai-chapters.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-ai-bad-json.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-ai.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=feedback-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=interview-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=cache-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-rule-copy.md, error=no such table: report_index
+DeepVision agent autodream lite
+overall: HEALTHY
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-tzjm2j37/autodream-root/doc-gardening/latest.json
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-tzjm2j37/autodream-root/doc-gardening/latest.md
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-tzjm2j37/autodream-root/heartbeat.md
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-tzjm2j37/autodream-root/memory/latest.json
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-tzjm2j37/autodream-root/memory-notes.md
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-tzjm2j37/autodream-root/memory/best-practices-latest.json
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-tzjm2j37/autodream-root/autodream/latest.json
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-tzjm2j37/autodream-root/autodream/latest.md
+Scaffolded: /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-tzjm2j37/scenario-output.json
+Source: eval | run_dir=/private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-tzjm2j37/artifacts/harness-eval/eval-run-write
+Cases: 1
+[0;32m[INFO][0m 文件已是文本格式，直接复制
+[0;31m[ERROR][0m 不支持的文件格式: .unsupported
+[0;32m[INFO][0m 支持的格式: docx, xlsx, xls, pptx, ppt, md, txt, pdf
+[0;32m[INFO][0m 文件已是文本格式，直接复制
+[0;32m[INFO][0m 文件已是文本格式，直接复制
+[0;31m[ERROR][0m 不支持的文件格式: .unsupported
+[0;32m[INFO][0m 支持的格式: docx, xlsx, xls, pptx, ppt, md, txt, pdf
+[0;32m[INFO][0m 转换完成: 2/3 个文件成功
+[0;32m[INFO][0m 已清理临时文件
+[0;32m[INFO][0m 未找到报告模板，使用简化报告格式
+[0;32m[INFO][0m 报告已生成: /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-tzjm2j37/data/reports/deep-vision-20260518-报告脚本测试.md
+[ScenarioLoader] 已加载 8 个场景配置
+[0;32m[INFO][0m 创建会话: dv-20260518111816-70720d79 (场景: product-requirement)
+[0;32m[INFO][0m 已更新会话: dv-20260518111816-70720d79
+[0;32m[INFO][0m 已更新会话: dv-20260518111816-70720d79
+[0;32m[INFO][0m 已更新会话: dv-20260518111816-70720d79
+[0;32m[INFO][0m 会话已删除: dv-20260518111816-70720d79
+[0;31m[ERROR][0m 会话不存在: dv-20260518111816-70720d79

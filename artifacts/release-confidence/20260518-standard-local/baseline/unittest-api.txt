@@ -1,0 +1,151 @@
+./Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:369: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now_iso = datetime.utcnow().isoformat()
+/Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:2517: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now_iso = datetime.utcnow().isoformat()
+............../Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:2104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now_iso = datetime.utcnow().isoformat()
+................................/Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:291: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().replace(microsecond=0)
+....../Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:1110: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().replace(microsecond=0).isoformat()
+./Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:1254: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().replace(microsecond=0).isoformat()
+..................................................................
+----------------------------------------------------------------------
+Ran 120 tests in 12.148s
+
+OK
+✅ 配置文件加载成功 (web.config)
+⚠️  未配置 SECRET_KEY，开发模式使用固定默认会话密钥
+[ScenarioLoader] 已加载 8 个场景配置
+🔐 已为 License 库初始化共享签名密钥
+[ScenarioLoader] 已加载 0 个场景配置
+启动初始化完成：reason=first_request_fallback，total=294.2ms，auth_db=0.6ms，license_db=0.6ms，meta_index_schema=293.1ms
+[SMS][mock] scene=login phone=14463898417 code=553298
+[SMS][mock] scene=login phone=10613978016 code=342215
+[ScenarioLoader] 已加载 1 个场景配置
+[SMS][mock] scene=login phone=18766570107 code=598640
+🔐 已为 License 库初始化共享签名密钥
+[SMS][mock] scene=login phone=15465474780 code=459503
+[SMS][mock] scene=login phone=15967887813 code=106577
+[SMS][mock] scene=login phone=11807095067 code=123650
+[SMS][mock] scene=login phone=10408412817 code=101051
+[SMS][mock] scene=login phone=19623123772 code=608261
+[SMS][mock] scene=login phone=10072425291 code=343417
+[SMS][mock] scene=login phone=15961837613 code=762563
+[SMS][mock] scene=login phone=18325525857 code=204336
+[SMS][mock] scene=login phone=15078774495 code=778364
+[ScenarioLoader] 已加载 1 个场景配置
+[ScenarioLoader] 已加载 1 个场景配置
+[SMS][mock] scene=login phone=18017537051 code=335346
+[SMS][mock] scene=login phone=11133218014 code=883176
+[ScenarioLoader] 已加载 1 个场景配置
+[SMS][mock] scene=login phone=12267860463 code=100068
+[SMS][mock] scene=login phone=12574865728 code=306667
+[SMS][mock] scene=login phone=12905705164 code=857295
+[SMS][mock] scene=login phone=10055565283 code=694359
+[SMS][mock] scene=login phone=11438948732 code=222402
+[SMS][mock] scene=login phone=11438948732 code=642816
+[SMS][mock] scene=login phone=19474122571 code=101757
+[SMS][mock] scene=login phone=15820795273 code=327750
+[SMS][mock] scene=login phone=18653847146 code=406351
+[SMS][mock] scene=bind phone=18653847146 code=289744
+[ScenarioLoader] 已加载 2 个场景配置
+[ScenarioLoader] 已加载 2 个场景配置
+[ScenarioLoader] 已加载 2 个场景配置
+[SMS][mock] scene=login phone=19710070888 code=844299
+[SMS][mock] scene=bind phone=19710070888 code=599289
+[ScenarioLoader] 已加载 2 个场景配置
+[SMS][mock] scene=login phone=19578765685 code=527699
+[ScenarioLoader] 已加载 3 个场景配置
+[SMS][mock] scene=login phone=12626831890 code=764032
+[ScenarioLoader] 已加载 3 个场景配置
+[SMS][mock] scene=login phone=11283834903 code=458277
+[SMS][mock] scene=login phone=19738395355 code=241007
+[SMS][mock] scene=login phone=10439598406 code=302067
+[SMS][mock] scene=login phone=15600718684 code=987910
+[SMS][mock] scene=login phone=19909041850 code=901202
+[SMS][mock] scene=login phone=15292806970 code=989497
+[SMS][mock] scene=login phone=15425703143 code=649381
+[SMS][mock] scene=login phone=12596623790 code=607534
+[ScenarioLoader] 已加载 5 个场景配置
+[SMS][mock] scene=login phone=13607331485 code=280859
+[SMS][mock] scene=login phone=15402490120 code=293394
+[SMS][mock] scene=login phone=17987195448 code=475217
+[SMS][mock] scene=login phone=10906648940 code=260867
+[SMS][mock] scene=login phone=11556397188 code=309253
+[SMS][mock] scene=login phone=11394205372 code=955083
+[SMS][mock] scene=login phone=15851398969 code=605887
+[SMS][mock] scene=login phone=10597139645 code=170644
+[SMS][mock] scene=login phone=10273099859 code=446494
+[SMS][mock] scene=login phone=16238033354 code=730760
+[SMS][mock] scene=login phone=18166986732 code=898328
+[SMS][mock] scene=login phone=18902623106 code=196017
+[SMS][mock] scene=login phone=16510854548 code=250369
+[SMS][mock] scene=login phone=13781539817 code=234241
+[SMS][mock] scene=login phone=17362167213 code=751212
+[SMS][mock] scene=login phone=19125222057 code=142988
+[SMS][mock] scene=login phone=16593017165 code=516300
+⚠️ AI 场景生成失败，已切换本地草案兜底: AI 场景结构不完整
+[SMS][mock] scene=login phone=12997983230 code=189228
+[SMS][mock] scene=login phone=17455581138 code=567273
+🔐 已将旧 users.db 中的 License 数据迁移到独立的 licenses.db
+🔐 已将旧 users.db 中的 License 数据迁移到独立的 licenses.db
+🔐 已将 License 签名密钥迁移到 License 库，同库多机共享不再依赖本机 SECRET_KEY
+[SMS][mock] scene=login phone=11511371249 code=627773
+[SMS][mock] scene=login phone=17760397880 code=197057
+[SMS][mock] scene=login phone=19358754050 code=576927
+[SMS][mock] scene=login phone=11044697277 code=642616
+[SMS][mock] scene=login phone=14725094920 code=845164
+[SMS][mock] scene=login phone=15643641787 code=774162
+[SMS][mock] scene=login phone=19973691903 code=526998
+[SMS][mock] scene=login phone=18407681483 code=680381
+[SMS][mock] scene=login phone=10693045491 code=749563
+[SMS][mock] scene=login phone=15482335160 code=925692
+[SMS][mock] scene=login phone=11502111155 code=529628
+生成问题时发生异常: simulated timeout
+[SMS][mock] scene=login phone=18781056175 code=816138
+[SMS][mock] scene=login phone=19792584585 code=532321
+[SMS][mock] scene=login phone=17809084390 code=304632
+[SMS][mock] scene=login phone=12693374791 code=997603
+[SMS][mock] scene=login phone=10537118099 code=704498
+[SMS][mock] scene=login phone=15141303406 code=701778
+[SMS][mock] scene=login phone=12742562089 code=566363
+[SMS][mock] scene=login phone=10333719053 code=804739
+[SMS][mock] scene=login phone=16780869469 code=648785
+[SMS][mock] scene=login phone=16287760218 code=959508
+[SMS][mock] scene=login phone=19728889836 code=480807
+[SMS][mock] scene=login phone=18356718745 code=434141
+[SMS][mock] scene=login phone=14915673289 code=317834
+[SMS][mock] scene=login phone=12922246078 code=369067
+[SMS][mock] scene=login phone=19452095207 code=346578
+[SMS][mock] scene=login phone=14616957583 code=100173
+[SMS][mock] scene=login phone=11335415779 code=168528
+[SMS][mock] scene=login phone=12241473625 code=996866
+[SMS][mock] scene=login phone=14632833499 code=379069
+[SMS][mock] scene=login phone=15131141354 code=149939
+[SMS][mock] scene=login phone=16893851787 code=353731
+[SMS][mock] scene=login phone=16413449717 code=866819
+[SMS][mock] scene=login phone=17840185775 code=618201
+[SMS][mock] scene=login phone=18195662849 code=461000
+[SMS][mock] scene=login phone=11744032826 code=468637
+[SMS][mock] scene=login phone=16261490941 code=645604
+[SMS][mock] scene=login phone=14946673763 code=209667
+[SMS][mock] scene=login phone=13511895897 code=520081
+[SMS][mock] scene=login phone=14765034965 code=637189
+[SMS][mock] scene=login phone=16737631725 code=546554
+[SMS][mock] scene=login phone=18762667569 code=294749
+[SMS][mock] scene=login phone=12289676195 code=255893
+[SMS][mock] scene=login phone=19143996911 code=440005
+[SMS][mock] scene=login phone=17513094666 code=179408
+[SMS][mock] scene=login phone=11807654678 code=792037
+[SMS][mock] scene=login phone=10337981207 code=720551
+[SMS][mock] scene=login phone=17015202158 code=779477
+[SMS][mock] scene=login phone=12910235207 code=506034
+[SMS][mock] scene=login phone=11937019759 code=992283
+[SMS][mock] scene=login phone=15796744486 code=532699
+[SMS][mock] scene=login phone=18466677312 code=317917
+[SMS][mock] scene=login phone=15585127999 code=811157
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store

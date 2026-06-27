@@ -1,0 +1,592 @@
+{
+  "generated_at": "2026-05-18T03:20:13Z",
+  "root_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision",
+  "scenarios_root": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/harness_scenarios",
+  "filters": {
+    "scenario_names": [],
+    "categories": [],
+    "tags": [
+      "stability-local"
+    ]
+  },
+  "repeat": 1,
+  "results": [
+    {
+      "name": "browser-smoke-extended",
+      "category": "browser",
+      "description": "覆盖登录视图、License 门禁、绑定成功与刷新恢复、公开分享只读刷新保持、访谈进行中刷新恢复、报告生成中刷新恢复、报告详情打开与刷新恢复，以及配置中心页签切换的扩展浏览器回归。",
+      "path": "tests/harness_scenarios/browser/browser-smoke-extended.json",
+      "tags": [
+        "browser",
+        "manual",
+        "stability-local",
+        "stability-local-core",
+        "ui"
+      ],
+      "executor": "browser_smoke",
+      "executor_config": {
+        "type": "browser_smoke",
+        "suite": "extended",
+        "allowed_overalls": [
+          "READY"
+        ]
+      },
+      "contract": null,
+      "mission": null,
+      "plan": null,
+      "calibration_samples": [
+        {
+          "name": "license-gate-ui-wording-drift-should-warn",
+          "title": "License 门禁前端轻微文案漂移应判 WARN 而非 FAIL",
+          "category": "browser",
+          "expected_decision": "WARN",
+          "rule": "License 门禁前端如果只是标题、说明文案或按钮文案有轻微调整，但仍保持门禁阻断、绑定入口和退出登录链路，Evaluator 应判 WARN 而不是 FAIL。",
+          "incident": "浏览器扩展回归更容易因前端文案调整而波动，真正需要硬失败的是门禁失效或业务壳提前暴露，而不是措辞替换。",
+          "source_file": "tests/harness_calibration/license-gate-ui-wording-drift-should-warn.json",
+          "source_refs": [
+            "scripts/agent_browser_smoke.py",
+            "scripts/agent_browser_smoke_runner.mjs",
+            "docs/agent/admin-ops.md"
+          ],
+          "signals": [
+            "首页仍停留在 License gate，而不是直接进入业务壳",
+            "绑定 License 入口仍可见，退出登录入口仍可见",
+            "主业务导航不应在无有效 License 时暴露"
+          ],
+          "applies_to": {
+            "scenarios": [
+              "browser-smoke-extended"
+            ],
+            "categories": [
+              "browser"
+            ],
+            "tags": [
+              "browser",
+              "ui"
+            ],
+            "executors": [
+              "browser_smoke"
+            ]
+          }
+        }
+      ],
+      "target": "suite=extended",
+      "status": "PASS",
+      "cases": [],
+      "stats": {
+        "attempts": 1,
+        "pass_attempts": 1,
+        "fail_attempts": 0,
+        "avg_duration_ms": 11729.83,
+        "max_duration_ms": 11729.83,
+        "max_duration_budget_ms": 240000.0,
+        "budget_exceeded": false
+      },
+      "failure_hotspots": [],
+      "highlights": [],
+      "detail": "attempts=1 pass=1 fail=0 suite=extended max_ms=11729.83"
+    },
+    {
+      "name": "stability-failure-degrade",
+      "category": "ops",
+      "description": "覆盖配置缺失、视觉异常、对象存储失败、演示稿下载失败，以及问题/报告链路的关键降级行为。",
+      "path": "tests/harness_scenarios/ops/stability-failure-degrade.json",
+      "tags": [
+        "degrade",
+        "ops",
+        "stability-local",
+        "stability-local-core"
+      ],
+      "executor": "unittest",
+      "executor_config": {
+        "type": "unittest"
+      },
+      "contract": null,
+      "mission": null,
+      "plan": null,
+      "calibration_samples": [],
+      "target": "cases=8",
+      "status": "PASS",
+      "cases": [
+        {
+          "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_wechat_start_returns_503_when_config_incomplete",
+          "label": "微信配置缺失返回明确 503"
+        },
+        {
+          "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_document_upload_image_degrades_when_vision_disabled",
+          "label": "视觉禁用时图片上传降级"
+        },
+        {
+          "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_document_upload_image_degrades_when_vision_api_times_out",
+          "label": "视觉接口超时时图片上传降级"
+        },
+        {
+          "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_document_upload_succeeds_when_object_storage_archive_fails",
+          "label": "对象存储归档失败时保留解析结果"
+        },
+        {
+          "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_refly_generation_keeps_pdf_link_when_download_fails",
+          "label": "演示稿下载失败时保留 PDF 链接"
+        },
+        {
+          "test_id": "tests.test_question_fast_strategy.QuestionFastStrategyTests.test_ai_search_decision_degrades_on_rate_limit_without_retry",
+          "label": "联网搜索决策限流降级"
+        },
+        {
+          "test_id": "tests.test_security_regression.SecurityRegressionTests.test_generate_report_v3_pipeline_falls_back_to_alternate_draft_lane_once",
+          "label": "报告 draft lane 失败回退"
+        },
+        {
+          "test_id": "tests.test_security_regression.SecurityRegressionTests.test_generate_report_v3_pipeline_recovers_from_review_parse_failure_via_repair",
+          "label": "报告 review parse 失败恢复"
+        }
+      ],
+      "stats": {
+        "attempts": 1,
+        "pass_attempts": 1,
+        "fail_attempts": 0,
+        "avg_duration_ms": 1135.5,
+        "max_duration_ms": 1135.5,
+        "max_duration_budget_ms": 240000.0,
+        "budget_exceeded": false
+      },
+      "failure_hotspots": [],
+      "highlights": [
+        "OK"
+      ],
+      "detail": "attempts=1 pass=1 fail=0 cases=8 max_ms=1135.50"
+    },
+    {
+      "name": "stability-idempotency",
+      "category": "ops",
+      "description": "覆盖回答重复提交、报告重复触发、License 重复激活与方案分享重复创建时的幂等边界，避免重复写入、重复排队和脏 sidecar。",
+      "path": "tests/harness_scenarios/ops/stability-idempotency.json",
+      "tags": [
+        "idempotency",
+        "ops",
+        "stability-local",
+        "stability-local-core"
+      ],
+      "executor": "unittest",
+      "executor_config": {
+        "type": "unittest"
+      },
+      "contract": null,
+      "mission": null,
+      "plan": null,
+      "calibration_samples": [],
+      "target": "cases=5",
+      "status": "PASS",
+      "cases": [
+        {
+          "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_submit_answer_is_idempotent_for_immediate_duplicate_payload",
+          "label": "回答重复提交不重复写入"
+        },
+        {
+          "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_generate_report_returns_existing_active_payload_when_retriggered",
+          "label": "报告重复触发复用当前活跃任务"
+        },
+        {
+          "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_reactivating_same_license_keeps_current_binding_stable",
+          "label": "同一 License 重复激活不漂移绑定状态"
+        },
+        {
+          "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_solution_share_creation_is_idempotent_for_same_owner",
+          "label": "方案分享重复创建不生成脏 sidecar"
+        },
+        {
+          "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_ownership_preview_reissue_invalidates_old_token_and_apply_is_single_use",
+          "label": "归属迁移重复 preview / apply 维持单次执行边界"
+        }
+      ],
+      "stats": {
+        "attempts": 1,
+        "pass_attempts": 1,
+        "fail_attempts": 0,
+        "avg_duration_ms": 1273.51,
+        "max_duration_ms": 1273.51,
+        "max_duration_budget_ms": 180000.0,
+        "budget_exceeded": false
+      },
+      "failure_hotspots": [],
+      "highlights": [
+        "OK"
+      ],
+      "detail": "attempts=1 pass=1 fail=0 cases=5 max_ms=1273.51"
+    },
+    {
+      "name": "report-solution-core",
+      "category": "report-solution",
+      "description": "覆盖标准版报告生成、专业版方案页访问和旧报告兼容回退。",
+      "path": "tests/harness_scenarios/report-solution/report-solution-core.json",
+      "tags": [
+        "core",
+        "nightly",
+        "report",
+        "stability-local",
+        "stability-local-core"
+      ],
+      "executor": "unittest",
+      "executor_config": {
+        "type": "unittest"
+      },
+      "contract": null,
+      "mission": null,
+      "plan": null,
+      "calibration_samples": [
+        {
+          "name": "report-solution-wording-drift",
+          "title": "方案页文案漂移应按语义校验，不按逐字文案误判",
+          "category": "report-solution",
+          "expected_decision": "WARN",
+          "rule": "当方案页标题、卡片或指标文案只发生轻微措辞调整时，Evaluator 不应仅因逐字差异判 FAIL；应优先校验稳定语义、权限边界和内部实现词是否泄露。",
+          "incident": "nightly 的 report-solution-preview 曾因固定标题断言过死而误红，后续已改成稳定语义断言。",
+          "source_file": "tests/harness_calibration/report-solution-wording-drift.json",
+          "source_refs": [
+            "tests/test_solution_payload.py",
+            "docs/agent/report-solution.md"
+          ],
+          "signals": [
+            "优先检查 AI工程底座、分层架构、系统闭环、试点决策阶段 等稳定语义",
+            "禁止回流 MLOps、LLMOps、proposal_brief、结构化素材 等内部实现词",
+            "公开分享只读、owner 校验和旧报告 fallback 仍然是硬失败条件"
+          ],
+          "applies_to": {
+            "scenarios": [
+              "report-solution-preview",
+              "report-solution-core"
+            ],
+            "categories": [
+              "report-solution",
+              "workflow"
+            ],
+            "tags": [
+              "report",
+              "workflow"
+            ],
+            "executors": [
+              "workflow",
+              "unittest"
+            ]
+          }
+        }
+      ],
+      "target": "cases=3",
+      "status": "PASS",
+      "cases": [
+        {
+          "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_standard_user_can_generate_balanced_but_cannot_access_solution_appendix_or_presentation",
+          "label": "标准版报告与能力门禁"
+        },
+        {
+          "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_professional_user_can_access_solution_share_appendix_and_presentation_endpoints",
+          "label": "专业版方案页与分享能力"
+        },
+        {
+          "test_id": "tests.test_solution_payload.SolutionPayloadTests.test_build_solution_payload_falls_back_to_legacy_markdown_for_old_report",
+          "label": "方案页旧报告兼容"
+        }
+      ],
+      "stats": {
+        "attempts": 1,
+        "pass_attempts": 1,
+        "fail_attempts": 0,
+        "avg_duration_ms": 723.97,
+        "max_duration_ms": 723.97,
+        "max_duration_budget_ms": 180000.0,
+        "budget_exceeded": false
+      },
+      "failure_hotspots": [],
+      "highlights": [
+        "OK"
+      ],
+      "detail": "attempts=1 pass=1 fail=0 cases=3 max_ms=723.97"
+    },
+    {
+      "name": "access-boundaries",
+      "category": "security",
+      "description": "覆盖匿名写接口、License 门禁和方案页分享只读边界。",
+      "path": "tests/harness_scenarios/security/access-boundaries.json",
+      "tags": [
+        "core",
+        "nightly",
+        "security",
+        "stability-local",
+        "stability-local-core"
+      ],
+      "executor": "unittest",
+      "executor_config": {
+        "type": "unittest"
+      },
+      "contract": null,
+      "mission": null,
+      "plan": null,
+      "calibration_samples": [
+        {
+          "name": "share-readonly-regression-must-fail",
+          "title": "公开分享只读边界回退必须直接判 FAIL",
+          "category": "security",
+          "expected_decision": "FAIL",
+          "rule": "方案页分享如果破坏 owner 校验、公开只读边界或匿名写拦截，Evaluator 必须直接判 FAIL；不能因为页面还能打开或其它权限用例通过而放过。",
+          "incident": "分享链路经常混合 owner 访问、公开 token 和匿名路径，边界一旦回退会直接影响外部可见页面，因此应被视为硬失败项。",
+          "source_file": "tests/harness_calibration/share-readonly-regression-must-fail.json",
+          "source_refs": [
+            "tests/test_security_regression.py",
+            "docs/agent/report-solution.md"
+          ],
+          "signals": [
+            "owner 访问必须继续校验 token 与 owner_user_id",
+            "公开分享只允许匿名只读，不能放开写接口",
+            "匿名写接口必须持续拦截"
+          ],
+          "applies_to": {
+            "scenarios": [
+              "access-boundaries",
+              "asset-ownership-boundaries"
+            ],
+            "categories": [
+              "security",
+              "tenant"
+            ],
+            "tags": [
+              "security",
+              "ownership",
+              "tenant"
+            ],
+            "executors": [
+              "unittest"
+            ]
+          }
+        }
+      ],
+      "target": "cases=3",
+      "status": "PASS",
+      "cases": [
+        {
+          "test_id": "tests.test_security_regression.SecurityRegressionTests.test_anonymous_write_endpoints_are_blocked",
+          "label": "匿名写接口拦截"
+        },
+        {
+          "test_id": "tests.test_security_regression.SecurityRegressionTests.test_license_gate_blocks_business_routes_but_allows_auth_and_license_endpoints",
+          "label": "License 门禁边界"
+        },
+        {
+          "test_id": "tests.test_security_regression.SecurityRegressionTests.test_report_solution_share_link_requires_owner_and_allows_public_readonly_access",
+          "label": "方案页分享只读边界"
+        }
+      ],
+      "stats": {
+        "attempts": 1,
+        "pass_attempts": 1,
+        "fail_attempts": 0,
+        "avg_duration_ms": 757.8,
+        "max_duration_ms": 757.8,
+        "max_duration_budget_ms": 150000.0,
+        "budget_exceeded": false
+      },
+      "failure_hotspots": [],
+      "highlights": [
+        "OK"
+      ],
+      "detail": "attempts=1 pass=1 fail=0 cases=3 max_ms=757.80"
+    },
+    {
+      "name": "asset-ownership-boundaries",
+      "category": "tenant",
+      "description": "覆盖方案分享 owner 约束、账号合并后的资产归属迁移，以及导出资产写入对象存储元数据的 owner/scope 边界。",
+      "path": "tests/harness_scenarios/tenant/asset-ownership-boundaries.json",
+      "tags": [
+        "manual",
+        "ownership",
+        "stability-local",
+        "stability-local-core",
+        "tenant"
+      ],
+      "executor": "unittest",
+      "executor_config": {
+        "type": "unittest"
+      },
+      "contract": null,
+      "mission": null,
+      "plan": null,
+      "calibration_samples": [
+        {
+          "name": "share-readonly-regression-must-fail",
+          "title": "公开分享只读边界回退必须直接判 FAIL",
+          "category": "security",
+          "expected_decision": "FAIL",
+          "rule": "方案页分享如果破坏 owner 校验、公开只读边界或匿名写拦截，Evaluator 必须直接判 FAIL；不能因为页面还能打开或其它权限用例通过而放过。",
+          "incident": "分享链路经常混合 owner 访问、公开 token 和匿名路径，边界一旦回退会直接影响外部可见页面，因此应被视为硬失败项。",
+          "source_file": "tests/harness_calibration/share-readonly-regression-must-fail.json",
+          "source_refs": [
+            "tests/test_security_regression.py",
+            "docs/agent/report-solution.md"
+          ],
+          "signals": [
+            "owner 访问必须继续校验 token 与 owner_user_id",
+            "公开分享只允许匿名只读，不能放开写接口",
+            "匿名写接口必须持续拦截"
+          ],
+          "applies_to": {
+            "scenarios": [
+              "access-boundaries",
+              "asset-ownership-boundaries"
+            ],
+            "categories": [
+              "security",
+              "tenant"
+            ],
+            "tags": [
+              "security",
+              "ownership",
+              "tenant"
+            ],
+            "executors": [
+              "unittest"
+            ]
+          }
+        }
+      ],
+      "target": "cases=3",
+      "status": "PASS",
+      "cases": [
+        {
+          "test_id": "tests.test_security_regression.SecurityRegressionTests.test_report_solution_share_link_requires_owner_and_allows_public_readonly_access",
+          "label": "方案分享 owner 与公开只读边界"
+        },
+        {
+          "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_bind_phone_conflict_requires_preview_apply_and_admin_rollback",
+          "label": "账号合并资产归属迁移与回滚"
+        },
+        {
+          "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_export_asset_permission_follows_current_level",
+          "label": "导出资产对象存储元数据边界"
+        }
+      ],
+      "stats": {
+        "attempts": 1,
+        "pass_attempts": 1,
+        "fail_attempts": 0,
+        "avg_duration_ms": 1188.86,
+        "max_duration_ms": 1188.86,
+        "max_duration_budget_ms": 240000.0,
+        "budget_exceeded": false
+      },
+      "failure_hotspots": [],
+      "highlights": [
+        "OK"
+      ],
+      "detail": "attempts=1 pass=1 fail=0 cases=3 max_ms=1188.86"
+    }
+  ],
+  "summary": {
+    "PASS": 6,
+    "FLAKY": 0,
+    "FAIL": 0,
+    "budget_exceeded": 0,
+    "scenarios_total": 6,
+    "attempts_total": 6
+  },
+  "overall": "HEALTHY",
+  "category_summary": {
+    "browser": {
+      "PASS": 1,
+      "FLAKY": 0,
+      "FAIL": 0,
+      "budget_exceeded": 0,
+      "scenarios": 1
+    },
+    "ops": {
+      "PASS": 2,
+      "FLAKY": 0,
+      "FAIL": 0,
+      "budget_exceeded": 0,
+      "scenarios": 2
+    },
+    "report-solution": {
+      "PASS": 1,
+      "FLAKY": 0,
+      "FAIL": 0,
+      "budget_exceeded": 0,
+      "scenarios": 1
+    },
+    "security": {
+      "PASS": 1,
+      "FLAKY": 0,
+      "FAIL": 0,
+      "budget_exceeded": 0,
+      "scenarios": 1
+    },
+    "tenant": {
+      "PASS": 1,
+      "FLAKY": 0,
+      "FAIL": 0,
+      "budget_exceeded": 0,
+      "scenarios": 1
+    }
+  },
+  "failure_hotspots": [],
+  "slowest_scenarios": [
+    {
+      "name": "browser-smoke-extended",
+      "category": "browser",
+      "status": "PASS",
+      "max_duration_ms": 11729.83,
+      "avg_duration_ms": 11729.83
+    },
+    {
+      "name": "stability-idempotency",
+      "category": "ops",
+      "status": "PASS",
+      "max_duration_ms": 1273.51,
+      "avg_duration_ms": 1273.51
+    },
+    {
+      "name": "asset-ownership-boundaries",
+      "category": "tenant",
+      "status": "PASS",
+      "max_duration_ms": 1188.86,
+      "avg_duration_ms": 1188.86
+    },
+    {
+      "name": "stability-failure-degrade",
+      "category": "ops",
+      "status": "PASS",
+      "max_duration_ms": 1135.5,
+      "avg_duration_ms": 1135.5
+    },
+    {
+      "name": "access-boundaries",
+      "category": "security",
+      "status": "PASS",
+      "max_duration_ms": 757.8,
+      "avg_duration_ms": 757.8
+    }
+  ],
+  "flake_scenarios": [],
+  "calibration_matches": [
+    "license-gate-ui-wording-drift-should-warn",
+    "report-solution-wording-drift",
+    "share-readonly-regression-must-fail"
+  ],
+  "metadata": {
+    "generated_at": "2026-05-18T03:20:13Z",
+    "root_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision",
+    "run_name": "20260518T032013Z-pid8470",
+    "base_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/eval",
+    "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/eval/20260518T032013Z-pid8470",
+    "git": {
+      "commit": "a44920bd27bd0ddbfe7b4c2474fc8e1145d3c18d",
+      "short_commit": "a44920b",
+      "branch": "main",
+      "is_dirty": true,
+      "dirty_files_count": 4,
+      "dirty_files_preview": [
+        "M tests/test_api_comprehensive.py",
+        " M tests/test_security_regression.py",
+        " M tests/test_solution_payload.py",
+        "?? artifacts/release-confidence/"
+      ]
+    }
+  }
+}

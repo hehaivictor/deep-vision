@@ -1,0 +1,40 @@
+DeepVision agent harness
+仓库目录: /Users/hehai/Documents/开目软件/Agents/project/DeepVision
+
+[WARN] doctor: profile=auto env=/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/.env.local PASS=11 WARN=2 FAIL=0
+        command: python3 scripts/agent_doctor.py --profile auto
+        - SMS_PROVIDER: 当前使用 mock 短信，仅适合本地调试或演示环境。
+        - License 开关: 当前未启用登录后 License 强制校验。
+[WARN] observe: recent=5 overall=DEGRADED
+        command: python3 scripts/agent_observe.py --profile auto --recent 5
+        - source=runtime_metrics_store total=504 avg_ms=15853.9 recent_failures=5
+        - items=0 latest=none
+        - runs=20 latest=none blocked=3 latest_ms=44506.25
+        - latest=7 problem=0 warning=3 harness_diff=UNCHANGED evaluator_diff=CHANGED task=none blocker=browser_smoke: suite=extended scena… slow=browser-smoke-live-minimal streak=none blocker_repeat=browser_smoke: suite=ex…x2 regression=none release_gate=PASS:44506.25
+        - task=none blocker=browser_smoke: suite=extended scena… slow=browser-smoke-live-minimal problem_kinds=0 warning_kinds=3 streak=none blocker_repeat=browser_smoke: suite=ex…x2 regression=none release_gate=PASS:44506.25 replay=python3 scripts/agent_browser_smoke.py --suite extended
+        - source=runtime_metrics_store initialized=yes total_ms=10.00 completed_at=2026-05-13T02:23:06Z
+[PASS] static_guardrails: rules=13 fail=0
+        command: python3 scripts/agent_static_guardrails.py
+        - admin_routes_require_admin: checked=32 routes missing=0
+        - 所有高风险管理/运维路由都带 require_admin。
+        - license_admin_routes_require_valid_license: checked=15 routes missing=0
+        - 所有 License 管理路由都带 require_valid_license。
+        - solution_view_guard: function=get_report_solution
+        - 已检测到登录、能力校验和 owner 约束。
+[PASS] guardrails: suite=extended cases=15
+        command: /Users/hehai/.local/bin/uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with psycopg[binary] --with boto3 python3 -m unittest -q tests.test_security_regression.SecurityRegressionTests.test_anonymous_write_endpoints_are_blocked tests.test_security_regression.SecurityRegressionTests.test_license_gate_blocks_business_routes_but_allows_auth_and_license_endpoints tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_license_routes_require_valid_license_even_when_gate_disabled tests.test_api_comprehensive.ComprehensiveApiTests.test_license_activation_and_status_summary tests.test_api_comprehensive.ComprehensiveApiTests.test_standard_user_can_generate_balanced_but_cannot_access_solution_appendix_or_presentation tests.test_security_regression.SecurityRegressionTests.test_report_solution_endpoint_requires_auth tests.test_security_regression.SecurityRegressionTests.test_report_solution_endpoint_enforces_owner tests.test_security_regression.SecurityRegressionTests.test_report_solution_share_link_requires_owner_and_allows_public_readonly_access tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_ownership_migration_endpoints_cover_search_preview_apply_and_rollback tests.test_api_comprehensive.ComprehensiveApiTests.test_professional_user_can_access_solution_share_appendix_and_presentation_endpoints tests.test_security_regression.SecurityRegressionTests.test_deleted_reports_sidecar_keeps_all_entries_under_parallel_updates tests.test_security_regression.SecurityRegressionTests.test_solution_share_sidecar_keeps_all_entries_under_parallel_updates tests.test_security_regression.SecurityRegressionTests.test_deleted_docs_sidecar_keeps_all_entries_under_parallel_updates tests.test_security_regression.SecurityRegressionTests.test_presentation_map_remains_valid_under_parallel_updates tests.test_security_regression.SecurityRegressionTests.test_build_solution_payload_strips_html_from_new_fields
+        - OK
+[PASS] smoke: suite=extended cases=11
+        command: /Users/hehai/.local/bin/uv run --with flask --with flask-cors --with anthropic --with requests --with reportlab --with pillow --with jdcloud-sdk --with psycopg[binary] --with boto3 python3 -m unittest -q tests.test_api_comprehensive.ComprehensiveApiTests.test_auth_lifecycle tests.test_api_comprehensive.ComprehensiveApiTests.test_license_activation_and_status_summary tests.test_api_comprehensive.ComprehensiveApiTests.test_standard_user_can_generate_balanced_but_cannot_access_solution_appendix_or_presentation tests.test_api_comprehensive.ComprehensiveApiTests.test_professional_user_can_access_solution_share_appendix_and_presentation_endpoints tests.test_solution_payload.SolutionPayloadTests.test_build_solution_payload_falls_back_to_legacy_markdown_for_old_report tests.test_security_regression.SecurityRegressionTests.test_anonymous_write_endpoints_are_blocked tests.test_security_regression.SecurityRegressionTests.test_report_solution_share_link_requires_owner_and_allows_public_readonly_access tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_ownership_migration_endpoints_cover_search_preview_apply_and_rollback tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_config_center_endpoints_cover_catalog_and_file_persistence tests.test_security_regression.SecurityRegressionTests.test_ops_endpoints_require_admin_role tests.test_scripts_comprehensive.ComprehensiveScriptTests.test_replay_preflight_diagnostics_simulates_trigger_and_throttle
+        - OK
+[PASS] browser_smoke: suite=live-minimal scenarios=1 fail=0
+        command: python3 scripts/agent_browser_smoke.py --suite live-minimal
+        - 真实后端登录与 License 绑定: 真实后端下已完成验证码登录与 License 绑定，手机号=13800138000
+
+Summary: PASS=4 WARN=2 FAIL=0 SKIP=0
+Overall: READY_WITH_WARNINGS
+Artifacts: /Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705
+Latest: /Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/latest.json
+Progress: /Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705/progress.md
+Failure Summary: /Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705/failure-summary.md
+Handoff: /Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705/handoff.json

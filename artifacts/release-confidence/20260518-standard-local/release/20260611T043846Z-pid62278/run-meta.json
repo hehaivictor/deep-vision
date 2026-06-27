@@ -1,0 +1,18 @@
+{
+  "generated_at": "2026-06-11T04:38:46Z",
+  "root_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision",
+  "run_name": "20260611T043846Z-pid62278",
+  "base_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release",
+  "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260611T043846Z-pid62278",
+  "git": {
+    "commit": "e5618f7279c7c52379d16a276e57aeb542754685",
+    "short_commit": "e5618f7",
+    "branch": "codex/intus-optimization-backport",
+    "is_dirty": true,
+    "dirty_files_count": 2,
+    "dirty_files_preview": [
+      "?? artifacts/intus-backport-audit/",
+      "?? artifacts/release-confidence/"
+    ]
+  }
+}

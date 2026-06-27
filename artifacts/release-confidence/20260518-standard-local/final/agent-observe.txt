@@ -1,0 +1,21 @@
+DeepVision agent observe
+仓库目录: /Users/hehai/Documents/开目软件/Agents/project/DeepVision
+
+[PASS] env: profile=auto env=web/.env.local source=auto:local keys=66
+[PASS] startup_snapshot: source=runtime_metrics_store initialized=yes total_ms=10.00 completed_at=2026-05-13T02:23:06Z
+[PASS] db_health: auth=33 users license=1004 meta_schema=ready
+[PASS] metrics: source=runtime_metrics_store total=504 avg_ms=15853.9 recent_failures=5
+[PASS] summaries: source=summary_cache_store cached=0 size_kb=0.0
+[PASS] config_sources: env_source=auto:local env=web/.env.local sms=on(mock) ai=on
+[WARN] ownership_history: items=0 latest=none
+[PASS] cloud_import_backups: items=3 latest=external-import-20260402-190328
+[PASS] recent_operations: recent_files=5 latest=data/operations/real-report-runtime-benchmark-20260506-balanced-release-default.json
+[PASS] harness_runs: runs=20 latest=none blocked=3 latest_ms=44506.25
+[WARN] history_trends: latest=7 problem=0 warning=3 harness_diff=UNCHANGED evaluator_diff=CHANGED task=none blocker=browser_smoke: suite=extended scena… slow=browser-smoke-live-minimal streak=none blocker_repeat=browser_smoke: suite=ex…x2 regression=none release_gate=PASS:44506.25
+[WARN] diagnostic_panel: task=none blocker=browser_smoke: suite=extended scena… slow=browser-smoke-live-minimal problem_kinds=0 warning_kinds=3 streak=none blocker_repeat=browser_smoke: suite=ex…x2 regression=none release_gate=PASS:44506.25 replay=python3 scripts/agent_browser_smoke.py --suite extended
+        - 定位 Top blocker: python3 scripts/agent_browser_smoke.py --suite extended
+        - 定位 Top blocker: python3 scripts/agent_scenario_scaffold.py --source harness --run-dir /Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/browser-smoke/20260407T183418Z-pid67370
+        - 复跑最近最慢场景: python3 scripts/agent_eval.py --scenario browser-smoke-live-minimal --artifact-dir artifacts/harness-eval
+
+Summary: PASS=9 WARN=3 FAIL=0
+Overall: DEGRADED

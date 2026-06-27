@@ -1,0 +1,109 @@
+{
+  "name": "guardrails",
+  "suite": "extended",
+  "description": "在 minimal 基础上补 sidecar 并发与 HTML 清洗 guardrail",
+  "command": [
+    "/Users/hehai/.local/bin/uv",
+    "run",
+    "--with",
+    "flask",
+    "--with",
+    "flask-cors",
+    "--with",
+    "anthropic",
+    "--with",
+    "requests",
+    "--with",
+    "reportlab",
+    "--with",
+    "pillow",
+    "--with",
+    "jdcloud-sdk",
+    "--with",
+    "psycopg[binary]",
+    "--with",
+    "boto3",
+    "python3",
+    "-m",
+    "unittest",
+    "-q",
+    "tests.test_security_regression.SecurityRegressionTests.test_anonymous_write_endpoints_are_blocked",
+    "tests.test_security_regression.SecurityRegressionTests.test_license_gate_blocks_business_routes_but_allows_auth_and_license_endpoints",
+    "tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_license_routes_require_valid_license_even_when_gate_disabled",
+    "tests.test_api_comprehensive.ComprehensiveApiTests.test_license_activation_and_status_summary",
+    "tests.test_api_comprehensive.ComprehensiveApiTests.test_standard_user_can_generate_balanced_but_cannot_access_solution_appendix_or_presentation",
+    "tests.test_security_regression.SecurityRegressionTests.test_report_solution_endpoint_requires_auth",
+    "tests.test_security_regression.SecurityRegressionTests.test_report_solution_endpoint_enforces_owner",
+    "tests.test_security_regression.SecurityRegressionTests.test_report_solution_share_link_requires_owner_and_allows_public_readonly_access",
+    "tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_ownership_migration_endpoints_cover_search_preview_apply_and_rollback",
+    "tests.test_api_comprehensive.ComprehensiveApiTests.test_professional_user_can_access_solution_share_appendix_and_presentation_endpoints",
+    "tests.test_security_regression.SecurityRegressionTests.test_deleted_reports_sidecar_keeps_all_entries_under_parallel_updates",
+    "tests.test_security_regression.SecurityRegressionTests.test_solution_share_sidecar_keeps_all_entries_under_parallel_updates",
+    "tests.test_security_regression.SecurityRegressionTests.test_deleted_docs_sidecar_keeps_all_entries_under_parallel_updates",
+    "tests.test_security_regression.SecurityRegressionTests.test_presentation_map_remains_valid_under_parallel_updates",
+    "tests.test_security_regression.SecurityRegressionTests.test_build_solution_payload_strips_html_from_new_fields"
+  ],
+  "returncode": 0,
+  "cases": [
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_anonymous_write_endpoints_are_blocked",
+      "label": "匿名写接口必须被拦截"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_license_gate_blocks_business_routes_but_allows_auth_and_license_endpoints",
+      "label": "License 门禁必须阻断业务写链路"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_license_routes_require_valid_license_even_when_gate_disabled",
+      "label": "管理员接口仍需有效 License"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_license_activation_and_status_summary",
+      "label": "License 激活状态必须一致"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_standard_user_can_generate_balanced_but_cannot_access_solution_appendix_or_presentation",
+      "label": "标准版能力边界必须收紧"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_report_solution_endpoint_requires_auth",
+      "label": "方案页必须要求登录"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_report_solution_endpoint_enforces_owner",
+      "label": "方案页必须校验 owner"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_report_solution_share_link_requires_owner_and_allows_public_readonly_access",
+      "label": "方案分享必须只读且受 owner 保护"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_admin_ownership_migration_endpoints_cover_search_preview_apply_and_rollback",
+      "label": "归属迁移必须支持 preview/apply/rollback"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_professional_user_can_access_solution_share_appendix_and_presentation_endpoints",
+      "label": "专业版能力必须完整开放"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_deleted_reports_sidecar_keeps_all_entries_under_parallel_updates",
+      "label": "删除报告 sidecar 并发更新不丢数据"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_solution_share_sidecar_keeps_all_entries_under_parallel_updates",
+      "label": "方案分享 sidecar 并发更新不丢数据"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_deleted_docs_sidecar_keeps_all_entries_under_parallel_updates",
+      "label": "删除文档 sidecar 并发更新不丢数据"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_presentation_map_remains_valid_under_parallel_updates",
+      "label": "演示稿映射并发更新保持有效"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_build_solution_payload_strips_html_from_new_fields",
+      "label": "方案页新字段必须做 HTML 清洗"
+    }
+  ]
+}

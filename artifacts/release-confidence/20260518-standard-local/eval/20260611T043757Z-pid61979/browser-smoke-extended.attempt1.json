@@ -1,0 +1,16 @@
+{
+  "attempt": 1,
+  "executor": "browser_smoke",
+  "status": "PASS",
+  "returncode": 0,
+  "duration_ms": 10792.26,
+  "command": [
+    "python3",
+    "scripts/agent_browser_smoke.py",
+    "--suite",
+    "extended"
+  ],
+  "failed_tests": [],
+  "highlights": [],
+  "executor_overall": "READY"
+}

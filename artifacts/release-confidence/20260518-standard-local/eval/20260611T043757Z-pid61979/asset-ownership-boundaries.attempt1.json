@@ -1,0 +1,41 @@
+{
+  "attempt": 1,
+  "executor": "unittest",
+  "status": "PASS",
+  "returncode": 0,
+  "duration_ms": 1159.48,
+  "command": [
+    "/Users/hehai/.local/bin/uv",
+    "run",
+    "--with",
+    "flask",
+    "--with",
+    "flask-cors",
+    "--with",
+    "anthropic",
+    "--with",
+    "requests",
+    "--with",
+    "reportlab",
+    "--with",
+    "pillow",
+    "--with",
+    "jdcloud-sdk",
+    "--with",
+    "psycopg[binary]",
+    "--with",
+    "boto3",
+    "python3",
+    "-m",
+    "unittest",
+    "-q",
+    "tests.test_security_regression.SecurityRegressionTests.test_report_solution_share_link_requires_owner_and_allows_public_readonly_access",
+    "tests.test_api_comprehensive.ComprehensiveApiTests.test_bind_phone_conflict_requires_preview_apply_and_admin_rollback",
+    "tests.test_api_comprehensive.ComprehensiveApiTests.test_export_asset_permission_follows_current_level"
+  ],
+  "failed_tests": [],
+  "highlights": [
+    "OK"
+  ],
+  "executor_overall": "PASS"
+}

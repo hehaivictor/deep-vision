@@ -1,0 +1,61 @@
+# DeepVision Harness Ops
+
+> 生成时间：2026-05-18T03:09:14Z
+
+## 总览
+
+- overall：`ATTENTION_REQUIRED`
+- 当前阶段：`phase6`
+- 当前优先项：`phase6 已完成，待新阶段计划`
+- phase 台账：`docs/agent/harness-progress-phase6.md`
+
+## 覆盖率
+
+- task：`8`
+- planner：`8/8`
+- mission：`8/8`
+- 高风险 contract：`5/5`
+- calibration：`6`
+- evaluator 场景：`19`
+- AGENTS 入口：`6`
+
+## 园丁状态
+
+- overall：`HEALTHY`
+- summary：`PASS=6 WARN=0 FAIL=0`
+
+## 最新运行
+
+- `ci-agent-smoke`: overall=`READY` | generated_at=`2026-04-08T03:32:38Z` | duration_ms=`0.00` | latest=`artifacts/ci/agent-smoke/latest.json`
+- `ci-guardrails`: overall=`READY` | generated_at=`2026-04-08T03:32:38Z` | duration_ms=`0.00` | latest=`artifacts/ci/guardrails/latest.json`
+- `ci-browser-smoke`: overall=`READY` | generated_at=`2026-04-08T02:18:31Z` | duration_ms=`0.00` | latest=`artifacts/ci/browser-smoke/latest.json`
+- `harness-stability-core`: overall=`READY_WITH_WARNINGS` | generated_at=`2026-04-10T10:07:31Z` | duration_ms=`0.00` | latest=`artifacts/harness-runs/stability-local/core-profile-check/latest.json`
+- `harness-stability-release`: overall=`READY_WITH_WARNINGS` | generated_at=`2026-04-10T17:17:14Z` | duration_ms=`44506.25` | latest=`artifacts/harness-runs/stability-local/release-s6-check/latest.json`
+
+## 漂移摘要
+
+- `harness`: overall=`UNCHANGED` | changed_results=`0`
+- `evaluator`: overall=`CHANGED` | changed_results=`7`
+- `ci-browser-smoke`: overall=`UNCHANGED` | changed_results=`0`
+
+## 风险提示
+
+- WARN: harness-stability-core: overall=READY_WITH_WARNINGS
+- WARN: harness-stability-release: overall=READY_WITH_WARNINGS duration_ms=44506.25
+
+## 稳定性门槛
+
+- `stability-local-release` WARN：`1200000.00ms`
+- `stability-local-release` FAIL：`1440000.00ms`
+
+## 覆盖缺口
+
+- 当前 task 契约覆盖无缺口。
+
+## 推荐入口
+
+- `python3 scripts/agent_ops.py status`
+- `python3 scripts/agent_ops.py task-gap`
+- `python3 scripts/agent_ops.py latest-runs`
+- `python3 scripts/agent_doc_gardener.py`
+- `python3 scripts/agent_heartbeat.py`

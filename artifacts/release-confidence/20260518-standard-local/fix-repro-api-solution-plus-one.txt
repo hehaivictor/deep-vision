@@ -1,0 +1,240 @@
+./Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:369: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now_iso = datetime.utcnow().isoformat()
+/Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:2517: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now_iso = datetime.utcnow().isoformat()
+............../Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:2104: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now_iso = datetime.utcnow().isoformat()
+................................/Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:291: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().replace(microsecond=0)
+....../Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:1110: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().replace(microsecond=0).isoformat()
+./Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:1254: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().replace(microsecond=0).isoformat()
+..................................................................................................E
+======================================================================
+ERROR: test_agent_harness_can_append_browser_smoke_stage (tests.test_scripts_comprehensive.ComprehensiveScriptTests.test_agent_harness_can_append_browser_smoke_stage)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_scripts_comprehensive.py", line 3252, in test_agent_harness_can_append_browser_smoke_stage
+    payload = json.loads(stdout.getvalue())
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/hehai/.local/share/uv/python/cpython-3.12.11-macos-aarch64-none/lib/python3.12/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/hehai/.local/share/uv/python/cpython-3.12.11-macos-aarch64-none/lib/python3.12/json/decoder.py", line 338, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/hehai/.local/share/uv/python/cpython-3.12.11-macos-aarch64-none/lib/python3.12/json/decoder.py", line 356, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+
+----------------------------------------------------------------------
+Ran 153 tests in 13.123s
+
+FAILED (errors=1)
+✅ 配置文件加载成功 (web.config)
+⚠️  未配置 SECRET_KEY，开发模式使用固定默认会话密钥
+[ScenarioLoader] 已加载 8 个场景配置
+🔐 已为 License 库初始化共享签名密钥
+[ScenarioLoader] 已加载 0 个场景配置
+启动初始化完成：reason=first_request_fallback，total=62.0ms，auth_db=0.5ms，license_db=0.4ms，meta_index_schema=61.1ms
+[SMS][mock] scene=login phone=13578370847 code=801541
+[SMS][mock] scene=login phone=14311815830 code=770651
+[ScenarioLoader] 已加载 1 个场景配置
+[SMS][mock] scene=login phone=15917411192 code=772892
+🔐 已为 License 库初始化共享签名密钥
+[SMS][mock] scene=login phone=18053484575 code=759279
+[SMS][mock] scene=login phone=12728661845 code=106609
+[SMS][mock] scene=login phone=17178027934 code=593384
+[SMS][mock] scene=login phone=10019854017 code=666919
+[SMS][mock] scene=login phone=11609738619 code=793989
+[SMS][mock] scene=login phone=17793690289 code=347090
+[SMS][mock] scene=login phone=17741379550 code=429287
+[SMS][mock] scene=login phone=16267206707 code=596392
+[SMS][mock] scene=login phone=17443785346 code=335828
+[ScenarioLoader] 已加载 1 个场景配置
+[ScenarioLoader] 已加载 1 个场景配置
+[SMS][mock] scene=login phone=13047361437 code=915092
+[SMS][mock] scene=login phone=12603480785 code=986246
+[ScenarioLoader] 已加载 1 个场景配置
+[SMS][mock] scene=login phone=17398131258 code=636549
+[SMS][mock] scene=login phone=11250077891 code=251869
+[SMS][mock] scene=login phone=18655303553 code=898934
+[SMS][mock] scene=login phone=16824232042 code=160305
+[SMS][mock] scene=login phone=10693518197 code=249320
+[SMS][mock] scene=login phone=10693518197 code=310423
+[SMS][mock] scene=login phone=15793971685 code=839640
+[SMS][mock] scene=login phone=13777095294 code=172472
+[SMS][mock] scene=login phone=14400090653 code=522805
+[SMS][mock] scene=bind phone=14400090653 code=294673
+[ScenarioLoader] 已加载 2 个场景配置
+[ScenarioLoader] 已加载 2 个场景配置
+[ScenarioLoader] 已加载 2 个场景配置
+[SMS][mock] scene=login phone=15266685972 code=559605
+[SMS][mock] scene=bind phone=15266685972 code=784864
+[ScenarioLoader] 已加载 2 个场景配置
+[SMS][mock] scene=login phone=14905888532 code=583919
+[ScenarioLoader] 已加载 3 个场景配置
+[SMS][mock] scene=login phone=16838995482 code=738050
+[ScenarioLoader] 已加载 3 个场景配置
+[SMS][mock] scene=login phone=10569873907 code=154970
+[SMS][mock] scene=login phone=18634561586 code=690305
+[SMS][mock] scene=login phone=14751779653 code=926190
+[SMS][mock] scene=login phone=13130665316 code=373907
+[SMS][mock] scene=login phone=18087557297 code=671846
+[SMS][mock] scene=login phone=18780746026 code=105124
+[SMS][mock] scene=login phone=11228299183 code=270344
+[SMS][mock] scene=login phone=19732106553 code=549526
+[ScenarioLoader] 已加载 5 个场景配置
+[SMS][mock] scene=login phone=17999097399 code=445168
+[SMS][mock] scene=login phone=16296168955 code=664905
+[SMS][mock] scene=login phone=13716542372 code=406248
+[SMS][mock] scene=login phone=19996128099 code=879993
+[SMS][mock] scene=login phone=15352719026 code=658174
+[SMS][mock] scene=login phone=13979797286 code=114933
+[SMS][mock] scene=login phone=15120386761 code=519274
+[SMS][mock] scene=login phone=13306443403 code=606719
+[SMS][mock] scene=login phone=16001716702 code=114892
+[SMS][mock] scene=login phone=12719255497 code=403454
+[SMS][mock] scene=login phone=19473570681 code=134729
+[SMS][mock] scene=login phone=15053566190 code=695776
+[SMS][mock] scene=login phone=18947401359 code=599019
+[SMS][mock] scene=login phone=12614791447 code=646923
+[SMS][mock] scene=login phone=13085017335 code=274500
+[SMS][mock] scene=login phone=11661382421 code=708460
+[SMS][mock] scene=login phone=16497555309 code=732484
+⚠️ AI 场景生成失败，已切换本地草案兜底: AI 场景结构不完整
+[SMS][mock] scene=login phone=12022620855 code=182466
+[SMS][mock] scene=login phone=12988880260 code=642169
+🔐 已将旧 users.db 中的 License 数据迁移到独立的 licenses.db
+🔐 已将旧 users.db 中的 License 数据迁移到独立的 licenses.db
+🔐 已将 License 签名密钥迁移到 License 库，同库多机共享不再依赖本机 SECRET_KEY
+[SMS][mock] scene=login phone=13394882924 code=919192
+[SMS][mock] scene=login phone=15163006914 code=543059
+[SMS][mock] scene=login phone=10467285459 code=697653
+[SMS][mock] scene=login phone=19010354189 code=523880
+[SMS][mock] scene=login phone=12026647432 code=891730
+[SMS][mock] scene=login phone=10542774595 code=406794
+[SMS][mock] scene=login phone=11866403430 code=275554
+[SMS][mock] scene=login phone=11714695834 code=963127
+[SMS][mock] scene=login phone=16933279881 code=149047
+[SMS][mock] scene=login phone=10158836524 code=101162
+[SMS][mock] scene=login phone=12633828299 code=395396
+生成问题时发生异常: simulated timeout
+[SMS][mock] scene=login phone=11247145897 code=488339
+[SMS][mock] scene=login phone=16876410717 code=411056
+[SMS][mock] scene=login phone=17712170907 code=701902
+[SMS][mock] scene=login phone=19929263194 code=599769
+[SMS][mock] scene=login phone=16654417384 code=248142
+[SMS][mock] scene=login phone=16493009224 code=268079
+[SMS][mock] scene=login phone=17377751692 code=983138
+[SMS][mock] scene=login phone=11123187499 code=211488
+[SMS][mock] scene=login phone=14607408049 code=147833
+[SMS][mock] scene=login phone=12746560269 code=257579
+[SMS][mock] scene=login phone=10580522146 code=385713
+[SMS][mock] scene=login phone=13762761162 code=437793
+[SMS][mock] scene=login phone=15715478538 code=445884
+[SMS][mock] scene=login phone=11984098017 code=326871
+[SMS][mock] scene=login phone=12407566435 code=595644
+[SMS][mock] scene=login phone=16851209743 code=453488
+[SMS][mock] scene=login phone=15667273123 code=310875
+[SMS][mock] scene=login phone=17786983083 code=753063
+[SMS][mock] scene=login phone=11798305000 code=533763
+[SMS][mock] scene=login phone=17223970852 code=361418
+[SMS][mock] scene=login phone=18342597696 code=853466
+[SMS][mock] scene=login phone=15215480672 code=994175
+[SMS][mock] scene=login phone=12789095136 code=741951
+[SMS][mock] scene=login phone=15031329528 code=566799
+[SMS][mock] scene=login phone=18445894857 code=433248
+[SMS][mock] scene=login phone=18598427842 code=593818
+[SMS][mock] scene=login phone=19531044096 code=794396
+[SMS][mock] scene=login phone=14727813549 code=815539
+[SMS][mock] scene=login phone=16772582105 code=416429
+[SMS][mock] scene=login phone=14881069712 code=544055
+[SMS][mock] scene=login phone=19157396017 code=457273
+[SMS][mock] scene=login phone=18713618824 code=781778
+[SMS][mock] scene=login phone=11746828963 code=210950
+[SMS][mock] scene=login phone=18322699772 code=986995
+[SMS][mock] scene=login phone=17824651832 code=629104
+[SMS][mock] scene=login phone=17515466304 code=726047
+[SMS][mock] scene=login phone=19011387836 code=335532
+[SMS][mock] scene=login phone=14880061979 code=972219
+[SMS][mock] scene=login phone=10034451390 code=301942
+[SMS][mock] scene=login phone=10890462390 code=235809
+[SMS][mock] scene=login phone=19289900638 code=136873
+[SMS][mock] scene=login phone=11279007639 code=899906
+✅ 配置文件加载成功 (web.config)
+⚠️  未配置 SECRET_KEY，开发模式使用固定默认会话密钥
+✅ 已迁移会话主数据到 session_store: 1
+✅ 已迁移 site-config.js 到 site_config_store
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=final-stage-upgrade.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=delivery-fast.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=delivery-hardened.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=async-prewarm-sidecar.md, error=no such table: report_index
+✅ 方案缓存预热完成: report=async-prewarm-sidecar.md
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=cache-refresh-sidecar.md, error=no such table: report_index
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=cache-refresh-sidecar.md, error=no such table: report_index
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=degraded-sidecar.md, error=no such table: report_index
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-ai-chapters.md, error=no such table: report_index
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-ai-bad-json.md, error=no such table: report_index
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-ai.md, error=no such table: report_index
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=feedback-sidecar.md, error=no such table: report_index
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=interview-sidecar.md, error=no such table: report_index
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=cache-sidecar.md, error=no such table: report_index
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-rule-copy.md, error=no such table: report_index
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store
+⚠️  刷新指标失败: no such table: runtime_metrics_store

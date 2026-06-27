@@ -1,0 +1,91 @@
+{
+  "name": "asset-ownership-boundaries",
+  "category": "tenant",
+  "description": "覆盖方案分享 owner 约束、账号合并后的资产归属迁移，以及导出资产写入对象存储元数据的 owner/scope 边界。",
+  "path": "tests/harness_scenarios/tenant/asset-ownership-boundaries.json",
+  "tags": [
+    "manual",
+    "ownership",
+    "stability-local",
+    "stability-local-core",
+    "tenant"
+  ],
+  "executor": "unittest",
+  "executor_config": {
+    "type": "unittest"
+  },
+  "contract": null,
+  "mission": null,
+  "plan": null,
+  "calibration_samples": [
+    {
+      "name": "share-readonly-regression-must-fail",
+      "title": "公开分享只读边界回退必须直接判 FAIL",
+      "category": "security",
+      "expected_decision": "FAIL",
+      "rule": "方案页分享如果破坏 owner 校验、公开只读边界或匿名写拦截，Evaluator 必须直接判 FAIL；不能因为页面还能打开或其它权限用例通过而放过。",
+      "incident": "分享链路经常混合 owner 访问、公开 token 和匿名路径，边界一旦回退会直接影响外部可见页面，因此应被视为硬失败项。",
+      "source_file": "tests/harness_calibration/share-readonly-regression-must-fail.json",
+      "source_refs": [
+        "tests/test_security_regression.py",
+        "docs/agent/report-solution.md"
+      ],
+      "signals": [
+        "owner 访问必须继续校验 token 与 owner_user_id",
+        "公开分享只允许匿名只读，不能放开写接口",
+        "匿名写接口必须持续拦截"
+      ],
+      "applies_to": {
+        "scenarios": [
+          "access-boundaries",
+          "asset-ownership-boundaries"
+        ],
+        "categories": [
+          "security",
+          "tenant"
+        ],
+        "tags": [
+          "security",
+          "ownership",
+          "tenant"
+        ],
+        "executors": [
+          "unittest"
+        ]
+      }
+    }
+  ],
+  "target": "cases=3",
+  "status": "PASS",
+  "cases": [
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_report_solution_share_link_requires_owner_and_allows_public_readonly_access",
+      "label": "方案分享 owner 与公开只读边界"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_bind_phone_conflict_requires_preview_apply_and_admin_rollback",
+      "label": "账号合并资产归属迁移与回滚"
+    },
+    {
+      "test_id": "tests.test_api_comprehensive.ComprehensiveApiTests.test_export_asset_permission_follows_current_level",
+      "label": "导出资产对象存储元数据边界"
+    }
+  ],
+  "stats": {
+    "attempts": 1,
+    "pass_attempts": 1,
+    "fail_attempts": 0,
+    "avg_duration_ms": 1188.86,
+    "max_duration_ms": 1188.86,
+    "max_duration_budget_ms": 240000.0,
+    "budget_exceeded": false
+  },
+  "failure_hotspots": [],
+  "highlights": [
+    "OK"
+  ],
+  "detail": "attempts=1 pass=1 fail=0 cases=3 max_ms=1188.86",
+  "budgets": {
+    "max_duration_ms": 240000
+  }
+}

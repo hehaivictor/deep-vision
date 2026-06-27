@@ -1,0 +1,40 @@
+22b112f 工程：聚合变更碎片并更新正式版本 [skip release-version]
+2299bc5 优化报告导出与访谈进度体验
+aaf32b6 工程：聚合变更碎片并更新正式版本 [skip release-version]
+bf82480 修复生产镜像缺少 Node 运行时
+cab560c 工程：聚合变更碎片并更新正式版本 [skip release-version]
+dc456df feat(模型): 增加主备模型降级机制
+d032e64 工程：聚合变更碎片并更新正式版本 [skip release-version]
+bf7f625 统一主题配色并优化访谈展示
+27df7b0 优化首页样例输入场景
+588c354 工程：聚合变更碎片并更新正式版本 [skip release-version]
+83e4291 修复发布前测试发现的访谈质量与首页体验问题
+b27fe98 工程：聚合变更碎片并更新正式版本 [skip release-version]
+96720b9 fix(镜像发布): 排除本地部署交接文件
+b64f39e 工程：聚合变更碎片并更新正式版本 [skip release-version]
+82f39ac fix(报告图表): 修复 Mermaid 虚线标签渲染失败
+deabab2 工程：聚合变更碎片并更新正式版本 [skip release-version]
+3977f12 fix(报告生成): 阻断模板兜底伪成功
+c9afb96 工程：聚合变更碎片并更新正式版本 [skip release-version]
+2893bf2 fix(访谈): 清理题干中的内嵌选项
+70a2290 fix(访谈): 增加用户可见问题质量闸门
+6eb9b6e 工程：聚合变更碎片并更新正式版本 [skip release-version]
+20f9ca5 fix(访谈): 修复深度预生成问题浅显重复
+62e16ec 工程：聚合变更碎片并更新正式版本 [skip release-version]
+4c37f2a fix(访谈): 优化深度访谈问题质量
+683724f 工程：聚合变更碎片并更新正式版本 [skip release-version]
+cc1a497 fix(生产): 修复多 worker 下问题生成误中断
+c1b1d1d fix(登录页): 防止认证输入框圆角被覆盖
+3982e66 工程：聚合变更碎片并更新正式版本 [skip release-version]
+fc491a4 fix(登录页): 优化认证输入框圆角样式
+0ec5823 工程：聚合变更碎片并更新正式版本 [skip release-version]
+b192f41 调整 License 关闭时默认专业版策略
+0ca7cb0 工程：聚合变更碎片并更新正式版本 [skip release-version]
+143f07a perf(模型配置): 优化 Intus 默认模型路由
+0e17c07 工程：聚合变更碎片并更新正式版本 [skip release-version]
+aa1a716 修复会话删除菜单被侧栏裁剪
+78941cd 工程：聚合变更碎片并更新正式版本 [skip release-version]
+87cacc0 修复首页访谈草稿上下文丢失
+2b7812f 工程：聚合变更碎片并更新正式版本 [skip release-version]
+c424d9a 修复发布前回归阻断并完善生产部署
+b1e5728 工程：聚合变更碎片并更新正式版本 [skip release-version]

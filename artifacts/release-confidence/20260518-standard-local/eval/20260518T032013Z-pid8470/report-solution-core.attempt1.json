@@ -1,0 +1,41 @@
+{
+  "attempt": 1,
+  "executor": "unittest",
+  "status": "PASS",
+  "returncode": 0,
+  "duration_ms": 723.97,
+  "command": [
+    "/Users/hehai/.local/bin/uv",
+    "run",
+    "--with",
+    "flask",
+    "--with",
+    "flask-cors",
+    "--with",
+    "anthropic",
+    "--with",
+    "requests",
+    "--with",
+    "reportlab",
+    "--with",
+    "pillow",
+    "--with",
+    "jdcloud-sdk",
+    "--with",
+    "psycopg[binary]",
+    "--with",
+    "boto3",
+    "python3",
+    "-m",
+    "unittest",
+    "-q",
+    "tests.test_api_comprehensive.ComprehensiveApiTests.test_standard_user_can_generate_balanced_but_cannot_access_solution_appendix_or_presentation",
+    "tests.test_api_comprehensive.ComprehensiveApiTests.test_professional_user_can_access_solution_share_appendix_and_presentation_endpoints",
+    "tests.test_solution_payload.SolutionPayloadTests.test_build_solution_payload_falls_back_to_legacy_markdown_for_old_report"
+  ],
+  "failed_tests": [],
+  "highlights": [
+    "OK"
+  ],
+  "executor_overall": "PASS"
+}

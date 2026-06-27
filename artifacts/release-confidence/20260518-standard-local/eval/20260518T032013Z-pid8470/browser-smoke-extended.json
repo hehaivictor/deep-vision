@@ -1,0 +1,78 @@
+{
+  "name": "browser-smoke-extended",
+  "category": "browser",
+  "description": "覆盖登录视图、License 门禁、绑定成功与刷新恢复、公开分享只读刷新保持、访谈进行中刷新恢复、报告生成中刷新恢复、报告详情打开与刷新恢复，以及配置中心页签切换的扩展浏览器回归。",
+  "path": "tests/harness_scenarios/browser/browser-smoke-extended.json",
+  "tags": [
+    "browser",
+    "manual",
+    "stability-local",
+    "stability-local-core",
+    "ui"
+  ],
+  "executor": "browser_smoke",
+  "executor_config": {
+    "type": "browser_smoke",
+    "suite": "extended",
+    "allowed_overalls": [
+      "READY"
+    ]
+  },
+  "contract": null,
+  "mission": null,
+  "plan": null,
+  "calibration_samples": [
+    {
+      "name": "license-gate-ui-wording-drift-should-warn",
+      "title": "License 门禁前端轻微文案漂移应判 WARN 而非 FAIL",
+      "category": "browser",
+      "expected_decision": "WARN",
+      "rule": "License 门禁前端如果只是标题、说明文案或按钮文案有轻微调整，但仍保持门禁阻断、绑定入口和退出登录链路，Evaluator 应判 WARN 而不是 FAIL。",
+      "incident": "浏览器扩展回归更容易因前端文案调整而波动，真正需要硬失败的是门禁失效或业务壳提前暴露，而不是措辞替换。",
+      "source_file": "tests/harness_calibration/license-gate-ui-wording-drift-should-warn.json",
+      "source_refs": [
+        "scripts/agent_browser_smoke.py",
+        "scripts/agent_browser_smoke_runner.mjs",
+        "docs/agent/admin-ops.md"
+      ],
+      "signals": [
+        "首页仍停留在 License gate，而不是直接进入业务壳",
+        "绑定 License 入口仍可见，退出登录入口仍可见",
+        "主业务导航不应在无有效 License 时暴露"
+      ],
+      "applies_to": {
+        "scenarios": [
+          "browser-smoke-extended"
+        ],
+        "categories": [
+          "browser"
+        ],
+        "tags": [
+          "browser",
+          "ui"
+        ],
+        "executors": [
+          "browser_smoke"
+        ]
+      }
+    }
+  ],
+  "target": "suite=extended",
+  "status": "PASS",
+  "cases": [],
+  "stats": {
+    "attempts": 1,
+    "pass_attempts": 1,
+    "fail_attempts": 0,
+    "avg_duration_ms": 11729.83,
+    "max_duration_ms": 11729.83,
+    "max_duration_budget_ms": 240000.0,
+    "budget_exceeded": false
+  },
+  "failure_hotspots": [],
+  "highlights": [],
+  "detail": "attempts=1 pass=1 fail=0 suite=extended max_ms=11729.83",
+  "budgets": {
+    "max_duration_ms": 240000
+  }
+}

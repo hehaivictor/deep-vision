@@ -1,0 +1,232 @@
+............................................................................../Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_security_regression.py:751: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now_iso = datetime.utcnow().isoformat()
+..../Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_security_regression.py:207: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().replace(microsecond=0)
+.....................................................
+----------------------------------------------------------------------
+Ran 135 tests in 2.674s
+
+OK
+✅ 配置文件加载成功 (web.config)
+⚠️  未配置 SECRET_KEY，开发模式使用固定默认会话密钥
+[ScenarioLoader] 已加载 8 个场景配置
+🔐 已为 License 库初始化共享签名密钥
+✅ 已迁移 site-config.js 到 site_config_store
+启动初始化完成：reason=first_request_fallback，total=108.1ms，auth_db=0.9ms，license_db=0.6ms，meta_index_schema=106.7ms
+🔍 追问决策: should_follow_up=True, reason=为了让报告更准确，请补充“预算范围、资源限制”相关信息；建议补一句具体原因、使用场景、角色影响或数字指标；这些信息会影响后续报告和方案建议。
+   预算: 0/18 (维度: 0/5)
+   饱和度: 10% (low)
+   疲劳度: 55%, 信号: ['consecutive_short', 'option_only_streak']
+🤖 调用 Claude API，lane=question，model=doubao-seed-2-0-pro，max_tokens=64，timeout=12.0s
+❌ Claude API 调用失败: 模型响应中未包含可用文本内容
+   原因: 模型返回空文本，或仅返回了非 text 内容块
+🤖 调用 Claude API，lane=question，model=doubao-seed-2-0-pro，max_tokens=256，timeout=10.0s
+ℹ️ 熔断切换：跳过冷却 lane=report
+✅ API 响应成功，长度: 16 字符
+⚠️ V3 报告流程失败: simulated timeout
+[SMS][mock] scene=login phone=12685875089 code=163376
+🔐 已将旧 users.db 中的 License 数据迁移到独立的 licenses.db
+[SMS][mock] scene=login phone=18824926242 code=425730
+🔮 开始预生成首题: session=dv-20260518111542-1b163c9b
+⚡ 首题预生成优先窗口生效: session=dv-20260518111542-1b163c9b
+⚙️ 问题运行时档位: profile=prefetch_first_probe_light,fast_mode=light,full_mode=full,fast_hedge=on,full_hedge=on,fast_lanes=question(9.2s/1020)->report(9.2s/1020),full_lanes=question(72.0s/1680)->report(72.0s/1680),reason=prefetch_first_probe_light
+⚠️ 快档未命中，原因: question:未产出结果，回退全量档重试
+⚠️ 全量档未命中，原因: question:未产出结果
+⚙️ 首题预生成通道: full:question
+[SMS][mock] scene=login phone=19724388420 code=722729
+🔮 开始预生成首题: session=dv-20260518111542-ea2158ca
+⚡ 首题预生成优先窗口生效: session=dv-20260518111542-ea2158ca
+⚙️ 问题运行时档位: profile=prefetch_first_probe_light,fast_mode=light,full_mode=full,fast_hedge=on,full_hedge=on,fast_lanes=question(9.2s/1020)->report(9.2s/1020),full_lanes=question(72.0s/1680)->report(72.0s/1680),reason=prefetch_first_probe_light
+⚠️ 快档未命中，原因: question:未产出结果，回退全量档重试
+⚠️ 全量档未命中，原因: question:未产出结果
+⚙️ 首题预生成通道: full:question
+[SMS][mock] scene=login phone=11137364175 code=931944
+[SMS][mock] scene=login phone=12706953300 code=770737
+[SMS][mock] scene=login phone=18217464740 code=419415
+[SMS][mock] scene=login phone=14466275250 code=780569
+🔐 已为 License 库初始化共享签名密钥
+[SMS][mock] scene=login phone=19865118581 code=681329
+[SMS][mock] scene=login phone=16018245597 code=528199
+[SMS][mock] scene=login phone=10315589239 code=923971
+[SMS][mock] scene=login phone=13913501235 code=551572
+[SMS][mock] scene=login phone=15739638114 code=710424
+[SMS][mock] scene=login phone=15783865368 code=216348
+[SMS][mock] scene=login phone=19863791075 code=922641
+🔮 开始预生成首题: session=dv-20260518111543-55258711
+⚡ 首题预生成优先窗口生效: session=dv-20260518111543-55258711
+⚠️ V3 报告流程未通过，自动回退标准流程；primary[reason=exception,profile=balanced,parse_stage=review_generation,lane=report,phase_lanes=draft=report,review=report,error=simulated timeout,final_issue_count=0,final_issue_types=-,exception_stage=review_generation,exception_kind=timeout,salvage_attempted=False,salvage_success=False,salvage_quality_issue_count=0,salvage_issue_types=-,salvage_note=disabled_by_release_conservative_mode,salvage_error=-]
+📊 回退报告 Prompt 统计：模式=compact，总长度=13字符，参考资料=0个，访谈记录=0条
+⚙️ 问题运行时档位: profile=prefetch_first_probe_light,fast_mode=light,full_mode=full,fast_hedge=on,full_hedge=on,fast_lanes=question(8.0s/850)->report(8.0s/850),full_lanes=question(60.0s/1400)->report(60.0s/1400),reason=prefetch_first_probe_light
+📝 AI 原始响应 (前500字): # 回退报告
+
+## 一、访谈概览
+
+这是标准回退生成内容。
+
+## 二、核心需求
+
+- 保留异常调试字段。
+
+## 三、关键风险
+
+- V3 审稿阶段可能超时。
+
+## 四、行动建议
+
+- 对异常类型做更细分类。
+❌ 所有解析方法都失败
+📄 AI 响应前500字符:
+# 回退报告
+
+## 一、访谈概览
+
+这是标准回退生成内容。
+
+## 二、核心需求
+
+- 保留异常调试字段。
+
+## 三、关键风险
+
+- V3 审稿阶段可能超时。
+
+## 四、行动建议
+
+- 对异常类型做更细分类。
+📄 最后解析错误: 未知
+⚠️ 快档响应解析失败: lane=question, len=107，回退全量档重试
+📝 AI 原始响应 (前500字): # 回退报告
+
+## 一、访谈概览
+
+这是标准回退生成内容。
+
+## 二、核心需求
+
+- 保留异常调试字段。
+
+## 三、关键风险
+
+- V3 审稿阶段可能超时。
+
+## 四、行动建议
+
+- 对异常类型做更细分类。
+❌ 所有解析方法都失败
+📄 AI 响应前500字符:
+# 回退报告
+
+## 一、访谈概览
+
+这是标准回退生成内容。
+
+## 二、核心需求
+
+- 保留异常调试字段。
+
+## 三、关键风险
+
+- V3 审稿阶段可能超时。
+
+## 四、行动建议
+
+- 对异常类型做更细分类。
+📄 最后解析错误: 未知
+⚠️ 全量档响应解析失败: lane=question, len=107
+⚙️ 首题预生成通道: full:question
+[SMS][mock] scene=login phone=17828875362 code=973873
+🔮 开始预生成首题: session=dv-20260518111543-ebefae49
+⚡ 首题预生成优先窗口生效: session=dv-20260518111543-ebefae49
+ℹ️ V3 报告流程未通过，自动回退标准流程；primary[reason=quality_gate_failed,profile=balanced,parse_stage=quality_gate,lane=report,phase_lanes=draft=report,review=report,error=profile=balanced,final_issue_count=1,final_issue_count=1,final_issue_types=quality_gate_evidence,exception_stage=-,exception_kind=-,salvage_attempted=False,salvage_success=False,salvage_quality_issue_count=0,salvage_issue_types=-,salvage_note=disabled_by_release_conservative_mode,salvage_error=-]
+📊 回退报告 Prompt 统计：模式=compact，总长度=13字符，参考资料=0个，访谈记录=0条
+⚙️ 问题运行时档位: profile=prefetch_first_probe_light,fast_mode=light,full_mode=full,fast_hedge=on,full_hedge=on,fast_lanes=question(8.0s/850)->report(8.0s/850),full_lanes=question(60.0s/1400)->report(60.0s/1400),reason=prefetch_first_probe_light
+📝 AI 原始响应 (前500字): # 回退报告
+
+## 一、访谈概览
+
+这是标准回退生成内容。
+
+## 二、核心需求
+
+- 需要稳定报告链路。
+
+## 三、关键风险
+
+- V3 审稿可能失败。
+
+## 四、行动建议
+
+- 保留 fallback 并落库调试信息。
+❌ 所有解析方法都失败
+📄 AI 响应前500字符:
+# 回退报告
+
+## 一、访谈概览
+
+这是标准回退生成内容。
+
+## 二、核心需求
+
+- 需要稳定报告链路。
+
+## 三、关键风险
+
+- V3 审稿可能失败。
+
+## 四、行动建议
+
+- 保留 fallback 并落库调试信息。
+📄 最后解析错误: 未知
+⚠️ 快档响应解析失败: lane=question, len=114，回退全量档重试
+📝 AI 原始响应 (前500字): # 回退报告
+
+## 一、访谈概览
+
+这是标准回退生成内容。
+
+## 二、核心需求
+
+- 需要稳定报告链路。
+
+## 三、关键风险
+
+- V3 审稿可能失败。
+
+## 四、行动建议
+
+- 保留 fallback 并落库调试信息。
+❌ 所有解析方法都失败
+📄 AI 响应前500字符:
+# 回退报告
+
+## 一、访谈概览
+
+这是标准回退生成内容。
+
+## 二、核心需求
+
+- 需要稳定报告链路。
+
+## 三、关键风险
+
+- V3 审稿可能失败。
+
+## 四、行动建议
+
+- 保留 fallback 并落库调试信息。
+📄 最后解析错误: 未知
+⚠️ 全量档响应解析失败: lane=question, len=114
+⚙️ 首题预生成通道: full:question
+ℹ️ V3 报告流程未通过，自动回退标准流程；primary[reason=release_conservative_short_circuit,profile=balanced,parse_stage=draft_short_circuit,lane=report,phase_lanes=draft=report,review=report,error=检测到报告草案最近连续超时 2 次，发布保守档直接回退标准报告生成,final_issue_count=0,final_issue_types=-,exception_stage=-,exception_kind=-,salvage_attempted=False,salvage_success=False,salvage_quality_issue_count=0,salvage_issue_types=-,salvage_note=disabled_by_release_conservative_mode,salvage_error=-]
+📊 回退报告 Prompt 统计：模式=compact，总长度=23字符，参考资料=0个，访谈记录=0条
+[SMS][mock] scene=login phone=15643112802 code=246810
+[SMS][mock] scene=login phone=16142454879 code=633132
+[SMS][mock] scene=login phone=18262704682 code=111111
+[SMS][mock] scene=login phone=18262704682 code=222222
+[SMS][mock] scene=login phone=16049072564 code=355885
+🔮 开始预生成首题: session=dv-20260518111544-287e178f
+⚡ 首题预生成优先窗口生效: session=dv-20260518111544-287e178f
+⚙️ 问题运行时档位: profile=prefetch_first_probe_light,fast_mode=light,full_mode=full,fast_hedge=on,full_hedge=on,fast_lanes=question(9.2s/1020)->report(9.2s/1020),full_lanes=question(72.0s/1680)->report(72.0s/1680),reason=prefetch_first_probe_light
+⚠️ 快档未命中，原因: question:未产出结果，回退全量档重试
+⚠️ 全量档未命中，原因: question:未产出结果
+⚙️ 首题预生成通道: full:question

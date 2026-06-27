@@ -1,0 +1,10 @@
+DeepVision agent history
+仓库目录: /Users/hehai/Documents/开目软件/Agents/project/DeepVision
+
+[harness-stability-release] base=/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs
+  - latest: 20260410T171714Z-pid56370 | overall=READY_WITH_WARNINGS | generated_at=2026-04-10T17:17:14Z | duration_ms=44506.25
+    * 20260410T171714Z-pid56370 | overall=READY_WITH_WARNINGS | results=6 | duration_ms=44506.25 | subject=-
+    * 20260410T165858Z-pid50822 | overall=READY_WITH_WARNINGS | results=6 | duration_ms=0.00 | subject=-
+    * 20260410T165819Z-pid51576 | overall=READY_WITH_WARNINGS | results=6 | duration_ms=0.00 | subject=-
+    * 20260410T165740Z-pid51488 | overall=READY_WITH_WARNINGS | results=6 | duration_ms=0.00 | subject=-
+    * 20260410T165701Z-pid51390 | overall=READY_WITH_WARNINGS | results=6 | duration_ms=0.00 | subject=-

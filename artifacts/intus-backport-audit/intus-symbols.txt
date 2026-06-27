@@ -1,0 +1,64 @@
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/plans/deep-interview-question-quality-optimization.md:501:已新增 `tests/harness_scenarios/report-solution/deep-interview-question-quality.json` 进入 nightly，用现有 unittest 执行器覆盖以下质量边界：
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/heartbeat.md:35:- `product-ui-flow`: `product-ui-flow-复刻-Manus-agent-first-工作台并保留-Intus-高风险状态边界-mission` | `2026-05-07T10:39:46Z` | `artifacts/planner/missions/by-task/product-ui-flow/latest.json`
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/heartbeat.md:44:- `product-ui-flow`: `product-ui-flow-复刻-Manus-agent-first-工作台并保留-Intus-高风险状态边界` | `2026-05-07T10:39:46Z` | `artifacts/planner/by-task/product-ui-flow/latest.json`
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/README.md:152:- `product-ui-flow`：产品 UI 壳层、工作台、导航、搜索、库页和 Agent 能力页改造
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/README.md:185:- `product-ui-flow`：产品 UI 壳层、工作台、导航、搜索、库页和能力页改造核对
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/evaluator.md:58:- `deep-interview-question-quality`：深度访谈问题 full prompt、语义去重、质量 gate 和 deep question lane 模型 A/B 边界
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/plans/manus-style-replica.md:24:- `resources/harness/tasks/product-ui-flow.json`：产品 UI 壳层类任务画像，让 harness 能识别这类迭代。
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/plans/manus-style-replica.md:25:- `docs/agent/playbooks/product-ui-flow.md`：由 task profile 生成的执行 playbook。
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/plans/manus-style-replica.md:67:- 如果 planner / mission 指针存在，优先读取 `artifacts/planner/by-task/product-ui-flow/latest.json` 和 `artifacts/planner/missions/by-task/product-ui-flow/latest.json`。
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/plans/manus-style-replica.md:77:- 新增 `product-ui-flow` task profile。
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/plans/manus-style-replica.md:78:- 生成并登记 `product-ui-flow` playbook。
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/plans/manus-style-replica.md:85:- [x] 创建 `resources/harness/tasks/product-ui-flow.json`。
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/plans/manus-style-replica.md:86:- [x] 运行 `python3 scripts/agent_playbook_sync.py --task product-ui-flow`。
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/plans/manus-style-replica.md:88:- [x] 运行 `python3 scripts/agent_planner.py --task product-ui-flow --goal "复刻 Manus agent-first 工作台并保留 Intus 高风险状态边界" --artifact-dir artifacts/planner`。
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/plans/manus-style-replica.md:256:| Phase 0 | 已完成 | `agent_playbook_sync --check`、`agent_workflow --task product-ui-flow --execute plan`、`agent_ops.py task-gap`、`agent_doc_gardener.py`、`agent_static_guardrails.py`、`python3 -m unittest tests.test_version_manager tests.test_scripts_comprehensive`、`git diff --check`、`agent_heartbeat.py` | `38fa54c` |
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/plans/manus-style-replica.md:257:| Phase 1 | 已完成 | `node --check scripts/agent_browser_smoke_runner.mjs`、`node --check web/site-config.js`、`node --check web/app.js`、`python3 scripts/agent_static_guardrails.py`、`python3 scripts/agent_workflow.py --task product-ui-flow --execute plan`、`python3 scripts/agent_browser_smoke.py --suite extended --json`（16/16 PASS）、`python3 -m unittest tests.test_version_manager tests.test_scripts_comprehensive`（94 tests OK）、`git diff --check`、截图：`artifacts/manus-style-phase1/login.png` / `artifacts/manus-style-phase1/home.png` | `6146959` |
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/playbooks/README.md:17:- 产品 UI 壳层改造核对：[product-ui-flow.md](../../../docs/agent/playbooks/product-ui-flow.md)
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/playbooks/product-ui-flow.md:4:> 关联任务画像：`product-ui-flow` | 来源：`resources/harness/tasks/product-ui-flow.json`
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/playbooks/product-ui-flow.md:17:python3 scripts/agent_workflow.py --task product-ui-flow --execute plan
+/Users/hehai/Documents/开目软件/Agents/project/Intus/docs/agent/playbooks/product-ui-flow.md:32:python3 scripts/agent_harness.py --task product-ui-flow --observe --profile auto --artifact-dir artifacts/harness-runs
+/Users/hehai/Documents/开目软件/Agents/project/Intus/tests/test_runtime_token_config.py:373:                "QUESTION_FALLBACK_MODEL_NAME": "good-question",
+/Users/hehai/Documents/开目软件/Agents/project/Intus/tests/test_runtime_token_config.py:410:                "QUESTION_FALLBACK_MODEL_NAME": "good-question",
+/Users/hehai/Documents/开目软件/Agents/project/Intus/tests/test_runtime_token_config.py:443:                "REPORT_DRAFT_FALLBACK_MODEL_NAME": "good-draft",
+/Users/hehai/Documents/开目软件/Agents/project/Intus/tests/harness_scenarios/report-solution/deep-interview-question-quality.json:2:  "name": "deep-interview-question-quality",
+/Users/hehai/Documents/开目软件/Agents/project/Intus/tests/test_question_fast_strategy.py:1959:        result = self.server.evaluate_visible_question_quality_gate(
+/Users/hehai/Documents/开目软件/Agents/project/Intus/tests/test_question_fast_strategy.py:1974:        result = self.server.evaluate_visible_question_quality_gate(
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/version.json:488:        "Harness：新增 product-ui-flow 任务画像并同步 playbook 与索引",
+/Users/hehai/Documents/开目软件/Agents/project/Intus/resources/harness/tasks/product-ui-flow.json:2:  "name": "product-ui-flow",
+/Users/hehai/Documents/开目软件/Agents/project/Intus/resources/harness/tasks/product-ui-flow.json:71:      "python3 scripts/agent_workflow.py --task product-ui-flow --execute plan",
+/Users/hehai/Documents/开目软件/Agents/project/Intus/resources/harness/tasks/product-ui-flow.json:74:      "python3 scripts/agent_harness.py --task product-ui-flow --observe --profile auto --artifact-dir artifacts/harness-runs"
+/Users/hehai/Documents/开目软件/Agents/project/Intus/resources/harness/tasks/product-ui-flow.json:78:    "output": "docs/agent/playbooks/product-ui-flow.md",
+/Users/hehai/Documents/开目软件/Agents/project/Intus/resources/harness/tasks/product-ui-flow.json:89:          "python3 scripts/agent_workflow.py --task product-ui-flow --execute plan",
+/Users/hehai/Documents/开目软件/Agents/project/Intus/resources/harness/tasks/product-ui-flow.json:104:          "python3 scripts/agent_harness.py --task product-ui-flow --observe --profile auto --artifact-dir artifacts/harness-runs"
+/Users/hehai/Documents/开目软件/Agents/project/Intus/tests/test_scripts_comprehensive.py:906:        self.assertIn("viewReportEvidenceAppendix()", report_runtime_js)
+/Users/hehai/Documents/开目软件/Agents/project/Intus/tests/test_scripts_comprehensive.py:1523:        self.assertIn("deep-interview-question-quality", scenario_names)
+/Users/hehai/Documents/开目软件/Agents/project/Intus/tests/test_scripts_comprehensive.py:1600:        deep_interview_target = next(item for item in scenarios if item.name == "deep-interview-question-quality")
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/config.py:31:MODEL_FALLBACK_ENABLED = True
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/config.py:33:QUESTION_FALLBACK_MODEL_NAME = "kimi-for-coding"
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/config.py:37:REPORT_DRAFT_FALLBACK_MODEL_NAME = "doubao-seed-2-0-pro"
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server_modules/report_generation_runtime.py:1439:        def persist_report_failure_diagnostics(
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server_modules/report_generation_runtime.py:2160:            persist_report_failure_diagnostics(
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/app.js:4497:            content = this.normalizeMermaidBlocksForExport(content);
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/app.js:4510:            appendix = this.normalizeMermaidBlocksForExport(appendix);
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/app.js:6087:        normalizeMermaidBlocksForExport(content = '') {
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/app.js:6553:        getProgressAlignedRemainingQuestions(answered, progress, fallbackRemaining) {
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/app.js:6582:            const remaining = this.getProgressAlignedRemainingQuestions(answered, progress, fallbackRemaining);
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/app_modules/report_detail_runtime.js:1482:                this.viewReportEvidenceAppendix();
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/app_modules/report_detail_runtime.js:1506:        viewReportEvidenceAppendix() {
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:609:MODEL_FALLBACK_ENABLED = _cfg_bool("MODEL_FALLBACK_ENABLED", True)
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:610:QUESTION_FALLBACK_MODEL_NAME = _cfg_text("QUESTION_FALLBACK_MODEL_NAME", "") or ""
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:612:REPORT_DRAFT_FALLBACK_MODEL_NAME = _cfg_text("REPORT_DRAFT_FALLBACK_MODEL_NAME", "") or ""
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:2263:        (QUESTION_MODEL_NAME, QUESTION_FALLBACK_MODEL_NAME),
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:2264:        (REPORT_DRAFT_MODEL_NAME, REPORT_DRAFT_FALLBACK_MODEL_NAME),
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:2278:    if not MODEL_FALLBACK_ENABLED:
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:2290:        return str(REPORT_DRAFT_FALLBACK_MODEL_NAME or "").strip()
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:2301:    return str(QUESTION_FALLBACK_MODEL_NAME or "").strip()
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:3056:            _admin_bool("MODEL_FALLBACK_ENABLED", "启用主备模型降级"),
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:3057:            _admin_setting("QUESTION_FALLBACK_MODEL_NAME", "问题备用模型"),
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:3059:            _admin_setting("REPORT_DRAFT_FALLBACK_MODEL_NAME", "报告草案备用模型"),
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:20201:def evaluate_visible_question_quality_gate(
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:30549:        quality_gate = evaluate_visible_question_quality_gate(
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:30955:            quality_gate = evaluate_visible_question_quality_gate(
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:30981:                retry_quality_gate = evaluate_visible_question_quality_gate(
+/Users/hehai/Documents/开目软件/Agents/project/Intus/web/server.py:31088:            repair_quality_gate = evaluate_visible_question_quality_gate(

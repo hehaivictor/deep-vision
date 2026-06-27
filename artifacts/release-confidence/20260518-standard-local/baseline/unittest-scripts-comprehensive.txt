@@ -1,0 +1,37 @@
+...................................................................................
+----------------------------------------------------------------------
+Ran 83 tests in 5.272s
+
+OK
+DeepVision agent autodream lite
+overall: HEALTHY
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-4fpw7hv2/autodream-root/doc-gardening/latest.json
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-4fpw7hv2/autodream-root/doc-gardening/latest.md
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-4fpw7hv2/autodream-root/heartbeat.md
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-4fpw7hv2/autodream-root/memory/latest.json
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-4fpw7hv2/autodream-root/memory-notes.md
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-4fpw7hv2/autodream-root/memory/best-practices-latest.json
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-4fpw7hv2/autodream-root/autodream/latest.json
+[WRITE] /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-4fpw7hv2/autodream-root/autodream/latest.md
+Scaffolded: /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-4fpw7hv2/scenario-output.json
+Source: eval | run_dir=/private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-4fpw7hv2/artifacts/harness-eval/eval-run-write
+Cases: 1
+[0;32m[INFO][0m 文件已是文本格式，直接复制
+[0;31m[ERROR][0m 不支持的文件格式: .unsupported
+[0;32m[INFO][0m 支持的格式: docx, xlsx, xls, pptx, ppt, md, txt, pdf
+[0;32m[INFO][0m 文件已是文本格式，直接复制
+[0;32m[INFO][0m 文件已是文本格式，直接复制
+[0;31m[ERROR][0m 不支持的文件格式: .unsupported
+[0;32m[INFO][0m 支持的格式: docx, xlsx, xls, pptx, ppt, md, txt, pdf
+[0;32m[INFO][0m 转换完成: 2/3 个文件成功
+[0;32m[INFO][0m 已清理临时文件
+[0;32m[INFO][0m 未找到报告模板，使用简化报告格式
+[0;32m[INFO][0m 报告已生成: /private/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/dv-script-tests-4fpw7hv2/data/reports/deep-vision-20260518-报告脚本测试.md
+[ScenarioLoader] 已加载 8 个场景配置
+[ScenarioLoader] 已加载 8 个场景配置
+[0;32m[INFO][0m 创建会话: dv-20260518110703-87456cb5 (场景: product-requirement)
+[0;32m[INFO][0m 已更新会话: dv-20260518110703-87456cb5
+[0;32m[INFO][0m 已更新会话: dv-20260518110703-87456cb5
+[0;32m[INFO][0m 已更新会话: dv-20260518110703-87456cb5
+[0;32m[INFO][0m 会话已删除: dv-20260518110703-87456cb5
+[0;31m[ERROR][0m 会话不存在: dv-20260518110703-87456cb5

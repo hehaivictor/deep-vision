@@ -1,0 +1,160 @@
+{
+  "name": "static_guardrails",
+  "command": "python3 scripts/agent_static_guardrails.py",
+  "exit_code": 0,
+  "payload": {
+    "generated_at": "2026-05-18T03:19:07Z",
+    "server_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/server.py",
+    "route_count": 98,
+    "results": [
+      {
+        "name": "admin_routes_require_admin",
+        "status": "PASS",
+        "detail": "checked=32 routes missing=0",
+        "highlights": [
+          "所有高风险管理/运维路由都带 require_admin。"
+        ],
+        "repair_layer": "",
+        "recommended_actions": [],
+        "rerun_commands": []
+      },
+      {
+        "name": "license_admin_routes_require_valid_license",
+        "status": "PASS",
+        "detail": "checked=15 routes missing=0",
+        "highlights": [
+          "所有 License 管理路由都带 require_valid_license。"
+        ],
+        "repair_layer": "",
+        "recommended_actions": [],
+        "rerun_commands": []
+      },
+      {
+        "name": "solution_view_guard",
+        "status": "PASS",
+        "detail": "function=get_report_solution",
+        "highlights": [
+          "已检测到登录、能力校验和 owner 约束。"
+        ],
+        "repair_layer": "",
+        "recommended_actions": [],
+        "rerun_commands": []
+      },
+      {
+        "name": "solution_share_guard",
+        "status": "PASS",
+        "detail": "function=create_report_solution_share",
+        "highlights": [
+          "已检测到登录、分享能力校验和 owner 约束。"
+        ],
+        "repair_layer": "",
+        "recommended_actions": [],
+        "rerun_commands": []
+      },
+      {
+        "name": "public_solution_readonly",
+        "status": "PASS",
+        "detail": "function=get_public_solution_by_share_token",
+        "highlights": [
+          "已检测到 owner 校验、匿名只读字段收敛和 noindex header。"
+        ],
+        "repair_layer": "",
+        "recommended_actions": [],
+        "rerun_commands": []
+      },
+      {
+        "name": "config_center_routes_delegate_helpers",
+        "status": "PASS",
+        "detail": "get=admin_get_config_center save=admin_save_config_center_group",
+        "highlights": [
+          "配置中心路由已委托 build_admin_config_center_payload/save_admin_config_group，未在路由层直接写配置文件。"
+        ],
+        "repair_layer": "",
+        "recommended_actions": [],
+        "rerun_commands": []
+      },
+      {
+        "name": "frontend_assets_do_not_reference_harness_paths",
+        "status": "PASS",
+        "detail": "checked=23 frontend files violations=0",
+        "highlights": [
+          "web/ 下前端静态资源未反向引用 harness 路径、工件或测试语料。"
+        ],
+        "repair_layer": "",
+        "recommended_actions": [],
+        "rerun_commands": []
+      },
+      {
+        "name": "runtime_python_does_not_reference_test_assets",
+        "status": "PASS",
+        "detail": "checked=13 python files violations=0",
+        "highlights": [
+          "web/ 下 Python 运行时代码未反向依赖 tests/ 下的 harness 场景、校准样本或测试模块。"
+        ],
+        "repair_layer": "",
+        "recommended_actions": [],
+        "rerun_commands": []
+      },
+      {
+        "name": "runtime_python_does_not_reference_harness_resources",
+        "status": "PASS",
+        "detail": "checked=13 python files violations=0",
+        "highlights": [
+          "web/ 下 Python 运行时代码未反向依赖 harness resources、artifact 或 agent 文档指针。"
+        ],
+        "repair_layer": "",
+        "recommended_actions": [],
+        "rerun_commands": []
+      },
+      {
+        "name": "business_python_does_not_import_harness",
+        "status": "PASS",
+        "detail": "checked=13 python files violations=0",
+        "highlights": [
+          "web/ 下 Python 业务代码未反向依赖 scripts.agent_* harness 脚本。"
+        ],
+        "repair_layer": "",
+        "recommended_actions": [],
+        "rerun_commands": []
+      },
+      {
+        "name": "ownership_preview_dry_run",
+        "status": "PASS",
+        "detail": "function=admin_preview_ownership_migration",
+        "highlights": [
+          "已检测到管理员鉴权、dry-run 执行和 preview 持久化。"
+        ],
+        "repair_layer": "",
+        "recommended_actions": [],
+        "rerun_commands": []
+      },
+      {
+        "name": "ownership_apply_confirmation",
+        "status": "PASS",
+        "detail": "function=admin_apply_ownership_migration",
+        "highlights": [
+          "已检测到管理员鉴权、preview token 校验、确认词和 apply_mode=True。"
+        ],
+        "repair_layer": "",
+        "recommended_actions": [],
+        "rerun_commands": []
+      },
+      {
+        "name": "ownership_rollback_requires_backup",
+        "status": "PASS",
+        "detail": "function=admin_rollback_ownership_migration",
+        "highlights": [
+          "已检测到管理员鉴权和 backup_id 前置校验。"
+        ],
+        "repair_layer": "",
+        "recommended_actions": [],
+        "rerun_commands": []
+      }
+    ],
+    "summary": {
+      "PASS": 13,
+      "FAIL": 0
+    },
+    "overall": "READY"
+  }
+}

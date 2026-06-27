@@ -1,0 +1,1182 @@
+{
+  "name": "observe",
+  "command": "python3 scripts/agent_observe.py --profile auto --recent 5",
+  "exit_code": 0,
+  "payload": {
+    "generated_at": "2026-05-18T03:18:38Z",
+    "root_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision",
+    "profile": "auto",
+    "recent": 5,
+    "items": [
+      {
+        "name": "env",
+        "status": "PASS",
+        "detail": "profile=auto env=web/.env.local source=auto:local keys=66",
+        "data": {
+          "profile": "auto",
+          "source": "auto:local",
+          "env_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/.env.local",
+          "config_resolution_mode": "auto",
+          "debug_mode": true,
+          "enable_ai": true,
+          "sms_login_enabled": true,
+          "sms_provider": "mock",
+          "wechat_login_enabled": true,
+          "instance_scope_key": "local-dev",
+          "admin_phone_numbers_count": 3
+        }
+      },
+      {
+        "name": "startup_snapshot",
+        "status": "PASS",
+        "detail": "source=runtime_metrics_store initialized=yes total_ms=10.00 completed_at=2026-05-13T02:23:06Z",
+        "data": {
+          "source": "runtime_metrics_store",
+          "initialized": true,
+          "status": "ready",
+          "reason": "dev_server_start",
+          "started_at": "2026-05-13T02:23:06Z",
+          "completed_at": "2026-05-13T02:23:06Z",
+          "total_ms": 10.0,
+          "phases": [
+            {
+              "name": "auth_db",
+              "elapsed_ms": 2.96
+            },
+            {
+              "name": "license_db",
+              "elapsed_ms": 2.03
+            },
+            {
+              "name": "meta_index_schema",
+              "elapsed_ms": 4.97
+            }
+          ],
+          "failed_phase": "",
+          "error": ""
+        }
+      },
+      {
+        "name": "db_health",
+        "status": "PASS",
+        "detail": "auth=33 users license=1004 meta_schema=ready",
+        "data": {
+          "auth_db": {
+            "path": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/data/auth/users.db",
+            "exists": true,
+            "users": 33,
+            "wechat_identities": 0,
+            "modified_at": "2026-05-06T08:41:43Z"
+          },
+          "license_db": {
+            "path": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/data/auth/licenses.db",
+            "exists": true,
+            "summary": {
+              "total": 1004,
+              "active": 2,
+              "expired": 0,
+              "revoked": 1
+            },
+            "modified_at": "2026-05-06T15:48:47Z"
+          },
+          "meta_index_db": {
+            "path": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/data/meta_index.db",
+            "exists": true,
+            "table_counts": {
+              "session_store": 68,
+              "report_store": 14,
+              "summary_cache_store": 0,
+              "runtime_metrics_store": 2
+            },
+            "schema_ready": true,
+            "modified_at": "2026-05-13T02:23:05Z"
+          },
+          "warnings": []
+        }
+      },
+      {
+        "name": "metrics",
+        "status": "PASS",
+        "detail": "source=runtime_metrics_store total=504 avg_ms=15853.9 recent_failures=5",
+        "data": {
+          "source": "runtime_metrics_store",
+          "summary": {
+            "total_calls": 504,
+            "total_timeouts": 27,
+            "total_cache_hits": 51,
+            "avg_response_time": 15853.86,
+            "avg_queue_wait_ms": 2639.27
+          },
+          "latest_call_at": "2026-05-06T16:01:41Z",
+          "recent_failures": [
+            {
+              "timestamp": "2026-05-06T12:09:12Z",
+              "type": "question_fast",
+              "stage": "question_fast",
+              "timeout": true,
+              "error": "Request timed out or interrupted. This could be due to a network timeout, dropped connection, or request cancellation. See https://docs.anthropic.com/en/api/errors#long-requests for more details."
+            },
+            {
+              "timestamp": "2026-05-06T12:09:08Z",
+              "type": "prefetch_current_fast_hedged_report",
+              "stage": "question_fast",
+              "timeout": true,
+              "error": "Request timed out or interrupted. This could be due to a network timeout, dropped connection, or request cancellation. See https://docs.anthropic.com/en/api/errors#long-requests for more details."
+            },
+            {
+              "timestamp": "2026-05-06T08:42:43Z",
+              "type": "question_fast_hedged_report",
+              "stage": "question_fast",
+              "timeout": true,
+              "error": "Request timed out or interrupted. This could be due to a network timeout, dropped connection, or request cancellation. See https://docs.anthropic.com/en/api/errors#long-requests for more details."
+            },
+            {
+              "timestamp": "2026-05-06T05:54:46Z",
+              "type": "report_legacy_fallback",
+              "stage": "",
+              "timeout": false,
+              "error": "Error code: 403 - {'error': 'Forbidden', 'message': '不支持的模型类型，仅支持Claude Haiku、Sonnet和Opus系列模型'}"
+            },
+            {
+              "timestamp": "2026-05-06T05:54:45Z",
+              "type": "report_v3_draft",
+              "stage": "draft_gen",
+              "timeout": false,
+              "error": "Error code: 403 - {'error': 'Forbidden', 'message': '不支持的模型类型，仅支持Claude Haiku、Sonnet和Opus系列模型'}"
+            }
+          ],
+          "top_types": [
+            {
+              "type": "question_fast",
+              "count": 108
+            },
+            {
+              "type": "question_fast_hedged_report",
+              "count": 61
+            },
+            {
+              "type": "prefetch_current_fast",
+              "count": 45
+            },
+            {
+              "type": "search_decision_cache_hit",
+              "count": 29
+            },
+            {
+              "type": "summary",
+              "count": 27
+            }
+          ]
+        }
+      },
+      {
+        "name": "summaries",
+        "status": "PASS",
+        "detail": "source=summary_cache_store cached=0 size_kb=0.0",
+        "data": {
+          "source": "summary_cache_store",
+          "cached_count": 0,
+          "cache_size_bytes": 0
+        }
+      },
+      {
+        "name": "config_sources",
+        "status": "PASS",
+        "detail": "env_source=auto:local env=web/.env.local sms=on(mock) ai=on",
+        "data": {
+          "sources": [
+            {
+              "source": "env",
+              "path": "web/.env.local",
+              "exists": true,
+              "modified_at": "2026-04-22T11:46:20Z",
+              "size_bytes": 4895
+            },
+            {
+              "source": "config",
+              "path": "web/config.py",
+              "exists": true,
+              "modified_at": "2026-05-12T07:10:02Z",
+              "size_bytes": 26265
+            },
+            {
+              "source": "site",
+              "path": "web/site-config.js",
+              "exists": true,
+              "modified_at": "2026-05-12T07:10:02Z",
+              "size_bytes": 10591
+            }
+          ],
+          "note": "当前没有独立的配置中心写入审计，这里使用源文件存在性与修改时间做近似观察。"
+        }
+      },
+      {
+        "name": "ownership_history",
+        "status": "WARN",
+        "detail": "items=0 latest=none",
+        "data": {
+          "items": []
+        }
+      },
+      {
+        "name": "cloud_import_backups",
+        "status": "PASS",
+        "detail": "items=3 latest=external-import-20260402-190328",
+        "data": {
+          "items": [
+            {
+              "backup_id": "external-import-20260402-190328",
+              "captured_at": "2026-04-02T11:03:28Z",
+              "backup_dir": "data/operations/cloud-import-backups/external-import-20260402-190328",
+              "restorable_tables": [
+                "auth",
+                "meta"
+              ]
+            },
+            {
+              "backup_id": "external-import-20260402-185700",
+              "captured_at": "2026-04-02T10:57:00Z",
+              "backup_dir": "data/operations/cloud-import-backups/external-import-20260402-185700",
+              "restorable_tables": [
+                "auth",
+                "meta"
+              ]
+            },
+            {
+              "backup_id": "external-import-20260402-180223",
+              "captured_at": "2026-04-02T10:02:23Z",
+              "backup_dir": "data/operations/cloud-import-backups/external-import-20260402-180223",
+              "restorable_tables": [
+                "auth",
+                "meta"
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "name": "recent_operations",
+        "status": "PASS",
+        "detail": "recent_files=5 latest=data/operations/real-report-runtime-benchmark-20260506-balanced-release-default.json",
+        "data": {
+          "items": [
+            {
+              "path": "data/operations/real-report-runtime-benchmark-20260506-balanced-release-default.json",
+              "modified_at": "2026-05-06T05:54:46Z",
+              "size_bytes": 4977
+            },
+            {
+              "path": "data/operations/real-report-runtime-benchmark-20260331-quality-tuned.json",
+              "modified_at": "2026-03-31T11:04:00Z",
+              "size_bytes": 841
+            },
+            {
+              "path": "data/operations/real-question-runtime-benchmark-20260331-quality-tuned.json",
+              "modified_at": "2026-03-31T10:59:15Z",
+              "size_bytes": 2971
+            },
+            {
+              "path": "data/operations/short-circuit-report-output.md",
+              "modified_at": "2026-03-31T02:25:58Z",
+              "size_bytes": 20068
+            },
+            {
+              "path": "data/operations/real-report-runtime-benchmark-20260331-short-circuit-default.json",
+              "modified_at": "2026-03-31T02:25:58Z",
+              "size_bytes": 1826
+            }
+          ]
+        }
+      },
+      {
+        "name": "harness_runs",
+        "status": "PASS",
+        "detail": "runs=20 latest=none blocked=3 latest_ms=44506.25",
+        "data": {
+          "latest_pointer": {},
+          "recent_runs": [
+            {
+              "run_name": "20260410T171714Z-pid56370",
+              "generated_at": "2026-04-10T17:17:14Z",
+              "overall": "READY_WITH_WARNINGS",
+              "duration_ms": 44506.25,
+              "summary": {
+                "PASS": 4,
+                "WARN": 2,
+                "FAIL": 0,
+                "SKIP": 0
+              },
+              "failed_stages": [],
+              "task": ""
+            },
+            {
+              "run_name": "20260410T165858Z-pid50822",
+              "generated_at": "2026-04-10T16:58:58Z",
+              "overall": "READY_WITH_WARNINGS",
+              "duration_ms": 0.0,
+              "summary": {
+                "PASS": 4,
+                "WARN": 2,
+                "FAIL": 0,
+                "SKIP": 0
+              },
+              "failed_stages": [],
+              "task": ""
+            },
+            {
+              "run_name": "20260410T165819Z-pid51576",
+              "generated_at": "2026-04-10T16:58:19Z",
+              "overall": "READY_WITH_WARNINGS",
+              "duration_ms": 0.0,
+              "summary": {
+                "PASS": 4,
+                "WARN": 2,
+                "FAIL": 0,
+                "SKIP": 0
+              },
+              "failed_stages": [],
+              "task": ""
+            },
+            {
+              "run_name": "20260410T165740Z-pid51488",
+              "generated_at": "2026-04-10T16:57:40Z",
+              "overall": "READY_WITH_WARNINGS",
+              "duration_ms": 0.0,
+              "summary": {
+                "PASS": 4,
+                "WARN": 2,
+                "FAIL": 0,
+                "SKIP": 0
+              },
+              "failed_stages": [],
+              "task": ""
+            },
+            {
+              "run_name": "20260410T165701Z-pid51390",
+              "generated_at": "2026-04-10T16:57:01Z",
+              "overall": "READY_WITH_WARNINGS",
+              "duration_ms": 0.0,
+              "summary": {
+                "PASS": 4,
+                "WARN": 2,
+                "FAIL": 0,
+                "SKIP": 0
+              },
+              "failed_stages": [],
+              "task": ""
+            }
+          ],
+          "recent_blocked_runs": [
+            {
+              "run_name": "20260410T163929Z-pid49554",
+              "generated_at": "2026-04-10T16:39:29Z",
+              "overall": "BLOCKED",
+              "duration_ms": 0.0,
+              "summary": {
+                "PASS": 1,
+                "WARN": 2,
+                "FAIL": 3,
+                "SKIP": 0
+              },
+              "failed_stages": [
+                "guardrails",
+                "smoke",
+                "browser_smoke"
+              ],
+              "task": ""
+            },
+            {
+              "run_name": "20260410T100458Z-pid39452",
+              "generated_at": "2026-04-10T10:04:58Z",
+              "overall": "BLOCKED",
+              "duration_ms": 0.0,
+              "summary": {
+                "PASS": 3,
+                "WARN": 2,
+                "FAIL": 1,
+                "SKIP": 0
+              },
+              "failed_stages": [
+                "browser_smoke"
+              ],
+              "task": ""
+            },
+            {
+              "run_name": "20260410T085958Z-pid18403",
+              "generated_at": "2026-04-10T08:59:58Z",
+              "overall": "BLOCKED",
+              "duration_ms": 0.0,
+              "summary": {
+                "PASS": 2,
+                "WARN": 2,
+                "FAIL": 1,
+                "SKIP": 0
+              },
+              "failed_stages": [
+                "smoke"
+              ],
+              "task": ""
+            }
+          ]
+        }
+      },
+      {
+        "name": "history_trends",
+        "status": "WARN",
+        "detail": "latest=7 problem=0 warning=3 harness_diff=UNCHANGED evaluator_diff=CHANGED task=none blocker=browser_smoke: suite=extended scena… slow=browser-smoke-live-minimal streak=none blocker_repeat=browser_smoke: suite=ex…x2 regression=none release_gate=PASS:44506.25",
+        "data": {
+          "latest": [
+            {
+              "kind": "harness",
+              "overall": "READY_WITH_WARNINGS",
+              "subject": "",
+              "generated_at": "2026-04-10T17:17:14Z",
+              "run_name": "20260410T171714Z-pid56370",
+              "bucket": "warning"
+            },
+            {
+              "kind": "harness-stability-core",
+              "overall": "READY_WITH_WARNINGS",
+              "subject": "",
+              "generated_at": "2026-04-10T10:07:31Z",
+              "run_name": "20260410T100731Z-pid42293",
+              "bucket": "warning"
+            },
+            {
+              "kind": "harness-stability-release",
+              "overall": "READY_WITH_WARNINGS",
+              "subject": "",
+              "generated_at": "2026-04-10T17:17:14Z",
+              "run_name": "20260410T171714Z-pid56370",
+              "bucket": "warning"
+            },
+            {
+              "kind": "evaluator",
+              "overall": "HEALTHY",
+              "subject": "tags=stability-local-release",
+              "generated_at": "2026-04-10T16:51:35Z",
+              "run_name": "20260410T165135Z-pid50684",
+              "bucket": "healthy"
+            },
+            {
+              "kind": "ci-agent-smoke",
+              "overall": "READY",
+              "subject": "",
+              "generated_at": "2026-04-08T03:32:38Z",
+              "run_name": "20260408T033238Z-pid79051",
+              "bucket": "healthy"
+            },
+            {
+              "kind": "ci-guardrails",
+              "overall": "READY",
+              "subject": "",
+              "generated_at": "2026-04-08T03:32:38Z",
+              "run_name": "20260408T033238Z-pid79052",
+              "bucket": "healthy"
+            },
+            {
+              "kind": "ci-browser-smoke",
+              "overall": "READY",
+              "subject": "",
+              "generated_at": "2026-04-08T02:18:31Z",
+              "run_name": "20260408T021831Z-pid20776",
+              "bucket": "healthy"
+            }
+          ],
+          "problem_kinds": [],
+          "warning_kinds": [
+            "harness",
+            "harness-stability-core",
+            "harness-stability-release"
+          ],
+          "drift_items": [
+            {
+              "kind": "evaluator",
+              "name": "browser/browser-smoke-extended",
+              "before": "PASS",
+              "after": "MISSING"
+            },
+            {
+              "kind": "evaluator",
+              "name": "browser/browser-smoke-live-minimal",
+              "before": "MISSING",
+              "after": "PASS"
+            },
+            {
+              "kind": "evaluator",
+              "name": "ops/stability-failure-degrade",
+              "before": "PASS",
+              "after": "MISSING"
+            },
+            {
+              "kind": "ci-agent-smoke",
+              "name": "static_guardrails",
+              "before": "PASS",
+              "after": "SKIP"
+            },
+            {
+              "kind": "ci-guardrails",
+              "name": "static_guardrails",
+              "before": "PASS",
+              "after": "SKIP"
+            }
+          ],
+          "diffs": {
+            "harness": {
+              "kind": "harness",
+              "root_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision",
+              "overall": "UNCHANGED",
+              "before": {
+                "kind": "harness",
+                "run_name": "20260410T165858Z-pid50822",
+                "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-repeat/20260410T165858Z-pid50822",
+                "generated_at": "2026-04-10T16:58:58Z",
+                "overall": "READY_WITH_WARNINGS",
+                "duration_ms": 0.0,
+                "summary": {
+                  "PASS": 4,
+                  "WARN": 2,
+                  "FAIL": 0,
+                  "SKIP": 0
+                },
+                "subject": "",
+                "results_count": 6,
+                "files": {
+                  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-repeat/20260410T165858Z-pid50822/summary.json",
+                  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-repeat/20260410T165858Z-pid50822/progress.md",
+                  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-repeat/20260410T165858Z-pid50822/failure-summary.md",
+                  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-repeat/20260410T165858Z-pid50822/handoff.json"
+                }
+              },
+              "after": {
+                "kind": "harness",
+                "run_name": "20260410T171714Z-pid56370",
+                "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-s6-check/20260410T171714Z-pid56370",
+                "generated_at": "2026-04-10T17:17:14Z",
+                "overall": "READY_WITH_WARNINGS",
+                "duration_ms": 44506.25,
+                "summary": {
+                  "PASS": 4,
+                  "WARN": 2,
+                  "FAIL": 0,
+                  "SKIP": 0
+                },
+                "subject": "",
+                "results_count": 6,
+                "files": {
+                  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-s6-check/20260410T171714Z-pid56370/summary.json",
+                  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-s6-check/20260410T171714Z-pid56370/progress.md",
+                  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-s6-check/20260410T171714Z-pid56370/failure-summary.md",
+                  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-s6-check/20260410T171714Z-pid56370/handoff.json"
+                }
+              },
+              "overall_change": {
+                "before": "READY_WITH_WARNINGS",
+                "after": "READY_WITH_WARNINGS"
+              },
+              "summary_delta": {
+                "FAIL": 0,
+                "PASS": 0,
+                "SKIP": 0,
+                "WARN": 0
+              },
+              "changed_results": []
+            },
+            "harness-stability-core": {
+              "kind": "harness-stability-core",
+              "root_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision",
+              "overall": "UNCHANGED",
+              "before": {
+                "kind": "harness-stability-core",
+                "run_name": "20260410T100600Z-pid40825",
+                "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/core-profile-check/20260410T100600Z-pid40825",
+                "generated_at": "2026-04-10T10:06:00Z",
+                "overall": "READY_WITH_WARNINGS",
+                "duration_ms": 0.0,
+                "summary": {
+                  "PASS": 4,
+                  "WARN": 2,
+                  "FAIL": 0,
+                  "SKIP": 0
+                },
+                "subject": "",
+                "results_count": 6,
+                "files": {
+                  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/core-profile-check/20260410T100600Z-pid40825/summary.json",
+                  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/core-profile-check/20260410T100600Z-pid40825/progress.md",
+                  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/core-profile-check/20260410T100600Z-pid40825/failure-summary.md",
+                  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/core-profile-check/20260410T100600Z-pid40825/handoff.json"
+                }
+              },
+              "after": {
+                "kind": "harness-stability-core",
+                "run_name": "20260410T100731Z-pid42293",
+                "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/core-profile-check/20260410T100731Z-pid42293",
+                "generated_at": "2026-04-10T10:07:31Z",
+                "overall": "READY_WITH_WARNINGS",
+                "duration_ms": 0.0,
+                "summary": {
+                  "PASS": 4,
+                  "WARN": 2,
+                  "FAIL": 0,
+                  "SKIP": 0
+                },
+                "subject": "",
+                "results_count": 6,
+                "files": {
+                  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/core-profile-check/20260410T100731Z-pid42293/summary.json",
+                  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/core-profile-check/20260410T100731Z-pid42293/progress.md",
+                  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/core-profile-check/20260410T100731Z-pid42293/failure-summary.md",
+                  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/core-profile-check/20260410T100731Z-pid42293/handoff.json"
+                }
+              },
+              "overall_change": {
+                "before": "READY_WITH_WARNINGS",
+                "after": "READY_WITH_WARNINGS"
+              },
+              "summary_delta": {
+                "FAIL": 0,
+                "PASS": 0,
+                "SKIP": 0,
+                "WARN": 0
+              },
+              "changed_results": []
+            },
+            "harness-stability-release": {
+              "kind": "harness-stability-release",
+              "root_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision",
+              "overall": "UNCHANGED",
+              "before": {
+                "kind": "harness-stability-release",
+                "run_name": "20260410T165858Z-pid50822",
+                "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-repeat/20260410T165858Z-pid50822",
+                "generated_at": "2026-04-10T16:58:58Z",
+                "overall": "READY_WITH_WARNINGS",
+                "duration_ms": 0.0,
+                "summary": {
+                  "PASS": 4,
+                  "WARN": 2,
+                  "FAIL": 0,
+                  "SKIP": 0
+                },
+                "subject": "",
+                "results_count": 6,
+                "files": {
+                  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-repeat/20260410T165858Z-pid50822/summary.json",
+                  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-repeat/20260410T165858Z-pid50822/progress.md",
+                  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-repeat/20260410T165858Z-pid50822/failure-summary.md",
+                  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-repeat/20260410T165858Z-pid50822/handoff.json"
+                }
+              },
+              "after": {
+                "kind": "harness-stability-release",
+                "run_name": "20260410T171714Z-pid56370",
+                "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-s6-check/20260410T171714Z-pid56370",
+                "generated_at": "2026-04-10T17:17:14Z",
+                "overall": "READY_WITH_WARNINGS",
+                "duration_ms": 44506.25,
+                "summary": {
+                  "PASS": 4,
+                  "WARN": 2,
+                  "FAIL": 0,
+                  "SKIP": 0
+                },
+                "subject": "",
+                "results_count": 6,
+                "files": {
+                  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-s6-check/20260410T171714Z-pid56370/summary.json",
+                  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-s6-check/20260410T171714Z-pid56370/progress.md",
+                  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-s6-check/20260410T171714Z-pid56370/failure-summary.md",
+                  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-runs/stability-local/release-s6-check/20260410T171714Z-pid56370/handoff.json"
+                }
+              },
+              "overall_change": {
+                "before": "READY_WITH_WARNINGS",
+                "after": "READY_WITH_WARNINGS"
+              },
+              "summary_delta": {
+                "FAIL": 0,
+                "PASS": 0,
+                "SKIP": 0,
+                "WARN": 0
+              },
+              "changed_results": []
+            },
+            "evaluator": {
+              "kind": "evaluator",
+              "root_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision",
+              "overall": "CHANGED",
+              "before": {
+                "kind": "evaluator",
+                "run_name": "20260410T161012Z-pid44374",
+                "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-eval/stability-local/s3-post-ownership-idempotency/20260410T161012Z-pid44374",
+                "generated_at": "2026-04-10T16:10:12Z",
+                "overall": "HEALTHY",
+                "duration_ms": 0.0,
+                "summary": {
+                  "PASS": 6,
+                  "FLAKY": 0,
+                  "FAIL": 0,
+                  "budget_exceeded": 0,
+                  "scenarios_total": 6,
+                  "attempts_total": 6
+                },
+                "subject": "tags=stability-local",
+                "results_count": 6,
+                "files": {
+                  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-eval/stability-local/s3-post-ownership-idempotency/20260410T161012Z-pid44374/summary.json",
+                  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-eval/stability-local/s3-post-ownership-idempotency/20260410T161012Z-pid44374/progress.md",
+                  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-eval/stability-local/s3-post-ownership-idempotency/20260410T161012Z-pid44374/failure-summary.md",
+                  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-eval/stability-local/s3-post-ownership-idempotency/20260410T161012Z-pid44374/handoff.json"
+                }
+              },
+              "after": {
+                "kind": "evaluator",
+                "run_name": "20260410T165135Z-pid50684",
+                "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-eval/stability-local/s5-release-baseline/20260410T165135Z-pid50684",
+                "generated_at": "2026-04-10T16:51:35Z",
+                "overall": "HEALTHY",
+                "duration_ms": 0.0,
+                "summary": {
+                  "PASS": 1,
+                  "FLAKY": 0,
+                  "FAIL": 0,
+                  "budget_exceeded": 0,
+                  "scenarios_total": 1,
+                  "attempts_total": 1
+                },
+                "subject": "tags=stability-local-release",
+                "results_count": 1,
+                "files": {
+                  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-eval/stability-local/s5-release-baseline/20260410T165135Z-pid50684/summary.json",
+                  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-eval/stability-local/s5-release-baseline/20260410T165135Z-pid50684/progress.md",
+                  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-eval/stability-local/s5-release-baseline/20260410T165135Z-pid50684/failure-summary.md",
+                  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/harness-eval/stability-local/s5-release-baseline/20260410T165135Z-pid50684/handoff.json"
+                }
+              },
+              "overall_change": {
+                "before": "HEALTHY",
+                "after": "HEALTHY"
+              },
+              "summary_delta": {
+                "FAIL": 0,
+                "FLAKY": 0,
+                "PASS": -5,
+                "attempts_total": -5,
+                "budget_exceeded": 0,
+                "scenarios_total": -5
+              },
+              "changed_results": [
+                {
+                  "name": "browser/browser-smoke-extended",
+                  "before": "PASS",
+                  "after": "MISSING"
+                },
+                {
+                  "name": "browser/browser-smoke-live-minimal",
+                  "before": "MISSING",
+                  "after": "PASS"
+                },
+                {
+                  "name": "ops/stability-failure-degrade",
+                  "before": "PASS",
+                  "after": "MISSING"
+                },
+                {
+                  "name": "ops/stability-idempotency",
+                  "before": "PASS",
+                  "after": "MISSING"
+                },
+                {
+                  "name": "report-solution/report-solution-core",
+                  "before": "PASS",
+                  "after": "MISSING"
+                },
+                {
+                  "name": "security/access-boundaries",
+                  "before": "PASS",
+                  "after": "MISSING"
+                },
+                {
+                  "name": "tenant/asset-ownership-boundaries",
+                  "before": "PASS",
+                  "after": "MISSING"
+                }
+              ]
+            },
+            "ci-agent-smoke": {
+              "kind": "ci-agent-smoke",
+              "root_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision",
+              "overall": "CHANGED",
+              "before": {
+                "kind": "ci-agent-smoke",
+                "run_name": "20260407T093324Z-pid9591",
+                "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/agent-smoke/20260407T093324Z-pid9591",
+                "generated_at": "2026-04-07T09:33:24Z",
+                "overall": "READY",
+                "duration_ms": 0.0,
+                "summary": {
+                  "PASS": 2,
+                  "WARN": 0,
+                  "FAIL": 0,
+                  "SKIP": 2
+                },
+                "subject": "",
+                "results_count": 4,
+                "files": {
+                  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/agent-smoke/20260407T093324Z-pid9591/summary.json",
+                  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/agent-smoke/20260407T093324Z-pid9591/progress.md",
+                  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/agent-smoke/20260407T093324Z-pid9591/failure-summary.md",
+                  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/agent-smoke/20260407T093324Z-pid9591/handoff.json"
+                }
+              },
+              "after": {
+                "kind": "ci-agent-smoke",
+                "run_name": "20260408T033238Z-pid79051",
+                "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/agent-smoke/20260408T033238Z-pid79051",
+                "generated_at": "2026-04-08T03:32:38Z",
+                "overall": "READY",
+                "duration_ms": 0.0,
+                "summary": {
+                  "PASS": 1,
+                  "WARN": 0,
+                  "FAIL": 0,
+                  "SKIP": 3
+                },
+                "subject": "",
+                "results_count": 4,
+                "files": {
+                  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/agent-smoke/20260408T033238Z-pid79051/summary.json",
+                  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/agent-smoke/20260408T033238Z-pid79051/progress.md",
+                  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/agent-smoke/20260408T033238Z-pid79051/failure-summary.md",
+                  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/agent-smoke/20260408T033238Z-pid79051/handoff.json"
+                }
+              },
+              "overall_change": {
+                "before": "READY",
+                "after": "READY"
+              },
+              "summary_delta": {
+                "FAIL": 0,
+                "PASS": -1,
+                "SKIP": 1,
+                "WARN": 0
+              },
+              "changed_results": [
+                {
+                  "name": "static_guardrails",
+                  "before": "PASS",
+                  "after": "SKIP"
+                }
+              ]
+            },
+            "ci-guardrails": {
+              "kind": "ci-guardrails",
+              "root_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision",
+              "overall": "CHANGED",
+              "before": {
+                "kind": "ci-guardrails",
+                "run_name": "20260407T093325Z-pid9592",
+                "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/guardrails/20260407T093325Z-pid9592",
+                "generated_at": "2026-04-07T09:33:25Z",
+                "overall": "READY",
+                "duration_ms": 0.0,
+                "summary": {
+                  "PASS": 2,
+                  "WARN": 0,
+                  "FAIL": 0,
+                  "SKIP": 2
+                },
+                "subject": "",
+                "results_count": 4,
+                "files": {
+                  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/guardrails/20260407T093325Z-pid9592/summary.json",
+                  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/guardrails/20260407T093325Z-pid9592/progress.md",
+                  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/guardrails/20260407T093325Z-pid9592/failure-summary.md",
+                  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/guardrails/20260407T093325Z-pid9592/handoff.json"
+                }
+              },
+              "after": {
+                "kind": "ci-guardrails",
+                "run_name": "20260408T033238Z-pid79052",
+                "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/guardrails/20260408T033238Z-pid79052",
+                "generated_at": "2026-04-08T03:32:38Z",
+                "overall": "READY",
+                "duration_ms": 0.0,
+                "summary": {
+                  "PASS": 1,
+                  "WARN": 0,
+                  "FAIL": 0,
+                  "SKIP": 3
+                },
+                "subject": "",
+                "results_count": 4,
+                "files": {
+                  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/guardrails/20260408T033238Z-pid79052/summary.json",
+                  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/guardrails/20260408T033238Z-pid79052/progress.md",
+                  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/guardrails/20260408T033238Z-pid79052/failure-summary.md",
+                  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/guardrails/20260408T033238Z-pid79052/handoff.json"
+                }
+              },
+              "overall_change": {
+                "before": "READY",
+                "after": "READY"
+              },
+              "summary_delta": {
+                "FAIL": 0,
+                "PASS": -1,
+                "SKIP": 1,
+                "WARN": 0
+              },
+              "changed_results": [
+                {
+                  "name": "static_guardrails",
+                  "before": "PASS",
+                  "after": "SKIP"
+                }
+              ]
+            },
+            "ci-browser-smoke": {
+              "kind": "ci-browser-smoke",
+              "root_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision",
+              "overall": "UNCHANGED",
+              "before": {
+                "kind": "ci-browser-smoke",
+                "run_name": "20260407T183531Z-pid68515",
+                "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/browser-smoke/20260407T183531Z-pid68515",
+                "generated_at": "2026-04-07T18:35:31Z",
+                "overall": "READY",
+                "duration_ms": 0.0,
+                "summary": {
+                  "PASS": 1,
+                  "WARN": 0,
+                  "FAIL": 0,
+                  "SKIP": 4
+                },
+                "subject": "",
+                "results_count": 5,
+                "files": {
+                  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/browser-smoke/20260407T183531Z-pid68515/summary.json",
+                  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/browser-smoke/20260407T183531Z-pid68515/progress.md",
+                  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/browser-smoke/20260407T183531Z-pid68515/failure-summary.md",
+                  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/browser-smoke/20260407T183531Z-pid68515/handoff.json"
+                }
+              },
+              "after": {
+                "kind": "ci-browser-smoke",
+                "run_name": "20260408T021831Z-pid20776",
+                "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/browser-smoke/20260408T021831Z-pid20776",
+                "generated_at": "2026-04-08T02:18:31Z",
+                "overall": "READY",
+                "duration_ms": 0.0,
+                "summary": {
+                  "PASS": 1,
+                  "WARN": 0,
+                  "FAIL": 0,
+                  "SKIP": 4
+                },
+                "subject": "",
+                "results_count": 5,
+                "files": {
+                  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/browser-smoke/20260408T021831Z-pid20776/summary.json",
+                  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/browser-smoke/20260408T021831Z-pid20776/progress.md",
+                  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/browser-smoke/20260408T021831Z-pid20776/failure-summary.md",
+                  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/browser-smoke/20260408T021831Z-pid20776/handoff.json"
+                }
+              },
+              "overall_change": {
+                "before": "READY",
+                "after": "READY"
+              },
+              "summary_delta": {
+                "FAIL": 0,
+                "PASS": 0,
+                "SKIP": 0,
+                "WARN": 0
+              },
+              "changed_results": []
+            }
+          },
+          "problem_tasks": [],
+          "top_blockers": [
+            {
+              "text": "browser_smoke: suite=extended scenarios=9 fail=1",
+              "count": 2,
+              "latest_generated_at": "2026-04-07T18:34:18Z",
+              "kinds": {
+                "ci-browser-smoke": 2
+              }
+            }
+          ],
+          "slow_scenarios": [
+            {
+              "name": "browser-smoke-live-minimal",
+              "category": "browser",
+              "count": 1,
+              "max_duration_ms": 33720.97,
+              "budget_exceeded": false
+            },
+            {
+              "name": "browser-smoke-extended",
+              "category": "browser",
+              "count": 2,
+              "max_duration_ms": 29214.31,
+              "budget_exceeded": false
+            },
+            {
+              "name": "stability-idempotency",
+              "category": "ops",
+              "count": 3,
+              "max_duration_ms": 2089.18,
+              "budget_exceeded": false
+            },
+            {
+              "name": "asset-ownership-boundaries",
+              "category": "tenant",
+              "count": 2,
+              "max_duration_ms": 1022.3,
+              "budget_exceeded": false
+            },
+            {
+              "name": "stability-failure-degrade",
+              "category": "ops",
+              "count": 2,
+              "max_duration_ms": 905.04,
+              "budget_exceeded": false
+            }
+          ],
+          "consecutive_problems": [],
+          "frequent_blockers": [
+            {
+              "text": "browser_smoke: suite=extended scenarios=9 fail=1",
+              "count": 2,
+              "latest_generated_at": "2026-04-07T18:34:18Z",
+              "kinds": {
+                "ci-browser-smoke": 2
+              }
+            }
+          ],
+          "slow_regressions": [],
+          "stability_gates": [
+            {
+              "kind": "harness-stability-release",
+              "status": "PASS",
+              "duration_ms": 44506.25,
+              "warn_ms": 1200000.0,
+              "fail_ms": 1440000.0,
+              "generated_at": "2026-04-10T17:17:14Z",
+              "overall": "READY_WITH_WARNINGS"
+            }
+          ]
+        }
+      },
+      {
+        "name": "diagnostic_panel",
+        "status": "WARN",
+        "detail": "task=none blocker=browser_smoke: suite=extended scena… slow=browser-smoke-live-minimal problem_kinds=0 warning_kinds=3 streak=none blocker_repeat=browser_smoke: suite=ex…x2 regression=none release_gate=PASS:44506.25 replay=python3 scripts/agent_browser_smoke.py --suite extended",
+        "data": {
+          "top_problem_task": {},
+          "top_blocker": {
+            "text": "browser_smoke: suite=extended scenarios=9 fail=1",
+            "count": 2,
+            "latest_generated_at": "2026-04-07T18:34:18Z",
+            "kinds": {
+              "ci-browser-smoke": 2
+            }
+          },
+          "top_slow_scenario": {
+            "name": "browser-smoke-live-minimal",
+            "category": "browser",
+            "count": 1,
+            "max_duration_ms": 33720.97,
+            "budget_exceeded": false
+          },
+          "problem_kinds": [],
+          "warning_kinds": [
+            "harness",
+            "harness-stability-core",
+            "harness-stability-release"
+          ],
+          "top_consecutive_problem": {},
+          "top_frequent_blocker": {
+            "text": "browser_smoke: suite=extended scenarios=9 fail=1",
+            "count": 2,
+            "latest_generated_at": "2026-04-07T18:34:18Z",
+            "kinds": {
+              "ci-browser-smoke": 2
+            }
+          },
+          "top_slow_regression": {},
+          "top_stability_gate": {
+            "kind": "harness-stability-release",
+            "status": "PASS",
+            "duration_ms": 44506.25,
+            "warn_ms": 1200000.0,
+            "fail_ms": 1440000.0,
+            "generated_at": "2026-04-10T17:17:14Z",
+            "overall": "READY_WITH_WARNINGS"
+          },
+          "consecutive_problems": [],
+          "frequent_blockers": [
+            {
+              "text": "browser_smoke: suite=extended scenarios=9 fail=1",
+              "count": 2,
+              "latest_generated_at": "2026-04-07T18:34:18Z",
+              "kinds": {
+                "ci-browser-smoke": 2
+              }
+            }
+          ],
+          "slow_regressions": [],
+          "stability_gates": [
+            {
+              "kind": "harness-stability-release",
+              "status": "PASS",
+              "duration_ms": 44506.25,
+              "warn_ms": 1200000.0,
+              "fail_ms": 1440000.0,
+              "generated_at": "2026-04-10T17:17:14Z",
+              "overall": "READY_WITH_WARNINGS"
+            }
+          ],
+          "alert_thresholds": {
+            "consecutive_problem_warn": 2,
+            "consecutive_problem_fail": 3,
+            "frequent_blocker_warn": 2,
+            "slow_regression_delta_warn_ms": 150.0,
+            "slow_regression_delta_fail_ms": 500.0,
+            "slow_regression_ratio_warn": 1.2,
+            "stability_release_warn_ms": 1200000.0,
+            "stability_release_fail_ms": 1440000.0
+          },
+          "recommended_commands": [
+            {
+              "reason": "定位 Top blocker",
+              "command": "python3 scripts/agent_browser_smoke.py --suite extended",
+              "source": "handoff",
+              "subject": "browser_smoke: suite=extended scenarios=9 fail=1"
+            },
+            {
+              "reason": "定位 Top blocker",
+              "command": "python3 scripts/agent_scenario_scaffold.py --source harness --run-dir /Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/ci/browser-smoke/20260407T183418Z-pid67370",
+              "source": "handoff",
+              "subject": "browser_smoke: suite=extended scenarios=9 fail=1"
+            },
+            {
+              "reason": "复跑最近最慢场景",
+              "command": "python3 scripts/agent_eval.py --scenario browser-smoke-live-minimal --artifact-dir artifacts/harness-eval",
+              "source": "heuristic",
+              "subject": "browser-smoke-live-minimal"
+            }
+          ]
+        }
+      }
+    ],
+    "summary": {
+      "PASS": 9,
+      "WARN": 3,
+      "FAIL": 0
+    },
+    "overall": "DEGRADED"
+  }
+}

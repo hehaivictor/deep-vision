@@ -1,0 +1,168 @@
+./Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:370: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now_iso = datetime.utcnow().isoformat()
+/Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:2518: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now_iso = datetime.utcnow().isoformat()
+............../Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:2105: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now_iso = datetime.utcnow().isoformat()
+................................/Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:292: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().replace(microsecond=0)
+....../Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:1111: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().replace(microsecond=0).isoformat()
+./Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/test_api_comprehensive.py:1255: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow().replace(microsecond=0).isoformat()
+...................................................................................................
+----------------------------------------------------------------------
+Ran 153 tests in 13.040s
+
+OK
+✅ 配置文件加载成功 (web.config)
+⚠️  未配置 SECRET_KEY，开发模式使用固定默认会话密钥
+[ScenarioLoader] 已加载 8 个场景配置
+🔐 已为 License 库初始化共享签名密钥
+[ScenarioLoader] 已加载 0 个场景配置
+启动初始化完成：reason=first_request_fallback，total=66.0ms，auth_db=0.6ms，license_db=0.4ms，meta_index_schema=65.0ms
+[SMS][mock] scene=login phone=15920146009 code=287349
+[SMS][mock] scene=login phone=13460547611 code=867924
+[ScenarioLoader] 已加载 1 个场景配置
+[SMS][mock] scene=login phone=11829008330 code=448112
+🔐 已为 License 库初始化共享签名密钥
+[SMS][mock] scene=login phone=17253312368 code=858539
+[SMS][mock] scene=login phone=14144222168 code=977484
+[SMS][mock] scene=login phone=10955625367 code=507413
+[SMS][mock] scene=login phone=14363757147 code=652206
+[SMS][mock] scene=login phone=13175798022 code=478881
+[SMS][mock] scene=login phone=18674857579 code=892371
+[SMS][mock] scene=login phone=11996049449 code=917522
+[SMS][mock] scene=login phone=14073180965 code=910605
+[SMS][mock] scene=login phone=11594620951 code=805164
+[ScenarioLoader] 已加载 1 个场景配置
+[ScenarioLoader] 已加载 1 个场景配置
+[SMS][mock] scene=login phone=12951697022 code=844873
+[SMS][mock] scene=login phone=14704014249 code=863375
+[ScenarioLoader] 已加载 1 个场景配置
+[SMS][mock] scene=login phone=11133637041 code=480712
+[SMS][mock] scene=login phone=10755080147 code=198354
+[SMS][mock] scene=login phone=17716092844 code=870016
+[SMS][mock] scene=login phone=16327545714 code=283177
+[SMS][mock] scene=login phone=12509035381 code=345700
+[SMS][mock] scene=login phone=12509035381 code=590145
+[SMS][mock] scene=login phone=11160730117 code=913804
+[SMS][mock] scene=login phone=13603118552 code=368703
+[SMS][mock] scene=login phone=16461485784 code=422204
+[SMS][mock] scene=bind phone=16461485784 code=479512
+[ScenarioLoader] 已加载 2 个场景配置
+[ScenarioLoader] 已加载 2 个场景配置
+[ScenarioLoader] 已加载 2 个场景配置
+[SMS][mock] scene=login phone=10396140560 code=569434
+[SMS][mock] scene=bind phone=10396140560 code=998301
+[ScenarioLoader] 已加载 2 个场景配置
+[SMS][mock] scene=login phone=13651476835 code=173472
+[ScenarioLoader] 已加载 3 个场景配置
+[SMS][mock] scene=login phone=16534288758 code=563036
+[ScenarioLoader] 已加载 3 个场景配置
+[SMS][mock] scene=login phone=10861561895 code=694003
+[SMS][mock] scene=login phone=15834050372 code=817618
+[SMS][mock] scene=login phone=14817036625 code=372493
+[SMS][mock] scene=login phone=13317163830 code=866738
+[SMS][mock] scene=login phone=18158229587 code=320214
+[SMS][mock] scene=login phone=15547817792 code=546670
+[SMS][mock] scene=login phone=12251241528 code=923592
+[SMS][mock] scene=login phone=17584667857 code=993522
+[ScenarioLoader] 已加载 5 个场景配置
+[SMS][mock] scene=login phone=12717736104 code=494742
+[SMS][mock] scene=login phone=11983071536 code=215515
+[SMS][mock] scene=login phone=10231502144 code=436856
+[SMS][mock] scene=login phone=16975002961 code=250777
+[SMS][mock] scene=login phone=17759319469 code=566995
+[SMS][mock] scene=login phone=10770431966 code=192312
+[SMS][mock] scene=login phone=19810390136 code=516146
+[SMS][mock] scene=login phone=18403759851 code=287159
+[SMS][mock] scene=login phone=10093689899 code=571243
+[SMS][mock] scene=login phone=11273460338 code=590070
+[SMS][mock] scene=login phone=11214344172 code=274045
+[SMS][mock] scene=login phone=17599316432 code=199822
+[SMS][mock] scene=login phone=16067311956 code=581956
+[SMS][mock] scene=login phone=13605436296 code=666297
+[SMS][mock] scene=login phone=10346869081 code=561162
+[SMS][mock] scene=login phone=12082525444 code=891340
+[SMS][mock] scene=login phone=14556894356 code=406817
+⚠️ AI 场景生成失败，已切换本地草案兜底: AI 场景结构不完整
+[SMS][mock] scene=login phone=19482088607 code=539337
+[SMS][mock] scene=login phone=10817463755 code=840611
+🔐 已将旧 users.db 中的 License 数据迁移到独立的 licenses.db
+🔐 已将旧 users.db 中的 License 数据迁移到独立的 licenses.db
+🔐 已将 License 签名密钥迁移到 License 库，同库多机共享不再依赖本机 SECRET_KEY
+[SMS][mock] scene=login phone=16012696658 code=972344
+[SMS][mock] scene=login phone=11250905433 code=770764
+[SMS][mock] scene=login phone=17846415230 code=934355
+[SMS][mock] scene=login phone=18196633026 code=628842
+[SMS][mock] scene=login phone=11449965359 code=394830
+[SMS][mock] scene=login phone=13767362552 code=783404
+[SMS][mock] scene=login phone=13520540390 code=167182
+[SMS][mock] scene=login phone=11786426560 code=233255
+[SMS][mock] scene=login phone=18703180714 code=448320
+[SMS][mock] scene=login phone=14723037615 code=601987
+[SMS][mock] scene=login phone=12114088575 code=601984
+生成问题时发生异常: simulated timeout
+[SMS][mock] scene=login phone=16616428373 code=266022
+[SMS][mock] scene=login phone=17961132364 code=764131
+[SMS][mock] scene=login phone=19569417588 code=636889
+[SMS][mock] scene=login phone=16332357046 code=961832
+[SMS][mock] scene=login phone=15221366491 code=770147
+[SMS][mock] scene=login phone=12488869932 code=806037
+[SMS][mock] scene=login phone=16062177185 code=593496
+[SMS][mock] scene=login phone=16109148158 code=945538
+[SMS][mock] scene=login phone=14553518380 code=651508
+[SMS][mock] scene=login phone=18261907446 code=860736
+[SMS][mock] scene=login phone=17799735472 code=691756
+[SMS][mock] scene=login phone=16383860529 code=913974
+[SMS][mock] scene=login phone=18148293840 code=339338
+[SMS][mock] scene=login phone=12736124934 code=385309
+[SMS][mock] scene=login phone=17197536288 code=370884
+[SMS][mock] scene=login phone=19024481187 code=933376
+[SMS][mock] scene=login phone=15315785052 code=390705
+[SMS][mock] scene=login phone=12485072268 code=665660
+[SMS][mock] scene=login phone=19184229586 code=363303
+[SMS][mock] scene=login phone=14295207197 code=265774
+[SMS][mock] scene=login phone=15022256302 code=955684
+[SMS][mock] scene=login phone=14793023095 code=865823
+[SMS][mock] scene=login phone=18107083533 code=824488
+[SMS][mock] scene=login phone=18404798952 code=577623
+[SMS][mock] scene=login phone=11479431278 code=288066
+[SMS][mock] scene=login phone=11858460076 code=944741
+[SMS][mock] scene=login phone=15168104131 code=172333
+[SMS][mock] scene=login phone=12551390097 code=477502
+[SMS][mock] scene=login phone=13673802081 code=254537
+[SMS][mock] scene=login phone=14065246207 code=353840
+[SMS][mock] scene=login phone=15715207310 code=495914
+[SMS][mock] scene=login phone=19275032286 code=643652
+[SMS][mock] scene=login phone=13655131274 code=527316
+[SMS][mock] scene=login phone=15582228780 code=365706
+[SMS][mock] scene=login phone=11077038860 code=854545
+[SMS][mock] scene=login phone=14600336736 code=739589
+[SMS][mock] scene=login phone=18279653527 code=306470
+[SMS][mock] scene=login phone=17937802435 code=299076
+[SMS][mock] scene=login phone=19453252732 code=894683
+[SMS][mock] scene=login phone=17238993290 code=833272
+[SMS][mock] scene=login phone=19343302173 code=130439
+[SMS][mock] scene=login phone=14689230678 code=279478
+✅ 配置文件加载成功 (web.config)
+⚠️  未配置 SECRET_KEY，开发模式使用固定默认会话密钥
+✅ 已迁移会话主数据到 session_store: 1
+✅ 已迁移 site-config.js 到 site_config_store
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=final-stage-upgrade.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=delivery-fast.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=delivery-hardened.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=async-prewarm-sidecar.md, error=no such table: report_index
+✅ 方案缓存预热完成: report=async-prewarm-sidecar.md
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=cache-refresh-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=cache-refresh-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=degraded-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-ai-chapters.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-ai-bad-json.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-ai.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=feedback-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=interview-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=cache-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-rule-copy.md, error=no such table: report_index

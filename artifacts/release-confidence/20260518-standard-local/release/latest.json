@@ -1,0 +1,11 @@
+{
+  "generated_at": "2026-06-11T04:38:46Z",
+  "run_name": "20260611T043846Z-pid62278",
+  "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260611T043846Z-pid62278",
+  "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260611T043846Z-pid62278/summary.json",
+  "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260611T043846Z-pid62278/progress.md",
+  "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260611T043846Z-pid62278/failure-summary.md",
+  "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260611T043846Z-pid62278/handoff.json",
+  "overall": "READY_WITH_WARNINGS",
+  "duration_ms": 41761.2
+}

@@ -1,0 +1,96 @@
+{
+  "name": "doctor",
+  "command": "python3 scripts/agent_doctor.py --profile auto",
+  "exit_code": 0,
+  "payload": {
+    "profile": "auto",
+    "root_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision",
+    "selected_env_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/.env.local",
+    "env_source": "auto:local",
+    "summary": {
+      "PASS": 11,
+      "WARN": 2,
+      "FAIL": 0
+    },
+    "results": [
+      {
+        "name": "仓库结构",
+        "status": "PASS",
+        "detail": "关键入口、测试与 agent 文档均存在。",
+        "hint": ""
+      },
+      {
+        "name": "Python",
+        "status": "PASS",
+        "detail": "已检测到 python3: /opt/homebrew/bin/python3",
+        "hint": ""
+      },
+      {
+        "name": "uv",
+        "status": "PASS",
+        "detail": "已检测到 uv: /Users/hehai/.local/bin/uv",
+        "hint": ""
+      },
+      {
+        "name": "环境文件",
+        "status": "PASS",
+        "detail": "已选择 /Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/.env.local（来源: auto:local），解析到 66 个字段。",
+        "hint": ""
+      },
+      {
+        "name": "SECRET_KEY",
+        "status": "PASS",
+        "detail": "SECRET_KEY 已配置为非占位值。",
+        "hint": ""
+      },
+      {
+        "name": "INSTANCE_SCOPE_KEY",
+        "status": "PASS",
+        "detail": "已配置实例隔离键: local-dev",
+        "hint": ""
+      },
+      {
+        "name": "SMS_PROVIDER",
+        "status": "WARN",
+        "detail": "当前使用 mock 短信，仅适合本地调试或演示环境。",
+        "hint": ""
+      },
+      {
+        "name": "微信登录",
+        "status": "PASS",
+        "detail": "微信登录启用且关键配置完整。",
+        "hint": ""
+      },
+      {
+        "name": "AUTH_DB_PATH",
+        "status": "PASS",
+        "detail": "路径可解析，父目录存在: /Users/hehai/Documents/开目软件/Agents/project/DeepVision/data/auth",
+        "hint": ""
+      },
+      {
+        "name": "LICENSE_DB_PATH",
+        "status": "PASS",
+        "detail": "路径可解析，父目录存在: /Users/hehai/Documents/开目软件/Agents/project/DeepVision/data/auth",
+        "hint": ""
+      },
+      {
+        "name": "META_INDEX_DB_PATH",
+        "status": "PASS",
+        "detail": "路径可解析，父目录存在: /Users/hehai/Documents/开目软件/Agents/project/DeepVision/data",
+        "hint": ""
+      },
+      {
+        "name": "CUSTOM_SCENARIOS_DIR",
+        "status": "PASS",
+        "detail": "路径可解析，父目录存在: /Users/hehai/Documents/开目软件/Agents/project/DeepVision/data/scenarios/custom",
+        "hint": ""
+      },
+      {
+        "name": "License 开关",
+        "status": "WARN",
+        "detail": "当前未启用登录后 License 强制校验。",
+        "hint": ""
+      }
+    ]
+  }
+}

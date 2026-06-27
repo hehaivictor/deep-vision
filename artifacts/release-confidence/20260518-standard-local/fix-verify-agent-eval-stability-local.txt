@@ -1,0 +1,20 @@
+DeepVision harness evaluator
+场景目录: /Users/hehai/Documents/开目软件/Agents/project/DeepVision/tests/harness_scenarios
+
+[PASS] browser/browser-smoke-extended: attempts=1 pass=1 fail=0 suite=extended max_ms=11729.83
+        calibration: license-gate-ui-wording-drift-should-warn
+[PASS] ops/stability-failure-degrade: attempts=1 pass=1 fail=0 cases=8 max_ms=1135.50
+[PASS] ops/stability-idempotency: attempts=1 pass=1 fail=0 cases=5 max_ms=1273.51
+[PASS] report-solution/report-solution-core: attempts=1 pass=1 fail=0 cases=3 max_ms=723.97
+        calibration: report-solution-wording-drift
+[PASS] security/access-boundaries: attempts=1 pass=1 fail=0 cases=3 max_ms=757.80
+        calibration: share-readonly-regression-must-fail
+[PASS] tenant/asset-ownership-boundaries: attempts=1 pass=1 fail=0 cases=3 max_ms=1188.86
+        calibration: share-readonly-regression-must-fail
+
+Summary: PASS=6 FLAKY=0 FAIL=0 budget_exceeded=0
+Overall: HEALTHY
+Artifacts: /Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/eval/20260518T032013Z-pid8470
+Progress: /Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/eval/20260518T032013Z-pid8470/progress.md
+Failure Summary: /Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/eval/20260518T032013Z-pid8470/failure-summary.md
+Handoff: /Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/eval/20260518T032013Z-pid8470/handoff.json

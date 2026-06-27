@@ -1502,6 +1502,23 @@ def generate_question_with_tiered_strategy(
 
     runtime_profile = dict(runtime_profile or {})
     effective_fast_prompt = fast_prompt if isinstance(fast_prompt, str) and fast_prompt else prompt
+    high_evidence_fast_requires_full_prompt = bool(
+        runtime_profile.get("requires_rationale", False)
+        or normalize_question_evidence_intent(
+            runtime_profile.get("evidence_intent", ""),
+            fallback="low",
+        ) == "high"
+    )
+    if high_evidence_fast_requires_full_prompt:
+        effective_fast_prompt = prompt
+        runtime_profile["fast_prompt_mode"] = "full"
+        runtime_profile["fast_output_mode"] = "full"
+        runtime_profile["fast_allow_compacted_docs"] = False
+        selection_reason = str(runtime_profile.get("selection_reason", "") or "").strip()
+        if "high_evidence_full_prompt" not in selection_reason:
+            runtime_profile["selection_reason"] = ",".join(
+                item for item in [selection_reason, "high_evidence_full_prompt"] if item
+            )
     effective_fast_allowed = bool(runtime_profile.get("allow_fast_path", allow_fast_path))
     fast_timeout = runtime_profile.get("fast_timeout")
     if fast_timeout is None:

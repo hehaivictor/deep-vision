@@ -1,0 +1,91 @@
+{
+  "name": "access-boundaries",
+  "category": "security",
+  "description": "覆盖匿名写接口、License 门禁和方案页分享只读边界。",
+  "path": "tests/harness_scenarios/security/access-boundaries.json",
+  "tags": [
+    "core",
+    "nightly",
+    "security",
+    "stability-local",
+    "stability-local-core"
+  ],
+  "executor": "unittest",
+  "executor_config": {
+    "type": "unittest"
+  },
+  "contract": null,
+  "mission": null,
+  "plan": null,
+  "calibration_samples": [
+    {
+      "name": "share-readonly-regression-must-fail",
+      "title": "公开分享只读边界回退必须直接判 FAIL",
+      "category": "security",
+      "expected_decision": "FAIL",
+      "rule": "方案页分享如果破坏 owner 校验、公开只读边界或匿名写拦截，Evaluator 必须直接判 FAIL；不能因为页面还能打开或其它权限用例通过而放过。",
+      "incident": "分享链路经常混合 owner 访问、公开 token 和匿名路径，边界一旦回退会直接影响外部可见页面，因此应被视为硬失败项。",
+      "source_file": "tests/harness_calibration/share-readonly-regression-must-fail.json",
+      "source_refs": [
+        "tests/test_security_regression.py",
+        "docs/agent/report-solution.md"
+      ],
+      "signals": [
+        "owner 访问必须继续校验 token 与 owner_user_id",
+        "公开分享只允许匿名只读，不能放开写接口",
+        "匿名写接口必须持续拦截"
+      ],
+      "applies_to": {
+        "scenarios": [
+          "access-boundaries",
+          "asset-ownership-boundaries"
+        ],
+        "categories": [
+          "security",
+          "tenant"
+        ],
+        "tags": [
+          "security",
+          "ownership",
+          "tenant"
+        ],
+        "executors": [
+          "unittest"
+        ]
+      }
+    }
+  ],
+  "target": "cases=3",
+  "status": "PASS",
+  "cases": [
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_anonymous_write_endpoints_are_blocked",
+      "label": "匿名写接口拦截"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_license_gate_blocks_business_routes_but_allows_auth_and_license_endpoints",
+      "label": "License 门禁边界"
+    },
+    {
+      "test_id": "tests.test_security_regression.SecurityRegressionTests.test_report_solution_share_link_requires_owner_and_allows_public_readonly_access",
+      "label": "方案页分享只读边界"
+    }
+  ],
+  "stats": {
+    "attempts": 1,
+    "pass_attempts": 1,
+    "fail_attempts": 0,
+    "avg_duration_ms": 796.32,
+    "max_duration_ms": 796.32,
+    "max_duration_budget_ms": 150000.0,
+    "budget_exceeded": false
+  },
+  "failure_hotspots": [],
+  "highlights": [
+    "OK"
+  ],
+  "detail": "attempts=1 pass=1 fail=0 cases=3 max_ms=796.32",
+  "budgets": {
+    "max_duration_ms": 150000
+  }
+}

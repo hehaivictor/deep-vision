@@ -1,0 +1,20 @@
+{
+  "generated_at": "2026-05-18T03:20:13Z",
+  "root_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision",
+  "run_name": "20260518T032013Z-pid8470",
+  "base_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/eval",
+  "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/eval/20260518T032013Z-pid8470",
+  "git": {
+    "commit": "a44920bd27bd0ddbfe7b4c2474fc8e1145d3c18d",
+    "short_commit": "a44920b",
+    "branch": "main",
+    "is_dirty": true,
+    "dirty_files_count": 4,
+    "dirty_files_preview": [
+      "M tests/test_api_comprehensive.py",
+      " M tests/test_security_regression.py",
+      " M tests/test_solution_payload.py",
+      "?? artifacts/release-confidence/"
+    ]
+  }
+}

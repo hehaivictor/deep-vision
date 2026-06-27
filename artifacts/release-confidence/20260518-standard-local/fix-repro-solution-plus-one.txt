@@ -1,0 +1,26 @@
+.................................
+----------------------------------------------------------------------
+Ran 33 tests in 2.034s
+
+OK
+✅ 配置文件加载成功 (web.config)
+⚠️  未配置 SECRET_KEY，开发模式使用固定默认会话密钥
+[ScenarioLoader] 已加载 8 个场景配置
+✅ 已迁移会话主数据到 session_store: 1
+✅ 已迁移 site-config.js 到 site_config_store
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=final-stage-upgrade.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=delivery-fast.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=delivery-hardened.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=async-prewarm-sidecar.md, error=no such table: report_index
+✅ 方案缓存预热完成: report=async-prewarm-sidecar.md
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=cache-refresh-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=cache-refresh-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=degraded-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-ai-chapters.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-ai-bad-json.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-ai.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=feedback-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=interview-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=cache-sidecar.md, error=no such table: report_index
+⚠️ 写入 solution sidecar 后同步报告索引失败: report=proposal-rule-copy.md, error=no such table: report_index

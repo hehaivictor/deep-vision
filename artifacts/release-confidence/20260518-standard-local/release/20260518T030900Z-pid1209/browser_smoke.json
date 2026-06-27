@@ -1,0 +1,40 @@
+{
+  "name": "browser_smoke",
+  "command": "python3 scripts/agent_browser_smoke.py --suite live-minimal",
+  "exit_code": 0,
+  "payload": {
+    "generated_at": "2026-05-18T03:09:00.840Z",
+    "suite": "live-minimal",
+    "description": "隔离数据目录下启动真实后端，执行验证码登录、License 绑定以及刷新恢复真链路",
+    "mode": "live",
+    "base_url": "http://127.0.0.1:59531",
+    "summary": {
+      "PASS": 1,
+      "WARN": 0,
+      "FAIL": 0
+    },
+    "overall": "READY",
+    "results": [
+      {
+        "scenario_id": "live-login-license-flow",
+        "label": "真实后端登录与 License 绑定",
+        "status": "PASS",
+        "detail": "真实后端下已完成验证码登录与 License 绑定，手机号=13800138000",
+        "duration_ms": 31838,
+        "highlights": []
+      }
+    ],
+    "runtime": {
+      "auth_phone": "13800138000",
+      "auth_db_path": "/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/deepvision-browser-live-gzt5uM/data/auth/users.db",
+      "license_db_path": "/var/folders/bg/t2k8rp8s2csdhgl4c7cn49zm0000gn/T/deepvision-browser-live-gzt5uM/data/auth/licenses.db"
+    },
+    "dependency_status": {
+      "node_available": true,
+      "npm_available": true,
+      "uv_available": true,
+      "playwright_package_installed": true,
+      "runner_exists": true
+    }
+  }
+}

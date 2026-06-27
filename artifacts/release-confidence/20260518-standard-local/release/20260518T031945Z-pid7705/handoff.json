@@ -1,0 +1,57 @@
+{
+  "kind": "harness",
+  "generated_at": "2026-05-18T03:19:45Z",
+  "overall": "READY_WITH_WARNINGS",
+  "task": null,
+  "todo": [
+    "doctor: profile=auto env=/Users/hehai/Documents/开目软件/Agents/project/DeepVision/web/.env.local PASS=11 WARN=2 FAIL=0",
+    "observe: recent=5 overall=DEGRADED"
+  ],
+  "blockers": [],
+  "next_steps": [
+    "先查看 failure-summary.md，处理 WARN 项并决定是否继续。",
+    "如需预览场景模板，可执行：python3 scripts/agent_scenario_scaffold.py --source harness --run-dir '/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705' --name ops-incident-20260518 --category ops --budget-ms 120000 --output tests/harness_scenarios/ops/ops-incident-20260518.json --tag incident --tag manual --tag ops --tag harness --dry-run",
+    "如需沉淀本次失败，可执行：python3 scripts/agent_scenario_scaffold.py --source harness --run-dir '/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705' --name ops-incident-20260518 --category ops --budget-ms 120000 --output tests/harness_scenarios/ops/ops-incident-20260518.json --tag incident --tag manual --tag ops --tag harness (category=ops output=tests/harness_scenarios/ops/ops-incident-20260518.json)"
+  ],
+  "resume_commands": [
+    "python3 scripts/agent_doctor.py --profile auto",
+    "python3 scripts/agent_observe.py --profile auto --recent 5",
+    "python3 scripts/agent_scenario_scaffold.py --source harness --run-dir '/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705' --name ops-incident-20260518 --category ops --budget-ms 120000 --output tests/harness_scenarios/ops/ops-incident-20260518.json --tag incident --tag manual --tag ops --tag harness --dry-run",
+    "python3 scripts/agent_scenario_scaffold.py --source harness --run-dir '/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705' --name ops-incident-20260518 --category ops --budget-ms 120000 --output tests/harness_scenarios/ops/ops-incident-20260518.json --tag incident --tag manual --tag ops --tag harness"
+  ],
+  "docs": [],
+  "governance": {
+    "required_for_apply": false,
+    "missing_fields": [],
+    "values": {},
+    "ready": true
+  },
+  "mission": null,
+  "plan": null,
+  "contract": null,
+  "scaffold_recommendation": {
+    "name": "ops-incident-20260518",
+    "category": "ops",
+    "tags": [
+      "incident",
+      "manual",
+      "ops",
+      "harness"
+    ],
+    "budget_ms": 120000,
+    "output_path": "tests/harness_scenarios/ops/ops-incident-20260518.json",
+    "source_summary": "harness:20260518T031945Z-pid7705 stages=doctor/observe",
+    "executor_type": "harness",
+    "preview_command": "python3 scripts/agent_scenario_scaffold.py --source harness --run-dir '/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705' --name ops-incident-20260518 --category ops --budget-ms 120000 --output tests/harness_scenarios/ops/ops-incident-20260518.json --tag incident --tag manual --tag ops --tag harness --dry-run",
+    "write_command": "python3 scripts/agent_scenario_scaffold.py --source harness --run-dir '/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705' --name ops-incident-20260518 --category ops --budget-ms 120000 --output tests/harness_scenarios/ops/ops-incident-20260518.json --tag incident --tag manual --tag ops --tag harness"
+  },
+  "pointers": {
+    "run_dir": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705",
+    "summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705/summary.json",
+    "progress_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705/progress.md",
+    "failure_summary_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705/failure-summary.md",
+    "handoff_file": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/20260518T031945Z-pid7705/handoff.json",
+    "latest_json": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/latest.json",
+    "latest_handoff": "/Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/release-confidence/20260518-standard-local/release/latest-handoff.json"
+  }
+}

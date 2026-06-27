@@ -1,0 +1,11 @@
+DeepVision agent doc gardening
+overall: HEALTHY
+summary: PASS=6 WARN=0 FAIL=0
+[PASS] task_playbooks_synced: all task-backed playbooks are in sync
+[PASS] doc_index_links: key navigation docs include heartbeat/memory-notes/architecture/phase6 references
+[PASS] hierarchical_agents_coverage: required=5 materialized=5
+[PASS] high_risk_contract_coverage: high_risk=5 covered=5
+[PASS] planner_mission_materialization: tasks=8 planner=8 mission=8
+[PASS] calibration_registry: samples=6 documented=6
+[WRITE] /Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/doc-gardening/latest.md
+[WRITE] /Users/hehai/Documents/开目软件/Agents/project/DeepVision/artifacts/doc-gardening/latest.json

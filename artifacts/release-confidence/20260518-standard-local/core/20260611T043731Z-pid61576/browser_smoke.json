@@ -1,0 +1,155 @@
+{
+  "name": "browser_smoke",
+  "command": "python3 scripts/agent_browser_smoke.py --suite extended",
+  "exit_code": 0,
+  "payload": {
+    "generated_at": "2026-06-11T04:37:31.373Z",
+    "suite": "extended",
+    "description": "在 minimal 基础上补公开分享只读、登录 provider 可见反馈、License 门禁前端视图、License 绑定成功切换、访谈与报告刷新恢复，以及配置中心页签切换",
+    "mode": "mock",
+    "base_url": "http://127.0.0.1:52275",
+    "summary": {
+      "PASS": 16,
+      "WARN": 0,
+      "FAIL": 0
+    },
+    "overall": "READY",
+    "results": [
+      {
+        "scenario_id": "help-docs",
+        "label": "帮助文档静态页",
+        "status": "PASS",
+        "detail": "标题与帮助文档主文案可见",
+        "duration_ms": 275,
+        "highlights": []
+      },
+      {
+        "scenario_id": "solution-share",
+        "label": "方案页分享面板",
+        "status": "PASS",
+        "detail": "方案页成功渲染，分享面板可打开并写入匿名只读链接",
+        "duration_ms": 675,
+        "highlights": []
+      },
+      {
+        "scenario_id": "admin-config-entry",
+        "label": "管理员中心入口",
+        "status": "PASS",
+        "detail": "管理员账号可从主界面进入管理员中心",
+        "duration_ms": 859,
+        "highlights": []
+      },
+      {
+        "scenario_id": "solution-public-readonly",
+        "label": "方案页公开分享只读",
+        "status": "PASS",
+        "detail": "公开分享模式可渲染，并保持只读边界",
+        "duration_ms": 511,
+        "highlights": []
+      },
+      {
+        "scenario_id": "solution-public-readonly-refresh",
+        "label": "方案页公开分享刷新保持只读",
+        "status": "PASS",
+        "detail": "公开分享页刷新后仍保持只读方案边界",
+        "duration_ms": 681,
+        "highlights": []
+      },
+      {
+        "scenario_id": "login-view",
+        "label": "登录前端视图",
+        "status": "PASS",
+        "detail": "未登录状态会隐藏短信登录表单，并提示当前未启用可用登录方式",
+        "duration_ms": 442,
+        "highlights": []
+      },
+      {
+        "scenario_id": "login-sms-only-view",
+        "label": "登录视图仅短信 provider",
+        "status": "PASS",
+        "detail": "微信 provider 关闭或缺失时，前端仍展示短信登录表单并隐藏微信入口",
+        "duration_ms": 442,
+        "highlights": []
+      },
+      {
+        "scenario_id": "login-wechat-only-view",
+        "label": "登录视图仅微信 provider",
+        "status": "PASS",
+        "detail": "短信 provider 关闭时，前端仍展示微信登录入口并隐藏短信表单",
+        "duration_ms": 441,
+        "highlights": []
+      },
+      {
+        "scenario_id": "license-gate-view",
+        "label": "License 门禁前端视图",
+        "status": "PASS",
+        "detail": "已登录但无有效 License 时，会展示 License gate 与绑定入口",
+        "duration_ms": 442,
+        "highlights": []
+      },
+      {
+        "scenario_id": "license-activate-success",
+        "label": "License 绑定成功后切回业务壳",
+        "status": "PASS",
+        "detail": "License 绑定成功后会退出门禁，并回到访谈会话主页",
+        "duration_ms": 540,
+        "highlights": []
+      },
+      {
+        "scenario_id": "license-activate-refresh",
+        "label": "License 绑定后刷新保持业务壳",
+        "status": "PASS",
+        "detail": "License 绑定成功后刷新首页仍停留在业务壳，而不会回到门禁页",
+        "duration_ms": 755,
+        "highlights": []
+      },
+      {
+        "scenario_id": "report-detail-flow",
+        "label": "报告详情恢复链路",
+        "status": "PASS",
+        "detail": "可从报告列表进入报告详情，并看到核心报告内容与返回入口",
+        "duration_ms": 606,
+        "highlights": []
+      },
+      {
+        "scenario_id": "report-detail-refresh",
+        "label": "报告详情刷新后保持详情态",
+        "status": "PASS",
+        "detail": "报告详情刷新后仍恢复到同一份报告详情",
+        "duration_ms": 870,
+        "highlights": []
+      },
+      {
+        "scenario_id": "interview-refresh",
+        "label": "访谈进行中刷新后保持当前会话",
+        "status": "PASS",
+        "detail": "访谈进行中刷新后仍恢复到同一会话与当前问题",
+        "duration_ms": 1169,
+        "highlights": []
+      },
+      {
+        "scenario_id": "report-generation-refresh",
+        "label": "报告生成中刷新后保持进度",
+        "status": "PASS",
+        "detail": "报告生成中刷新后仍恢复到需求确认态，并继续显示生成进度",
+        "duration_ms": 830,
+        "highlights": []
+      },
+      {
+        "scenario_id": "admin-config-tab",
+        "label": "管理员配置中心页签",
+        "status": "PASS",
+        "detail": "配置中心可加载，并能在 env/config/site 三类来源间切换",
+        "duration_ms": 1116,
+        "highlights": []
+      }
+    ],
+    "dependency_status": {
+      "node_available": true,
+      "npm_available": true,
+      "uv_available": true,
+      "playwright_package_installed": true,
+      "runner_exists": true
+    }
+  }
+}
