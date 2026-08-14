@@ -1,7 +1,21 @@
 {
-  "version": "10.5.7",
+  "version": "10.5.8",
   "releaseDate": "2026-08-14",
   "changelog": [
+    {
+      "version": "10.5.8",
+      "date": "2026-08-14",
+      "type": "patch",
+      "title": "按实例隔离分享映射与归属迁移扫描",
+      "changes": [
+        "修复：分享表补 instance_scope_key，创建删除合并按当前实例过滤，公开 token 仍按 token 只读",
+        "修复：方案分享 Postgres 路径改为按 token UPSERT，不再整表 DELETE 后回写",
+        "修复：归属迁移与账号合并只扫描当前实例资产",
+        "修复：报告任务状态落盘供多 worker 共享",
+        "测试：补充分享隔离、迁移跳过其他实例、报告状态回源",
+        "文档：把分享表无 scope 的旧口径改成已完成"
+      ]
+    },
     {
       "version": "10.5.7",
       "date": "2026-08-14",
