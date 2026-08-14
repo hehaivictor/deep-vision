@@ -1,7 +1,20 @@
 {
-  "version": "10.5.8",
+  "version": "10.5.9",
   "releaseDate": "2026-08-14",
   "changelog": [
+    {
+      "version": "10.5.9",
+      "date": "2026-08-14",
+      "type": "patch",
+      "title": "按版本写入会话并收口演示稿与前端竞态",
+      "changes": [
+        "修复：会话主存储按 payload_revision 做 CAS，过期快照不得覆盖更新后的会话",
+        "修复：演示稿云端映射按 report_name 单行 UPSERT，不再整表 DELETE 后回写",
+        "修复：前端写回 currentSession 前核对 session_id，离开访谈页取消出题请求",
+        "测试：补充过期 revision、演示稿单行 UPSERT 与前端竞态守卫",
+        "文档：同步访谈与方案页的会话版本化、演示稿单行写入口径"
+      ]
+    },
     {
       "version": "10.5.8",
       "date": "2026-08-14",
