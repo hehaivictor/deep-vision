@@ -30,8 +30,24 @@
       "label": "泛化题干和模板选项会被质量闸门拦截"
     },
     {
+      "test_id": "tests.test_question_fast_strategy.QuestionFastStrategyTests.test_visible_question_quality_gate_rejects_fallback_label_options",
+      "label": "备用标签选项题会被质量闸门拦截"
+    },
+    {
+      "test_id": "tests.test_question_fast_strategy.QuestionFastStrategyTests.test_visible_question_quality_gate_rejects_fallback_bank_question",
+      "label": "备用题库泛题会被质量闸门拦截"
+    },
+    {
+      "test_id": "tests.test_question_fast_strategy.QuestionFastStrategyTests.test_fallback_question_bank_fails_visible_quality_gate",
+      "label": "备用题库本身无法通过可见题闸门"
+    },
+    {
       "test_id": "tests.test_question_fast_strategy.QuestionFastStrategyTests.test_visible_question_quality_gate_accepts_contextual_question_and_options",
       "label": "具备业务上下文的问题可通过质量闸门"
+    },
+    {
+      "test_id": "tests.test_question_fast_strategy.QuestionFastStrategyTests.test_visible_question_quality_gate_rejects_questions_that_cannot_be_written_into_report",
+      "label": "不能写进报告的浅问答会被质量闸门拦截"
     },
     {
       "test_id": "tests.test_question_fast_strategy.QuestionFastStrategyTests.test_should_reject_visible_question_marks_low_quality_cache_candidate",

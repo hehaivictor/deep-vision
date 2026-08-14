@@ -1452,9 +1452,6 @@ def run_report_generation_job(
             session["last_report_v3_debug"] = debug_payload
             if isinstance(quality_meta, dict):
                 session["last_report_quality_meta"] = quality_meta
-            session.pop("last_report_name", None)
-            session.pop("current_report_name", None)
-            session.pop("current_report_path", None)
 
             with named_file_lock("sessions", session_id):
                 latest_session = safe_load_session(session_file)
@@ -1464,9 +1461,6 @@ def run_report_generation_job(
                     latest_session["last_report_v3_debug"] = debug_payload
                     if isinstance(quality_meta, dict):
                         latest_session["last_report_quality_meta"] = quality_meta
-                    latest_session.pop("last_report_name", None)
-                    latest_session.pop("current_report_name", None)
-                    latest_session.pop("current_report_path", None)
                     save_session_json_and_sync(session_file, latest_session)
 
             update_report_generation_status(

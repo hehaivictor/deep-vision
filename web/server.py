@@ -232,6 +232,7 @@ ENV_MANAGED_CONFIG_EXACT_KEYS = {
     "SMS_LOGIN_ENABLED",
     "SMS_PROVIDER",
     "SMS_TEST_CODE",
+    "ALLOW_SMS_TEST_CODE",
     "SUPPRESS_STATUS_POLL_ACCESS_LOG",
     "VISION_API_URL",
     "WECHAT_APP_ID",
@@ -581,23 +582,23 @@ if REPORT_GENERATION_ESTIMATED_SLOT_SECONDS <= 0:
 # 模型路由配置：支持问题/报告分离，未配置时向后兼容 MODEL_NAME
 _base_model_name = _cfg_text("MODEL_NAME", str(MODEL_NAME or "").strip())
 _question_model_name_deep_default = str(
-    getattr(runtime_config, "QUESTION_MODEL_NAME_DEEP", "claude-opus-4-7") if runtime_config else "claude-opus-4-7"
+    getattr(runtime_config, "QUESTION_MODEL_NAME_DEEP", "ai/glm-5.1") if runtime_config else "ai/glm-5.1"
 ).strip()
 QUESTION_MODEL_NAME = _cfg_text("QUESTION_MODEL_NAME", _base_model_name) or _base_model_name
 QUESTION_MODEL_NAME_DEEP = _cfg_text("QUESTION_MODEL_NAME_DEEP", _question_model_name_deep_default) or QUESTION_MODEL_NAME
 REPORT_MODEL_NAME = _cfg_text("REPORT_MODEL_NAME", "doubao-seed-2-0-pro") or QUESTION_MODEL_NAME
-REPORT_DRAFT_MODEL_NAME = _cfg_text("REPORT_DRAFT_MODEL_NAME", "gemini-3.1-pro-preview") or REPORT_MODEL_NAME
-REPORT_REVIEW_MODEL_NAME = _cfg_text("REPORT_REVIEW_MODEL_NAME", "claude-opus-4-7") or REPORT_MODEL_NAME
-SUMMARY_MODEL_NAME = _cfg_text("SUMMARY_MODEL_NAME", "kimi-for-coding") or QUESTION_MODEL_NAME
-SEARCH_DECISION_MODEL_NAME = _cfg_text("SEARCH_DECISION_MODEL_NAME", "kimi-for-coding") or SUMMARY_MODEL_NAME
-ASSESSMENT_MODEL_NAME = _cfg_text("ASSESSMENT_MODEL_NAME", "kimi-for-coding") or SEARCH_DECISION_MODEL_NAME
+REPORT_DRAFT_MODEL_NAME = _cfg_text("REPORT_DRAFT_MODEL_NAME", "minimax-m3") or REPORT_MODEL_NAME
+REPORT_REVIEW_MODEL_NAME = _cfg_text("REPORT_REVIEW_MODEL_NAME", "gemini-3.1-pro-preview") or REPORT_MODEL_NAME
+SUMMARY_MODEL_NAME = _cfg_text("SUMMARY_MODEL_NAME", "kimi-k2.5") or QUESTION_MODEL_NAME
+SEARCH_DECISION_MODEL_NAME = _cfg_text("SEARCH_DECISION_MODEL_NAME", "deepseek-v4-flash") or SUMMARY_MODEL_NAME
+ASSESSMENT_MODEL_NAME = _cfg_text("ASSESSMENT_MODEL_NAME", "glm-5") or SEARCH_DECISION_MODEL_NAME
 MODEL_FALLBACK_ENABLED = _cfg_bool("MODEL_FALLBACK_ENABLED", True)
-QUESTION_FALLBACK_MODEL_NAME = _cfg_text("QUESTION_FALLBACK_MODEL_NAME", "kimi-for-coding") or ""
-QUESTION_MODEL_NAME_DEEP_FALLBACK = _cfg_text("QUESTION_MODEL_NAME_DEEP_FALLBACK", "doubao-seed-2-0-pro") or ""
-REPORT_DRAFT_FALLBACK_MODEL_NAME = _cfg_text("REPORT_DRAFT_FALLBACK_MODEL_NAME", "doubao-seed-2-0-pro") or ""
-REPORT_REVIEW_FALLBACK_MODEL_NAME = _cfg_text("REPORT_REVIEW_FALLBACK_MODEL_NAME", "gemini-3.1-pro-preview") or ""
-SUMMARY_FALLBACK_MODEL_NAME = _cfg_text("SUMMARY_FALLBACK_MODEL_NAME", "doubao-seed-2-0-pro") or ""
-SEARCH_DECISION_FALLBACK_MODEL_NAME = _cfg_text("SEARCH_DECISION_FALLBACK_MODEL_NAME", "doubao-seed-2-0-pro") or ""
+QUESTION_FALLBACK_MODEL_NAME = _cfg_text("QUESTION_FALLBACK_MODEL_NAME", "doubao-seed-2-0-pro") or ""
+QUESTION_MODEL_NAME_DEEP_FALLBACK = _cfg_text("QUESTION_MODEL_NAME_DEEP_FALLBACK", "minimax-m3") or ""
+REPORT_DRAFT_FALLBACK_MODEL_NAME = _cfg_text("REPORT_DRAFT_FALLBACK_MODEL_NAME", "gemini-3.1-pro-preview") or ""
+REPORT_REVIEW_FALLBACK_MODEL_NAME = _cfg_text("REPORT_REVIEW_FALLBACK_MODEL_NAME", "glm-5") or ""
+SUMMARY_FALLBACK_MODEL_NAME = _cfg_text("SUMMARY_FALLBACK_MODEL_NAME", "glm-5") or ""
+SEARCH_DECISION_FALLBACK_MODEL_NAME = _cfg_text("SEARCH_DECISION_FALLBACK_MODEL_NAME", "glm-5") or ""
 ASSESSMENT_FALLBACK_MODEL_NAME = _cfg_text("ASSESSMENT_FALLBACK_MODEL_NAME", "doubao-seed-2-0-pro") or ""
 
 # 鉴权路由配置：兼容 Anthropic x-api-key 与 Bearer Authorization 两种网关模式
@@ -1975,6 +1976,7 @@ SMS_MAX_SEND_PER_PHONE_PER_DAY = max(1, min(SMS_MAX_SEND_PER_PHONE_PER_DAY, 200)
 SMS_MAX_VERIFY_ATTEMPTS = _cfg_int("SMS_MAX_VERIFY_ATTEMPTS", 5)
 SMS_MAX_VERIFY_ATTEMPTS = max(1, min(SMS_MAX_VERIFY_ATTEMPTS, 20))
 SMS_TEST_CODE = _cfg_text("SMS_TEST_CODE", "")
+ALLOW_SMS_TEST_CODE = _cfg_bool("ALLOW_SMS_TEST_CODE", False)
 ADMIN_USER_IDS_RAW = _cfg_text_list("ADMIN_USER_IDS", [])
 ADMIN_PHONE_NUMBERS_RAW = _cfg_text_list("ADMIN_PHONE_NUMBERS", [])
 LICENSE_ENFORCEMENT_ENABLED = _cfg_bool("LICENSE_ENFORCEMENT_ENABLED", False)
@@ -2721,6 +2723,13 @@ def _collect_runtime_security_validation_issues() -> tuple[list[str], list[str]]
         if strict_mode or has_explicit_env:
             (errors if strict_mode else warnings).append(message)
 
+    configured_sms_test_code = str(SMS_TEST_CODE or "").strip()
+    if configured_sms_test_code:
+        if strict_mode:
+            errors.append("生产环境禁止配置 SMS_TEST_CODE，请改用真实短信通道")
+        elif not ALLOW_SMS_TEST_CODE:
+            warnings.append("已配置 SMS_TEST_CODE，但未开启 ALLOW_SMS_TEST_CODE，固定测试码不会生效")
+
     object_storage_values = [
         OBJECT_STORAGE_ENDPOINT,
         OBJECT_STORAGE_BUCKET,
@@ -2902,7 +2911,8 @@ ADMIN_ENV_SETTINGS_GROUPS: list[dict[str, Any]] = [
                 ],
                 description="生产建议使用 jdcloud，本地调试可用 mock。",
             ),
-            _admin_password("SMS_TEST_CODE", "测试验证码", description="仅测试环境使用。"),
+            _admin_password("SMS_TEST_CODE", "测试验证码", description="仅测试环境使用，生产环境禁止配置。"),
+            _admin_bool("ALLOW_SMS_TEST_CODE", "允许固定测试验证码", description="仅 DEBUG 环境生效；Flask TESTING 模式始终允许。"),
             _admin_password("SMS_CODE_SIGNING_SECRET", "短信签名密钥", description="验证码签名使用。"),
             _admin_setting("JD_SMS_ACCESS_KEY_ID", "JD Access Key ID", description="京东云短信 Access Key ID。"),
             _admin_password("JD_SMS_ACCESS_KEY_SECRET", "JD Access Key Secret", description="京东云短信 Access Key Secret。"),
@@ -4184,6 +4194,7 @@ def _resolve_dynamic_question_lane_order(runtime_profile: Optional[dict], phase:
         for item in (profile.get("disallowed_lanes", []) if isinstance(profile.get("disallowed_lanes", []), list) else [])
         if str(item or "").strip()
     }
+    disallowed_lanes.add("summary")
     base_candidates = []
     primary_lane = str(profile.get("primary_lane", "question") or "question").strip().lower() or "question"
     secondary_lane = str(profile.get("secondary_lane", QUESTION_HEDGED_SECONDARY_LANE) or QUESTION_HEDGED_SECONDARY_LANE).strip().lower() or QUESTION_HEDGED_SECONDARY_LANE
@@ -11410,9 +11421,20 @@ def generate_sms_code() -> str:
     return str(secrets.randbelow(upper - lower + 1) + lower)
 
 
+def is_sms_test_code_allowed() -> bool:
+    """固定测试码仅允许 Flask TESTING，或 DEBUG 且显式开启 ALLOW_SMS_TEST_CODE。"""
+    if app.config.get("TESTING"):
+        return True
+    return bool(DEBUG_MODE and ALLOW_SMS_TEST_CODE)
+
+
 def resolve_sms_code_for_issue() -> str:
     configured = str(SMS_TEST_CODE or "").strip()
-    if configured and re.fullmatch(rf"\d{{{SMS_CODE_LENGTH}}}", configured):
+    if (
+        configured
+        and re.fullmatch(rf"\d{{{SMS_CODE_LENGTH}}}", configured)
+        and is_sms_test_code_allowed()
+    ):
         return configured
     return generate_sms_code()
 
@@ -15161,13 +15183,22 @@ def is_valid_api_key(api_key: str) -> bool:
     return True
 
 
+def _normalize_anthropic_base_url(base_url: str) -> str:
+    """Anthropic SDK 会再拼接 /v1/messages，配置里的尾部 /v1 需要去掉。"""
+    normalized = str(base_url or "").strip().rstrip("/")
+    if normalized.lower().endswith("/v1"):
+        normalized = normalized[:-3].rstrip("/")
+    return normalized
+
+
 def _create_anthropic_client(api_key: str, base_url: str, use_bearer_auth: bool = False):
     kwargs = {
         "api_key": api_key,
         "max_retries": AI_CLIENT_MAX_RETRIES,
     }
-    if base_url:
-        kwargs["base_url"] = base_url
+    normalized_base_url = _normalize_anthropic_base_url(base_url)
+    if normalized_base_url:
+        kwargs["base_url"] = normalized_base_url
     if use_bearer_auth:
         kwargs["default_headers"] = {"Authorization": f"Bearer {api_key}"}
     return anthropic.Anthropic(**kwargs)
@@ -17178,7 +17209,11 @@ def get_bound_reports_for_session(session: dict) -> list[str]:
         bound_reports.append(report_name)
         seen.add(report_name)
 
-    fallback_candidates = [name for name in find_reports_by_session_topic(session) if name not in seen]
+    session_token = sanitize_filename(str(session.get("session_id") or "").strip()).replace(".", "-")
+    fallback_candidates = [
+        name for name in find_reports_by_session_topic(session)
+        if name not in seen and session_token and session_token in str(name)
+    ]
     if len(fallback_candidates) == 1:
         bound_reports.append(fallback_candidates[0])
         seen.add(fallback_candidates[0])
@@ -20088,6 +20123,34 @@ QUESTION_VISIBLE_GENERIC_OPTION_TERMS = {
     "流程",
     "其他",
     "不确定",
+    "核心痛点",
+    "期望价值",
+    "使用场景",
+    "用户角色",
+    "关键流程",
+    "角色分工",
+    "触发事件",
+    "异常处理",
+    "部署方式",
+    "系统集成",
+    "性能要求",
+    "安全合规",
+    "预算范围",
+    "时间节点",
+    "资源限制",
+    "优先级",
+    "内部员工",
+    "外部客户",
+    "合作伙伴",
+    "管理层",
+    "节省时间",
+    "减少错误",
+    "获取洞察",
+    "提升协作",
+    "提升工作效率",
+    "降低运营成本",
+    "改善用户体验",
+    "增强数据分析能力",
 }
 
 QUESTION_VISIBLE_CONTEXT_MARKERS = {
@@ -20131,10 +20194,12 @@ QUESTION_VISIBLE_CONTEXT_MARKERS = {
 
 QUESTION_VISIBLE_GENERIC_QUESTION_PATTERNS = (
     "最需要优先确认的重点是什么",
+    "最需要优先确认的是哪一项",
     "最核心诉求",
     "主要诉求是什么",
     "最大问题是什么",
     "核心问题是什么",
+    "解决哪些核心问题",
     "最大痛点是什么",
     "核心痛点是什么",
     "最让你们头疼的痛点是什么",
@@ -20143,6 +20208,11 @@ QUESTION_VISIBLE_GENERIC_QUESTION_PATTERNS = (
     "还有什么补充",
     "主要身份是",
     "使用经验更接近哪种",
+    "主要的用户群体",
+    "核心价值是什么",
+    "最应补充哪类信息",
+    "最关键的判断点是什么",
+    "哪项更符合您的当前情况",
 )
 
 QUESTION_VISIBLE_LOW_INFORMATION_OPTION_PATTERNS = (
@@ -20164,7 +20234,6 @@ QUESTION_VISIBLE_HIGH_INFORMATION_OPTION_MARKERS = {
     "小时",
     "分钟",
     "天内",
-    "角色",
     "部门",
     "负责人",
     "责任",
@@ -20213,7 +20282,12 @@ def _is_generic_visible_option(text: object) -> bool:
         return True
     if compact in QUESTION_VISIBLE_GENERIC_OPTION_TERMS:
         return True
-    return len(compact) <= 4 and not _has_visible_context_marker(compact)
+    if (
+        len(compact) > 8
+        and any(marker in raw for marker in QUESTION_VISIBLE_HIGH_INFORMATION_OPTION_MARKERS)
+    ):
+        return False
+    return len(compact) <= 6
 
 
 def _is_low_information_context_option(text: object) -> bool:
@@ -20269,7 +20343,7 @@ def evaluate_visible_question_quality_gate(
         or str(payload.get("evidence_intent") or "").strip() == "high"
     )
 
-    if len(placeholder_options) >= 2 or generic_option_ratio >= 0.75 or (generic_question and not contextual_options):
+    if len(placeholder_options) >= 2 or generic_option_ratio >= 0.5 or (generic_question and not contextual_options):
         reasons.append("generic_options")
     if requires_high_information and len(options) >= 3 and low_information_context_ratio >= 0.75:
         reasons.append("shallow_context_options")
@@ -20324,6 +20398,107 @@ def should_reject_visible_question(
             "quality_gate": quality_gate,
         }
     return {"reject": False, "reason": "", "quality_gate": quality_gate}
+
+
+VISIBLE_QUESTION_RECOVERY_ACTIONS = (
+    {"id": "retry", "label": "重新生成问题"},
+    {"id": "back_to_sessions", "label": "返回会话列表"},
+)
+
+
+def build_visible_question_recovery_actions() -> list[dict]:
+    return [dict(item) for item in VISIBLE_QUESTION_RECOVERY_ACTIONS]
+
+
+def build_visible_question_quality_failure_response(
+    session: Optional[dict] = None,
+    dimension: str = "",
+    *,
+    quality_gate: Optional[dict] = None,
+    detail: str = "",
+) -> dict:
+    """闸门失败不得展示浅结果：返回可恢复错误，而不是备用浅题。"""
+    return {
+        "error": "当前问题还不够具体，请重新生成",
+        "error_code": "visible_question_quality_failed",
+        "detail": str(detail or "这次生成的问题过于笼统，无法写入报告。请重新生成，或先补充主题与参考资料。"),
+        "recoverable": True,
+        "dimension": str(dimension or ""),
+        "interview_mode": get_mode_identifier(session) if isinstance(session, dict) else "",
+        "quality_gate": copy.deepcopy(quality_gate or {}),
+        "recovery_actions": build_visible_question_recovery_actions(),
+    }
+
+
+def build_visible_question_generation_failure_response(
+    session: Optional[dict] = None,
+    dimension: str = "",
+    *,
+    reason: str = "",
+    detail: str = "",
+    quality_gate: Optional[dict] = None,
+) -> dict:
+    """生成失败不得展示浅结果：按原因给出可恢复错误，而不是备用浅题。"""
+    reason_key = str(reason or "").strip().lower()
+    if reason_key in {"ai_disabled", "ai_unavailable", "exception"}:
+        error = "问题生成服务暂时不可用，请稍后重试"
+        error_code = "visible_question_generation_unavailable"
+        default_detail = "当前无法连接到问题生成服务。请稍后重试，或先返回会话列表稍后再继续。"
+    elif reason_key in {"parse_invalid", "repeat_retry_failed"}:
+        error = "问题生成结果无效，请重试生成"
+        error_code = "visible_question_generation_failed"
+        default_detail = "这次生成结果无法使用。请重新生成，不要继续使用笼统问题。"
+    else:
+        return build_visible_question_quality_failure_response(
+            session,
+            dimension,
+            quality_gate=quality_gate,
+            detail=detail,
+        )
+    return {
+        "error": error,
+        "error_code": error_code,
+        "detail": str(detail or default_detail),
+        "recoverable": True,
+        "dimension": str(dimension or ""),
+        "interview_mode": get_mode_identifier(session) if isinstance(session, dict) else "",
+        "failure_reason": reason_key,
+        "quality_gate": copy.deepcopy(quality_gate or {}),
+        "recovery_actions": build_visible_question_recovery_actions(),
+    }
+
+
+def build_visible_fallback_http_response(
+    session: Optional[dict],
+    dimension: str,
+    *,
+    reason: str,
+    detail: str,
+):
+    """可见题不得回落备用浅题库；维度完成态仍可正常返回。"""
+    fallback = get_fallback_question(session or {}, dimension)
+    if fallback.get("completed"):
+        _record_question_generation_fallback(reason)
+        return jsonify(fallback), 200
+
+    quality_gate = evaluate_visible_question_quality_gate(
+        fallback,
+        session=session,
+        dimension=dimension,
+        source=f"fallback:{reason}",
+    )
+    _record_question_generation_fallback(reason)
+    print(
+        f"⚠️ 拒绝展示备用浅题: reason={reason}, dimension={dimension}, "
+        f"gate_reasons={quality_gate.get('reasons')}"
+    )
+    return jsonify(build_visible_question_generation_failure_response(
+        session,
+        dimension,
+        reason=reason,
+        detail=detail,
+        quality_gate=quality_gate,
+    )), 422
 
 
 def evaluate_dimension_completion_v2(session: dict, dimension: str) -> dict:
@@ -30064,10 +30239,13 @@ def get_next_question(session_id):
     # 检查是否有 Claude API
     if not resolve_ai_client(call_type="question"):
         if ENABLE_DEBUG_LOG:
-            print(f"ℹ️ AI 未启用，使用 fallback 题库: session={session_id}, dimension={dimension}")
-        fallback = get_fallback_question(session, dimension)
-        _record_question_generation_fallback("ai_disabled")
-        return jsonify(fallback)
+            print(f"ℹ️ AI 未启用，拒绝展示备用浅题: session={session_id}, dimension={dimension}")
+        return build_visible_fallback_http_response(
+            session,
+            dimension,
+            reason="ai_disabled",
+            detail="问题生成服务尚未就绪。请稍后重试，或先返回会话列表稍后再继续。",
+        )
 
     # 获取当前维度的所有记录
     all_dim_logs = [log for log in session.get("interview_log", []) if log.get("dimension") == dimension]
@@ -30237,9 +30415,6 @@ def get_next_question(session_id):
 
         if not response:
             clear_thinking_status(session_id)
-            fallback = get_fallback_question(session, dimension)
-            fallback["detail"] = "AI 服务暂时不可用，已切换为备用题目"
-            _record_question_generation_fallback("ai_unavailable")
             question_runtime_durations["parse_repair_ms"] = round(_elapsed_ms(parse_repair_started_at), 2)
             _record_question_runtime(
                 "failed",
@@ -30247,7 +30422,12 @@ def get_next_question(session_id):
                 tier_used=tier_used,
                 selection_reason=runtime_profile.get("selection_reason", ""),
             )
-            return jsonify(fallback)
+            return build_visible_fallback_http_response(
+                session,
+                dimension,
+                reason="ai_unavailable",
+                detail="当前无法连接到问题生成服务。请稍后重试，或先返回会话列表稍后再继续。",
+            )
 
         if result:
             selected_lane = tier_used.split(":", 1)[1] if ":" in tier_used else ""
@@ -30304,9 +30484,6 @@ def get_next_question(session_id):
                     question_mode_metrics["ai_recommendation"] = bool(result.get("ai_recommendation"))
                 else:
                     clear_thinking_status(session_id)
-                    fallback = get_fallback_question(session, dimension)
-                    fallback["detail"] = "AI 连续生成了重复问题，已切换为备用题目"
-                    _record_question_generation_fallback("repeat_retry_failed")
                     question_runtime_durations["parse_repair_ms"] = round(_elapsed_ms(parse_repair_started_at), 2)
                     _record_question_runtime(
                         "failed",
@@ -30314,7 +30491,12 @@ def get_next_question(session_id):
                         tier_used=tier_used,
                         selection_reason=runtime_profile.get("selection_reason", ""),
                     )
-                    return jsonify(fallback)
+                    return build_visible_fallback_http_response(
+                        session,
+                        dimension,
+                        reason="repeat_retry_failed",
+                        detail="连续生成了重复问题，这次结果无法使用。请重新生成。",
+                    )
 
             quality_gate = evaluate_visible_question_quality_gate(
                 result,
@@ -30371,8 +30553,6 @@ def get_next_question(session_id):
                     question_mode_metrics["ai_recommendation"] = bool(result.get("ai_recommendation"))
                 else:
                     clear_thinking_status(session_id)
-                    fallback = get_fallback_question(session, dimension)
-                    fallback["detail"] = "AI 生成的问题质量不足，已切换为备用题目"
                     _record_question_generation_fallback("quality_gate_failed")
                     question_runtime_durations["parse_repair_ms"] = round(_elapsed_ms(parse_repair_started_at), 2)
                     _record_question_runtime(
@@ -30381,7 +30561,12 @@ def get_next_question(session_id):
                         tier_used=tier_used,
                         selection_reason=runtime_profile.get("selection_reason", ""),
                     )
-                    return jsonify(fallback)
+                    return jsonify(build_visible_question_quality_failure_response(
+                        session,
+                        dimension,
+                        quality_gate=retry_quality_gate or quality_gate,
+                        detail="AI 生成的问题质量不足，已丢弃浅结果。请重试生成。",
+                    )), 422
 
             # ========== 后端强制校验 is_follow_up ==========
             # 防止 AI 绕过追问预算控制，自行将问题标记为追问
@@ -30459,8 +30644,6 @@ def get_next_question(session_id):
                 source="ai_generation_repair",
             )
             if not repair_quality_gate.get("passed"):
-                fallback = get_fallback_question(session, dimension)
-                fallback["detail"] = "AI 修复后的问题质量不足，已切换为备用题目"
                 _record_question_generation_fallback("quality_gate_repair_failed")
                 question_runtime_durations["parse_repair_ms"] = round(_elapsed_ms(parse_repair_started_at), 2)
                 _record_question_runtime(
@@ -30469,7 +30652,12 @@ def get_next_question(session_id):
                     tier_used=f"{tier_used}:repair",
                     selection_reason=runtime_profile.get("selection_reason", ""),
                 )
-                return jsonify(fallback)
+                return jsonify(build_visible_question_quality_failure_response(
+                    session,
+                    dimension,
+                    quality_gate=repair_quality_gate,
+                    detail="AI 修复后的问题质量不足，已丢弃浅结果。请重试生成。",
+                )), 422
             postprocess_started_at = _time.perf_counter()
             trigger_prefetch_if_needed(session, dimension, session_signature=session_signature)
             _set_question_result_cache(question_cache_key, repaired_result)
@@ -30484,19 +30672,6 @@ def get_next_question(session_id):
             )
             return jsonify(repaired_result)
 
-        fallback = get_fallback_question(session, dimension)
-        if fallback.get("question") or fallback.get("completed"):
-            fallback["detail"] = "AI 返回内容无法稳定解析，已切换为备用题目"
-            _record_question_generation_fallback("parse_invalid")
-            question_runtime_durations["parse_repair_ms"] = round(_elapsed_ms(parse_repair_started_at), 2)
-            _record_question_runtime(
-                "failed",
-                runtime_profile=runtime_profile.get("profile_name", ""),
-                tier_used=tier_used,
-                selection_reason=runtime_profile.get("selection_reason", ""),
-            )
-            return jsonify(fallback)
-
         question_runtime_durations["parse_repair_ms"] = round(_elapsed_ms(parse_repair_started_at), 2)
         _record_question_runtime(
             "failed",
@@ -30504,71 +30679,26 @@ def get_next_question(session_id):
             tier_used=tier_used,
             selection_reason=runtime_profile.get("selection_reason", ""),
         )
-        return jsonify({
-            "error": "AI 响应格式错误",
-            "detail": "AI 返回的内容无法解析为有效的 JSON 格式。请点击「重试」按钮重新生成问题。"
-        }), 503
+        return build_visible_fallback_http_response(
+            session,
+            dimension,
+            reason="parse_invalid",
+            detail="这次生成结果无法稳定解析。请重新生成。",
+        )
 
     except Exception as e:
         clear_thinking_status(session_id)
         print(f"生成问题时发生异常: {e}")
-        error_msg = str(e)
-        fallback = get_fallback_question(session, dimension)
-        if fallback.get("question") or fallback.get("completed"):
-            fallback["detail"] = "AI 生成过程中发生异常，已切换为备用题目"
-            _record_question_generation_fallback("exception")
-            _record_question_runtime(
-                "failed",
-                selection_reason="exception",
-            )
-            return jsonify(fallback)
-
-        # 根据异常类型提供更具体的错误信息
-        if "connection" in error_msg.lower() or "network" in error_msg.lower():
-            _record_question_runtime(
-                "failed",
-                selection_reason="exception:connection",
-            )
-            return jsonify({
-                "error": "网络连接失败",
-                "detail": "无法连接到 AI 服务，请检查网络连接"
-            }), 503
-        elif "timeout" in error_msg.lower():
-            _record_question_runtime(
-                "failed",
-                selection_reason="exception:timeout",
-            )
-            return jsonify({
-                "error": "请求超时",
-                "detail": "AI 服务响应超时，请稍后重试"
-            }), 503
-        elif "authentication" in error_msg.lower() or "api key" in error_msg.lower():
-            _record_question_runtime(
-                "failed",
-                selection_reason="exception:auth",
-            )
-            return jsonify({
-                "error": "API 认证失败",
-                "detail": "API Key 无效或已过期，请联系管理员"
-            }), 503
-        elif "rate limit" in error_msg.lower():
-            _record_question_runtime(
-                "failed",
-                selection_reason="exception:rate_limit",
-            )
-            return jsonify({
-                "error": "请求频率超限",
-                "detail": "AI 服务请求过于频繁，请稍后再试"
-            }), 503
-        else:
-            _record_question_runtime(
-                "failed",
-                selection_reason="exception:unknown",
-            )
-            return jsonify({
-                "error": "生成问题失败",
-                "detail": f"发生未知错误: {error_msg}"
-            }), 503
+        _record_question_runtime(
+            "failed",
+            selection_reason="exception",
+        )
+        return build_visible_fallback_http_response(
+            session,
+            dimension,
+            reason="exception",
+            detail="问题生成过程中出现异常。请稍后重试。",
+        )
     finally:
         if question_generation_slot_acquired:
             try:
@@ -35506,6 +35636,12 @@ def write_solution_sidecar(report_name: str, snapshot: dict) -> None:
     payload = copy.deepcopy(snapshot)
     payload["version"] = SOLUTION_SNAPSHOT_VERSION
     payload["report_name"] = report_name
+    owner_id = _safe_int(payload.get("owner_user_id"), 0) or get_report_owner_id(report_name)
+    if owner_id > 0:
+        payload["owner_user_id"] = owner_id
+    scope_key = get_record_instance_scope_key(payload.get("instance_scope_key") or get_report_scope_key(report_name))
+    if scope_key:
+        payload["instance_scope_key"] = scope_key
     _save_report_artifact_payload(
         "report_solution_sidecars",
         report_name,
@@ -35843,6 +35979,8 @@ def _normalize_solution_snapshot(snapshot: dict) -> dict:
         "snapshot_origin": clean_solution_text(snapshot.get("snapshot_origin", ""), max_len=40),
         "snapshot_stage": clean_solution_text(snapshot.get("snapshot_stage", ""), max_len=40),
         "has_structured_evidence": bool(snapshot.get("has_structured_evidence", False)),
+        "owner_user_id": _safe_int(snapshot.get("owner_user_id"), 0),
+        "instance_scope_key": get_record_instance_scope_key(snapshot.get("instance_scope_key", "")),
         "draft": {
             "overview": clean_solution_text(draft.get("overview", snapshot.get("overview", "")), max_len=3200),
             "needs": _normalize_solution_structured_list(draft.get("needs", snapshot.get("needs", [])), "needs"),
@@ -36324,12 +36462,24 @@ def build_solution_fingerprint(snapshot: dict) -> dict:
     return payload
 
 
-def load_recent_solution_sidecars(exclude_report_name: str = "", limit: int = SOLUTION_SIMILARITY_LOOKBACK) -> list[dict]:
+def load_recent_solution_sidecars(
+    exclude_report_name: str = "",
+    limit: int = SOLUTION_SIMILARITY_LOOKBACK,
+    *,
+    owner_user_id: int = 0,
+    instance_scope_key: object = "",
+) -> list[dict]:
     sidecar_files = sorted(
         REPORTS_DIR.glob(f"*{SOLUTION_SIDECAR_SUFFIX}"),
         key=lambda item: item.stat().st_mtime if item.exists() else 0,
         reverse=True,
     )
+    expected_owner_id = 0
+    try:
+        expected_owner_id = int(owner_user_id or 0)
+    except (TypeError, ValueError):
+        expected_owner_id = 0
+    expected_scope = get_record_instance_scope_key(instance_scope_key) if instance_scope_key else ""
     results = []
     for path in sidecar_files:
         try:
@@ -36344,13 +36494,33 @@ def load_recent_solution_sidecars(exclude_report_name: str = "", limit: int = SO
             payload["report_name"] = report_name
         if exclude_report_name and report_name == exclude_report_name:
             continue
+        if expected_owner_id > 0:
+            sidecar_owner_id = 0
+            try:
+                sidecar_owner_id = int(payload.get("owner_user_id") or get_report_owner_id(report_name) or 0)
+            except (TypeError, ValueError):
+                sidecar_owner_id = get_report_owner_id(report_name)
+            if sidecar_owner_id != expected_owner_id:
+                continue
+        if expected_scope:
+            sidecar_scope = get_record_instance_scope_key(
+                payload.get("instance_scope_key") or get_report_scope_key(report_name)
+            )
+            if sidecar_scope != expected_scope:
+                continue
         results.append(payload)
         if len(results) >= limit:
             break
     return results
 
 
-def build_solution_quality_signals(snapshot: dict, source_mode: str = "structured_sidecar") -> dict:
+def build_solution_quality_signals(
+    snapshot: dict,
+    source_mode: str = "structured_sidecar",
+    *,
+    owner_user_id: int = 0,
+    instance_scope_key: object = "",
+) -> dict:
     normalized = _normalize_solution_snapshot(snapshot)
     draft = normalized["draft"]
     analysis = draft.get("analysis", {})
@@ -36408,7 +36578,12 @@ def build_solution_quality_signals(snapshot: dict, source_mode: str = "structure
     signature = build_solution_similarity_text_from_snapshot(normalized)
     max_similarity = 0.0
     similar_report_name = ""
-    for other in load_recent_solution_sidecars(exclude_report_name=normalized.get("report_name", ""), limit=SOLUTION_SIMILARITY_LOOKBACK):
+    for other in load_recent_solution_sidecars(
+        exclude_report_name=normalized.get("report_name", ""),
+        limit=SOLUTION_SIMILARITY_LOOKBACK,
+        owner_user_id=owner_user_id or normalized.get("owner_user_id", 0),
+        instance_scope_key=instance_scope_key or normalized.get("instance_scope_key", ""),
+    ):
         other_fingerprint = build_solution_fingerprint(other)
         if other_fingerprint.get("hash") == fingerprint.get("hash"):
             continue
@@ -43014,7 +43189,12 @@ def _build_solution_payload_from_snapshot(
     allow_ai_enhancement: bool = True,
 ) -> dict:
     normalized = _normalize_solution_snapshot(snapshot)
-    quality_signals = build_solution_quality_signals(normalized, source_mode=source_mode)
+    quality_signals = build_solution_quality_signals(
+        normalized,
+        source_mode=source_mode,
+        owner_user_id=normalized.get("owner_user_id", 0) or get_report_owner_id(normalized.get("report_name", "")),
+        instance_scope_key=normalized.get("instance_scope_key", "") or get_report_scope_key(normalized.get("report_name", "")),
+    )
     if quality_signals.get("degraded_reasons"):
         return _build_solution_degraded_payload(normalized, source_mode, quality_signals)
 
@@ -43143,7 +43323,12 @@ def _build_legacy_quality_signals(legacy_payload: dict) -> dict:
         "top_actions": [clean_solution_text(item.get("title", ""), max_len=40) for item in legacy_payload.get("action_items", [])[:3] if isinstance(item, dict)],
     }
     fingerprint["hash"] = hashlib.sha1(json.dumps(fingerprint, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:12]
-    for other in load_recent_solution_sidecars(exclude_report_name=report_name, limit=SOLUTION_SIMILARITY_LOOKBACK):
+    for other in load_recent_solution_sidecars(
+        exclude_report_name=report_name,
+        limit=SOLUTION_SIMILARITY_LOOKBACK,
+        owner_user_id=get_report_owner_id(report_name),
+        instance_scope_key=get_report_scope_key(report_name),
+    ):
         other_fingerprint = build_solution_fingerprint(other)
         if other_fingerprint.get("hash") == fingerprint.get("hash"):
             continue
@@ -43755,12 +43940,52 @@ def get_public_solution_by_share_token(share_token):
     payload["viewer_capabilities"] = {
         "solution_share": False,
     }
-
+    sanitize_public_solution_payload(payload)
     response = jsonify(payload)
     response.headers["Cache-Control"] = "no-store, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
     return response
+
+
+def sanitize_public_solution_payload(payload: dict) -> dict:
+    """公开分享不得带出他报报名或可反推报名的质量信号。"""
+    if not isinstance(payload, dict):
+        return payload
+
+    payload["report_name"] = ""
+    quality_signals = payload.get("quality_signals")
+    if isinstance(quality_signals, dict):
+        similar_report_name = str(quality_signals.get("similar_report_name") or "").strip()
+        quality_signals["similar_report_name"] = ""
+        redacted_reasons = []
+        for reason in quality_signals.get("degraded_reasons", []) if isinstance(quality_signals.get("degraded_reasons", []), list) else []:
+            text = str(reason or "").strip()
+            if not text:
+                continue
+            if similar_report_name and similar_report_name in text:
+                redacted_reasons.append("与最近方案相似度过高，已停止生成雷同内容。")
+                continue
+            if re.search(r"与最近方案「[^」]+」", text):
+                redacted_reasons.append(re.sub(r"与最近方案「[^」]+」", "与最近方案", text))
+                continue
+            redacted_reasons.append(text)
+        quality_signals["degraded_reasons"] = redacted_reasons
+
+    def _scrub(value):
+        if isinstance(value, dict):
+            value.pop("similar_report_name", None)
+            value.pop("report_name", None)
+            for nested in value.values():
+                _scrub(nested)
+            return
+        if isinstance(value, list):
+            for item in value:
+                _scrub(item)
+
+    for key in ("proposal_page", "quality_review", "chapter_copy", "proposal_brief", "sections", "closing_block"):
+        _scrub(payload.get(key))
+    return payload
 
 
 @app.route('/api/reports/<path:filename>/appendix/pdf', methods=['GET'])
@@ -44235,7 +44460,6 @@ def get_status():
             "authenticated": False,
             "wechat_login_enabled": wechat_enabled,
             "sms_login_enabled": sms_enabled,
-            "sms_provider": SMS_PROVIDER,
             "sms_code_length": SMS_CODE_LENGTH,
             "sms_cooldown_seconds": SMS_SEND_COOLDOWN_SECONDS,
             "license_enforcement_enabled": bool(license_enforcement_state.get("enabled")),

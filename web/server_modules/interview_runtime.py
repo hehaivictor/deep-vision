@@ -874,7 +874,7 @@ def _select_question_generation_runtime_profile(
             QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS
             if reference_light_candidate else QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS
         )
-        secondary_lane = "summary" if not is_prefetch else secondary_lane
+        secondary_lane = QUESTION_HEDGED_SECONDARY_LANE if not is_prefetch else secondary_lane
         hedge_delay_seconds = min(float(hedge_delay_seconds), 1.0 if not is_prefetch else float(PREFETCH_QUESTION_HEDGE_DELAY_SECONDS))
         if reference_light_candidate:
             fast_timeout = _resolve_reference_light_fast_timeout(fast_timeout, is_prefetch=is_prefetch)
@@ -914,7 +914,7 @@ def _select_question_generation_runtime_profile(
             QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS
             if reference_light_candidate else QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS
         )
-        secondary_lane = "summary" if not is_prefetch else secondary_lane
+        secondary_lane = QUESTION_HEDGED_SECONDARY_LANE if not is_prefetch else secondary_lane
         if reference_light_candidate:
             fast_timeout = _resolve_reference_light_fast_timeout(fast_timeout, is_prefetch=is_prefetch)
         else:
@@ -958,7 +958,7 @@ def _select_question_generation_runtime_profile(
             QUESTION_FAST_REFERENCE_PROMPT_MAX_CHARS
             if reference_light_candidate else QUESTION_FAST_LIGHT_PROMPT_MAX_CHARS
         )
-        secondary_lane = "summary" if not is_prefetch else secondary_lane
+        secondary_lane = QUESTION_HEDGED_SECONDARY_LANE if not is_prefetch else secondary_lane
         if reference_light_candidate:
             fast_timeout = _resolve_reference_light_fast_timeout(fast_timeout, is_prefetch=is_prefetch)
         full_timeout = _clamp_question_generation_timeout(
@@ -999,6 +999,13 @@ def _select_question_generation_runtime_profile(
         reasons.append("release_conservative")
     if not reasons:
         reasons.append(profile_name)
+
+    # 可见题禁止 summary 作为竞速胜出通道；summary 只用于内部压缩。
+    disallowed_lanes.append("summary")
+    if str(primary_lane or "").strip().lower() == "summary":
+        primary_lane = "question"
+    if str(secondary_lane or "").strip().lower() == "summary":
+        secondary_lane = QUESTION_HEDGED_SECONDARY_LANE
 
     return {
         "profile_name": profile_name,
@@ -1302,9 +1309,9 @@ def _call_question_with_optional_hedge(
     primary_lane = str(primary_lane or "question").strip().lower() or "question"
     default_secondary_lane = "question_deep"
     secondary_lane = str(secondary_lane or default_secondary_lane).strip().lower() or default_secondary_lane
-    if primary_lane not in valid_lanes:
+    if primary_lane not in valid_lanes or primary_lane == "summary":
         primary_lane = "question"
-    if secondary_lane not in valid_lanes:
+    if secondary_lane not in valid_lanes or secondary_lane == "summary":
         secondary_lane = default_secondary_lane
     hedged_enabled = bool(globals().get("QUESTION_HEDGED_ENABLED", False)) if hedged_enabled is None else bool(hedged_enabled)
     primary_timeout, _ = _resolve_question_lane_call_runtime_overrides(
@@ -1624,6 +1631,11 @@ def generate_question_with_tiered_strategy(
                 parse_question_response(fast_response, debug=debug),
                 fallback_contract=runtime_profile,
             )
+            if fast_result and str(fast_lane or "").strip().lower() == "summary":
+                _record_question_fast_outcome(False, lane=fast_lane, reason="summary_lane_rejected")
+                if debug:
+                    print("⚠️ 快档命中 summary 通道，已丢弃并回退全量档")
+                fast_result = None
             if fast_result:
                 fast_result = _annotate_question_result(fast_result, fast_meta, fallback_triggered=False)
                 _record_question_fast_outcome(True, lane=fast_lane, reason="ok")
@@ -1659,6 +1671,12 @@ def generate_question_with_tiered_strategy(
         parse_question_response(full_response, debug=debug),
         fallback_contract=runtime_profile,
     ) if full_response else None
+    if full_result and str(full_lane or "").strip().lower() == "summary":
+        if debug:
+            print("⚠️ 全量档命中 summary 通道，已丢弃")
+        full_result = None
+        full_response = None
+        full_lane = full_primary_lane
     if full_result:
         full_result = _annotate_question_result(full_result, full_meta, fallback_triggered=False)
 
@@ -1691,6 +1709,8 @@ def generate_question_with_tiered_strategy(
             parse_question_response(fallback_response, debug=debug),
             fallback_contract=runtime_profile,
         ) if fallback_response else None
+        if fallback_result and str(fallback_lane or "").strip().lower() == "summary":
+            fallback_result = None
         if fallback_result:
             fallback_meta = dict(fallback_meta or {})
             primary_attempts = list((full_meta or {}).get("attempts", []) if isinstance((full_meta or {}).get("attempts", []), list) else [])

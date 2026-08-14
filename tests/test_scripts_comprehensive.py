@@ -32,6 +32,7 @@ from scripts import agent_static_guardrails
 from scripts import agent_artifacts
 from scripts import agent_workflow
 from scripts import context_hub
+from scripts import admin_ownership_service
 from scripts import convert_doc
 from scripts import migrate_session_evidence_annotations
 from scripts import replay_preflight_diagnostics
@@ -969,20 +970,20 @@ class ComprehensiveScriptTests(unittest.TestCase):
     def test_model_role_defaults_match_release_config(self):
         content = (ROOT_DIR / "web" / "config.py").read_text(encoding="utf-8")
         expected_defaults = {
-            "MODEL_NAME": "doubao-seed-2-0-pro",
-            "QUESTION_MODEL_NAME_DEEP": "claude-opus-4-7",
+            "MODEL_NAME": "glm-5",
+            "QUESTION_MODEL_NAME_DEEP": "ai/glm-5.1",
             "REPORT_MODEL_NAME": "doubao-seed-2-0-pro",
-            "REPORT_DRAFT_MODEL_NAME": "gemini-3.1-pro-preview",
-            "REPORT_REVIEW_MODEL_NAME": "claude-opus-4-7",
-            "SUMMARY_MODEL_NAME": "kimi-for-coding",
-            "SEARCH_DECISION_MODEL_NAME": "kimi-for-coding",
-            "ASSESSMENT_MODEL_NAME": "kimi-for-coding",
-            "QUESTION_FALLBACK_MODEL_NAME": "kimi-for-coding",
-            "QUESTION_MODEL_NAME_DEEP_FALLBACK": "doubao-seed-2-0-pro",
-            "REPORT_DRAFT_FALLBACK_MODEL_NAME": "doubao-seed-2-0-pro",
-            "REPORT_REVIEW_FALLBACK_MODEL_NAME": "gemini-3.1-pro-preview",
-            "SUMMARY_FALLBACK_MODEL_NAME": "doubao-seed-2-0-pro",
-            "SEARCH_DECISION_FALLBACK_MODEL_NAME": "doubao-seed-2-0-pro",
+            "REPORT_DRAFT_MODEL_NAME": "minimax-m3",
+            "REPORT_REVIEW_MODEL_NAME": "gemini-3.1-pro-preview",
+            "SUMMARY_MODEL_NAME": "kimi-k2.5",
+            "SEARCH_DECISION_MODEL_NAME": "deepseek-v4-flash",
+            "ASSESSMENT_MODEL_NAME": "glm-5",
+            "QUESTION_FALLBACK_MODEL_NAME": "doubao-seed-2-0-pro",
+            "QUESTION_MODEL_NAME_DEEP_FALLBACK": "minimax-m3",
+            "REPORT_DRAFT_FALLBACK_MODEL_NAME": "gemini-3.1-pro-preview",
+            "REPORT_REVIEW_FALLBACK_MODEL_NAME": "glm-5",
+            "SUMMARY_FALLBACK_MODEL_NAME": "glm-5",
+            "SEARCH_DECISION_FALLBACK_MODEL_NAME": "glm-5",
             "ASSESSMENT_FALLBACK_MODEL_NAME": "doubao-seed-2-0-pro",
         }
         for key, value in expected_defaults.items():
@@ -992,6 +993,24 @@ class ComprehensiveScriptTests(unittest.TestCase):
         for key in expected_defaults:
             if "FALLBACK" in key:
                 self.assertNotIn(f'{key} = ""', content)
+        self.assertIn('QUESTION_HEDGED_SECONDARY_LANE = "question_deep"', content)
+        self.assertIn('QUESTION_HIGH_EVIDENCE_SECONDARY_LANE = "question_deep"', content)
+
+    def test_interview_runtime_aborts_question_request_when_opening_session(self):
+        content = (ROOT_DIR / "web" / "app_modules" / "interview_runtime.js").read_text(encoding="utf-8")
+        self.assertIn("this.questionRequestId += 1;", content)
+        self.assertIn("this.abortQuestionRequest();", content)
+        self.assertIn("buildVisibleQuestionErrorState", content)
+        self.assertIn("handleVisibleQuestionRecoveryAction", content)
+        self.assertIn("expectedSessionId", content)
+        self.assertIn("fetchNextQuestion({ force: true })", content)
+
+    def test_production_start_script_requires_env_file(self):
+        content = (ROOT_DIR / "scripts" / "start-production.sh").read_text(encoding="utf-8")
+        self.assertIn("DEEPVISION_ENV_FILE", content)
+        self.assertIn("web/.env.production", content)
+        self.assertIn("web/.env.cloud", content)
+        self.assertIn("exit 1", content)
 
     def test_agent_scenario_scaffold_builds_from_eval_run(self):
         run_dir = self._write_eval_run(
@@ -4441,6 +4460,44 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertNotEqual(scenario_id_a, scenario_id_b)
         self.assertTrue((custom_dir / f"{scenario_id_a}.json").exists())
         self.assertTrue((custom_dir / f"{scenario_id_b}.json").exists())
+
+    def test_upsert_solution_share_records_does_not_delete_other_tokens(self):
+        shares_file = self.sandbox_root / "solution-shares" / ".solution_shares.json"
+        shares_file.parent.mkdir(parents=True, exist_ok=True)
+        admin_ownership_service.save_solution_share_records(
+            shares_file,
+            {
+                "token-keep": {
+                    "report_name": "keep.md",
+                    "owner_user_id": 22,
+                    "created_at": "2026-01-01T00:00:00",
+                    "updated_at": "2026-01-01T00:00:00",
+                },
+                "token-source": {
+                    "report_name": "source.md",
+                    "owner_user_id": 11,
+                    "created_at": "2026-01-01T00:00:00",
+                    "updated_at": "2026-01-01T00:00:00",
+                },
+            },
+        )
+
+        admin_ownership_service.upsert_solution_share_records(
+            shares_file,
+            {
+                "token-source": {
+                    "report_name": "source.md",
+                    "owner_user_id": 33,
+                    "created_at": "2026-01-01T00:00:00",
+                    "updated_at": "2026-01-02T00:00:00",
+                }
+            },
+        )
+
+        payload = admin_ownership_service.load_solution_share_records(shares_file)
+        self.assertEqual(22, int(payload["token-keep"]["owner_user_id"]))
+        self.assertEqual(33, int(payload["token-source"]["owner_user_id"]))
+        self.assertEqual("keep.md", payload["token-keep"]["report_name"])
 
 
 if __name__ == "__main__":

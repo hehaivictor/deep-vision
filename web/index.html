@@ -1905,10 +1905,19 @@
                                             </div>
                                             <h3 class="text-lg font-semibold text-primary mb-2" x-text="currentQuestion.errorTitle || '服务错误'"></h3>
                                             <p class="text-muted mb-6" x-text="currentQuestion.errorDetail || '请稍后重试'"></p>
-                                            <button @click="fetchNextQuestion()"
-                                                    class="report-action-primary px-6 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer">
-                                                重试
-                                            </button>
+                                            <div class="flex flex-wrap items-center justify-center gap-3">
+                                                <template x-if="!(currentQuestion.recoveryActions || []).length">
+                                                    <button @click="fetchNextQuestion({ force: true })"
+                                                            class="report-action-primary px-6 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer">
+                                                        重试
+                                                    </button>
+                                                </template>
+                                                <template x-for="action in (currentQuestion.recoveryActions || [])" :key="action.id">
+                                                    <button @click="handleVisibleQuestionRecoveryAction(action.id)"
+                                                            :class="action.id === 'retry' ? 'report-action-primary px-6 py-2.5 rounded-lg font-medium transition-colors duration-200 cursor-pointer' : 'px-6 py-2.5 rounded-lg font-medium border border-border text-primary hover:bg-surface-secondary transition-colors duration-200 cursor-pointer'"
+                                                            x-text="action.label"></button>
+                                                </template>
+                                            </div>
                                         </div>
                                     </template>
 

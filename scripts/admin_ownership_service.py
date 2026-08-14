@@ -345,36 +345,59 @@ def load_solution_share_records(report_solution_shares_file: Path, meta_index_db
     return payload if isinstance(payload, dict) else {}
 
 
+def upsert_solution_share_records(
+    report_solution_shares_file: Path,
+    payload: dict[str, dict[str, Any]],
+    meta_index_db_path: Optional[str] = None,
+) -> None:
+    normalized = {
+        str(token).strip(): dict(record)
+        for token, record in (payload if isinstance(payload, dict) else {}).items()
+        if isinstance(record, dict) and str(token).strip()
+    }
+    if not normalized:
+        return
+    if _use_meta_index_storage(meta_index_db_path):
+        with get_meta_index_connection(str(meta_index_db_path)) as conn:
+            for token, record in normalized.items():
+                conn.execute(
+                    """
+                    INSERT INTO report_meta_solution_shares(
+                        share_token, report_name, owner_user_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(share_token) DO UPDATE SET
+                        report_name = excluded.report_name,
+                        owner_user_id = excluded.owner_user_id,
+                        created_at = excluded.created_at,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        token,
+                        str(record.get("report_name") or "").strip(),
+                        parse_owner_id(record.get("owner_user_id")),
+                        str(record.get("created_at") or "").strip(),
+                        str(record.get("updated_at") or "").strip(),
+                    ),
+                )
+        return
+
+    existing = load_solution_share_records(report_solution_shares_file, meta_index_db_path=None)
+    if not isinstance(existing, dict):
+        existing = {}
+    existing.update(normalized)
+    _write_json_file(report_solution_shares_file, existing)
+
+
 def save_solution_share_records(
     report_solution_shares_file: Path,
     payload: dict[str, dict[str, Any]],
     meta_index_db_path: Optional[str] = None,
 ) -> None:
-    normalized = payload if isinstance(payload, dict) else {}
-    if _use_meta_index_storage(meta_index_db_path):
-        with get_meta_index_connection(str(meta_index_db_path)) as conn:
-            conn.execute("DELETE FROM report_meta_solution_shares")
-            if normalized:
-                conn.executemany(
-                    """
-                    INSERT INTO report_meta_solution_shares(
-                        share_token, report_name, owner_user_id, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?)
-                    """,
-                    [
-                        (
-                            str(token),
-                            str((record or {}).get("report_name") or "").strip(),
-                            parse_owner_id((record or {}).get("owner_user_id")),
-                            str((record or {}).get("created_at") or "").strip(),
-                            str((record or {}).get("updated_at") or "").strip(),
-                        )
-                        for token, record in normalized.items()
-                        if isinstance(record, dict) and str(token).strip()
-                    ],
-                )
-        return
-    _write_json_file(report_solution_shares_file, normalized)
+    upsert_solution_share_records(
+        report_solution_shares_file,
+        payload,
+        meta_index_db_path=meta_index_db_path,
+    )
 
 
 def prepare_backup_dir(backup_root: Path, backup_id: str, target_user_id: int, apply_mode: bool) -> Optional[Path]:
@@ -1616,14 +1639,16 @@ def run_account_merge(
                 save_report_owners(report_owners_file, owners)
 
             if source_share_tokens and isinstance(solution_shares_payload, dict):
+                updated_shares: dict[str, dict[str, Any]] = {}
                 for token in source_share_tokens:
                     record = solution_shares_payload.get(token)
                     if isinstance(record, dict):
                         record["owner_user_id"] = normalized_target_user_id
                         record["updated_at"] = now_iso
-                save_solution_share_records(
+                        updated_shares[str(token)] = record
+                upsert_solution_share_records(
                     report_solution_shares_file,
-                    solution_shares_payload,
+                    updated_shares,
                     meta_index_db_path=meta_index_db_path,
                 )
 

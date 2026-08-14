@@ -37,6 +37,8 @@
 - 老报告的 Markdown fallback 必须继续可用，并保持 HTML 清洗与转义。
 - 报告、导出资产、分享 token 的归属必须与 `owner_user_id`、`instance_scope_key` 一致。
 - 公开分享接口只提供最小只读暴露，不能泄露管理态或其他用户数据。
+- 公开分享 payload 不得带出他报报名，包括 `quality_signals.similar_report_name` 与 `degraded_reasons` 中的报名。
+- 方案相似度扫描必须按 `owner_user_id` 与 `instance_scope_key` 过滤，不能扫到其他用户 sidecar。
 
 ## 推荐验证
 

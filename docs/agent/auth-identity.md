@@ -27,6 +27,7 @@
 - merge preview 和 merge apply 必须绑定当前候选上下文，不能跳过 preview 直接 apply。
 - 绑定冲突时不能自动吞掉历史数据，必须先给出 merge_required 或 rollback 入口。
 - 账号历史、导出资产、分享映射和归属关系不能因为绑定流程丢失。
+- 账号合并写入分享映射时必须按 `share_token` UPSERT，不得整表替换导致其他用户分享被删。
 
 ## 推荐验证
 

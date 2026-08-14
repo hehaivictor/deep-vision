@@ -3446,6 +3446,8 @@ function deepVision() {
                 serviceError: false,
                 errorTitle: '',
                 errorDetail: '',
+                errorCode: '',
+                recoveryActions: [],
                 aiRecommendation: null,
                 ...overrides,
             };

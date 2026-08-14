@@ -2233,6 +2233,10 @@ class ComprehensiveApiTests(unittest.TestCase):
         source_client = self.server.app.test_client()
         source_user = self._register(client=source_client)
         fixture = self._create_owned_merge_fixture(int(source_user["id"]), f"phone-merge-{uuid.uuid4().hex[:6]}")
+        other_client = self.server.app.test_client()
+        other_user = self._register(client=other_client)
+        other_fixture = self._create_owned_merge_fixture(int(other_user["id"]), f"other-share-{uuid.uuid4().hex[:6]}")
+        other_share_token = other_fixture["share_token"]
 
         send_resp = self.client.post(
             "/api/auth/sms/send-code",
@@ -2292,6 +2296,8 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(int(target_row["id"]), int(report_owners[fixture["report_name"]]))
         shares = self.server.load_solution_share_map()
         self.assertEqual(int(target_row["id"]), int(shares[fixture["share_token"]]["owner_user_id"]))
+        self.assertIn(other_share_token, shares)
+        self.assertEqual(int(other_user["id"]), int(shares[other_share_token]["owner_user_id"]))
         merged_scenario = self.server.scenario_loader.get_scenario(fixture["scenario_id"])
         self.assertEqual(int(target_row["id"]), int(merged_scenario["owner_user_id"]))
         self.assertEqual("active", self.server.get_user_license_state(int(target_row["id"]))["status"])
@@ -2328,6 +2334,8 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(int(source_user["id"]), int(rolled_back_owners[fixture["report_name"]]))
         rolled_back_shares = self.server.load_solution_share_map()
         self.assertEqual(int(source_user["id"]), int(rolled_back_shares[fixture["share_token"]]["owner_user_id"]))
+        self.assertIn(other_share_token, rolled_back_shares)
+        self.assertEqual(int(other_user["id"]), int(rolled_back_shares[other_share_token]["owner_user_id"]))
         self.server.scenario_loader.reload()
         rolled_back_scenario = self.server.scenario_loader.get_scenario(fixture["scenario_id"])
         self.assertEqual(int(source_user["id"]), int(rolled_back_scenario["owner_user_id"]))
@@ -3184,13 +3192,15 @@ class ComprehensiveApiTests(unittest.TestCase):
             f"/api/sessions/{session_id}/next-question",
             json={"dimension": dimension},
         )
-        self.assertEqual(next_q.status_code, 200, next_q.get_data(as_text=True))
-        payload = next_q.get_json()
-        self.assertEqual(payload.get("dimension"), dimension)
-        self.assertFalse(payload.get("ai_generated", True))
-        self.assertTrue(payload.get("question"))
-        self.assertIsInstance(payload.get("options"), list)
-        self.assertGreater(len(payload.get("options", [])), 0)
+        self.assertEqual(next_q.status_code, 422, next_q.get_data(as_text=True))
+        payload = next_q.get_json() or {}
+        self.assertEqual(payload.get("error_code"), "visible_question_generation_unavailable")
+        self.assertEqual(payload.get("failure_reason"), "ai_disabled")
+        self.assertTrue(payload.get("recoverable"))
+        self.assertNotIn("question", payload)
+        self.assertNotIn("options", payload)
+        self.assertNotIn("备用浅题", payload.get("detail", ""))
+        self.assertTrue(payload.get("recovery_actions"))
         stats = self.server.get_question_generation_stats_snapshot()
         self.assertEqual(stats.get("fallback_served"), 1)
         self.assertEqual(stats.get("fallback_reasons", {}).get("ai_disabled"), 1)
@@ -3386,15 +3396,58 @@ class ComprehensiveApiTests(unittest.TestCase):
                 f"/api/sessions/{session_id}/next-question",
                 json={"dimension": dimension},
             )
-            self.assertEqual(next_q.status_code, 200, next_q.get_data(as_text=True))
+            self.assertEqual(next_q.status_code, 422, next_q.get_data(as_text=True))
             payload = next_q.get_json() or {}
-            self.assertEqual(payload.get("dimension"), dimension)
-            self.assertFalse(payload.get("ai_generated", True))
-            self.assertTrue(payload.get("question"))
-            self.assertIn("已切换为备用题目", payload.get("detail", ""))
+            self.assertEqual(payload.get("error_code"), "visible_question_generation_unavailable")
+            self.assertEqual(payload.get("failure_reason"), "exception")
+            self.assertTrue(payload.get("recoverable"))
+            self.assertNotIn("question", payload)
+            self.assertNotIn("options", payload)
+            self.assertNotIn("备用浅题", payload.get("detail", ""))
+            self.assertTrue(payload.get("recovery_actions"))
         finally:
             self.server.resolve_ai_client = old_resolve_ai_client
             self.server.generate_question_with_tiered_strategy = old_generate_question
+
+    def test_next_question_returns_422_when_visible_quality_gate_fails(self):
+        self._register()
+        created = self._create_session(topic="AI 视觉质检系统建设访谈")
+        session_id = created["session_id"]
+        dimension = list(created["dimensions"].keys())[0]
+
+        old_resolve_ai_client = self.server.resolve_ai_client
+        old_generate_question = self.server.generate_question_with_tiered_strategy
+        old_trigger_prefetch = self.server.trigger_prefetch_if_needed
+        try:
+            self.server.resolve_ai_client = lambda call_type="question": object()
+            self.server.trigger_prefetch_if_needed = lambda *args, **kwargs: None
+            self.server.generate_question_with_tiered_strategy = lambda *_args, **_kwargs: (
+                '{"question":"当前最需要优先确认的重点是什么？","options":["效率","成本","体验","质量"]}',
+                {
+                    "question": "当前最需要优先确认的重点是什么？",
+                    "options": ["效率", "成本", "体验", "质量"],
+                    "multi_select": False,
+                    "is_follow_up": False,
+                },
+                "fast:question",
+            )
+
+            next_q = self.client.post(
+                f"/api/sessions/{session_id}/next-question",
+                json={"dimension": dimension},
+            )
+            self.assertEqual(next_q.status_code, 422, next_q.get_data(as_text=True))
+            payload = next_q.get_json() or {}
+            self.assertEqual(payload.get("error_code"), "visible_question_quality_failed")
+            self.assertTrue(payload.get("recoverable"))
+            self.assertNotIn("question", payload)
+            self.assertNotIn("options", payload)
+            self.assertNotIn("备用浅题", payload.get("detail", ""))
+            self.assertTrue(payload.get("recovery_actions"))
+        finally:
+            self.server.resolve_ai_client = old_resolve_ai_client
+            self.server.generate_question_with_tiered_strategy = old_generate_question
+            self.server.trigger_prefetch_if_needed = old_trigger_prefetch
 
     def test_next_question_waits_for_inflight_prefetch(self):
         self._register()

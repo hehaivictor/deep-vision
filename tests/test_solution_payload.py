@@ -1773,6 +1773,62 @@ class SolutionPayloadTests(unittest.TestCase):
         self.assertTrue(proposal_brief.get('thesis', {}).get('headline'))
         self.assertEqual(len(chapter_copy.get('chapters', []) or []), 8)
 
+    def test_sanitize_public_solution_payload_removes_other_report_names(self):
+        payload = {
+            "report_name": "owner-report.md",
+            "quality_signals": {
+                "similar_report_name": "other-user-report.md",
+                "degraded_reasons": [
+                    "与最近方案「other-user-report.md」相似度过高，已停止生成雷同内容。",
+                    "旧版 Markdown 能抽取到的真实事实不足，继续拼装会造成大面积模板化。",
+                ],
+            },
+            "proposal_page": {
+                "similar_report_name": "other-user-report.md",
+                "report_name": "owner-report.md",
+            },
+        }
+
+        sanitized = self.server.sanitize_public_solution_payload(payload)
+
+        self.assertEqual(sanitized.get("report_name"), "")
+        self.assertEqual((sanitized.get("quality_signals") or {}).get("similar_report_name"), "")
+        reasons = (sanitized.get("quality_signals") or {}).get("degraded_reasons") or []
+        self.assertTrue(reasons)
+        self.assertNotIn("other-user-report.md", " ".join(str(item) for item in reasons))
+        self.assertFalse(any("与最近方案「" in str(item) for item in reasons))
+        self.assertNotIn("similar_report_name", sanitized.get("proposal_page") or {})
+        self.assertNotIn("report_name", sanitized.get("proposal_page") or {})
+
+    def test_load_recent_solution_sidecars_filters_by_owner_and_scope(self):
+        own_snapshot = self._build_snapshot(
+            "own-report.md",
+            topic="本账号方案",
+            scenario_name="交互式访谈",
+            overview="本账号方案用于相似度扫描。",
+        )
+        own_snapshot["owner_user_id"] = 11
+        own_snapshot["instance_scope_key"] = "scope-a"
+        other_snapshot = self._build_snapshot(
+            "other-report.md",
+            topic="他人方案",
+            scenario_name="交互式访谈",
+            overview="他人方案不应进入公开相似度扫描。",
+        )
+        other_snapshot["owner_user_id"] = 22
+        other_snapshot["instance_scope_key"] = "scope-a"
+        self.server.write_solution_sidecar("own-report.md", own_snapshot)
+        self.server.write_solution_sidecar("other-report.md", other_snapshot)
+
+        recent = self.server.load_recent_solution_sidecars(
+            exclude_report_name="current.md",
+            owner_user_id=11,
+            instance_scope_key="scope-a",
+        )
+        report_names = {str(item.get("report_name") or "") for item in recent}
+        self.assertIn("own-report.md", report_names)
+        self.assertNotIn("other-report.md", report_names)
+
     def test_structured_sidecar_falls_back_to_rule_chapters_when_ai_chapters_incomplete(self):
         snapshot = self._build_snapshot(
             'proposal-ai-chapters.md',

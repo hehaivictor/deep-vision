@@ -217,7 +217,7 @@ class QuestionFastStrategyTests(unittest.TestCase):
                 "call_type": call_type,
                 "timeout": timeout,
             })
-            return "{\"question\": \"ok\"}", "summary", {"response_length": 18}
+            return "{\"question\": \"ok\"}", "question", {"response_length": 18}
 
         self.server._call_question_with_optional_hedge = fake_call
         self.server.parse_question_response = lambda _response, debug=False: dict(fake_result)
@@ -233,7 +233,7 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["call_type"], "question")
         self.assertEqual(calls[0]["max_tokens"], 1600)
-        self.assertEqual(tier_used, "full:summary")
+        self.assertEqual(tier_used, "full:question")
         self.assertEqual(response, "{\"question\": \"ok\"}")
         self.assertEqual(result.get("question"), fake_result["question"])
 
@@ -368,10 +368,10 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertTrue(profile["allow_fast_path"])
         self.assertEqual(profile["fast_output_mode"], "light")
         self.assertTrue(profile["requires_rationale"])
-        self.assertEqual(profile["secondary_lane"], "summary")
+        self.assertEqual(profile["secondary_lane"], "question_deep")
         self.assertFalse(profile["fallback_enabled"])
         self.assertTrue(profile["dynamic_lane_order_enabled"])
-        self.assertEqual(profile["disallowed_lanes"], [])
+        self.assertIn("summary", profile["disallowed_lanes"])
 
     def test_runtime_profile_standard_promotes_high_evidence_only_after_three_signals(self):
         mode_strategy = self.server.get_interview_mode_runtime_strategy("standard")
@@ -1886,6 +1886,54 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertIn("generic_question", result["reasons"])
         self.assertIn("generic_options", result["reasons"])
 
+    def test_visible_question_quality_gate_rejects_fallback_label_options(self):
+        result = self.server.evaluate_visible_question_quality_gate(
+            {
+                "question": "为便于推进客户需求，接下来最应补充哪类信息？",
+                "options": ["核心痛点", "期望价值", "使用场景", "用户角色"],
+                "multi_select": False,
+            },
+            session={"topic": "访谈智能体需求调研"},
+            dimension="customer_needs",
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertIn("generic_question", result["reasons"])
+        self.assertIn("generic_options", result["reasons"])
+
+    def test_visible_question_quality_gate_rejects_fallback_bank_question(self):
+        result = self.server.evaluate_visible_question_quality_gate(
+            {
+                "question": "您希望通过这个项目解决哪些核心问题？",
+                "options": ["提升工作效率", "降低运营成本", "改善用户体验", "增强数据分析能力"],
+                "multi_select": True,
+            },
+            session={"topic": "访谈智能体需求调研"},
+            dimension="customer_needs",
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertIn("generic_question", result["reasons"])
+        self.assertIn("generic_options", result["reasons"])
+
+    def test_fallback_question_bank_fails_visible_quality_gate(self):
+        session = {
+            "topic": "访谈智能体需求调研",
+            "interview_mode": "standard",
+            "interview_log": [],
+        }
+        fallback = self.server.get_fallback_question(session, "customer_needs")
+        result = self.server.evaluate_visible_question_quality_gate(
+            fallback,
+            session=session,
+            dimension="customer_needs",
+            source="fallback:ai_disabled",
+        )
+
+        self.assertFalse(fallback.get("ai_generated", True))
+        self.assertFalse(result["passed"], result)
+        self.assertTrue(result["reasons"])
+
     def test_visible_question_quality_gate_accepts_contextual_question_and_options(self):
         result = self.server.evaluate_visible_question_quality_gate(
             {
@@ -1927,6 +1975,45 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertIn("shallow_context_options", result["reasons"])
 
+    def test_visible_question_quality_gate_rejects_questions_that_cannot_be_written_into_report(self):
+        unwritable = self.server.evaluate_visible_question_quality_gate(
+            {
+                "question": "当前最需要优先确认的重点是什么？",
+                "options": ["效率", "成本", "体验", "质量"],
+                "multi_select": False,
+                "answer_mode": "pick_with_reason",
+                "requires_rationale": True,
+                "evidence_intent": "high",
+            },
+            session={"topic": "访谈智能体需求调研"},
+            dimension="customer_needs",
+        )
+        writable = self.server.evaluate_visible_question_quality_gate(
+            {
+                "question": "访谈智能体进入试点前，哪条证据必须先写进需求报告？",
+                "options": [
+                    "业务负责人确认的试点产线范围与验收口径",
+                    "质检误报进入 MES 后的人工复核责任边界",
+                    "算法团队与产线运维共同承诺的周误报上限",
+                    "历史质检单中已反复出现的漏检物料清单",
+                ],
+                "multi_select": False,
+                "answer_mode": "pick_with_reason",
+                "requires_rationale": True,
+                "evidence_intent": "high",
+            },
+            session={"topic": "访谈智能体需求调研"},
+            dimension="customer_needs",
+        )
+
+        self.assertFalse(unwritable["passed"], unwritable)
+        self.assertTrue(
+            {"generic_question", "generic_options"} & set(unwritable["reasons"]),
+            unwritable,
+        )
+        self.assertTrue(writable["passed"], writable)
+        self.assertEqual(writable["reasons"], [])
+
     def test_should_reject_visible_question_marks_low_quality_cache_candidate(self):
         result = self.server.should_reject_visible_question(
             {
@@ -1942,6 +2029,65 @@ class QuestionFastStrategyTests(unittest.TestCase):
         self.assertEqual(result["reason"], "visible_quality_gate")
         self.assertIn("generic_options", result["quality_gate"]["reasons"])
 
+    def test_generate_question_rejects_summary_lane_winner(self):
+        original_call = self.server._call_question_with_optional_hedge
+        original_parse = self.server.parse_question_response
+        self.addCleanup(setattr, self.server, "_call_question_with_optional_hedge", original_call)
+        self.addCleanup(setattr, self.server, "parse_question_response", original_parse)
+
+        self.server._call_question_with_optional_hedge = lambda *args, **kwargs: (
+            '{"question":"请描述当前最关键的阻塞点？","options":["选项A","选项B","选项C"]}',
+            "summary",
+            {"response_length": 48},
+        )
+        self.server.parse_question_response = lambda _response, debug=False: {
+            "question": "请描述当前最关键的阻塞点？",
+            "options": ["选项A", "选项B", "选项C"],
+            "multi_select": False,
+            "is_follow_up": False,
+            "follow_up_reason": None,
+        }
+
+        response, result, tier_used = self.server.generate_question_with_tiered_strategy(
+            "PROMPT",
+            truncated_docs=[],
+            debug=False,
+            base_call_type="question",
+            allow_fast_path=False,
+        )
+
+        self.assertIsNone(response)
+        self.assertIsNone(result)
+        self.assertNotIn("summary", str(tier_used or ""))
+
+    def test_visible_quality_failure_response_does_not_include_fallback_question(self):
+        payload = self.server.build_visible_question_quality_failure_response(
+            {"interview_mode": "standard"},
+            "customer_needs",
+            quality_gate={"passed": False, "reasons": ["generic_options"]},
+        )
+
+        self.assertEqual(payload["error_code"], "visible_question_quality_failed")
+        self.assertTrue(payload["recoverable"])
+        self.assertNotIn("question", payload)
+        self.assertNotIn("options", payload)
+        self.assertNotIn("备用浅题", payload["detail"])
+        self.assertTrue(payload["recovery_actions"])
+
+    def test_visible_generation_unavailable_response_does_not_use_quality_title(self):
+        payload = self.server.build_visible_question_generation_failure_response(
+            {"interview_mode": "standard"},
+            "customer_needs",
+            reason="ai_unavailable",
+        )
+
+        self.assertEqual(payload["error_code"], "visible_question_generation_unavailable")
+        self.assertEqual(payload["failure_reason"], "ai_unavailable")
+        self.assertNotIn("质量要求", payload["error"])
+        self.assertNotIn("备用浅题", payload["detail"])
+        self.assertTrue(payload["recovery_actions"])
+        self.assertNotIn("question", payload)
+        self.assertNotIn("options", payload)
 
     def test_prefetch_runtime_profile_uses_independent_params(self):
         self.server.QUESTION_FAST_TIMEOUT = 7.0
@@ -2324,7 +2470,7 @@ class QuestionFastStrategyTests(unittest.TestCase):
 
         self.server._call_question_with_optional_hedge = lambda *args, **kwargs: (
             '{"question":"当前最优先解决的问题是什么？","options":["效率","成本","体验"],"multi_select":false,"is_follow_up":false,"follow_up_reason":null}',
-            "summary",
+            "question",
             {"response_length": 88},
         )
         self.server.parse_question_response = lambda _response, debug=False: {

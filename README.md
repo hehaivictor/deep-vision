@@ -2,14 +2,14 @@
 
 DeepVision 是一个面向需求访谈、方案沉淀与交付输出的 AI Web 应用。系统覆盖「发起访谈 -> 沉淀记录 -> 生成报告 -> 派生方案页 -> 导出与分享」的完整链路，适合需求调研、售前咨询、业务诊断与方案澄清场景。
 
-当前版本：`5.0.2`（`2026-03-19`，见 [web/version.json](web/version.json)）
+当前版本：`10.5.5`（`2026-06-28`，见 [web/version.json](web/version.json)）
 
 ## 近期更新
 
-- 访谈链路：补齐下一题生成的超时看门狗与失活恢复，异常请求不会再长期停留在加载态
-- 报告与方案页：统一消费已绑定报告的最终快照，方案页支持跟随自定义章节蓝图渲染
-- 帮助与导航：修复帮助文档目录定位与当前章节高亮，补齐方案页与会话页的前端一致性体验
-- 管理后台：新增独立管理员中心，统一收口 License 生命周期、配置中心、运行监控、摘要缓存与账号归属迁移
+- 访谈链路：可见题质量闸门失败不再展示备用浅题，错误页按原因分型并提供可恢复动作
+- 模型分工：默认问题链路使用 `glm-5`，深度题使用 `ai/glm-5.1`，报告草案使用 `minimax-m3`
+- 安全：生产环境拒绝固定短信测试码；匿名状态接口不再暴露短信通道
+- 报告：重生失败会保留已有报告绑定，主题兜底绑定必须匹配当前会话 token
 
 ## 核心能力
 
@@ -119,6 +119,8 @@ http://127.0.0.1:5001
 ./scripts/start-production.sh
 ```
 
+生产脚本必须带环境文件：优先读取 `DEEPVISION_ENV_FILE`，否则依次尝试 `web/.env.production`、`web/.env.cloud`。
+
 ### 方式二：直接运行 Gunicorn
 
 ```bash
@@ -168,6 +170,7 @@ python3 scripts/run_gunicorn.py
   - `ADMIN_PHONE_NUMBERS`
   - `SMS_PROVIDER`
   - `SMS_TEST_CODE`
+  - `ALLOW_SMS_TEST_CODE`
 - 运行与性能：
   - `LIST_API_DEFAULT_PAGE_SIZE`
   - `LIST_API_MAX_PAGE_SIZE`
@@ -189,13 +192,14 @@ SECRET_KEY=replace-with-your-own-random-secret
 INSTANCE_SCOPE_KEY=deepvision-demo
 SMS_PROVIDER=mock
 SMS_TEST_CODE=666666
+ALLOW_SMS_TEST_CODE=true
 ADMIN_PHONE_NUMBERS=13886047722
 ```
 
 说明：
 
 - `SMS_PROVIDER=mock` 仅适用于本地调试、内测或演示环境；当 `DEBUG_MODE=false` 时，服务会在启动期拒绝使用 `mock`
-- 配置 `SMS_TEST_CODE` 后，内测环境可直接使用固定验证码；未配置时，`mock` 仅会把验证码写入服务端日志
+- 固定测试码只在 Flask `TESTING`，或 `DEBUG_MODE=true` 且 `ALLOW_SMS_TEST_CODE=true` 时生效；生产环境配置 `SMS_TEST_CODE` 会拒绝启动
 - `ADMIN_PHONE_NUMBERS` / `ADMIN_USER_IDS` 只用于运维接口白名单，不影响普通业务功能
 - 变更环境变量或本机自建的 `web/.env.local` / `web/.env.cloud` 后需要重启服务进程；已登录的旧会话如未刷新权限，重新登录一次即可
 - 使用固定测试码意味着“知道站点地址的人都可能尝试任意手机号登录”，因此演示环境不要直接暴露到公网

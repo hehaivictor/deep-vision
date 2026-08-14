@@ -185,6 +185,19 @@ class RuntimeTokenConfigTests(unittest.TestCase):
             )
         self.assertIn("SMS_PROVIDER=mock", str(ctx.exception))
 
+    def test_production_import_rejects_sms_test_code(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            load_server_module(
+                env_overrides={
+                    "DEBUG_MODE": "false",
+                    "SECRET_KEY": "prod-secret-value",
+                    "INSTANCE_SCOPE_KEY": "prod-instance",
+                    "SMS_PROVIDER": "jdcloud",
+                    "SMS_TEST_CODE": "123456",
+                },
+            )
+        self.assertIn("SMS_TEST_CODE", str(ctx.exception))
+
     def test_debug_import_warns_for_explicit_insecure_defaults(self):
         with patch("builtins.print") as mock_print:
             module = load_server_module(

@@ -38,6 +38,8 @@
             serviceError: false,
             errorTitle: '',
             errorDetail: '',
+            errorCode: '',
+            recoveryActions: [],
             aiRecommendation: null,
         };
     }
@@ -610,8 +612,14 @@
         },
 
         async openSession(sessionId) {
+            this.questionRequestId += 1;
+            this.abortQuestionRequest();
+            this.stopQuestionRequestGuard();
+            this.stopThinkingPolling();
+            this.stopWebSearchPolling();
             const openRequestId = this.sessionOpenRequestId + 1;
             this.sessionOpenRequestId = openRequestId;
+            const targetSessionId = String(sessionId || '').trim();
             const sessionPlaceholder = this.buildInterviewSessionPlaceholder(sessionId);
             const hasStartedInterview = Number(sessionPlaceholder?.interview_count || 0) > 0
                 || (Array.isArray(sessionPlaceholder?.interview_log) && sessionPlaceholder.interview_log.length > 0);
@@ -649,6 +657,9 @@
 
                 this.currentSession = await this.apiCall(`/sessions/${sessionId}`);
                 if (openRequestId !== this.sessionOpenRequestId) {
+                    return;
+                }
+                if (String(this.currentSession?.session_id || '').trim() !== targetSessionId) {
                     return;
                 }
                 this.resetReportGenerationFeedback();
@@ -723,6 +734,68 @@
             return null;
         },
 
+        buildVisibleQuestionErrorState(result = {}) {
+            const errorCode = String(result?.error_code || '').trim();
+            const recoveryActions = Array.isArray(result?.recovery_actions)
+                ? result.recovery_actions
+                    .map((item) => ({
+                        id: String(item?.id || '').trim(),
+                        label: String(item?.label || '').trim(),
+                    }))
+                    .filter((item) => item.id && item.label)
+                : [];
+            const defaults = {
+                visible_question_quality_failed: {
+                    errorTitle: '当前问题还不够具体',
+                    errorDetail: '这次生成的问题过于笼统，无法写入报告。请重新生成，或先补充主题与参考资料。',
+                    recoveryActions: [
+                        { id: 'retry', label: '重新生成问题' },
+                        { id: 'back_to_sessions', label: '返回会话列表' },
+                    ],
+                },
+                visible_question_generation_unavailable: {
+                    errorTitle: '问题生成服务暂时不可用',
+                    errorDetail: '当前无法连接到问题生成服务。请稍后重试，或先返回会话列表稍后再继续。',
+                    recoveryActions: [
+                        { id: 'retry', label: '稍后重试' },
+                        { id: 'back_to_sessions', label: '返回会话列表' },
+                    ],
+                },
+                visible_question_generation_failed: {
+                    errorTitle: '问题生成结果无效',
+                    errorDetail: '这次生成结果无法使用。请重新生成，不要继续使用笼统问题。',
+                    recoveryActions: [
+                        { id: 'retry', label: '重新生成问题' },
+                        { id: 'back_to_sessions', label: '返回会话列表' },
+                    ],
+                },
+            };
+            const preset = defaults[errorCode] || {
+                errorTitle: result?.error || '服务错误',
+                errorDetail: result?.detail || '请稍后重试',
+                recoveryActions: [
+                    { id: 'retry', label: '重试' },
+                    { id: 'back_to_sessions', label: '返回会话列表' },
+                ],
+            };
+            return {
+                serviceError: true,
+                errorCode,
+                errorTitle: result?.error || preset.errorTitle,
+                errorDetail: result?.detail || preset.errorDetail,
+                recoveryActions: recoveryActions.length ? recoveryActions : preset.recoveryActions,
+            };
+        },
+
+        handleVisibleQuestionRecoveryAction(actionId) {
+            const action = String(actionId || '').trim();
+            if (action === 'back_to_sessions') {
+                this.exitInterview();
+                return;
+            }
+            this.fetchNextQuestion({ force: true });
+        },
+
         ensureDimensionVisualComplete(dimensionKey) {
             if (!dimensionKey || !this.currentSession?.dimensions?.[dimensionKey]) {
                 return;
@@ -737,6 +810,7 @@
         async fetchNextQuestion(options = {}) {
             if (this.loadingQuestion && !options?.force) return;
             const requestId = ++this.questionRequestId;
+            const expectedSessionId = String(this.currentSession?.session_id || '').trim();
             let activeRequestAbortController = null;
             const preferPrefetch = !!options?.preferPrefetch;
             let overloadWaitMs = 0;
@@ -802,6 +876,9 @@
                     if (requestId !== this.questionRequestId) {
                         return;
                     }
+                    if (expectedSessionId && String(this.currentSession?.session_id || '').trim() !== expectedSessionId) {
+                        return;
+                    }
 
                     if (this.questionRequestAbortController === requestAbortController) {
                         this.questionRequestAbortController = null;
@@ -862,20 +939,15 @@
                         this.loadingQuestion = false;
                         this.thinkingStage = null;
                         this.stopTipRotation();
-                        const errorTitle = result.error || '服务错误';
-                        const errorDetail = result.detail || '请稍后重试';
+                        const errorState = this.buildVisibleQuestionErrorState(result);
                         this.recordQuestionOpsOutcome('error', {
                             overloadRetryCount,
                             overloadWaitMs,
-                            error: errorTitle
+                            error: errorState.errorTitle
                         });
 
-                        this.showToast(errorTitle, 'error');
-                        this.currentQuestion = this.createQuestionState({
-                            serviceError: true,
-                            errorTitle: errorTitle,
-                            errorDetail: errorDetail
-                        });
+                        this.showToast(errorState.errorTitle, 'error');
+                        this.currentQuestion = this.createQuestionState(errorState);
                         this.aiRecommendationExpanded = false;
                         this.aiRecommendationApplied = false;
                         this.aiRecommendationPrevSelection = null;
@@ -1729,7 +1801,7 @@
                 );
 
                 this.showToast('已跳过追问', 'success');
-                await this.fetchNextQuestion();
+                await this.fetchNextQuestion({ force: true });
             } catch (error) {
                 this.showToast(`跳过失败: ${error.message}`, 'error');
             } finally {
@@ -1792,7 +1864,7 @@
                 if (nextDim) {
                     this.ensureDimensionVisualComplete(this.currentDimension);
                     this.currentDimension = nextDim;
-                    await this.fetchNextQuestion();
+                    await this.fetchNextQuestion({ force: true });
                 } else {
                     this.currentStep = 1;
                     this.currentQuestion = this.createQuestionState();

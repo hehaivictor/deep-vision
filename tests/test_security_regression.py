@@ -134,6 +134,7 @@ class SecurityRegressionTests(unittest.TestCase):
         self.server.SMS_PROVIDER = "mock"
         self.server.SMS_SEND_COOLDOWN_SECONDS = 0
         self.server.SMS_TEST_CODE = ""
+        self.server.ALLOW_SMS_TEST_CODE = False
         self.server.report_owners_cache["signature"] = None
         self.server.report_owners_cache["data"] = {}
         self.server.report_scopes_cache["signature"] = None
@@ -1135,6 +1136,11 @@ class SecurityRegressionTests(unittest.TestCase):
         self.assertEqual(public_payload.get('report_name'), '')
         self.assertTrue(public_payload.get('title'))
         self.assertTrue(public_payload.get('sections'))
+        quality_signals = public_payload.get('quality_signals') or {}
+        self.assertEqual(quality_signals.get('similar_report_name') or '', '')
+        for reason in quality_signals.get('degraded_reasons') or []:
+            self.assertNotRegex(str(reason), r'与最近方案「[^」]+」')
+            self.assertNotIn(report_name, str(reason))
 
         invalid_resp = public_client.get('/api/public/solutions/invalid-token')
         self.assertEqual(invalid_resp.status_code, 404)
@@ -2632,6 +2638,132 @@ class SecurityRegressionTests(unittest.TestCase):
                 self.server.REPORT_SIMPLE_TEMPLATE_FALLBACK_ENABLED = old_template_fallback
             for key, value in fn_backup.items():
                 setattr(self.server, key, value)
+
+    def test_run_report_generation_job_keeps_existing_report_binding_when_regenerate_fails(self):
+        user = self._register_user()
+        standard_code = self._generate_license_batch(level_key="standard", note="重生失败保留绑定")["licenses"][0]["code"]
+        self._activate_license(standard_code)
+        session_id = self._create_session(topic="重生失败保留绑定")
+        session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+        session_data = self.server.safe_load_session(session_file)
+        report_name = f"{session_id}-existing-report.md"
+        self.server.save_report_content_and_sync(report_name, "# 已有报告\n")
+        self.server.set_report_owner_id(report_name, int(user["id"]))
+        session_data["last_report_name"] = report_name
+        session_data["current_report_name"] = report_name
+        session_data["current_report_path"] = str(self.server.REPORTS_DIR / report_name)
+        self.server.save_session_json_and_sync(session_file, session_data)
+
+        fn_keys = [
+            "resolve_ai_client",
+            "get_release_conservative_report_short_circuit_meta",
+            "generate_report_v3_pipeline",
+            "attempt_salvage_v3_review_failure",
+            "build_report_prompt_with_options",
+            "call_claude",
+            "generate_interview_appendix",
+            "save_report_content_and_sync",
+            "build_report_quality_meta_fallback",
+        ]
+        fn_backup = {key: getattr(self.server, key) for key in fn_keys}
+        old_template_fallback = getattr(self.server, "REPORT_SIMPLE_TEMPLATE_FALLBACK_ENABLED", None)
+        try:
+            self.server.REPORT_SIMPLE_TEMPLATE_FALLBACK_ENABLED = False
+            self.server.resolve_ai_client = lambda *args, **kwargs: object()
+            self.server.get_release_conservative_report_short_circuit_meta = lambda *_args, **_kwargs: {"triggered": False}
+            self.server.generate_report_v3_pipeline = lambda *_args, **_kwargs: {
+                "status": "failed",
+                "reason": "exception",
+                "error": "simulated regenerate failure",
+                "parse_stage": "draft_generation",
+                "failure_stage": "draft_generation",
+                "evidence_pack": {"facts": []},
+            }
+            self.server.attempt_salvage_v3_review_failure = lambda *_args, **_kwargs: {
+                "attempted": False,
+                "success": False,
+                "note": "not_applicable",
+            }
+            self.server.build_report_prompt_with_options = lambda *_args, **_kwargs: "legacy prompt"
+            self.server.call_claude = lambda *_args, **_kwargs: ""
+            self.server.generate_interview_appendix = lambda _session: ""
+            self.server.build_report_quality_meta_fallback = lambda *_args, **_kwargs: {"mode": "model_generation_failed"}
+            save_calls = []
+
+            def _unexpected_save(filename, content):
+                save_calls.append({"filename": filename, "content": content})
+                return self.server.REPORTS_DIR / filename
+
+            self.server.save_report_content_and_sync = _unexpected_save
+
+            self.server.run_report_generation_job(
+                session_id,
+                int(user["id"]),
+                "req-keep-binding",
+                "balanced",
+                "regenerate",
+                "",
+            )
+
+            saved = self.server.safe_load_session(session_file)
+            self.assertEqual("failed", saved.get("status"))
+            self.assertEqual(report_name, saved.get("last_report_name"))
+            self.assertEqual(report_name, saved.get("current_report_name"))
+            self.assertTrue(str(saved.get("current_report_path") or "").endswith(report_name))
+            self.assertEqual([], save_calls)
+        finally:
+            if old_template_fallback is None:
+                try:
+                    delattr(self.server, "REPORT_SIMPLE_TEMPLATE_FALLBACK_ENABLED")
+                except AttributeError:
+                    pass
+            else:
+                self.server.REPORT_SIMPLE_TEMPLATE_FALLBACK_ENABLED = old_template_fallback
+            for key, value in fn_backup.items():
+                setattr(self.server, key, value)
+
+    def test_get_bound_reports_for_session_requires_session_token_in_topic_fallback(self):
+        user = self._register_user()
+        session_id = self._create_session(topic="主题兜底绑定")
+        session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+        session_data = self.server.safe_load_session(session_file)
+        owner_user_id = int(user["id"])
+        topic_slug = self.server.normalize_topic_slug(session_data.get("topic", ""))
+        foreign_name = f"deep-vision-20260814-other-session-{topic_slug}.md"
+        matching_name = self.server.build_session_report_filename(session_data)
+        session_data["last_report_name"] = ""
+        session_data["current_report_name"] = ""
+        session_data["current_report_path"] = ""
+
+        self.server.save_report_content_and_sync(foreign_name, "# 报告\n")
+        self.server.set_report_owner_id(foreign_name, owner_user_id)
+        self.assertEqual([], self.server.get_bound_reports_for_session(session_data))
+
+        self.server.save_report_content_and_sync(matching_name, "# 报告\n")
+        self.server.set_report_owner_id(matching_name, owner_user_id)
+        self.assertEqual([matching_name], self.server.get_bound_reports_for_session(session_data))
+
+    def test_sms_test_code_is_ignored_when_allow_flag_is_off_outside_testing(self):
+        self.server.SMS_TEST_CODE = "246810"
+        self.server.ALLOW_SMS_TEST_CODE = False
+        self.server.DEBUG_MODE = True
+        old_testing = self.server.app.config.get("TESTING")
+        try:
+            self.server.app.config["TESTING"] = False
+            self.assertNotEqual("246810", self.server.resolve_sms_code_for_issue())
+            self.server.ALLOW_SMS_TEST_CODE = True
+            self.assertEqual("246810", self.server.resolve_sms_code_for_issue())
+        finally:
+            self.server.app.config["TESTING"] = old_testing
+            self.server.SMS_TEST_CODE = ""
+            self.server.ALLOW_SMS_TEST_CODE = False
+
+    def test_anonymous_status_does_not_expose_sms_provider(self):
+        response = self.client.get("/api/status")
+        self.assertEqual(200, response.status_code)
+        payload = response.get_json() or {}
+        self.assertFalse(payload.get("authenticated"))
+        self.assertNotIn("sms_provider", payload)
 
     def test_filter_model_review_issues_v3_skips_hallucinated_template_rules(self):
         draft = {
@@ -5044,6 +5176,29 @@ class SecurityRegressionTests(unittest.TestCase):
                 captured.get("default_headers"),
                 {"Authorization": "Bearer test-key"},
             )
+        finally:
+            self.server.anthropic.Anthropic = original_constructor
+
+    def test_create_anthropic_client_strips_trailing_v1_from_base_url(self):
+        original_constructor = self.server.anthropic.Anthropic
+        captured = {}
+
+        class _DummyClient:
+            pass
+
+        def _fake_constructor(**kwargs):
+            captured.update(kwargs)
+            return _DummyClient()
+
+        try:
+            self.server.anthropic.Anthropic = _fake_constructor
+            client = self.server._create_anthropic_client(
+                api_key="test-key",
+                base_url="https://aimodelhub.example.com/v1/",
+                use_bearer_auth=True,
+            )
+            self.assertIsInstance(client, _DummyClient)
+            self.assertEqual(captured.get("base_url"), "https://aimodelhub.example.com")
         finally:
             self.server.anthropic.Anthropic = original_constructor
 
