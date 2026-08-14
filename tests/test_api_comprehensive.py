@@ -4492,6 +4492,41 @@ class ComprehensiveApiTests(unittest.TestCase):
         self.assertEqual(1, len(detail_payload.get("interview_log", [])))
         self.assertEqual("先确认核心需求", detail_payload["interview_log"][0]["answer"])
 
+    def test_save_session_json_and_sync_rejects_stale_revision(self):
+        self.server.set_license_enforcement_override(False)
+        self._register()
+        created = self._create_session(topic="会话版本化写入")
+        session_id = created["session_id"]
+        session_file = self.server.SESSIONS_DIR / f"{session_id}.json"
+        latest = self.server.safe_load_session(session_file)
+        self.assertIsInstance(latest, dict)
+        first_revision = int(latest.get("payload_revision") or 0)
+        self.assertGreaterEqual(first_revision, 1)
+
+        newer = json.loads(json.dumps(latest, ensure_ascii=False))
+        newer["description"] = "新快照"
+        self.server.save_session_json_and_sync(session_file, newer)
+        self.assertEqual(first_revision + 1, int(newer.get("payload_revision") or 0))
+
+        stale = json.loads(json.dumps(latest, ensure_ascii=False))
+        stale["description"] = "过期快照"
+        with self.assertRaises(self.server.StaleSessionWriteError):
+            self.server.save_session_json_and_sync(session_file, stale)
+
+        persisted = self.server.safe_load_session(session_file)
+        self.assertEqual("新快照", persisted.get("description"))
+        self.assertEqual(first_revision + 1, int(persisted.get("payload_revision") or 0))
+
+        original_use_cloud = self.server._use_pure_cloud_session_storage
+        self.server._use_pure_cloud_session_storage = lambda: True
+        self.addCleanup(setattr, self.server, "_use_pure_cloud_session_storage", original_use_cloud)
+        stale_cloud = json.loads(json.dumps(latest, ensure_ascii=False))
+        stale_cloud["description"] = "云端过期快照"
+        with self.assertRaises(self.server.StaleSessionWriteError):
+            self.server.save_session_json_and_sync(session_file, stale_cloud)
+        cloud_payload = self.server.safe_load_session(session_file)
+        self.assertEqual("新快照", cloud_payload.get("description"))
+
     def test_custom_scenario_create_with_solution_dsl(self):
         self._register()
         create_resp = self.client.post(

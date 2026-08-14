@@ -101,6 +101,17 @@ def get_license_db_connection(license_db_path: str):
     return connect_db(license_db_path)
 
 
+def _session_store_has_payload_revision(conn) -> bool:
+    try:
+        columns = {
+            str(row[1]): True
+            for row in conn.execute("PRAGMA table_info(session_store)").fetchall()
+        }
+    except Exception:
+        return False
+    return "payload_revision" in columns
+
+
 def get_meta_index_connection(meta_index_db_path: str):
     return connect_db(meta_index_db_path)
 
@@ -765,6 +776,13 @@ def _build_session_store_update_row(row: dict[str, Any], target_user_id: int, up
         payload = {}
     payload["owner_user_id"] = int(target_user_id)
     payload["updated_at"] = updated_at
+    try:
+        current_revision = int(row.get("payload_revision") or payload.get("payload_revision") or 0)
+    except (TypeError, ValueError):
+        current_revision = 0
+    if current_revision < 0:
+        current_revision = 0
+    payload["payload_revision"] = current_revision + 1
     updated_payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
     return {
         "session_id": str(row.get("session_id") or "").strip(),
@@ -776,11 +794,48 @@ def _build_session_store_update_row(row: dict[str, Any], target_user_id: int, up
         "updated_at": updated_at,
         "payload_mtime_ns": int(row.get("payload_mtime_ns") or 0),
         "payload_size": len(updated_payload_text.encode("utf-8")),
+        "payload_revision": int(payload["payload_revision"]),
     }
 
 
 def _upsert_session_store_rows(conn, rows: list[dict[str, Any]]) -> None:
     if not rows:
+        return
+    has_revision = _session_store_has_payload_revision(conn)
+    if has_revision:
+        conn.executemany(
+            """
+            INSERT INTO session_store (
+                session_id, file_name, owner_user_id, instance_scope_key,
+                payload_json, created_at, updated_at, payload_mtime_ns, payload_size, payload_revision
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                file_name = excluded.file_name,
+                owner_user_id = excluded.owner_user_id,
+                instance_scope_key = excluded.instance_scope_key,
+                payload_json = excluded.payload_json,
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                payload_mtime_ns = excluded.payload_mtime_ns,
+                payload_size = excluded.payload_size,
+                payload_revision = excluded.payload_revision
+            """,
+            [
+                (
+                    row["session_id"],
+                    row["file_name"],
+                    row["owner_user_id"],
+                    row["instance_scope_key"],
+                    row["payload_json"],
+                    row["created_at"],
+                    row["updated_at"],
+                    row["payload_mtime_ns"],
+                    row["payload_size"],
+                    int(row.get("payload_revision") or 0),
+                )
+                for row in rows
+            ],
+        )
         return
     conn.executemany(
         """
@@ -1241,12 +1296,13 @@ def list_owned_session_records(
     enforce = instance_scope_key is not None
     if _use_meta_index_storage(meta_index_db_path):
         with get_meta_index_connection(str(meta_index_db_path)) as conn:
+            revision_select = ", payload_revision" if _session_store_has_payload_revision(conn) else ""
             rows = _fetch_all_dicts(
                 conn,
-                """
+                f"""
                 SELECT
                     session_id, file_name, owner_user_id, instance_scope_key,
-                    payload_json, created_at, updated_at, payload_mtime_ns, payload_size
+                    payload_json, created_at, updated_at, payload_mtime_ns, payload_size{revision_select}
                 FROM session_store
                 WHERE owner_user_id = ?
                 ORDER BY updated_at DESC, session_id DESC
@@ -1989,12 +2045,13 @@ def run_ownership_migration(
     if "sessions" in parsed_kinds:
         if _use_meta_index_storage(meta_index_db_path):
             with get_meta_index_connection(str(meta_index_db_path)) as conn:
+                revision_select = ", payload_revision" if _session_store_has_payload_revision(conn) else ""
                 session_items: list[dict[str, Any] | Path] = _fetch_all_dicts(
                     conn,
-                    """
+                    f"""
                     SELECT
                         session_id, file_name, owner_user_id, instance_scope_key,
-                        payload_json, created_at, updated_at, payload_mtime_ns, payload_size
+                        payload_json, created_at, updated_at, payload_mtime_ns, payload_size{revision_select}
                     FROM session_store
                     ORDER BY updated_at DESC, session_id DESC
                     """,

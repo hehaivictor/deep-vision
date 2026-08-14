@@ -273,11 +273,13 @@
             this.loadingQuestion = false;
             this.isGoingPrev = false;
 
-            const sessionId = this.currentSession?.session_id;
+            const sessionId = String(this.currentSession?.session_id || '').trim();
             if (sessionId) {
                 try {
-                    this.currentSession = await this.apiCall(`/sessions/${sessionId}`, { suppressErrorLog: true });
-                    this.updateDimensionsFromSession(this.currentSession);
+                    const refreshed = await this.apiCall(`/sessions/${sessionId}`, { suppressErrorLog: true });
+                    if (this.applyLoadedSessionIfCurrent(refreshed, sessionId)) {
+                        this.updateDimensionsFromSession(this.currentSession);
+                    }
                 } catch (error) {
                     console.warn('刷新会话状态失败:', error);
                 }
@@ -611,6 +613,19 @@
             this.stopTipRotation();
         },
 
+        applyLoadedSessionIfCurrent(sessionPayload, expectedSessionId = '') {
+            const targetSessionId = String(expectedSessionId || sessionPayload?.session_id || '').trim();
+            const currentSessionId = String(this.currentSession?.session_id || '').trim();
+            if (!targetSessionId || currentSessionId !== targetSessionId) {
+                return false;
+            }
+            if (!sessionPayload || typeof sessionPayload !== 'object') {
+                return false;
+            }
+            this.currentSession = sessionPayload;
+            return true;
+        },
+
         async openSession(sessionId) {
             this.questionRequestId += 1;
             this.abortQuestionRequest();
@@ -655,11 +670,11 @@
                 }
                 this.scheduleAppShellSnapshotPersist();
 
-                this.currentSession = await this.apiCall(`/sessions/${sessionId}`);
+                const loadedSession = await this.apiCall(`/sessions/${sessionId}`);
                 if (openRequestId !== this.sessionOpenRequestId) {
                     return;
                 }
-                if (String(this.currentSession?.session_id || '').trim() !== targetSessionId) {
+                if (!this.applyLoadedSessionIfCurrent(loadedSession, targetSessionId)) {
                     return;
                 }
                 this.resetReportGenerationFeedback();
@@ -1655,7 +1670,10 @@
                     }
                 );
 
-                this.currentSession = updatedSession;
+                const submittedSessionId = String(this.currentSession.session_id || '').trim();
+                if (!this.applyLoadedSessionIfCurrent(updatedSession, submittedSessionId)) {
+                    return;
+                }
 
                 const currentDim = this.currentSession.dimensions[this.currentDimension];
                 if (currentDim && currentDim.coverage >= 100) {
@@ -1745,7 +1763,10 @@
                     { method: 'POST' }
                 );
 
-                this.currentSession = updatedSession;
+                const undoneSessionId = String(this.currentSession.session_id || '').trim();
+                if (!this.applyLoadedSessionIfCurrent(updatedSession, undoneSessionId)) {
+                    return;
+                }
                 this.currentDimension = undoDimension;
                 this.isGoingPrev = true;
                 this.currentQuestion = savedQuestion;
@@ -1858,7 +1879,11 @@
                 );
 
                 this.showToast(result.message, 'success');
-                this.currentSession = await this.apiCall(`/sessions/${this.currentSession.session_id}`);
+                const completedSessionId = String(this.currentSession.session_id || '').trim();
+                const refreshed = await this.apiCall(`/sessions/${completedSessionId}`);
+                if (!this.applyLoadedSessionIfCurrent(refreshed, completedSessionId)) {
+                    return;
+                }
 
                 const nextDim = this.getNextIncompleteDimension();
                 if (nextDim) {
@@ -1911,7 +1936,11 @@
                 );
 
                 if (result.success) {
-                    this.currentSession = await this.apiCall(`/sessions/${this.currentSession.session_id}`);
+                    const restartedSessionId = String(this.currentSession.session_id || '').trim();
+                    const refreshed = await this.apiCall(`/sessions/${restartedSessionId}`);
+                    if (!this.applyLoadedSessionIfCurrent(refreshed, restartedSessionId)) {
+                        return;
+                    }
                     this.updateDimensionsFromSession(this.currentSession);
 
                     this.questionRequestId += 1;

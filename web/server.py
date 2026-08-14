@@ -5259,7 +5259,7 @@ def _load_session_store_entry(session_id: str = "", file_name: str = "") -> tupl
             if sid:
                 row = conn.execute(
                     """
-                    SELECT payload_json, payload_mtime_ns, payload_size
+                    SELECT payload_json, payload_mtime_ns, payload_size, payload_revision
                     FROM session_store
                     WHERE session_id = ?
                     LIMIT 1
@@ -5269,7 +5269,7 @@ def _load_session_store_entry(session_id: str = "", file_name: str = "") -> tupl
             else:
                 row = conn.execute(
                     """
-                    SELECT payload_json, payload_mtime_ns, payload_size
+                    SELECT payload_json, payload_mtime_ns, payload_size, payload_revision
                     FROM session_store
                     WHERE file_name = ?
                     LIMIT 1
@@ -5289,6 +5289,11 @@ def _load_session_store_entry(session_id: str = "", file_name: str = "") -> tupl
         return None, None
     if not isinstance(payload, dict):
         return None, None
+    stored_revision = _safe_int(row["payload_revision"], 0)
+    payload_revision = _safe_int(payload.get("payload_revision"), stored_revision)
+    if payload_revision < stored_revision:
+        payload_revision = stored_revision
+    payload["payload_revision"] = payload_revision
     signature = (
         _safe_int(row["payload_mtime_ns"], 0),
         _safe_int(row["payload_size"], 0),
@@ -6456,6 +6461,7 @@ def _ensure_postgres_meta_index_bigint_columns(conn: Any, db_target: str) -> Non
         ("report_index", "file_size"),
         ("session_store", "payload_mtime_ns"),
         ("session_store", "payload_size"),
+        ("session_store", "payload_revision"),
     ]
     for table_name, column_name in targets:
         if not _table_exists(conn, table_name):
@@ -6508,18 +6514,81 @@ def _build_session_store_record(session_file: Path, session_data: dict) -> Optio
         "updated_at": str(session_data.get("updated_at") or ""),
         "payload_mtime_ns": int(signature[0]),
         "payload_size": int(signature[1]),
+        "payload_revision": _normalize_session_payload_revision(session_data.get("payload_revision")),
     }
 
 
-def _upsert_session_store_record(conn: Any, record: dict) -> None:
+class StaleSessionWriteError(RuntimeError):
+    def __init__(self, session_id: str, expected_revision: int, current_revision: int):
+        self.session_id = str(session_id or "").strip()
+        self.expected_revision = int(expected_revision)
+        self.current_revision = int(current_revision)
+        super().__init__(
+            f"会话写入已过期: session_id={self.session_id}, expected={self.expected_revision}, current={self.current_revision}"
+        )
+
+
+def _normalize_session_payload_revision(value: Any, default: int = 0) -> int:
+    revision = _safe_int(value, default)
+    return revision if revision > 0 else 0
+
+
+def _upsert_session_store_record(
+    conn: Any,
+    record: dict,
+    *,
+    expected_revision: Optional[int] = None,
+    force: bool = False,
+) -> int:
     if not isinstance(record, dict):
-        return
-    conn.execute(
+        return 0
+    incoming_revision = _normalize_session_payload_revision(record.get("payload_revision"))
+    if incoming_revision <= 0:
+        incoming_revision = 1
+    record["payload_revision"] = incoming_revision
+    values = (
+        record["session_id"],
+        record["file_name"],
+        record["owner_user_id"],
+        record["instance_scope_key"],
+        record["payload_json"],
+        record["created_at"],
+        record["updated_at"],
+        record["payload_mtime_ns"],
+        record["payload_size"],
+        incoming_revision,
+    )
+    if force:
+        conn.execute(
+            """
+            INSERT INTO session_store (
+                session_id, file_name, owner_user_id, instance_scope_key,
+                payload_json, created_at, updated_at, payload_mtime_ns, payload_size, payload_revision
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                file_name=excluded.file_name,
+                owner_user_id=excluded.owner_user_id,
+                instance_scope_key=excluded.instance_scope_key,
+                payload_json=excluded.payload_json,
+                created_at=excluded.created_at,
+                updated_at=excluded.updated_at,
+                payload_mtime_ns=excluded.payload_mtime_ns,
+                payload_size=excluded.payload_size,
+                payload_revision=excluded.payload_revision
+            """,
+            values,
+        )
+        return incoming_revision
+
+    if expected_revision is None:
+        expected_revision = incoming_revision - 1
+    expected_revision = _normalize_session_payload_revision(expected_revision)
+    cursor = conn.execute(
         """
         INSERT INTO session_store (
             session_id, file_name, owner_user_id, instance_scope_key,
-            payload_json, created_at, updated_at, payload_mtime_ns, payload_size
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            payload_json, created_at, updated_at, payload_mtime_ns, payload_size, payload_revision
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
             file_name=excluded.file_name,
             owner_user_id=excluded.owner_user_id,
@@ -6528,20 +6597,22 @@ def _upsert_session_store_record(conn: Any, record: dict) -> None:
             created_at=excluded.created_at,
             updated_at=excluded.updated_at,
             payload_mtime_ns=excluded.payload_mtime_ns,
-            payload_size=excluded.payload_size
+            payload_size=excluded.payload_size,
+            payload_revision=excluded.payload_revision
+        WHERE session_store.payload_revision <= 0
+           OR session_store.payload_revision = ?
         """,
-        (
-            record["session_id"],
-            record["file_name"],
-            record["owner_user_id"],
-            record["instance_scope_key"],
-            record["payload_json"],
-            record["created_at"],
-            record["updated_at"],
-            record["payload_mtime_ns"],
-            record["payload_size"],
-        ),
+        values + (expected_revision,),
     )
+    if int(getattr(cursor, "rowcount", 0) or 0) > 0:
+        return incoming_revision
+
+    row = conn.execute(
+        "SELECT payload_revision FROM session_store WHERE session_id = ? LIMIT 1",
+        (record["session_id"],),
+    ).fetchone()
+    current_revision = _normalize_session_payload_revision(row["payload_revision"] if row else 0)
+    raise StaleSessionWriteError(record["session_id"], expected_revision, current_revision)
 
 
 def _migrate_legacy_session_store_if_needed(conn: Any) -> None:
@@ -6554,7 +6625,7 @@ def _migrate_legacy_session_store_if_needed(conn: Any) -> None:
         record = _build_session_store_record(session_file, session_data)
         if not record:
             continue
-        _upsert_session_store_record(conn, record)
+        _upsert_session_store_record(conn, record, force=True)
         migrated_count += 1
 
     if migrated_count > 0 and ENABLE_DEBUG_LOG:
@@ -7710,10 +7781,19 @@ def ensure_meta_index_schema() -> None:
                     created_at TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL DEFAULT '',
                     payload_mtime_ns BIGINT NOT NULL DEFAULT 0,
-                    payload_size BIGINT NOT NULL DEFAULT 0
+                    payload_size BIGINT NOT NULL DEFAULT 0,
+                    payload_revision BIGINT NOT NULL DEFAULT 0
                 )
                 """
             )
+            session_store_columns = {
+                str(row[1]): True
+                for row in conn.execute("PRAGMA table_info(session_store)").fetchall()
+            }
+            if "payload_revision" not in session_store_columns:
+                conn.execute(
+                    "ALTER TABLE session_store ADD COLUMN payload_revision BIGINT NOT NULL DEFAULT 0"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_session_store_owner_scope_updated ON session_store(owner_user_id, instance_scope_key, updated_at DESC)"
             )
@@ -8117,15 +8197,28 @@ def sync_session_index_and_bound_reports(session_file: Path, session_data: dict)
             )
 
 
-def save_session_json_and_sync(session_file: Path, session_data: dict) -> tuple[int, int]:
+def save_session_json_and_sync(
+    session_file: Path,
+    session_data: dict,
+    *,
+    expected_revision: Optional[int] = None,
+    force: bool = False,
+) -> tuple[int, int]:
     use_cloud_primary = _use_pure_cloud_session_storage()
-    payload_text = _serialize_session_payload(session_data, compact=use_cloud_primary)
-    signature = (int(_time.time_ns()), len(payload_text.encode("utf-8")))
     session_id = str(session_data.get("session_id") or "").strip()
     file_name = session_file.name
-    if not use_cloud_primary:
-        _write_text_atomic(session_file, payload_text, encoding="utf-8")
-        signature = get_file_signature(session_file) or signature
+    base_revision = _normalize_session_payload_revision(session_data.get("payload_revision"))
+    if expected_revision is None:
+        expected_revision = base_revision
+    else:
+        expected_revision = _normalize_session_payload_revision(expected_revision)
+    next_revision = expected_revision + 1 if not force else max(base_revision, expected_revision) + 1
+    if force and base_revision > next_revision:
+        next_revision = base_revision + 1
+    session_data["payload_revision"] = next_revision
+    payload_text = _serialize_session_payload(session_data, compact=use_cloud_primary)
+    signature = (int(_time.time_ns()), len(payload_text.encode("utf-8")))
+    store_synced = False
 
     try:
         record = {
@@ -8138,18 +8231,48 @@ def save_session_json_and_sync(session_file: Path, session_data: dict) -> tuple[
             "updated_at": str(session_data.get("updated_at") or ""),
             "payload_mtime_ns": int(signature[0]),
             "payload_size": int(signature[1]),
+            "payload_revision": next_revision,
         }
         if not record["session_id"] or int(record["owner_user_id"]) <= 0:
             if use_cloud_primary:
                 raise RuntimeError("会话缺少 session_id 或 owner_user_id，无法写入云端主存储")
         else:
             with get_meta_index_connection() as conn:
-                _upsert_session_store_record(conn, record)
+                written_revision = _upsert_session_store_record(
+                    conn,
+                    record,
+                    expected_revision=expected_revision,
+                    force=force,
+                )
+                session_data["payload_revision"] = written_revision
+                if written_revision != next_revision:
+                    payload_text = _serialize_session_payload(session_data, compact=use_cloud_primary)
+                    signature = (int(signature[0]), len(payload_text.encode("utf-8")))
+            store_synced = True
+    except StaleSessionWriteError:
+        raise
     except Exception as exc:
         if use_cloud_primary:
             raise
         if ENABLE_DEBUG_LOG:
             _safe_log(f"⚠️ 同步 session_store 失败: {session_file.name}, 错误: {exc}")
+
+    if not use_cloud_primary:
+        _write_text_atomic(session_file, payload_text, encoding="utf-8")
+        signature = get_file_signature(session_file) or signature
+        if store_synced:
+            try:
+                with get_meta_index_connection() as conn:
+                    conn.execute(
+                        """
+                        UPDATE session_store
+                        SET payload_mtime_ns = ?, payload_size = ?
+                        WHERE session_id = ?
+                        """,
+                        (int(signature[0]), int(signature[1]), session_id),
+                    )
+            except Exception:
+                pass
 
     try:
         sync_session_index_and_bound_reports(session_file, session_data)
@@ -13070,23 +13193,76 @@ def load_presentation_map() -> dict:
         return {}
 
 
-def save_presentation_map(data: dict) -> None:
+def _normalize_presentation_map_payload(data: Optional[dict]) -> dict:
+    normalized = {}
+    if not isinstance(data, dict):
+        return normalized
+    for raw_name, record in data.items():
+        name = normalize_presentation_report_filename(raw_name)
+        if not name or not isinstance(record, dict):
+            continue
+        normalized[name] = record
+    return normalized
+
+
+def upsert_presentation_map_record(report_filename: str, record: dict) -> None:
+    name = normalize_presentation_report_filename(report_filename)
+    if not name or not isinstance(record, dict):
+        return
     if _use_pure_cloud_report_storage():
-        normalized = {}
-        if isinstance(data, dict):
-            for raw_name, record in data.items():
-                name = normalize_presentation_report_filename(raw_name)
-                if not name or not isinstance(record, dict):
-                    continue
-                normalized[name] = record
         try:
             with get_meta_index_connection() as conn:
-                conn.execute("DELETE FROM presentation_map_store")
+                conn.execute(
+                    """
+                    INSERT INTO presentation_map_store(report_name, record_json, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(report_name) DO UPDATE SET
+                        record_json=excluded.record_json,
+                        updated_at=excluded.updated_at
+                    """,
+                    (name, json.dumps(record, ensure_ascii=False, indent=2), get_utc_now()),
+                )
+            try:
+                if PRESENTATION_MAP_FILE.exists():
+                    PRESENTATION_MAP_FILE.unlink()
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return
+    data = load_presentation_map()
+    data[name] = record
+    try:
+        _write_json_atomic(PRESENTATION_MAP_FILE, data)
+    except Exception:
+        pass
+
+
+def save_presentation_map(data: dict) -> None:
+    normalized = _normalize_presentation_map_payload(data)
+    if _use_pure_cloud_report_storage():
+        try:
+            with get_meta_index_connection() as conn:
+                existing_names = {
+                    normalize_presentation_report_filename(row["report_name"])
+                    for row in conn.execute("SELECT report_name FROM presentation_map_store").fetchall()
+                }
+                existing_names.discard("")
+                incoming_names = set(normalized.keys())
+                stale_names = existing_names - incoming_names
+                if stale_names:
+                    conn.executemany(
+                        "DELETE FROM presentation_map_store WHERE report_name = ?",
+                        [(name,) for name in stale_names],
+                    )
                 if normalized:
                     conn.executemany(
                         """
                         INSERT INTO presentation_map_store(report_name, record_json, updated_at)
                         VALUES (?, ?, ?)
+                        ON CONFLICT(report_name) DO UPDATE SET
+                            record_json=excluded.record_json,
+                            updated_at=excluded.updated_at
                         """,
                         [
                             (name, json.dumps(record, ensure_ascii=False, indent=2), get_utc_now())
@@ -13103,7 +13279,7 @@ def save_presentation_map(data: dict) -> None:
         return
 
     try:
-        _write_json_atomic(PRESENTATION_MAP_FILE, data)
+        _write_json_atomic(PRESENTATION_MAP_FILE, normalized)
     except Exception:
         pass
 
@@ -13169,8 +13345,14 @@ def record_presentation_file(report_filename: str, download_info: Optional[dict]
     with PRESENTATION_MAP_LOCK:
         with named_file_lock("sidecar", "presentation_map"):
             data = load_presentation_map()
-            data[report_filename] = record
-            save_presentation_map(data)
+            existing = data.get(report_filename) if isinstance(data.get(report_filename), dict) else {}
+            merged = dict(existing or {})
+            merged.update(record)
+            if "created_at" not in merged:
+                merged["created_at"] = record["created_at"]
+            data[report_filename] = merged
+            upsert_presentation_map_record(report_filename, merged)
+            record = merged
     return record
 
 
@@ -13200,7 +13382,7 @@ def record_presentation_execution(report_filename: str, execution_id: str) -> No
             if "created_at" not in record:
                 record["created_at"] = datetime.now().isoformat()
             data[report_filename] = record
-            save_presentation_map(data)
+            upsert_presentation_map_record(report_filename, record)
 
 
 def clear_presentation_execution(report_filename: str) -> None:
@@ -13216,7 +13398,7 @@ def clear_presentation_execution(report_filename: str) -> None:
                 return
             record.pop("execution_id", None)
             data[report_filename] = record
-            save_presentation_map(data)
+            upsert_presentation_map_record(report_filename, record)
 
 
 def mark_presentation_stopped(report_filename: str, execution_id: str = "") -> None:
@@ -13240,7 +13422,7 @@ def mark_presentation_stopped(report_filename: str, execution_id: str = "") -> N
             if "created_at" not in record:
                 record["created_at"] = datetime.now().isoformat()
             data[report_filename] = record
-            save_presentation_map(data)
+            upsert_presentation_map_record(report_filename, record)
 
 
 def clear_presentation_stopped(report_filename: str) -> None:
@@ -13256,7 +13438,7 @@ def clear_presentation_stopped(report_filename: str) -> None:
                 record.pop("stopped_at", None)
                 record.pop("stopped_execution_id", None)
                 data[report_filename] = record
-                save_presentation_map(data)
+                upsert_presentation_map_record(report_filename, record)
 
 
 def get_presentation_record(report_filename: str) -> Optional[dict]:

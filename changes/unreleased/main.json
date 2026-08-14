@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "62e3705",
+  "committedAt": "2026-08-14T17:27:21+08:00",
+  "versionType": "patch",
+  "title": "按版本写入会话并收口演示稿与前端竞态",
+  "changes": [
+    "修复：会话主存储按 payload_revision 做 CAS，过期快照不得覆盖更新后的会话",
+    "修复：演示稿云端映射按 report_name 单行 UPSERT，不再整表 DELETE 后回写",
+    "修复：前端写回 currentSession 前核对 session_id，离开访谈页取消出题请求",
+    "测试：补充过期 revision、演示稿单行 UPSERT 与前端竞态守卫",
+    "文档：同步访谈与方案页的会话版本化、演示稿单行写入口径"
+  ],
+  "changedFiles": [
+    "docs/agent/interview.md",
+    "docs/agent/memory-notes.md",
+    "docs/agent/report-solution.md",
+    "scripts/admin_ownership_service.py",
+    "scripts/import_external_local_data_to_cloud.py",
+    "tests/test_api_comprehensive.py",
+    "tests/test_scripts_comprehensive.py",
+    "tests/test_security_regression.py",
+    "web/app.js",
+    "web/app_modules/interview_runtime.js",
+    "web/app_modules/report_detail_runtime.js",
+    "web/server.py"
+  ]
+}

@@ -40,6 +40,7 @@
 - 公开分享接口只提供最小只读暴露，不能泄露管理态或其他用户数据；合法 token 不因当前进程 `INSTANCE_SCOPE_KEY` 被 404。
 - 公开分享 payload 不得带出他报报名，包括 `quality_signals.similar_report_name` 与 `degraded_reasons` 中的报名。
 - 方案相似度扫描必须按 `owner_user_id` 与 `instance_scope_key` 过滤，不能扫到其他用户 sidecar。
+- 演示稿映射在云端按 `report_name` 单行 UPSERT，不得整表 DELETE 后回写。
 
 ## 推荐验证
 

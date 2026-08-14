@@ -3145,7 +3145,7 @@ function deepVision() {
                 '.webp': ['image/webp']
             };
 
-            const sessionId = this.currentSession.session_id;
+            const sessionId = String(this.currentSession.session_id || '').trim();
             let successCount = 0;
             let readyCount = 0;
             const uploadSummaries = [];
@@ -3214,8 +3214,11 @@ function deepVision() {
                 if (event.target?.value !== undefined) {
                     event.target.value = '';
                 }
-                if (successCount > 0 && this.currentSession?.session_id === sessionId) {
-                    this.currentSession = await this.apiCall(`/sessions/${sessionId}`);
+                if (successCount > 0 && String(this.currentSession?.session_id || '').trim() === sessionId) {
+                    const refreshed = await this.apiCall(`/sessions/${sessionId}`);
+                    if (!this.applyLoadedSessionIfCurrent(refreshed, sessionId)) {
+                        return;
+                    }
                     const firstSummary = uploadSummaries[0] || '';
                     const message = successCount === 1
                         ? (firstSummary || '文档上传成功')
@@ -3233,6 +3236,7 @@ function deepVision() {
             }
 
             const doc = this.currentSession.reference_materials[index];
+            const sessionId = String(this.currentSession.session_id || '').trim();
 
             // 使用自定义确认对话框
             this.docToDelete = doc;
@@ -3240,14 +3244,15 @@ function deepVision() {
                 try {
                     const query = doc?.doc_id ? `?doc_id=${encodeURIComponent(doc.doc_id)}` : '';
                     const response = await fetch(
-                        `${API_BASE}/sessions/${this.currentSession.session_id}/documents/${encodeURIComponent(doc.name)}${query}`,
+                        `${API_BASE}/sessions/${sessionId}/documents/${encodeURIComponent(doc.name)}${query}`,
                         { method: 'DELETE' }
                     );
 
                     if (response.ok) {
-                        // 刷新会话数据
-                        this.currentSession = await this.apiCall(`/sessions/${this.currentSession.session_id}`);
-                        this.showToast(`文档 ${doc.name} 已删除`, 'success');
+                        const refreshed = await this.apiCall(`/sessions/${sessionId}`);
+                        if (this.applyLoadedSessionIfCurrent(refreshed, sessionId)) {
+                            this.showToast(`文档 ${doc.name} 已删除`, 'success');
+                        }
                     } else {
                         throw new Error('删除失败');
                     }
@@ -5863,6 +5868,11 @@ function deepVision() {
             }
             if (view !== 'interview') {
                 this.sessionOpenRequestId += 1;
+                this.questionRequestId += 1;
+                this.abortQuestionRequest();
+                this.stopQuestionRequestGuard();
+                this.stopThinkingPolling();
+                this.stopWebSearchPolling();
                 this.clearInterviewLoadingState();
             }
             this.currentView = view;

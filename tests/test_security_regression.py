@@ -1033,6 +1033,43 @@ class SecurityRegressionTests(unittest.TestCase):
         payload = json.loads(self.server.PRESENTATION_MAP_FILE.read_text(encoding="utf-8"))
         self.assertEqual(set(payload.keys()), set(report_names))
 
+    def test_presentation_map_cloud_store_upserts_single_row_without_full_replace(self):
+        original_use_cloud = self.server._use_pure_cloud_report_storage
+        self.server._use_pure_cloud_report_storage = lambda: True
+        self.addCleanup(setattr, self.server, "_use_pure_cloud_report_storage", original_use_cloud)
+
+        first_name = "cloud-presentation-a.md"
+        second_name = "cloud-presentation-b.md"
+        self.server.record_presentation_execution(first_name, "exec-a")
+        self.server.record_presentation_file(first_name, download_info={"path": "/tmp/a.pptx", "filename": "a.pptx"})
+        self.server.record_presentation_execution(second_name, "exec-b")
+
+        with self.server.get_meta_index_connection() as conn:
+            rows = {
+                str(row["report_name"]): json.loads(row["record_json"])
+                for row in conn.execute(
+                    "SELECT report_name, record_json FROM presentation_map_store"
+                ).fetchall()
+            }
+        self.assertIn(first_name, rows)
+        self.assertIn(second_name, rows)
+        self.assertEqual("exec-a", rows[first_name].get("execution_id"))
+        self.assertEqual("/tmp/a.pptx", rows[first_name].get("path"))
+        self.assertEqual("exec-b", rows[second_name].get("execution_id"))
+
+        self.server.record_presentation_file(second_name, download_info={"path": "/tmp/b.pptx", "filename": "b.pptx"})
+        with self.server.get_meta_index_connection() as conn:
+            refreshed = {
+                str(row["report_name"]): json.loads(row["record_json"])
+                for row in conn.execute(
+                    "SELECT report_name, record_json FROM presentation_map_store"
+                ).fetchall()
+            }
+        self.assertEqual("exec-a", refreshed[first_name].get("execution_id"))
+        self.assertEqual("/tmp/a.pptx", refreshed[first_name].get("path"))
+        self.assertEqual("exec-b", refreshed[second_name].get("execution_id"))
+        self.assertEqual("/tmp/b.pptx", refreshed[second_name].get("path"))
+
     def test_report_solution_endpoint_requires_auth(self):
         response = self.client.get('/api/reports/security-solution.md/solution')
         self.assertEqual(response.status_code, 401)

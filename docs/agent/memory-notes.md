@@ -4,10 +4,10 @@
 
 ## 当前焦点
 
-- 当前阶段：`product-hardening-w3`
-- 当前优先项：分享表 scope、归属迁移按实例过滤、报告任务跨 worker 共享
+- 当前阶段：`product-hardening-w4`
+- 当前优先项：会话版本化 UPSERT、演示稿单行 UPSERT、前端会话写回竞态
 - 阶段台账：`docs/agent/harness-progress-phase6.md`
-- 阶段计划：已批准的实施改造计划 W3
+- 阶段计划：已批准的实施改造计划 W4
 
 ## 最近稳定经验
 
@@ -19,6 +19,9 @@
 - 分享记录已带 `instance_scope_key`；创建、复用、删除和归属迁移按当前实例过滤，公开 token 读取不按当前进程 scope 拦截。
 - 归属迁移与账号合并只改当前实例资产；云端导入的 rewrite/cleanup 仍是把导入数据改写到当前实例的既有语义。
 - 报告任务状态会落盘到 `DATA_DIR/runtime/report-generation-status/`，跨 worker 以文件中的 `active` 为准，不要只看本进程 Future。
+- 会话写入按 `payload_revision` 做 CAS；过期快照必须失败，不能后写覆盖。
+- 演示稿云端映射按 `report_name` 单行 UPSERT，不要再整表 DELETE。
+- 前端写回 `currentSession` 前必须核对 `session_id`；离开访谈页要取消进行中的出题请求。
 
 ## 最近健康指针
 

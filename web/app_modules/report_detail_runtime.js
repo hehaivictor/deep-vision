@@ -267,6 +267,9 @@
                 if (!isActive || (state === 'completed' || state === 'failed')) {
                     return;
                 }
+                if (String(this.currentSession?.session_id || '').trim() !== targetSessionId) {
+                    return;
+                }
 
                 this.clearReportGenerationTransitionTimer();
                 this.clearReportGenerationResetTimer();

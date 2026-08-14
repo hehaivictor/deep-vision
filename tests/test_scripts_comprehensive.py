@@ -1001,10 +1001,14 @@ class ComprehensiveScriptTests(unittest.TestCase):
         content = (ROOT_DIR / "web" / "app_modules" / "interview_runtime.js").read_text(encoding="utf-8")
         self.assertIn("this.questionRequestId += 1;", content)
         self.assertIn("this.abortQuestionRequest();", content)
+        self.assertIn("applyLoadedSessionIfCurrent", content)
         self.assertIn("buildVisibleQuestionErrorState", content)
         self.assertIn("handleVisibleQuestionRecoveryAction", content)
         self.assertIn("expectedSessionId", content)
         self.assertIn("fetchNextQuestion({ force: true })", content)
+        app_content = (ROOT_DIR / "web" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("this.abortQuestionRequest();", app_content)
+        self.assertIn("applyLoadedSessionIfCurrent(refreshed, sessionId)", app_content)
 
     def test_production_start_script_requires_env_file(self):
         content = (ROOT_DIR / "scripts" / "start-production.sh").read_text(encoding="utf-8")

@@ -1403,7 +1403,7 @@ def apply_import_plan(
                 record = server_module._build_session_store_record(item["file_path"], payload)
                 if not record:
                     continue
-                server_module._upsert_session_store_record(conn, record)
+                server_module._upsert_session_store_record(conn, record, force=True)
                 imported["sessions"] += 1
 
         imported_report_names: set[str] = set()

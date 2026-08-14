@@ -41,6 +41,8 @@
 - AI 未就绪、无响应、重复重试失败、解析失败或生成异常时，可见题同样不得把 `get_fallback_question` 作为 200 成功结果展示；仅维度完成态可返回 completed。
 - 模型网关不可用与可见题质量失败要分开提示，并带 `recovery_actions`，不能把连接失败显示成“质量不达标”。
 - 切换会话时必须先作废并取消上一题请求，落地结果时还要校验 `session_id`。
+- 离开访谈页时同样要作废出题请求，不能把旧会话结果写回新页面。
+- 会话主存储按 `payload_revision` 做版本化 UPSERT；过期快照不得覆盖更新后的会话。
 - 主题兜底绑定报告时，文件名必须包含当前会话 token，不能只按主题撞车。
 - Anthropic 兼容网关的 `base_url` 不要带尾部 `/v1`；客户端会自动去掉，避免请求打到 `/v1/v1/messages`。
 - 预检干预需要留下结构化痕迹，例如是否干预、fingerprint、planner mode、probe slots。
