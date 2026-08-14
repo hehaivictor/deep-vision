@@ -4,10 +4,10 @@
 
 ## 当前焦点
 
-- 当前阶段：`product-hardening-w1`
-- 当前优先项：可见题质量、切会话竞态、报告绑定、短信测试码门闩
+- 当前阶段：`product-hardening-w3`
+- 当前优先项：分享表 scope、归属迁移按实例过滤、报告任务跨 worker 共享
 - 阶段台账：`docs/agent/harness-progress-phase6.md`
-- 阶段计划：已批准的实施改造计划 W0-W2
+- 阶段计划：已批准的实施改造计划 W3
 
 ## 最近稳定经验
 
@@ -16,7 +16,9 @@
 - Anthropic 兼容网关的 `base_url` 不要带尾部 `/v1`。
 - 默认模型以网关实测为准：问题 `glm-5`，深度题 `ai/glm-5.1`，草案 `minimax-m3`，审稿 `gemini-3.1-pro-preview`。
 - 高风险 task 默认先走 workflow preview；本周不要开 harness phase7，也不要先拆 `server.py`。
-- 分享必须同时尊重 owner 与 scope 是目标，不是当前分享表的已完成能力。
+- 分享记录已带 `instance_scope_key`；创建、复用、删除和归属迁移按当前实例过滤，公开 token 读取不按当前进程 scope 拦截。
+- 归属迁移与账号合并只改当前实例资产；云端导入的 rewrite/cleanup 仍是把导入数据改写到当前实例的既有语义。
+- 报告任务状态会落盘到 `DATA_DIR/runtime/report-generation-status/`，跨 worker 以文件中的 `active` 为准，不要只看本进程 Future。
 
 ## 最近健康指针
 

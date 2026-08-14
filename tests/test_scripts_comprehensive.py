@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 import sqlite3
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -4498,6 +4499,87 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertEqual(22, int(payload["token-keep"]["owner_user_id"]))
         self.assertEqual(33, int(payload["token-source"]["owner_user_id"]))
         self.assertEqual("keep.md", payload["token-keep"]["report_name"])
+
+    def test_ownership_migration_skips_other_instance_scope_assets(self):
+        isolated_root = self.sandbox_root / f"ownership-scope-{uuid.uuid4().hex[:8]}"
+        sessions_dir = isolated_root / "sessions"
+        reports_dir = isolated_root / "reports"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        reports_dir.mkdir(parents=True, exist_ok=True)
+
+        current_session = {
+            "session_id": "scope-current-session",
+            "topic": "当前实例会话",
+            "owner_user_id": 0,
+            "instance_scope_key": "scope-a",
+        }
+        other_session = {
+            "session_id": "scope-other-session",
+            "topic": "其他实例会话",
+            "owner_user_id": 0,
+            "instance_scope_key": "scope-b",
+        }
+        (sessions_dir / "scope-current-session.json").write_text(
+            json.dumps(current_session, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (sessions_dir / "scope-other-session.json").write_text(
+            json.dumps(other_session, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        (reports_dir / "scope-current-report.md").write_text("# 当前实例报告\n", encoding="utf-8")
+        (reports_dir / "scope-other-report.md").write_text("# 其他实例报告\n", encoding="utf-8")
+        (reports_dir / ".scopes.json").write_text(
+            json.dumps(
+                {
+                    "scope-current-report.md": "scope-a",
+                    "scope-other-report.md": "scope-b",
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        users_db = isolated_root / "users.db"
+        with sqlite3.connect(users_db) as conn:
+            conn.execute(
+                """
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY,
+                    email TEXT,
+                    phone TEXT,
+                    created_at TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO users(id, email, phone, created_at, updated_at) VALUES (7, 'scope@example.com', '13700000007', '', '')"
+            )
+            conn.commit()
+
+        summary = admin_ownership_service.run_ownership_migration(
+            auth_db_path=users_db,
+            sessions_dir=sessions_dir,
+            reports_dir=reports_dir,
+            report_owners_file=reports_dir / ".owners.json",
+            backup_root=isolated_root / "backups",
+            to_user_id=7,
+            scope="unowned",
+            kinds="sessions,reports",
+            apply_mode=True,
+            instance_scope_key="scope-a",
+        )
+        self.assertEqual(1, summary["sessions"]["matched"])
+        self.assertEqual(1, summary["reports"]["matched"])
+        current_payload = json.loads((sessions_dir / "scope-current-session.json").read_text(encoding="utf-8"))
+        other_payload = json.loads((sessions_dir / "scope-other-session.json").read_text(encoding="utf-8"))
+        self.assertEqual(7, int(current_payload["owner_user_id"]))
+        self.assertEqual(0, int(other_payload["owner_user_id"]))
+        owners = json.loads((reports_dir / ".owners.json").read_text(encoding="utf-8"))
+        self.assertEqual(7, int(owners["scope-current-report.md"]))
+        self.assertNotIn("scope-other-report.md", owners)
 
 
 if __name__ == "__main__":

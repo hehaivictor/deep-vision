@@ -1148,6 +1148,33 @@ class SecurityRegressionTests(unittest.TestCase):
         raw_report_resp = public_client.get(f'/api/reports/{report_name}')
         self.assertEqual(raw_report_resp.status_code, 401)
 
+    def test_solution_share_records_keep_instance_scope_and_public_token_is_not_filtered(self):
+        owner_user = self._register_user()
+        self._activate_license(
+            self._generate_license_batch(level_key="professional", note="分享 scope 安全")["licenses"][0]["code"]
+        )
+        old_scope = self.server.INSTANCE_SCOPE_KEY
+        old_enforcement = self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED
+        try:
+            self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED = True
+            self.server.INSTANCE_SCOPE_KEY = "security-scope-a"
+            report_name = f"security-share-scope-{uuid.uuid4().hex[:8]}.md"
+            (self.server.REPORTS_DIR / report_name).write_text("# 分享隔离报告\n", encoding="utf-8")
+            self.server.set_report_owner_id(report_name, owner_user["id"])
+            share_resp = self.client.post(f"/api/reports/{report_name}/solution/share")
+            self.assertEqual(share_resp.status_code, 200, share_resp.get_data(as_text=True))
+            share_token = (share_resp.get_json() or {}).get("share_token")
+            record = self.server.get_solution_share_record(share_token)
+            self.assertEqual("security-scope-a", record.get("instance_scope_key"))
+
+            self.server.INSTANCE_SCOPE_KEY = "security-scope-b"
+            public_resp = self.server.app.test_client().get(f"/api/public/solutions/{share_token}")
+            self.assertEqual(public_resp.status_code, 200, public_resp.get_data(as_text=True))
+            self.assertEqual("public", (public_resp.get_json() or {}).get("share_mode"))
+        finally:
+            self.server.INSTANCE_SCOPE_KEY = old_scope
+            self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED = old_enforcement
+
     def test_build_solution_payload_strips_html_from_new_fields(self):
         report_content = (
             '# DeepVision 访谈报告\n\n'

@@ -236,6 +236,88 @@ def should_migrate_owner(owner_id: int, target_user_id: int, scope: str, from_us
     return False
 
 
+def normalize_instance_scope_key(raw_scope: object) -> str:
+    value = str(raw_scope or "").strip().lower()
+    if not value:
+        return ""
+    value = re.sub(r"[^a-z0-9._/-]+", "-", value)
+    value = value.strip("-._/")
+    value = value.replace("/", "--")
+    return value[:96]
+
+
+def is_instance_scope_visible(
+    record_scope: object,
+    expected_scope: Optional[str] = None,
+    *,
+    enforce: bool = True,
+) -> bool:
+    if not enforce:
+        return True
+    current_scope = normalize_instance_scope_key(expected_scope)
+    normalized_record_scope = normalize_instance_scope_key(record_scope)
+    if current_scope:
+        return normalized_record_scope == current_scope
+    return normalized_record_scope == ""
+
+
+def _extract_payload_scope_key(payload: object, fallback: object = "") -> str:
+    if isinstance(payload, dict):
+        if payload.get("instance_scope_key") not in (None, ""):
+            return normalize_instance_scope_key(payload.get("instance_scope_key"))
+        meta = payload.get("meta")
+        if isinstance(meta, dict) and meta.get("instance_scope_key") not in (None, ""):
+            return normalize_instance_scope_key(meta.get("instance_scope_key"))
+    return normalize_instance_scope_key(fallback)
+
+
+def _load_report_scope_map(reports_dir: Path, meta_index_db_path: Optional[str] = None) -> dict[str, str]:
+    if _use_meta_index_storage(meta_index_db_path):
+        with get_meta_index_connection(str(meta_index_db_path)) as conn:
+            rows = _fetch_all_dicts(
+                conn,
+                """
+                SELECT file_name, instance_scope_key
+                FROM report_meta_scopes
+                """,
+            )
+        normalized: dict[str, str] = {}
+        for row in rows:
+            name = str(row.get("file_name") or "").strip()
+            scope_key = normalize_instance_scope_key(row.get("instance_scope_key"))
+            if name:
+                normalized[name] = scope_key
+        return normalized
+
+    scopes_file = Path(reports_dir) / ".scopes.json"
+    payload = _load_json_file(scopes_file, {})
+    if not isinstance(payload, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for name, scope_key in payload.items():
+        report_name = str(name or "").strip()
+        if not report_name:
+            continue
+        normalized[report_name] = normalize_instance_scope_key(scope_key)
+    return normalized
+
+
+def _normalize_solution_share_record(raw_record: object) -> Optional[dict[str, Any]]:
+    if not isinstance(raw_record, dict):
+        return None
+    report_name = str(raw_record.get("report_name") or "").strip()
+    owner_id = parse_owner_id(raw_record.get("owner_user_id"))
+    if not report_name or owner_id <= 0:
+        return None
+    return {
+        "report_name": report_name,
+        "owner_user_id": owner_id,
+        "instance_scope_key": normalize_instance_scope_key(raw_record.get("instance_scope_key")),
+        "created_at": str(raw_record.get("created_at") or "").strip(),
+        "updated_at": str(raw_record.get("updated_at") or "").strip(),
+    }
+
+
 def resolve_target_user(auth_db_path: str, to_user_id: Optional[int], to_account: str) -> dict[str, Any]:
     if not db_target_exists(auth_db_path):
         raise RuntimeError(f"用户数据库不存在: {auth_db_path}")
@@ -324,25 +406,30 @@ def load_solution_share_records(report_solution_shares_file: Path, meta_index_db
             rows = _fetch_all_dicts(
                 conn,
                 """
-                SELECT share_token, report_name, owner_user_id, created_at, updated_at
+                SELECT share_token, report_name, owner_user_id, instance_scope_key, created_at, updated_at
                 FROM report_meta_solution_shares
                 """,
             )
         normalized: dict[str, dict[str, Any]] = {}
         for row in rows:
             token = str(row.get("share_token") or "").strip()
-            if not token:
+            record = _normalize_solution_share_record(row)
+            if not token or not record:
                 continue
-            normalized[token] = {
-                "report_name": str(row.get("report_name") or "").strip(),
-                "owner_user_id": parse_owner_id(row.get("owner_user_id")),
-                "created_at": str(row.get("created_at") or "").strip(),
-                "updated_at": str(row.get("updated_at") or "").strip(),
-            }
+            normalized[token] = record
         return normalized
 
     payload = _load_json_file(report_solution_shares_file, {})
-    return payload if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for token, raw_record in payload.items():
+        share_token = str(token or "").strip()
+        record = _normalize_solution_share_record(raw_record)
+        if not share_token or not record:
+            continue
+        normalized[share_token] = record
+    return normalized
 
 
 def upsert_solution_share_records(
@@ -350,11 +437,13 @@ def upsert_solution_share_records(
     payload: dict[str, dict[str, Any]],
     meta_index_db_path: Optional[str] = None,
 ) -> None:
-    normalized = {
-        str(token).strip(): dict(record)
-        for token, record in (payload if isinstance(payload, dict) else {}).items()
-        if isinstance(record, dict) and str(token).strip()
-    }
+    normalized: dict[str, dict[str, Any]] = {}
+    for token, raw_record in (payload if isinstance(payload, dict) else {}).items():
+        share_token = str(token).strip()
+        record = _normalize_solution_share_record(raw_record)
+        if not share_token or not record:
+            continue
+        normalized[share_token] = record
     if not normalized:
         return
     if _use_meta_index_storage(meta_index_db_path):
@@ -363,11 +452,12 @@ def upsert_solution_share_records(
                 conn.execute(
                     """
                     INSERT INTO report_meta_solution_shares(
-                        share_token, report_name, owner_user_id, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?)
+                        share_token, report_name, owner_user_id, instance_scope_key, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(share_token) DO UPDATE SET
                         report_name = excluded.report_name,
                         owner_user_id = excluded.owner_user_id,
+                        instance_scope_key = excluded.instance_scope_key,
                         created_at = excluded.created_at,
                         updated_at = excluded.updated_at
                     """,
@@ -375,6 +465,7 @@ def upsert_solution_share_records(
                         token,
                         str(record.get("report_name") or "").strip(),
                         parse_owner_id(record.get("owner_user_id")),
+                        normalize_instance_scope_key(record.get("instance_scope_key")),
                         str(record.get("created_at") or "").strip(),
                         str(record.get("updated_at") or "").strip(),
                     ),
@@ -879,11 +970,12 @@ def restore_meta_storage_snapshot(*, snapshot_path: Path, meta_index_db_path: st
             conn.execute(
                 """
                 INSERT INTO report_meta_solution_shares(
-                    share_token, report_name, owner_user_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?)
+                    share_token, report_name, owner_user_id, instance_scope_key, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(share_token) DO UPDATE SET
                     report_name = excluded.report_name,
                     owner_user_id = excluded.owner_user_id,
+                    instance_scope_key = excluded.instance_scope_key,
                     created_at = excluded.created_at,
                     updated_at = excluded.updated_at
                 """,
@@ -891,6 +983,7 @@ def restore_meta_storage_snapshot(*, snapshot_path: Path, meta_index_db_path: st
                     str(row.get("share_token") or "").strip(),
                     str(row.get("report_name") or "").strip(),
                     parse_owner_id(row.get("owner_user_id")),
+                    normalize_instance_scope_key(row.get("instance_scope_key")),
                     str(row.get("created_at") or "").strip(),
                     str(row.get("updated_at") or "").strip() or utc_now_iso(),
                 ),
@@ -945,14 +1038,36 @@ def count_bound_licenses(license_db_path: Path, user_id: int) -> int:
         return 0
 
 
-def count_owned_sessions(sessions_dir: Path, owner_user_id: int, meta_index_db_path: Optional[str] = None) -> int:
+def count_owned_sessions(
+    sessions_dir: Path,
+    owner_user_id: int,
+    meta_index_db_path: Optional[str] = None,
+    instance_scope_key: Optional[str] = None,
+) -> int:
+    expected_scope = None if instance_scope_key is None else normalize_instance_scope_key(instance_scope_key)
+    enforce = instance_scope_key is not None
     if _use_meta_index_storage(meta_index_db_path):
         with get_meta_index_connection(str(meta_index_db_path)) as conn:
-            row = conn.execute(
-                "SELECT COUNT(1) AS count FROM session_store WHERE owner_user_id = ?",
+            rows = _fetch_all_dicts(
+                conn,
+                """
+                SELECT instance_scope_key, payload_json
+                FROM session_store
+                WHERE owner_user_id = ?
+                """,
                 (int(owner_user_id),),
-            ).fetchone()
-        return parse_owner_id((row or {}).get("count") if isinstance(row, dict) else row["count"] if row else 0)
+            )
+        matched = 0
+        for row in rows:
+            payload_text = str(row.get("payload_json") or "").strip()
+            try:
+                payload = json.loads(payload_text) if payload_text else {}
+            except Exception:
+                payload = {}
+            record_scope = _extract_payload_scope_key(payload, row.get("instance_scope_key"))
+            if is_instance_scope_visible(record_scope, expected_scope, enforce=enforce):
+                matched += 1
+        return matched
     matched = 0
     for session_file in sessions_dir.glob("*.json"):
         try:
@@ -961,8 +1076,15 @@ def count_owned_sessions(sessions_dir: Path, owner_user_id: int, meta_index_db_p
             continue
         if not isinstance(payload, dict):
             continue
-        if parse_owner_id(payload.get("owner_user_id")) == int(owner_user_id):
-            matched += 1
+        if parse_owner_id(payload.get("owner_user_id")) != int(owner_user_id):
+            continue
+        if not is_instance_scope_visible(
+            _extract_payload_scope_key(payload),
+            expected_scope,
+            enforce=enforce,
+        ):
+            continue
+        matched += 1
     return matched
 
 
@@ -971,12 +1093,19 @@ def count_owned_reports(
     report_owners_file: Path,
     owner_user_id: int,
     meta_index_db_path: Optional[str] = None,
+    instance_scope_key: Optional[str] = None,
 ) -> int:
     matched = 0
     owners = load_report_owners(report_owners_file, meta_index_db_path=meta_index_db_path)
+    scopes = _load_report_scope_map(reports_dir, meta_index_db_path=meta_index_db_path)
+    expected_scope = None if instance_scope_key is None else normalize_instance_scope_key(instance_scope_key)
+    enforce = instance_scope_key is not None
     for report_file in reports_dir.glob("*.md"):
-        if parse_owner_id(owners.get(report_file.name, 0)) == int(owner_user_id):
-            matched += 1
+        if parse_owner_id(owners.get(report_file.name, 0)) != int(owner_user_id):
+            continue
+        if not is_instance_scope_visible(scopes.get(report_file.name, ""), expected_scope, enforce=enforce):
+            continue
+        matched += 1
     return matched
 
 
@@ -984,15 +1113,33 @@ def count_owned_custom_scenarios(
     custom_scenarios_dir: Path,
     owner_user_id: int,
     meta_index_db_path: Optional[str] = None,
+    instance_scope_key: Optional[str] = None,
 ) -> int:
+    expected_scope = None if instance_scope_key is None else normalize_instance_scope_key(instance_scope_key)
+    enforce = instance_scope_key is not None
     if _use_meta_index_storage(meta_index_db_path):
         with get_meta_index_connection(str(meta_index_db_path)) as conn:
             _ensure_custom_scenarios_meta_table(conn)
-            row = conn.execute(
-                "SELECT COUNT(1) AS count FROM custom_scenarios WHERE owner_user_id = ?",
+            rows = _fetch_all_dicts(
+                conn,
+                """
+                SELECT instance_scope_key, payload_json
+                FROM custom_scenarios
+                WHERE owner_user_id = ?
+                """,
                 (int(owner_user_id),),
-            ).fetchone()
-        return parse_owner_id((row or {}).get("count") if isinstance(row, dict) else row["count"] if row else 0)
+            )
+        matched = 0
+        for row in rows:
+            payload_text = str(row.get("payload_json") or "").strip()
+            try:
+                payload = json.loads(payload_text) if payload_text else {}
+            except Exception:
+                payload = {}
+            record_scope = _extract_payload_scope_key(payload, row.get("instance_scope_key"))
+            if is_instance_scope_visible(record_scope, expected_scope, enforce=enforce):
+                matched += 1
+        return matched
 
     matched = 0
     if not custom_scenarios_dir.exists():
@@ -1004,8 +1151,15 @@ def count_owned_custom_scenarios(
             continue
         if not isinstance(payload, dict):
             continue
-        if parse_owner_id(payload.get("owner_user_id")) == int(owner_user_id):
-            matched += 1
+        if parse_owner_id(payload.get("owner_user_id")) != int(owner_user_id):
+            continue
+        if not is_instance_scope_visible(
+            _extract_payload_scope_key(payload),
+            expected_scope,
+            enforce=enforce,
+        ):
+            continue
+        matched += 1
     return matched
 
 
@@ -1013,17 +1167,23 @@ def count_owned_solution_shares(
     report_solution_shares_file: Path,
     owner_user_id: int,
     meta_index_db_path: Optional[str] = None,
+    instance_scope_key: Optional[str] = None,
 ) -> int:
     payload = load_solution_share_records(
         report_solution_shares_file,
         meta_index_db_path=meta_index_db_path,
     )
+    expected_scope = None if instance_scope_key is None else normalize_instance_scope_key(instance_scope_key)
+    enforce = instance_scope_key is not None
     matched = 0
     for record in payload.values():
         if not isinstance(record, dict):
             continue
-        if parse_owner_id(record.get("owner_user_id")) == int(owner_user_id):
-            matched += 1
+        if parse_owner_id(record.get("owner_user_id")) != int(owner_user_id):
+            continue
+        if not is_instance_scope_visible(record.get("instance_scope_key"), expected_scope, enforce=enforce):
+            continue
+        matched += 1
     return matched
 
 
@@ -1038,24 +1198,33 @@ def build_account_merge_asset_counts(
     report_solution_shares_file: Path,
     meta_index_db_path: Optional[str] = None,
     user_id: int,
+    instance_scope_key: Optional[str] = None,
 ) -> dict[str, int]:
     return {
-        "sessions": count_owned_sessions(sessions_dir, user_id, meta_index_db_path=meta_index_db_path),
+        "sessions": count_owned_sessions(
+            sessions_dir,
+            user_id,
+            meta_index_db_path=meta_index_db_path,
+            instance_scope_key=instance_scope_key,
+        ),
         "reports": count_owned_reports(
             reports_dir,
             report_owners_file,
             user_id,
             meta_index_db_path=meta_index_db_path,
+            instance_scope_key=instance_scope_key,
         ),
         "custom_scenarios": count_owned_custom_scenarios(
             custom_scenarios_dir,
             user_id,
             meta_index_db_path=meta_index_db_path,
+            instance_scope_key=instance_scope_key,
         ),
         "solution_shares": count_owned_solution_shares(
             report_solution_shares_file,
             user_id,
             meta_index_db_path=meta_index_db_path,
+            instance_scope_key=instance_scope_key,
         ),
         "licenses": count_bound_licenses(license_db_path, user_id),
         "wechat_identities": len(query_wechat_identities_by_user_id(auth_db_path, user_id)),
@@ -1066,10 +1235,13 @@ def list_owned_session_records(
     sessions_dir: Path,
     owner_user_id: int,
     meta_index_db_path: Optional[str] = None,
+    instance_scope_key: Optional[str] = None,
 ) -> list[dict[str, Any]]:
+    expected_scope = None if instance_scope_key is None else normalize_instance_scope_key(instance_scope_key)
+    enforce = instance_scope_key is not None
     if _use_meta_index_storage(meta_index_db_path):
         with get_meta_index_connection(str(meta_index_db_path)) as conn:
-            return _fetch_all_dicts(
+            rows = _fetch_all_dicts(
                 conn,
                 """
                 SELECT
@@ -1081,6 +1253,17 @@ def list_owned_session_records(
                 """,
                 (int(owner_user_id),),
             )
+        visible_rows: list[dict[str, Any]] = []
+        for row in rows:
+            payload_text = str(row.get("payload_json") or "").strip()
+            try:
+                payload = json.loads(payload_text) if payload_text else {}
+            except Exception:
+                payload = {}
+            record_scope = _extract_payload_scope_key(payload, row.get("instance_scope_key"))
+            if is_instance_scope_visible(record_scope, expected_scope, enforce=enforce):
+                visible_rows.append(row)
+        return visible_rows
 
     rows: list[dict[str, Any]] = []
     for session_file in sorted(sessions_dir.glob("*.json")):
@@ -1092,9 +1275,16 @@ def list_owned_session_records(
             continue
         if parse_owner_id(payload.get("owner_user_id")) != int(owner_user_id):
             continue
+        if not is_instance_scope_visible(
+            _extract_payload_scope_key(payload),
+            expected_scope,
+            enforce=enforce,
+        ):
+            continue
         rows.append({
             "session_id": str(payload.get("session_id") or session_file.stem),
             "file_name": session_file.name,
+            "instance_scope_key": _extract_payload_scope_key(payload),
             "payload_json": json.dumps(payload, ensure_ascii=False, indent=2),
         })
     return rows
@@ -1105,12 +1295,17 @@ def list_owned_report_names(
     report_owners_file: Path,
     owner_user_id: int,
     meta_index_db_path: Optional[str] = None,
+    instance_scope_key: Optional[str] = None,
 ) -> list[str]:
     owners = load_report_owners(report_owners_file, meta_index_db_path=meta_index_db_path)
+    scopes = _load_report_scope_map(reports_dir, meta_index_db_path=meta_index_db_path)
+    expected_scope = None if instance_scope_key is None else normalize_instance_scope_key(instance_scope_key)
+    enforce = instance_scope_key is not None
     return [
         report_file.name
         for report_file in sorted(reports_dir.glob("*.md"))
         if parse_owner_id(owners.get(report_file.name, 0)) == int(owner_user_id)
+        and is_instance_scope_visible(scopes.get(report_file.name, ""), expected_scope, enforce=enforce)
     ]
 
 
@@ -1118,11 +1313,14 @@ def list_owned_custom_scenario_records(
     custom_scenarios_dir: Path,
     owner_user_id: int,
     meta_index_db_path: Optional[str] = None,
+    instance_scope_key: Optional[str] = None,
 ) -> list[dict[str, Any]]:
+    expected_scope = None if instance_scope_key is None else normalize_instance_scope_key(instance_scope_key)
+    enforce = instance_scope_key is not None
     if _use_meta_index_storage(meta_index_db_path):
         with get_meta_index_connection(str(meta_index_db_path)) as conn:
             _ensure_custom_scenarios_meta_table(conn)
-            return _fetch_all_dicts(
+            rows = _fetch_all_dicts(
                 conn,
                 """
                 SELECT scenario_id, owner_user_id, instance_scope_key, payload_json, created_at, updated_at
@@ -1132,6 +1330,17 @@ def list_owned_custom_scenario_records(
                 """,
                 (int(owner_user_id),),
             )
+        visible_rows: list[dict[str, Any]] = []
+        for row in rows:
+            payload_text = str(row.get("payload_json") or "").strip()
+            try:
+                payload = json.loads(payload_text) if payload_text else {}
+            except Exception:
+                payload = {}
+            record_scope = _extract_payload_scope_key(payload, row.get("instance_scope_key"))
+            if is_instance_scope_visible(record_scope, expected_scope, enforce=enforce):
+                visible_rows.append(row)
+        return visible_rows
 
     rows: list[dict[str, Any]] = []
     if not custom_scenarios_dir.exists():
@@ -1145,10 +1354,13 @@ def list_owned_custom_scenario_records(
             continue
         if parse_owner_id(payload.get("owner_user_id")) != int(owner_user_id):
             continue
+        record_scope = _extract_payload_scope_key(payload)
+        if not is_instance_scope_visible(record_scope, expected_scope, enforce=enforce):
+            continue
         rows.append({
             "scenario_id": str(payload.get("id") or scenario_file.stem),
             "owner_user_id": parse_owner_id(payload.get("owner_user_id")),
-            "instance_scope_key": str(payload.get("instance_scope_key") or "").strip(),
+            "instance_scope_key": record_scope,
             "payload_json": json.dumps(payload, ensure_ascii=False, indent=2),
             "created_at": str(payload.get("created_at") or "").strip(),
             "updated_at": str(payload.get("updated_at") or "").strip(),
@@ -1161,15 +1373,20 @@ def list_owned_solution_share_records(
     report_solution_shares_file: Path,
     owner_user_id: int,
     meta_index_db_path: Optional[str] = None,
+    instance_scope_key: Optional[str] = None,
 ) -> dict[str, dict[str, Any]]:
     payload = load_solution_share_records(
         report_solution_shares_file,
         meta_index_db_path=meta_index_db_path,
     )
+    expected_scope = None if instance_scope_key is None else normalize_instance_scope_key(instance_scope_key)
+    enforce = instance_scope_key is not None
     return {
         str(token): dict(record)
         for token, record in payload.items()
-        if isinstance(record, dict) and parse_owner_id(record.get("owner_user_id")) == int(owner_user_id)
+        if isinstance(record, dict)
+        and parse_owner_id(record.get("owner_user_id")) == int(owner_user_id)
+        and is_instance_scope_visible(record.get("instance_scope_key"), expected_scope, enforce=enforce)
     }
 
 
@@ -1269,6 +1486,7 @@ def run_account_merge(
     apply_mode: bool = False,
     backup_id: str = "",
     max_examples: int = 20,
+    instance_scope_key: Optional[str] = None,
 ) -> dict[str, Any]:
     normalized_target_user_id = int(target_user_id or 0)
     normalized_source_user_id = int(source_user_id or 0)
@@ -1289,6 +1507,7 @@ def run_account_merge(
         report_solution_shares_file=report_solution_shares_file,
         meta_index_db_path=meta_index_db_path,
         user_id=normalized_source_user_id,
+        instance_scope_key=instance_scope_key,
     )
     backup_dir = prepare_backup_dir(backup_root, backup_id, normalized_target_user_id, apply_mode)
     summary = _build_account_merge_summary(
@@ -1314,6 +1533,7 @@ def run_account_merge(
         sessions_dir,
         normalized_source_user_id,
         meta_index_db_path=meta_index_db_path,
+        instance_scope_key=instance_scope_key,
     )
     source_session_files = [
         sessions_dir / str(row.get("file_name") or "").strip()
@@ -1339,6 +1559,7 @@ def run_account_merge(
         report_owners_file,
         normalized_source_user_id,
         meta_index_db_path=meta_index_db_path,
+        instance_scope_key=instance_scope_key,
     )
     owners = load_report_owners(report_owners_file, meta_index_db_path=meta_index_db_path)
     for report_name in source_report_names:
@@ -1356,6 +1577,7 @@ def run_account_merge(
         custom_scenarios_dir,
         normalized_source_user_id,
         meta_index_db_path=meta_index_db_path,
+        instance_scope_key=instance_scope_key,
     )
     source_scenario_files = [
         custom_scenarios_dir / str(row.get("file_name") or "").strip()
@@ -1379,6 +1601,7 @@ def run_account_merge(
         report_solution_shares_file,
         normalized_source_user_id,
         meta_index_db_path=meta_index_db_path,
+        instance_scope_key=instance_scope_key,
     )
     source_share_tokens: list[str] = []
     for token, record in solution_shares_payload.items():
@@ -1604,11 +1827,12 @@ def run_account_merge(
                     meta_conn.execute(
                         """
                         INSERT INTO report_meta_solution_shares(
-                            share_token, report_name, owner_user_id, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?)
+                            share_token, report_name, owner_user_id, instance_scope_key, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
                         ON CONFLICT(share_token) DO UPDATE SET
                             report_name = excluded.report_name,
                             owner_user_id = excluded.owner_user_id,
+                            instance_scope_key = excluded.instance_scope_key,
                             created_at = excluded.created_at,
                             updated_at = excluded.updated_at
                         """,
@@ -1616,6 +1840,7 @@ def run_account_merge(
                             str(token),
                             str(record.get("report_name") or "").strip(),
                             normalized_target_user_id,
+                            normalize_instance_scope_key(record.get("instance_scope_key")),
                             str(record.get("created_at") or "").strip(),
                             now_iso,
                         ),
@@ -1721,6 +1946,7 @@ def run_ownership_migration(
     apply_mode: bool = False,
     backup_id: str = "",
     max_examples: int = 20,
+    instance_scope_key: Optional[str] = None,
 ) -> dict[str, Any]:
     if scope not in VALID_OWNERSHIP_SCOPES:
         raise ValueError("scope 必须是 unowned / all / from-user")
@@ -1756,6 +1982,9 @@ def run_ownership_migration(
     meta_snapshot_session_rows: list[dict[str, Any]] = []
     meta_snapshot_report_owner_rows: list[dict[str, Any]] = []
     meta_snapshot_report_owner_absent: list[str] = []
+    expected_instance_scope = None if instance_scope_key is None else normalize_instance_scope_key(instance_scope_key)
+    enforce_instance_scope = instance_scope_key is not None
+    report_scope_map = _load_report_scope_map(reports_dir, meta_index_db_path=meta_index_db_path)
 
     if "sessions" in parsed_kinds:
         if _use_meta_index_storage(meta_index_db_path):
@@ -1795,6 +2024,13 @@ def run_ownership_migration(
 
             if not isinstance(data, dict):
                 summary["sessions"]["skipped_invalid"] += 1
+                continue
+
+            record_scope = _extract_payload_scope_key(
+                data,
+                session_item.get("instance_scope_key") if isinstance(session_item, dict) else "",
+            )
+            if not is_instance_scope_visible(record_scope, expected_instance_scope, enforce=enforce_instance_scope):
                 continue
 
             current_owner = parse_owner_id(data.get("owner_user_id"))
@@ -1838,6 +2074,12 @@ def run_ownership_migration(
         for report_file in sorted(reports_dir.glob("*.md")):
             summary["reports"]["scanned"] += 1
             report_name = report_file.name
+            if not is_instance_scope_visible(
+                report_scope_map.get(report_name, ""),
+                expected_instance_scope,
+                enforce=enforce_instance_scope,
+            ):
+                continue
             current_owner = parse_owner_id(owners.get(report_name, 0))
             should_migrate = should_migrate_owner(current_owner, target_user_id, scope, from_user_id)
             if not should_migrate:

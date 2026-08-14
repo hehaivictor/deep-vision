@@ -4,10 +4,12 @@
 
 ## 背景
 
-DeepVision 现在支持按实例作用域隔离会话和报告。系统在读取会话列表、报告列表、详情、批量删除时，都会同时校验：
+DeepVision 现在支持按实例作用域隔离会话、报告和方案分享。系统在读取会话列表、报告列表、详情、批量删除、创建/复用/删除分享以及归属迁移时，都会同时校验：
 
 - `owner_user_id`
 - `instance_scope_key`
+
+公开分享仍按 `share_token` 只读访问；合法 token 不因当前进程的 `INSTANCE_SCOPE_KEY` 被拒绝。
 
 如果多个 DeepVision 实例共享同一份 `data/` 目录，但没有正确配置 `INSTANCE_SCOPE_KEY`，就可能出现以下问题：
 

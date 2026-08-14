@@ -4275,6 +4275,82 @@ THINKING_STAGES = {
 # ============ 报告生成进度状态追踪 ============
 report_generation_status = {}   # { session_id: { state, stage_index, total_stages, progress, message, updated_at, active } }
 report_generation_status_lock = threading.Lock()
+REPORT_GENERATION_STATUS_TTL_SECONDS = 6 * 60 * 60
+
+
+def get_report_generation_status_dir() -> Path:
+    return DATA_DIR / "runtime" / "report-generation-status"
+
+
+def get_report_generation_status_file(session_id: str) -> Path:
+    digest = hashlib.sha1(str(session_id or "").encode("utf-8")).hexdigest()
+    return get_report_generation_status_dir() / f"{digest}.json"
+
+
+def persist_report_generation_status(session_id: str, status_payload: dict) -> None:
+    if not session_id or not isinstance(status_payload, dict):
+        return
+    payload = dict(status_payload)
+    payload["session_id"] = str(session_id)
+    payload["updated_ts"] = float(_time.time())
+    if not payload.get("updated_at"):
+        payload["updated_at"] = get_utc_now()
+    try:
+        with named_file_lock("report-generation-status", session_id):
+            _write_json_atomic(get_report_generation_status_file(session_id), payload)
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            print(f"[report-generation-status] 持久化失败: session_id={session_id}, error={exc}")
+
+
+def read_persisted_report_generation_status(session_id: str) -> Optional[dict]:
+    if not session_id:
+        return None
+    status_file = get_report_generation_status_file(session_id)
+    try:
+        with named_file_lock("report-generation-status", session_id):
+            if not status_file.exists():
+                return None
+            try:
+                payload = json.loads(status_file.read_text(encoding="utf-8"))
+            except Exception as exc:
+                if ENABLE_DEBUG_LOG:
+                    print(f"[report-generation-status] 读取失败: session_id={session_id}, error={exc}")
+                try:
+                    status_file.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return None
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            print(f"[report-generation-status] 读取加锁失败: session_id={session_id}, error={exc}")
+        return None
+    if not isinstance(payload, dict) or str(payload.get("session_id") or "") != str(session_id):
+        return None
+
+    updated_ts = payload.get("updated_ts")
+    try:
+        updated_ts_value = float(updated_ts)
+    except (TypeError, ValueError):
+        updated_ts_value = 0.0
+    if updated_ts_value and (_time.time() - updated_ts_value) > REPORT_GENERATION_STATUS_TTL_SECONDS:
+        try:
+            status_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+    return payload
+
+
+def remove_persisted_report_generation_status(session_id: str) -> None:
+    if not session_id:
+        return
+    try:
+        with named_file_lock("report-generation-status", session_id):
+            get_report_generation_status_file(session_id).unlink(missing_ok=True)
+    except Exception as exc:
+        if ENABLE_DEBUG_LOG:
+            print(f"[report-generation-status] 清理失败: session_id={session_id}, error={exc}")
 report_generation_workers = {}  # { session_id: Future }
 report_generation_workers_lock = threading.Lock()
 report_generation_queue_stats_lock = threading.Lock()
@@ -6575,16 +6651,18 @@ def _migrate_legacy_report_meta_if_needed(conn: Any) -> None:
                     continue
                 created_at = str(record.get("created_at") or "")
                 updated_at = str(record.get("updated_at") or "") or created_at or now_iso
-                rows.append((normalized_token, report_name, owner_id, created_at or now_iso, updated_at))
+                scope_key = normalize_instance_scope_key(record.get(INSTANCE_SCOPE_FIELD))
+                rows.append((normalized_token, report_name, owner_id, scope_key, created_at or now_iso, updated_at))
             if rows:
                 conn.executemany(
                     """
                     INSERT INTO report_meta_solution_shares(
-                        share_token, report_name, owner_user_id, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?)
+                        share_token, report_name, owner_user_id, instance_scope_key, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(share_token) DO UPDATE SET
                         report_name=excluded.report_name,
                         owner_user_id=excluded.owner_user_id,
+                        instance_scope_key=excluded.instance_scope_key,
                         created_at=excluded.created_at,
                         updated_at=excluded.updated_at
                     """,
@@ -7680,13 +7758,25 @@ def ensure_meta_index_schema() -> None:
                     share_token TEXT PRIMARY KEY,
                     report_name TEXT NOT NULL,
                     owner_user_id INTEGER NOT NULL,
+                    instance_scope_key TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
+            share_columns = {
+                str(row[1]): True
+                for row in conn.execute("PRAGMA table_info(report_meta_solution_shares)").fetchall()
+            }
+            if "instance_scope_key" not in share_columns:
+                conn.execute(
+                    "ALTER TABLE report_meta_solution_shares ADD COLUMN instance_scope_key TEXT NOT NULL DEFAULT ''"
+                )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_report_meta_solution_shares_report_owner ON report_meta_solution_shares(report_name, owner_user_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_report_meta_solution_shares_report_owner_scope ON report_meta_solution_shares(report_name, owner_user_id, instance_scope_key)"
             )
             conn.execute(
                 """
@@ -11874,6 +11964,7 @@ def _build_account_merge_user_summary(user_id: int) -> Optional[dict]:
         report_solution_shares_file=REPORT_SOLUTION_SHARES_FILE,
         meta_index_db_path=_get_admin_meta_index_db_target(),
         user_id=int(user_row["id"]),
+        instance_scope_key=get_active_instance_scope_key(),
     )
     phone = str(user_row["phone"] or "").strip()
     nickname = normalize_wechat_nickname((wechat_identity or {}).get("nickname") or "")
@@ -12094,6 +12185,7 @@ def _build_account_merge_preview_payload(candidate: dict, current_user_id: int) 
         identity_value=str(candidate.get("identity_value") or "").strip(),
         actor_user_id=target_user_id,
         apply_mode=False,
+        instance_scope_key=get_active_instance_scope_key(),
     )
     public_summary = {
         "operation_type": str(merge_summary.get("operation_type") or "account_merge"),
@@ -12172,6 +12264,7 @@ def _execute_account_merge_apply(candidate: dict, *, actor_user_id: int, reason:
         identity_value=str(candidate.get("identity_value") or "").strip() or reason,
         actor_user_id=int(actor_user_id),
         apply_mode=True,
+        instance_scope_key=get_active_instance_scope_key(),
     )
     _refresh_account_merge_runtime_state()
     updated_user = query_user_by_id(target_user_id)
@@ -13491,6 +13584,8 @@ def update_report_generation_status(
 
     with report_generation_status_lock:
         existing = report_generation_status.get(session_id)
+        if not isinstance(existing, dict):
+            existing = read_persisted_report_generation_status(session_id)
         merged = dict(existing) if isinstance(existing, dict) else {}
         resolved_detail_key = str(detail_key or merged.get("detail_key", "") or "")
         resolved_detail_label = str(
@@ -13537,6 +13632,7 @@ def update_report_generation_status(
             phase_history.append(phase_entry)
         merged["phase_history"] = phase_history[-12:]
         report_generation_status[session_id] = merged
+    persist_report_generation_status(session_id, merged)
 
 
 def set_report_generation_metadata(session_id: str, updates: Optional[dict] = None):
@@ -13546,6 +13642,8 @@ def set_report_generation_metadata(session_id: str, updates: Optional[dict] = No
 
     with report_generation_status_lock:
         existing = report_generation_status.get(session_id)
+        if not isinstance(existing, dict):
+            existing = read_persisted_report_generation_status(session_id)
         merged = dict(existing) if isinstance(existing, dict) else {}
         merged.update(updates)
         report_name = normalize_solution_report_filename(merged.get("report_name", ""))
@@ -13556,6 +13654,7 @@ def set_report_generation_metadata(session_id: str, updates: Optional[dict] = No
                 merged["report_path"] = report_reference
         merged["updated_at"] = datetime.now(timezone.utc).isoformat()
         report_generation_status[session_id] = merged
+    persist_report_generation_status(session_id, merged)
 
 
 def get_report_generation_record(session_id: str) -> Optional[dict]:
@@ -13563,9 +13662,17 @@ def get_report_generation_record(session_id: str) -> Optional[dict]:
         return None
     with report_generation_status_lock:
         status = report_generation_status.get(session_id)
-        if not isinstance(status, dict):
-            return None
-        return dict(status)
+        if isinstance(status, dict):
+            return dict(status)
+    persisted = read_persisted_report_generation_status(session_id)
+    if not isinstance(persisted, dict):
+        return None
+    with report_generation_status_lock:
+        current = report_generation_status.get(session_id)
+        if isinstance(current, dict):
+            return dict(current)
+        report_generation_status[session_id] = dict(persisted)
+        return dict(persisted)
 
 
 def build_report_generation_payload(record: Optional[dict]) -> dict:
@@ -13739,8 +13846,19 @@ def sync_report_generation_queue_metadata(session_id: str, snapshot: Optional[di
 
     with report_generation_status_lock:
         existing = report_generation_status.get(session_id)
-        if not isinstance(existing, dict):
+    if not isinstance(existing, dict):
+        existing = read_persisted_report_generation_status(session_id)
+        if isinstance(existing, dict):
+            with report_generation_status_lock:
+                current = report_generation_status.get(session_id)
+                if isinstance(current, dict):
+                    existing = current
+                else:
+                    report_generation_status[session_id] = dict(existing)
+        else:
             return queue_snapshot
+    if not isinstance(existing, dict):
+        return queue_snapshot
 
     queue_positions = queue_snapshot.get("queue_positions", {}) if isinstance(queue_snapshot, dict) else {}
     queue_position = 0
@@ -13812,6 +13930,7 @@ def clear_report_generation_status(session_id: str):
     """清除报告生成进度状态"""
     with report_generation_status_lock:
         report_generation_status.pop(session_id, None)
+    remove_persisted_report_generation_status(session_id)
     cleanup_report_generation_worker(session_id)
 
 
@@ -16459,6 +16578,36 @@ def normalize_solution_share_token(raw_token: object) -> str:
     return token
 
 
+def _normalize_solution_share_record(raw_record: object, *, default_scope: object = "") -> Optional[dict]:
+    if not isinstance(raw_record, dict):
+        return None
+    report_name = normalize_solution_report_filename(raw_record.get("report_name"))
+    if not report_name:
+        return None
+    try:
+        owner_user_id = int(raw_record.get("owner_user_id", 0))
+    except (TypeError, ValueError):
+        owner_user_id = 0
+    if owner_user_id <= 0:
+        return None
+    scope_key = get_record_instance_scope_key(
+        raw_record.get(INSTANCE_SCOPE_FIELD, default_scope)
+    )
+    return {
+        "report_name": report_name,
+        "owner_user_id": owner_user_id,
+        INSTANCE_SCOPE_FIELD: scope_key,
+        "created_at": str(raw_record.get("created_at") or ""),
+        "updated_at": str(raw_record.get("updated_at") or ""),
+    }
+
+
+def is_solution_share_visible(record: object, expected_scope: Optional[str] = None) -> bool:
+    if not isinstance(record, dict):
+        return False
+    return is_instance_scope_visible(record.get(INSTANCE_SCOPE_FIELD), expected_scope=expected_scope)
+
+
 def load_solution_share_map() -> dict:
     if _use_postgres_shared_meta_storage():
         rows = []
@@ -16466,7 +16615,7 @@ def load_solution_share_map() -> dict:
             with get_meta_index_connection() as conn:
                 rows = conn.execute(
                     """
-                    SELECT share_token, report_name, owner_user_id, created_at, updated_at
+                    SELECT share_token, report_name, owner_user_id, instance_scope_key, created_at, updated_at
                     FROM report_meta_solution_shares
                     """
                 ).fetchall()
@@ -16476,16 +16625,18 @@ def load_solution_share_map() -> dict:
         normalized = {}
         for row in rows:
             token = normalize_solution_share_token(row["share_token"])
-            report_name = normalize_solution_report_filename(row["report_name"])
-            owner_user_id = _safe_int(row["owner_user_id"], 0)
-            if not token or not report_name or owner_user_id <= 0:
+            record = _normalize_solution_share_record(
+                {
+                    "report_name": row["report_name"],
+                    "owner_user_id": row["owner_user_id"],
+                    INSTANCE_SCOPE_FIELD: row["instance_scope_key"],
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+            )
+            if not token or not record:
                 continue
-            normalized[token] = {
-                "report_name": report_name,
-                "owner_user_id": owner_user_id,
-                "created_at": str(row["created_at"] or ""),
-                "updated_at": str(row["updated_at"] or ""),
-            }
+            normalized[token] = record
         return normalized
 
     with REPORT_SOLUTION_SHARES_LOCK:
@@ -16506,23 +16657,10 @@ def load_solution_share_map() -> dict:
             if isinstance(payload, dict):
                 for raw_token, raw_record in payload.items():
                     token = normalize_solution_share_token(raw_token)
-                    if not token or not isinstance(raw_record, dict):
+                    record = _normalize_solution_share_record(raw_record)
+                    if not token or not record:
                         continue
-                    report_name = normalize_solution_report_filename(raw_record.get("report_name"))
-                    if not report_name:
-                        continue
-                    try:
-                        owner_user_id = int(raw_record.get("owner_user_id", 0))
-                    except (TypeError, ValueError):
-                        owner_user_id = 0
-                    if owner_user_id <= 0:
-                        continue
-                    normalized[token] = {
-                        "report_name": report_name,
-                        "owner_user_id": owner_user_id,
-                        "created_at": str(raw_record.get("created_at") or ""),
-                        "updated_at": str(raw_record.get("updated_at") or ""),
-                    }
+                    normalized[token] = record
         except Exception:
             normalized = {}
 
@@ -16536,39 +16674,32 @@ def save_solution_share_map(data: dict) -> None:
     if isinstance(data, dict):
         for raw_token, raw_record in data.items():
             token = normalize_solution_share_token(raw_token)
-            if not token or not isinstance(raw_record, dict):
+            record = _normalize_solution_share_record(raw_record)
+            if not token or not record:
                 continue
-            report_name = normalize_solution_report_filename(raw_record.get("report_name"))
-            if not report_name:
-                continue
-            try:
-                owner_user_id = int(raw_record.get("owner_user_id", 0))
-            except (TypeError, ValueError):
-                owner_user_id = 0
-            if owner_user_id <= 0:
-                continue
-            normalized[token] = {
-                "report_name": report_name,
-                "owner_user_id": owner_user_id,
-                "created_at": str(raw_record.get("created_at") or ""),
-                "updated_at": str(raw_record.get("updated_at") or ""),
-            }
+            normalized[token] = record
 
     if _use_postgres_shared_meta_storage():
         with get_meta_index_connection() as conn:
-            conn.execute("DELETE FROM report_meta_solution_shares")
             if normalized:
                 conn.executemany(
                     """
                     INSERT INTO report_meta_solution_shares(
-                        share_token, report_name, owner_user_id, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?)
+                        share_token, report_name, owner_user_id, instance_scope_key, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(share_token) DO UPDATE SET
+                        report_name=excluded.report_name,
+                        owner_user_id=excluded.owner_user_id,
+                        instance_scope_key=excluded.instance_scope_key,
+                        created_at=excluded.created_at,
+                        updated_at=excluded.updated_at
                     """,
                     [
                         (
                             token,
                             record["report_name"],
                             int(record["owner_user_id"]),
+                            str(record.get(INSTANCE_SCOPE_FIELD) or ""),
                             str(record["created_at"] or ""),
                             str(record["updated_at"] or ""),
                         )
@@ -16603,24 +16734,26 @@ def create_or_get_solution_share(report_name: str, owner_user_id: int) -> dict:
     owner_id = int(owner_user_id)
     if not normalized_report_name or owner_id <= 0:
         raise ValueError("分享参数无效")
+    current_scope = get_active_instance_scope_key()
 
     if _use_postgres_shared_meta_storage():
         created_payload = None
         with get_meta_index_connection() as conn:
             existing = conn.execute(
                 """
-                SELECT share_token, created_at, updated_at
+                SELECT share_token, instance_scope_key, created_at, updated_at
                 FROM report_meta_solution_shares
-                WHERE report_name = ? AND owner_user_id = ?
+                WHERE report_name = ? AND owner_user_id = ? AND instance_scope_key = ?
                 LIMIT 1
                 """,
-                (normalized_report_name, owner_id),
+                (normalized_report_name, owner_id, current_scope),
             ).fetchone()
             if existing:
                 return {
                     "share_token": str(existing["share_token"] or ""),
                     "report_name": normalized_report_name,
                     "owner_user_id": owner_id,
+                    INSTANCE_SCOPE_FIELD: get_record_instance_scope_key(existing["instance_scope_key"]),
                     "created_at": str(existing["created_at"] or ""),
                     "updated_at": str(existing["updated_at"] or ""),
                 }
@@ -16634,15 +16767,16 @@ def create_or_get_solution_share(report_name: str, owner_user_id: int) -> dict:
                     conn.execute(
                         """
                         INSERT INTO report_meta_solution_shares(
-                            share_token, report_name, owner_user_id, created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?)
+                            share_token, report_name, owner_user_id, instance_scope_key, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
                         """,
-                        (share_token, normalized_report_name, owner_id, created_at, created_at),
+                        (share_token, normalized_report_name, owner_id, current_scope, created_at, created_at),
                     )
                     created_payload = {
                         "share_token": share_token,
                         "report_name": normalized_report_name,
                         "owner_user_id": owner_id,
+                        INSTANCE_SCOPE_FIELD: current_scope,
                         "created_at": created_at,
                         "updated_at": created_at,
                     }
@@ -16663,8 +16797,11 @@ def create_or_get_solution_share(report_name: str, owner_user_id: int) -> dict:
                     continue
                 if int(record.get("owner_user_id", 0) or 0) != owner_id:
                     continue
+                if get_record_instance_scope_key(record.get(INSTANCE_SCOPE_FIELD)) != current_scope:
+                    continue
                 result = copy.deepcopy(record)
                 result["share_token"] = token
+                result[INSTANCE_SCOPE_FIELD] = current_scope
                 return result
 
             created_at = get_utc_now()
@@ -16674,6 +16811,7 @@ def create_or_get_solution_share(report_name: str, owner_user_id: int) -> dict:
             record = {
                 "report_name": normalized_report_name,
                 "owner_user_id": owner_id,
+                INSTANCE_SCOPE_FIELD: current_scope,
                 "created_at": created_at,
                 "updated_at": created_at,
             }
@@ -16688,12 +16826,13 @@ def delete_solution_shares_for_report(report_name: str) -> None:
     normalized_report_name = normalize_solution_report_filename(report_name)
     if not normalized_report_name:
         return
+    current_scope = get_active_instance_scope_key()
 
     if _use_postgres_shared_meta_storage():
         with get_meta_index_connection() as conn:
             conn.execute(
-                "DELETE FROM report_meta_solution_shares WHERE report_name = ?",
-                (normalized_report_name,),
+                "DELETE FROM report_meta_solution_shares WHERE report_name = ? AND instance_scope_key = ?",
+                (normalized_report_name, current_scope),
             )
         with REPORT_SOLUTION_SHARES_LOCK:
             report_solution_shares_cache["signature"] = None
@@ -16706,9 +16845,14 @@ def delete_solution_shares_for_report(report_name: str) -> None:
             mutated = False
             for token in list(shares.keys()):
                 record = shares.get(token, {})
-                if isinstance(record, dict) and record.get("report_name") == normalized_report_name:
-                    shares.pop(token, None)
-                    mutated = True
+                if not isinstance(record, dict):
+                    continue
+                if record.get("report_name") != normalized_report_name:
+                    continue
+                if get_record_instance_scope_key(record.get(INSTANCE_SCOPE_FIELD)) != current_scope:
+                    continue
+                shares.pop(token, None)
+                mutated = True
             if mutated:
                 save_solution_share_map(shares)
 
@@ -45018,6 +45162,7 @@ def admin_preview_ownership_migration():
             kinds=payload.get("kinds", []),
             apply_mode=False,
             max_examples=payload.get("max_examples", 20),
+            instance_scope_key=get_active_instance_scope_key(),
         )
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400
@@ -45066,6 +45211,7 @@ def admin_apply_ownership_migration():
             kinds=payload.get("kinds", []),
             apply_mode=True,
             max_examples=payload.get("max_examples", 20),
+            instance_scope_key=get_active_instance_scope_key(),
         )
     except Exception as exc:
         return jsonify({"error": str(exc)}), 400

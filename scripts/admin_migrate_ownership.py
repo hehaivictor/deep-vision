@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -106,6 +107,7 @@ def run_migrate(args: argparse.Namespace) -> int:
             apply_mode=bool(args.apply),
             backup_id=str(args.backup_dir or "").strip(),
             max_examples=args.max_examples,
+            instance_scope_key=service.normalize_instance_scope_key(os.getenv("INSTANCE_SCOPE_KEY", "")),
         )
     except Exception as exc:
         log_error(str(exc))

@@ -5971,6 +5971,71 @@ class ComprehensiveApiTests(unittest.TestCase):
             and int(record.get("owner_user_id") or 0) == int(user["id"])
         ]
         self.assertEqual([first_payload.get("share_token")], matching_tokens)
+        created_record = share_records.get(first_payload.get("share_token")) or {}
+        self.assertEqual(self.server.get_active_instance_scope_key(), created_record.get("instance_scope_key", ""))
+
+    def test_solution_share_is_scoped_per_instance_but_public_token_stays_readable(self):
+        user = self._register()
+        professional_code = self._generate_license_batch(level_key="professional", note="方案分享实例隔离")["licenses"][0]["code"]
+        self._activate_license(professional_code)
+        old_scope = self.server.INSTANCE_SCOPE_KEY
+        old_enforcement = self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED
+        try:
+            self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED = True
+            self.server.INSTANCE_SCOPE_KEY = "scope-a"
+            report_name = self._create_owned_report(int(user["id"]), topic="方案分享实例隔离")
+            first_resp = self.client.post(f"/api/reports/{report_name}/solution/share")
+            self.assertEqual(first_resp.status_code, 200, first_resp.get_data(as_text=True))
+            first_token = (first_resp.get_json() or {}).get("share_token")
+            self.assertTrue(first_token)
+
+            self.server.INSTANCE_SCOPE_KEY = "scope-b"
+            second_record = self.server.create_or_get_solution_share(report_name, int(user["id"]))
+            second_token = second_record.get("share_token")
+            self.assertTrue(second_token)
+            self.assertNotEqual(first_token, second_token)
+            self.assertEqual("scope-b", second_record.get("instance_scope_key"))
+
+            self.server.delete_solution_shares_for_report(report_name)
+            shares = self.server.load_solution_share_map()
+            self.assertIn(first_token, shares)
+            self.assertNotIn(second_token, shares)
+            self.assertEqual("scope-a", shares[first_token].get("instance_scope_key"))
+
+            public_client = self.server.app.test_client()
+            public_resp = public_client.get(f"/api/public/solutions/{quote(first_token)}")
+            self.assertEqual(public_resp.status_code, 200, public_resp.get_data(as_text=True))
+            self.assertEqual("public", (public_resp.get_json() or {}).get("share_mode"))
+        finally:
+            self.server.INSTANCE_SCOPE_KEY = old_scope
+            self.server.INSTANCE_SCOPE_ENFORCEMENT_ENABLED = old_enforcement
+
+    def test_report_generation_status_is_shared_across_worker_memory(self):
+        session_id = f"shared-report-status-{uuid.uuid4().hex[:8]}"
+        old_status = dict(getattr(self.server, "report_generation_status", {}))
+        try:
+            self.server.report_generation_status.clear()
+            self.server.update_report_generation_status(
+                session_id,
+                "building_prompt",
+                message="正在构建证据包...",
+                detail_key="evidence_pack",
+            )
+            persisted = self.server.read_persisted_report_generation_status(session_id)
+            self.assertTrue(persisted)
+            self.assertTrue(persisted.get("active"))
+            self.assertEqual("building_prompt", persisted.get("state"))
+
+            with self.server.report_generation_status_lock:
+                self.server.report_generation_status.clear()
+            recovered = self.server.get_report_generation_record(session_id)
+            self.assertTrue(recovered)
+            self.assertTrue(recovered.get("active"))
+            self.assertEqual("building_prompt", recovered.get("state"))
+        finally:
+            self.server.clear_report_generation_status(session_id)
+            self.server.report_generation_status.clear()
+            self.server.report_generation_status.update(old_status)
 
     def test_export_asset_permission_follows_current_level(self):
         uploaded_objects = {}

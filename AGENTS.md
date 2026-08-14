@@ -173,7 +173,7 @@
 ## 关键不变量
 
 - 所有写接口默认要求登录；运维接口默认要求管理员权限。
-- 会话、报告、批量删除必须同时尊重 `owner_user_id` 与 `instance_scope_key`；分享表尚无独立 scope 列，后续需补齐，当前不要把它写成已经完成的现状。
+- 会话、报告、分享、批量删除都必须同时尊重 `owner_user_id` 与 `instance_scope_key`。公开分享仍按 token 只读访问，不因当前进程 scope 拒绝合法 token。
 - 方案页默认消费已绑定报告的最终快照；老报告允许回退到 Markdown 解析，但不能破坏现有兼容链路。
 - 服务启动前必须保证 `auth_db`、`license_db`、`meta_index schema` 已就绪；不要再依赖 import 副作用完成关键初始化。
 - 高风险数据操作优先 `dry-run`、预览、备份、可回滚，正式执行必须有明确确认。
