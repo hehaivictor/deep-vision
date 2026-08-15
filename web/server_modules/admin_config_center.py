@@ -77,7 +77,7 @@ class AdminConfigCenterService:
             "write_policy": "single_highest_priority_env",
             "explicit_env_files": explicit_env_files,
             "loaded_file_count": len(loaded_files),
-            "process_env_notice": "若运行值来自进程环境变量，保存 env 文件不会覆盖当前进程值，需调整部署环境并重启。",
+            "process_env_notice": "保存 env 后会同步写入当前进程环境变量；部署级路径、数据库与密钥改动仍建议重启服务。",
         }
 
     @staticmethod
@@ -261,9 +261,10 @@ class AdminConfigCenterService:
             "message": (
                 f"已写入 {source_label}，刷新浏览器页面后生效"
                 if normalized_source == "site"
-                else f"已写入 {source_label}，建议按需重启服务"
+                else f"已写入 {source_label}，并已同步到当前进程运行值；部署级路径改动仍建议重启服务"
             ),
             "saved_keys": sorted(parsed_updates.keys()),
+            "saved_values": parsed_updates,
             "source": normalized_source,
             "group_id": group["id"],
             "target_path": str(target_path),

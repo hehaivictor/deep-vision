@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "branch": "main",
+  "baseRef": "origin/main",
+  "sourceCommit": "1ccdfa0",
+  "committedAt": "2026-08-16T04:40:37+08:00",
+  "versionType": "patch",
+  "title": "关闭发布保守模式并收口配置热更新与 CI 假绿",
+  "changes": [
+    "修复：问题和报告发布保守模式默认关闭，balanced 档不再默认跳过审稿",
+    "修复：配置中心保存 env/config 后同步当前进程环境变量与运行时全局值",
+    "修复：auth_instance_id 按 license 库路径缓存，避免拆库后串号",
+    "修复：CI 摘要缺少 latest.json 或 overall 为 BLOCKED/UNKNOWN 时失败，全跳过不再报 READY",
+    "测试：补充保守模式默认值、配置热更新、license 缓存键与 CI 摘要退出码",
+    "文档：同步配置中心热更新、实例缓存键与 CI 失败判定口径"
+  ],
+  "changedFiles": [
+    ".github/workflows/browser-smoke.yml",
+    ".github/workflows/harness-nightly.yml",
+    ".github/workflows/pr-harness.yml",
+    "docs/agent/admin-ops.md",
+    "docs/agent/auth-identity.md",
+    "docs/agent/interview.md",
+    "docs/agent/memory-notes.md",
+    "docs/agent/report-solution.md",
+    "docs/worktree-shipping.md",
+    "scripts/agent_ci_summary.py",
+    "scripts/agent_harness.py",
+    "tests/test_api_comprehensive.py",
+    "tests/test_runtime_token_config.py",
+    "tests/test_scripts_comprehensive.py",
+    "web/config.py",
+    "web/server.py",
+    "web/server_modules/admin_config_center.py"
+  ]
+}

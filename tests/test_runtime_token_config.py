@@ -105,7 +105,8 @@ class RuntimeTokenConfigTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
-        self.assertTrue(module.REPORT_V3_RELEASE_CONSERVATIVE_MODE)
+        self.assertFalse(module.REPORT_V3_RELEASE_CONSERVATIVE_MODE)
+        self.assertFalse(module.QUESTION_RELEASE_CONSERVATIVE_MODE)
         self.assertTrue(module.REPORT_V3_RELEASE_SHORT_CIRCUIT_ENABLED)
 
     def test_data_dir_supports_env_file_and_process_override(self):

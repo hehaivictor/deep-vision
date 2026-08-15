@@ -460,6 +460,8 @@ def determine_overall_status(summary: dict[str, int]) -> str:
         return "BLOCKED"
     if summary.get("WARN", 0) > 0:
         return "READY_WITH_WARNINGS"
+    if summary.get("PASS", 0) <= 0:
+        return "SKIPPED"
     return "READY"
 
 

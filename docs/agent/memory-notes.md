@@ -4,10 +4,10 @@
 
 ## 当前焦点
 
-- 当前阶段：`product-hardening-w4`
-- 当前优先项：会话版本化 UPSERT、演示稿单行 UPSERT、前端会话写回竞态
+- 当前阶段：`product-hardening-w5-w7`
+- 当前优先项：关闭发布保守模式、配置中心写进程 env、auth_instance 缓存键、CI 假绿
 - 阶段台账：`docs/agent/harness-progress-phase6.md`
-- 阶段计划：已批准的实施改造计划 W4
+- 阶段计划：已批准的实施改造计划 W5-W7
 
 ## 最近稳定经验
 
@@ -22,6 +22,9 @@
 - 会话写入按 `payload_revision` 做 CAS；过期快照必须失败，不能后写覆盖。
 - 演示稿云端映射按 `report_name` 单行 UPSERT，不要再整表 DELETE。
 - 前端写回 `currentSession` 前必须核对 `session_id`；离开访谈页要取消进行中的出题请求。
+- 发布期问题和报告保守模式默认关闭；需要时再显式打开，不能当生产默认值。
+- 配置中心保存 env/config 后会同步当前进程运行值；`auth_instance_id` 缓存在 license 库路径上。
+- CI 摘要缺少 `latest.json` 或 overall 为 `BLOCKED/UNKNOWN` 时必须失败，不能假绿。
 
 ## 最近健康指针
 
@@ -33,7 +36,7 @@
 
 - 不要默认修改 `web/.env.local`、`web/.env.cloud`、真实部署环境或 `data/`。
 - 不要全局关闭 `QUESTION_FAST_PATH_ENABLED`。
-- 生产报告保守模式（W5）本周不做。
+- 不要把发布保守模式重新改成默认开启。
 
 ## 刷新命令
 

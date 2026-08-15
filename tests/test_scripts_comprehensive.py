@@ -2434,6 +2434,38 @@ class ComprehensiveScriptTests(unittest.TestCase):
         self.assertIn("- Overall: `READY`", markdown)
         self.assertIn("`browser_smoke`: `PASS` | suite=extended scenarios=9 fail=0", markdown)
         self.assertIn("当前无阻塞，可继续执行后续开发、交付或人工复核。", markdown)
+        self.assertEqual(
+            0,
+            agent_ci_summary.main(
+                [
+                    "--latest-json",
+                    str(artifact_root / "latest.json"),
+                    "--title",
+                    "Browser Smoke Summary",
+                    "--output",
+                    str(run_dir / "summary.md"),
+                ]
+            ),
+        )
+        latest_payload["overall"] = "BLOCKED"
+        summary_payload["overall"] = "BLOCKED"
+        handoff_payload["overall"] = "BLOCKED"
+        (run_dir / "summary.json").write_text(json.dumps(summary_payload, ensure_ascii=False), encoding="utf-8")
+        (run_dir / "handoff.json").write_text(json.dumps(handoff_payload, ensure_ascii=False), encoding="utf-8")
+        (artifact_root / "latest.json").write_text(json.dumps(latest_payload, ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(
+            1,
+            agent_ci_summary.main(
+                [
+                    "--latest-json",
+                    str(artifact_root / "latest.json"),
+                    "--title",
+                    "Browser Smoke Summary",
+                    "--output",
+                    str(run_dir / "blocked.md"),
+                ]
+            ),
+        )
 
     def test_agent_ci_summary_renders_eval_markdown(self):
         artifact_root = self.sandbox_root / "artifacts" / "ci-summary-eval"
@@ -3171,6 +3203,10 @@ class ComprehensiveScriptTests(unittest.TestCase):
         results.append(agent_harness.HarnessStageResult(name="extra", status="FAIL", exit_code=2, detail="fail"))
         failed_summary = agent_harness.summarize_results(results)
         self.assertEqual("BLOCKED", agent_harness.determine_overall_status(failed_summary))
+        self.assertEqual(
+            "SKIPPED",
+            agent_harness.determine_overall_status({"PASS": 0, "WARN": 0, "FAIL": 0, "SKIP": 3}),
+        )
 
     def test_agent_harness_extracts_diagnostics(self):
         highlights = agent_harness.extract_highlights(

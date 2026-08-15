@@ -185,6 +185,9 @@ def main(argv: list[str] | None = None) -> int:
         output_path = Path(args.output).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(markdown, encoding="utf-8")
+    overall = str(latest_payload.get("overall") or summary_payload.get("overall") or handoff_payload.get("overall") or "").strip().upper()
+    if overall in {"", "UNKNOWN", "BLOCKED"}:
+        return 1
     return 0
 
 

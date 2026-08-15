@@ -41,6 +41,7 @@
 - 公开分享 payload 不得带出他报报名，包括 `quality_signals.similar_report_name` 与 `degraded_reasons` 中的报名。
 - 方案相似度扫描必须按 `owner_user_id` 与 `instance_scope_key` 过滤，不能扫到其他用户 sidecar。
 - 演示稿映射在云端按 `report_name` 单行 UPSERT，不得整表 DELETE 后回写。
+- 发布期报告保守模式默认关闭；balanced 档不得默认跳过审稿或软通过质量门。
 
 ## 推荐验证
 

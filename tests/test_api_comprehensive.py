@@ -2,6 +2,7 @@ import io
 import importlib.util
 import inspect
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -1714,6 +1715,23 @@ class ComprehensiveApiTests(unittest.TestCase):
         old_runtime_config = self.server.runtime_config
         old_service_loaded_env_files = list(self.server.admin_config_center_service._loaded_env_files)
         old_service_env_metadata = dict(self.server.admin_config_center_service._env_load_metadata)
+        old_enable_ai = self.server.ENABLE_AI
+        old_debug_mode = self.server.DEBUG_MODE
+        old_enable_web_search = self.server.ENABLE_WEB_SEARCH
+        old_config_resolution_mode = self.server.CONFIG_RESOLUTION_MODE
+        old_service_resolution_mode = self.server.admin_config_center_service._config_resolution_mode
+        env_keys_to_restore = (
+            "CONFIG_RESOLUTION_MODE",
+            "DEBUG_MODE",
+            "ENABLE_AI",
+            "ENABLE_WEB_SEARCH",
+            "ENABLE_VISION",
+            "ENABLE_DEBUG_LOG",
+            "FOCUS_GENERATION_ACCESS_LOG",
+            "SUPPRESS_STATUS_POLL_ACCESS_LOG",
+            "LICENSE_ENFORCEMENT_ENABLED",
+        )
+        old_process_env = {key: os.environ.get(key) for key in env_keys_to_restore}
         env_base_path = self.server.DATA_DIR / "admin-center-base.env"
         env_path = self.server.DATA_DIR / "admin-center.env"
         config_path = self.server.DATA_DIR / "admin-center-config.py"
@@ -1876,6 +1894,11 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.assertIn("ENABLE_WEB_SEARCH=true", env_text)
             self.assertIn("DEBUG_MODE=false", env_text)
             self.assertNotIn("CONFIG_RESOLUTION_MODE=env_only", env_base_path.read_text(encoding="utf-8"))
+            self.assertEqual("true", os.environ.get("ENABLE_AI"))
+            self.assertTrue(self.server.ENABLE_AI)
+            self.assertEqual("env_only", self.server.CONFIG_RESOLUTION_MODE)
+            runtime_sync = (save_env_resp.get_json() or {}).get("runtime_sync") or {}
+            self.assertIn("ENABLE_AI", runtime_sync.get("applied_env_keys") or [])
 
             save_config_resp = self.client.post(
                 "/api/admin/config-center/save",
@@ -1954,6 +1977,16 @@ class ComprehensiveApiTests(unittest.TestCase):
             refreshed_site_payload = site_save_payload.get("config_center", {}).get("site", {})
             self.assertEqual("site_config_store", (refreshed_site_payload.get("file") or {}).get("storage"))
         finally:
+            for env_key, env_value in old_process_env.items():
+                if env_value is None:
+                    os.environ.pop(env_key, None)
+                else:
+                    os.environ[env_key] = env_value
+            self.server.ENABLE_AI = old_enable_ai
+            self.server.DEBUG_MODE = old_debug_mode
+            self.server.ENABLE_WEB_SEARCH = old_enable_web_search
+            self.server.CONFIG_RESOLUTION_MODE = old_config_resolution_mode
+            self.server.admin_config_center_service._config_resolution_mode = old_service_resolution_mode
             self.server.ADMIN_USER_IDS = old_admin_ids
             self.server.ADMIN_PHONE_NUMBERS = old_admin_phones
             self.server.get_admin_env_file_path = old_get_env_file_path
@@ -4526,6 +4559,14 @@ class ComprehensiveApiTests(unittest.TestCase):
             self.server.save_session_json_and_sync(session_file, stale_cloud)
         cloud_payload = self.server.safe_load_session(session_file)
         self.assertEqual("新快照", cloud_payload.get("description"))
+
+    def test_get_auth_instance_id_uses_license_db_cache_key(self):
+        first = self.server.get_auth_instance_id()
+        self.assertTrue(first)
+        cached_path = str(self.server.auth_instance_cache.get("db_path") or "")
+        self.assertEqual(self.server._resolve_license_db_cache_path(), cached_path)
+        self.assertNotEqual(self.server._resolve_auth_db_cache_path(), cached_path)
+        self.assertEqual(first, self.server.get_auth_instance_id())
 
     def test_custom_scenario_create_with_solution_dsl(self):
         self._register()

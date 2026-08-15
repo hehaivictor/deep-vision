@@ -83,6 +83,7 @@ jobs:
               echo "- Overall: \`UNKNOWN\`"
               echo "- 运行未生成 latest.json，请优先检查执行步骤日志。"
             } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
       - name: 上传 evaluator 工件

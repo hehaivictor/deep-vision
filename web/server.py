@@ -907,7 +907,7 @@ AI_RECOMMENDATION_MIN_CONFIDENCE_DEEP = str(
     _cfg_text("AI_RECOMMENDATION_MIN_CONFIDENCE_DEEP", "medium") or "medium"
 ).strip().lower()
 AI_RECOMMENDATION_REQUIRE_EVIDENCE_DEEP = _cfg_bool("AI_RECOMMENDATION_REQUIRE_EVIDENCE_DEEP", True)
-QUESTION_RELEASE_CONSERVATIVE_MODE = _cfg_bool("QUESTION_RELEASE_CONSERVATIVE_MODE", True)
+QUESTION_RELEASE_CONSERVATIVE_MODE = _cfg_bool("QUESTION_RELEASE_CONSERVATIVE_MODE", False)
 API_TIMEOUT = _cfg_float("API_TIMEOUT", 90.0)             # 通用 API 超时时间（秒）
 REPORT_API_TIMEOUT = _cfg_float("REPORT_API_TIMEOUT", 210.0)  # 报告生成专用超时（秒）
 if REPORT_API_TIMEOUT < API_TIMEOUT:
@@ -915,7 +915,7 @@ if REPORT_API_TIMEOUT < API_TIMEOUT:
 REPORT_V3_PROFILE = _cfg_text("REPORT_V3_PROFILE", "balanced").strip().lower()
 if REPORT_V3_PROFILE not in {"balanced", "quality"}:
     REPORT_V3_PROFILE = "balanced"
-REPORT_V3_RELEASE_CONSERVATIVE_MODE = _cfg_bool("REPORT_V3_RELEASE_CONSERVATIVE_MODE", True)
+REPORT_V3_RELEASE_CONSERVATIVE_MODE = _cfg_bool("REPORT_V3_RELEASE_CONSERVATIVE_MODE", False)
 REPORT_SIMPLE_TEMPLATE_FALLBACK_ENABLED = _cfg_bool("REPORT_SIMPLE_TEMPLATE_FALLBACK_ENABLED", False)
 report_default_review_timeout = min(REPORT_API_TIMEOUT, 120.0 if REPORT_V3_PROFILE == "balanced" else 150.0)
 REPORT_REVIEW_API_TIMEOUT = _cfg_float("REPORT_REVIEW_API_TIMEOUT", report_default_review_timeout)
@@ -3792,6 +3792,71 @@ def _write_admin_env_updates(updates: dict[str, Any]) -> Path:
     return env_path
 
 
+def _apply_admin_runtime_updates(source: str, updates: dict[str, Any]) -> dict[str, Any]:
+    global LOADED_ENV_KEY_COUNT
+    applied_env_keys: list[str] = []
+    applied_runtime_keys: list[str] = []
+    normalized_source = str(source or "").strip().lower()
+    if not isinstance(updates, dict) or not updates:
+        return {
+            "applied_env_keys": applied_env_keys,
+            "applied_runtime_keys": applied_runtime_keys,
+        }
+
+    if normalized_source == "env":
+        for key, value in updates.items():
+            setting_meta = ADMIN_SETTINGS_FIELD_INDEX.get("env", {}).get(key) or {}
+            os.environ[str(key)] = _serialize_admin_env_value(setting_meta, value)
+            LOADED_ENV_KEYS.add(str(key))
+            applied_env_keys.append(str(key))
+        LOADED_ENV_KEY_COUNT = len(LOADED_ENV_KEYS)
+
+    for key, value in updates.items():
+        setting_meta = ADMIN_SETTINGS_FIELD_INDEX.get(normalized_source, {}).get(key) or {}
+        field_type = str(setting_meta.get("type") or "text")
+        if key == "CONFIG_RESOLUTION_MODE":
+            mode = str(value or "auto").strip().lower()
+            if mode not in {"auto", "hybrid", "env_only"}:
+                mode = "auto"
+            globals()["CONFIG_RESOLUTION_MODE"] = mode
+            admin_config_center_service._config_resolution_mode = mode
+            applied_runtime_keys.append(key)
+            continue
+        if key not in globals():
+            continue
+        current = globals().get(key)
+        if isinstance(current, Path):
+            globals()[key] = Path(str(value)).expanduser()
+        elif field_type == "boolean":
+            globals()[key] = bool(value)
+        elif field_type == "int":
+            try:
+                globals()[key] = int(value)
+            except (TypeError, ValueError):
+                continue
+        elif field_type == "float":
+            try:
+                globals()[key] = float(value)
+            except (TypeError, ValueError):
+                continue
+        elif isinstance(current, set):
+            if isinstance(value, (list, tuple, set)):
+                globals()[key] = {str(item).strip() for item in value if str(item).strip()}
+            else:
+                globals()[key] = {item.strip() for item in str(value or "").split(",") if item.strip()}
+        else:
+            globals()[key] = value if field_type not in {"text", "password", "textarea", "select"} else str(value or "")
+        applied_runtime_keys.append(key)
+
+    if normalized_source in {"env", "config"}:
+        _sync_interview_runtime_bindings()
+        _sync_report_generation_runtime_bindings()
+    return {
+        "applied_env_keys": applied_env_keys,
+        "applied_runtime_keys": applied_runtime_keys,
+    }
+
+
 def _render_admin_managed_config_block(values: dict[str, Any]) -> str:
     lines = [
         ADMIN_CONFIG_MANAGED_BEGIN,
@@ -3860,11 +3925,11 @@ def _get_admin_runtime_source_label(source: str, key: str) -> str:
     if source == "site":
         return "共享数据库 site_config_store（刷新页面后生效）"
     if os.environ.get(f"DEEPVISION_{key}") is not None:
-        return "DEEPVISION_ 环境变量（保存配置文件不会覆盖当前运行值）"
+        return "DEEPVISION_ 环境变量（保存后会同步当前进程值）"
     if os.environ.get(key) is not None:
         if key in LOADED_ENV_KEYS:
             return ".env 文件"
-        return "进程环境变量（保存配置文件不会覆盖当前运行值）"
+        return "进程环境变量（保存后会同步当前进程值）"
     if _should_use_runtime_config_fallback(key):
         return "config.py"
     return "内置默认"
@@ -9874,7 +9939,7 @@ def set_license_enforcement_override(
 
 def get_auth_instance_id(force_refresh: bool = False) -> str:
     """返回当前鉴权库实例标识，用于拦截跨实例会话串号。"""
-    db_path = _resolve_auth_db_cache_path()
+    db_path = _resolve_license_db_cache_path()
     if not force_refresh:
         with auth_instance_cache_lock:
             if auth_instance_cache.get("db_path") == db_path and auth_instance_cache.get("value"):
@@ -45447,6 +45512,10 @@ def admin_save_config_center_group():
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+    source = str(payload.get("source") or "").strip().lower()
+    saved_values = payload.get("saved_values") if isinstance(payload.get("saved_values"), dict) else {}
+    if source in {"env", "config"} and saved_values:
+        payload["runtime_sync"] = _apply_admin_runtime_updates(source, saved_values)
     return jsonify(payload)
 
 
